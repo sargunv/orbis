@@ -58,6 +58,23 @@ pub(crate) const NO_CHUNK: u32 = u32::MAX;
 /// from did, and its first word says which (`cull.wgsl`'s `MOVED`).
 pub(crate) const MOVED: u32 = 2;
 
+/// A stretch of an indexed node's draw: compacted words of its row in one
+/// block, drawn with that block bound.
+///
+/// A node draws once in each block it has candidates in, and its tiles lie
+/// in the blocks they arrived in, so drawn block by block, its tiles would
+/// draw in an order that depends on the order they arrived in. Where two
+/// tiles' antialiased edges meet on one pixel, that order shows. So a node
+/// with candidates in more than one block draws its slots in stretches of
+/// one block's runs at a time, the stretches in its tiles' order: each
+/// stretch the runs of tiles that follow one another in that order and
+/// lie in one block, whose slots follow one another in its row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Segment {
+    pub(crate) block: u32,
+    pub(crate) indices: Range<u32>,
+}
+
 /// Compacted words a layout moved: `words` from `from` to `to`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Move {
@@ -276,6 +293,8 @@ struct Movable<'a> {
 #[derive(Clone)]
 struct RunPlan<'a> {
     key: RunKey,
+    /// Its tile's place in the tile order.
+    rank: u64,
     placement: u32,
     /// Which of the mesh's chunks it holds in the placement.
     route: Route,
@@ -372,6 +391,7 @@ impl Scene {
                 let route = Route::new(node.stream, node.cull.untested, &placement.row);
                 let run = RunPlan {
                     key: (self.mesh_serials[mesh.0 as usize], placement.slot, route),
+                    rank: super::place(&self.tiles, entry.tile),
                     placement: placement.slot,
                     route,
                     slots: &entry.chunk_slots,
@@ -687,6 +707,74 @@ impl Scene {
         self.moves = joined_moves(std::mem::take(&mut self.moves));
     }
 
+    /// Works out every row's [segments](Segment) again, after the node
+    /// rows changed: those of a visible indexed node's stream (all its
+    /// placements, or a split node's untested or tested ones) whose
+    /// candidates lie in more than one block, each of its rows laid out
+    /// tidy (its slots in its runs' order). A stream draws its rows whole
+    /// otherwise: in one block, or hidden, or untidy until a layout tidies
+    /// it. An extrusion's streams draw by depth, in any order.
+    pub(super) fn lay_out_segments(&mut self) {
+        let segments: Vec<Option<Vec<Segment>>> =
+            (0..self.rows).map(|n| self.node_segments(n)).collect();
+        if segments != self.segments {
+            self.segments = segments;
+            self.segments_revision += 1;
+        }
+    }
+
+    /// Row `node`'s segments, if it draws in them.
+    fn node_segments(&self, node: usize) -> Option<Vec<Segment>> {
+        let entry = self.nodes.get(node)?;
+        let stream = matches!(
+            entry.stream,
+            Stream::All | Stream::Untested(_) | Stream::Tested(_)
+        );
+        if entry.cull.draw != NodeDraw::Indexed || !entry.cull.visible || !stream {
+            return None;
+        }
+        let held: Vec<(u32, usize)> = (self.blocks())
+            .map(|block| (block, self.row(node as u32, block) as usize))
+            .filter(|&(_, row)| self.laid.get(row).is_some_and(|laid| laid.live > 0))
+            .collect();
+        if held.len() < 2 {
+            return None;
+        }
+        // Each run's tile order, block and compacted words.
+        let mut stretches: Vec<(u64, u32, Range<u32>)> = Vec::new();
+        let mut runs = Vec::new();
+        for (block, row) in held {
+            let laid = &self.laid[row];
+            let kept = laid
+                .runs
+                .as_ref()
+                .filter(|_| laid.tidy && laid.dropped == 0)?;
+            self.node_runs(row, &mut runs);
+            for run in &runs {
+                let words = &kept.get(&run.key)?.words;
+                let base = laid.word_base;
+                stretches.push((run.rank, block, base + words.start..base + words.end));
+            }
+        }
+        // A tile lies in one block: no two runs of one tile tie across
+        // blocks, and a block's runs keep their order.
+        stretches.sort_by_key(|s| s.0);
+        let mut segments: Vec<Segment> = Vec::new();
+        for (_, block, words) in stretches {
+            match segments.last_mut() {
+                Some(last) if last.block == block => {
+                    last.indices.start = last.indices.start.min(words.start);
+                    last.indices.end = last.indices.end.max(words.end);
+                }
+                _ => segments.push(Segment {
+                    block,
+                    indices: words,
+                }),
+            }
+        }
+        Some(segments)
+    }
+
     /// The node rows, with the cull's workgroups laid out in them: a
     /// node's `first_group` is the groups of the nodes before it, which
     /// take one for each 256 candidate rows of an indexed node (its
@@ -709,6 +797,7 @@ impl Scene {
             };
         }
         self.cull_groups = groups;
+        self.segments_dirty = true;
         self.tables
             .write_words(gpu, Table::NodeCull, 0, &self.node_rows);
     }
@@ -1343,6 +1432,7 @@ mod tests {
         };
         RunPlan {
             key: (serial, 0, Route::ALL),
+            rank: serial,
             placement: 0,
             route: Route::ALL,
             slots: Vec::leak((0..chunks).map(|c| serial as u32 * 100 + c).collect()),

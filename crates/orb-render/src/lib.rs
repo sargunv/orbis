@@ -564,6 +564,9 @@ pub struct Renderer {
     glyphs_bound: u32,
     /// The scene's buffer revision its groups bind.
     buffers_bound: u64,
+    /// The scene's segments revision the bundles drew
+    /// ([`Scene::segments`]).
+    segments_drawn: u64,
     /// What the scene group binds besides the scene's buffers.
     image_bindings: ImageBindings,
     /// The image texture the scene group binds.
@@ -839,6 +842,7 @@ impl Renderer {
             terrain_depth_bound: no_terrain_depth,
             glyphs_bound: glyphs.revision(),
             buffers_bound: 0,
+            segments_drawn: 0,
             glyphs,
             images_bound: image_bindings.texture,
             image_bindings,
@@ -2643,6 +2647,12 @@ impl Renderer {
             self.shrink(gpu);
         }
         let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame, self.settling);
+        // Nodes that draw in stretches of one block's slots record them.
+        let segments = self.scene.segments_revision();
+        if segments != self.segments_drawn {
+            self.segments_drawn = segments;
+            self.invalidate_bundle(gpu);
+        }
         // The symbol draws bind the placement target, which the placements
         // write whole each frame: it is made again for the symbol nodes'
         // quads, with room for twice them, so that labels rarely outgrow
@@ -3580,7 +3590,8 @@ impl Renderer {
     /// `scenes`, one per block slot: the map's (`in_map`), or the drape's
     /// for draped nodes on terrain, with its group and its second
     /// stream's. The node draws once in each block it may have candidates
-    /// in, that block's group bound; a split node's untested placements
+    /// in, that block's group bound, or in its segments, in its tiles'
+    /// order ([`Scene::segments`]); a split node's untested placements
     /// first, in their pipeline, then its tested ones. In the map, a
     /// terrain layer draws its nodes ([`Step::Terrain`]). `false` when
     /// the node waits for a pipeline: it records nothing, or draws with a
@@ -3726,8 +3737,11 @@ impl Renderer {
         };
         let pipelines = [untested, pipeline];
         let groups = [Some(group), second_group];
-        for ((rows, pipeline), group) in streams.into_iter().zip(pipelines).zip(groups) {
-            let Some(rows) = rows else {
+        let ids = [Some(i as u32), second];
+        for (((rows, pipeline), group), id) in
+            (streams.into_iter().zip(pipelines)).zip(groups).zip(ids)
+        {
+            let (Some(rows), Some(id)) = (rows, id) else {
                 continue;
             };
             let group = group.expect("a split node has its second stream's group");
@@ -3741,13 +3755,38 @@ impl Renderer {
                     offset: 0,
                 });
             }
-            for (scene, row) in rows {
+            let Some(segments) = self.scene.segments(id) else {
+                for (scene, row) in rows {
+                    commands.extend([
+                        RenderCommand::SetBindGroup {
+                            index: 0,
+                            group: scene,
+                        },
+                        self.driver.draw(buffers, row, node.cull.draw),
+                    ]);
+                }
+                continue;
+            };
+            // Each stretch whole: the cull wrote every slot of its runs,
+            // hidden indices for what is out of view, and holes between
+            // runs hold hidden ones.
+            for segment in segments {
+                let Some(Some(scene)) = scenes.get(segment.block as usize) else {
+                    continue;
+                };
+                if self.driver.draws_nothing(self.scene.row(id, segment.block)) {
+                    continue;
+                }
                 commands.extend([
                     RenderCommand::SetBindGroup {
                         index: 0,
-                        group: scene,
+                        group: *scene,
                     },
-                    self.driver.draw(buffers, row, node.cull.draw),
+                    RenderCommand::DrawIndexed {
+                        indices: segment.indices.clone(),
+                        base_vertex: 0,
+                        instances: 0..1,
+                    },
                 ]);
             }
         }

@@ -11,7 +11,9 @@
 //! block has its own cull rows, one per render node and second stream
 //! ([`Scene::row`]), which its meshes' candidates are laid out in: the
 //! cull runs once per block, and a node draws once per block it has
-//! candidates in, with that block bound.
+//! candidates in, with that block bound; a node whose tiles lie in more
+//! than one block draws in stretches of one block's at a time, in its
+//! tiles' order ([`Segment`]).
 
 mod arena;
 mod candidates;
@@ -23,9 +25,9 @@ mod sprites;
 mod symbol;
 mod tables;
 mod texels;
-pub(crate) use candidates::Move;
 #[cfg(cpu_driven)]
 pub(crate) use candidates::{MOVED, NO_CHUNK};
+pub(crate) use candidates::{Move, Segment};
 pub use glyph::{GLYPH_PADDING, GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas};
 pub use sprites::{ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload};
 #[cfg(cpu_driven)]
@@ -924,12 +926,14 @@ impl NodeEntry {
 /// made when no block there has room for what comes, freed once empty.
 ///
 /// But for the one that holds what draws as points (circles, heatmaps and
-/// symbols, and the tiles that have any): a node draws once a block, so
-/// where its tiles' draws overlap (a symbol or circle past its tile's
-/// edge, sort keys merged across tiles) one draw must hold them all for
+/// symbols, and the tiles that have any): a node draws a list per block,
+/// so where its tiles' draws overlap (a symbol or circle past its tile's
+/// edge, sort keys merged across tiles) one list must hold them all for
 /// the tile order and sort keys to decide what is on top, rather than the
 /// order the tiles arrived in. That block moves into larger buffers as it
-/// fills, and smaller as it empties, copying what it holds.
+/// fills, and smaller as it empties, copying what it holds. An indexed
+/// node's slots instead draw in stretches of one block's in its tiles'
+/// order ([`Segment`]).
 #[derive(Debug)]
 struct Block {
     /// It holds what draws as points ([`Scene::overlaps`]).
@@ -1275,6 +1279,14 @@ pub(crate) struct Scene {
     /// The candidates were laid out in place since they were last laid out
     /// from the start, their slices keeping the room they grew to.
     relaid: bool,
+    /// By render node, its draw in stretches of one block's slots, where
+    /// its candidates lie in more than one block ([`Segment`]).
+    segments: Vec<Option<Vec<Segment>>>,
+    /// The node rows changed since the segments were worked out.
+    segments_dirty: bool,
+    /// Changes whenever a node's segments do: bundles that recorded them
+    /// record again.
+    segments_revision: u64,
     /// The node rows as the last rebuild laid them out, with their cull
     /// parameters (margin, elevation, visibility) patched since.
     node_rows: Vec<u32>,
@@ -1455,6 +1467,9 @@ impl Scene {
             all_dirty: true,
             untidy: false,
             relaid: false,
+            segments: Vec::new(),
+            segments_dirty: false,
+            segments_revision: 0,
             node_rows: Vec::new(),
             params_dirty: false,
             cull_groups: 0,
@@ -2883,6 +2898,9 @@ impl Scene {
         for block in self.blocks().collect::<Vec<_>>() {
             self.write_block_frame(gpu, block);
         }
+        if std::mem::take(&mut self.segments_dirty) {
+            self.lay_out_segments();
+        }
         (self.candidate_count, rebuilt)
     }
 
@@ -3138,6 +3156,18 @@ impl Scene {
     /// Changes whenever a pool moved into a larger buffer.
     pub(crate) fn buffers_revision(&self) -> u64 {
         self.buffers_revision
+    }
+
+    /// Render node `node`'s draw in stretches of one block's slots, in its
+    /// tiles' order, where it draws in them ([`Segment`]); otherwise it
+    /// draws its row in each block whole.
+    pub(crate) fn segments(&self, node: u32) -> Option<&[Segment]> {
+        self.segments.get(node as usize)?.as_deref()
+    }
+
+    /// Changes whenever a node's [segments](Self::segments) do.
+    pub(crate) fn segments_revision(&self) -> u64 {
+        self.segments_revision
     }
 
     /// The scene's GPU memory by pool: the blocks' vertices and indices

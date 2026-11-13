@@ -1183,6 +1183,73 @@ fn overlapping_tiles_draw_in_tile_order_whatever_block_they_landed_in() {
     assert_eq!(draw([1, 0]), [255, 0, 0, 255], "arrived in reverse");
 }
 
+/// Where one layer's fills from three tiles overlap, as two tiles'
+/// antialiased edges do on a seam's pixels, the tile order says which is
+/// on top, whatever block of the pools each landed in: a node with tiles
+/// in several blocks draws them in the tiles' order, not the blocks'.
+#[test]
+fn overlapping_fills_draw_in_tile_order_whatever_block_they_landed_in() {
+    let mut b = LayerBuilder::new("water", 4096);
+    b.begin_feature(None, GeometryType::Polygon);
+    b.begin_part();
+    b.begin_ring();
+    for v in [[0, 0], [4096, 0], [4096, 4096], [0, 4096]] {
+        b.push_vertex(v);
+    }
+    let mesh = fill::layout(&b.finish(), &[0]);
+    let colors = [
+        [0.0, 1.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+    ];
+    let draw = |arrivals: [usize; 3]| {
+        // A block holds one tile's fill: each tile takes a block of its own.
+        let capacity = SceneCapacity {
+            vertex_words: mesh.vertices.len() as u32,
+            index_words: mesh.indices.len() as u32,
+            max_vertex_words: 1 << 12,
+            max_index_words: 1 << 12,
+            ..Harness::SMALL
+        };
+        let mut h = Harness::with(4, 2, 8, capacity, None);
+        h.renderer.set_nodes(&mut h.gpu, &[Family::Fill]);
+        let paint = FillPaint {
+            color: [0.0; 4],
+            opacity: 1.0,
+            translate: Default::default(),
+            table_mask: 1,
+            curves: [Curve::STEP; 2],
+            state: Default::default(),
+        };
+        h.renderer.set_paint(&mut h.gpu, 0, &NodePaint::Fill(paint));
+        let mut tiles = [None; 3];
+        for i in arrivals {
+            let key = orb_render::TileKey {
+                source: 0,
+                tile: orb_crs::TileIndex::new(2, i as u32, 0),
+            };
+            let tile = h.renderer.add_tile(&mut h.gpu, key, None).unwrap();
+            h.renderer
+                .place(tile, EXTENT, &[full_view_tile(0.0)])
+                .unwrap();
+            let mut props = [0; orb_shaders::layout::FILL_ROW_WORDS];
+            props[0] = orb_render::pack_color(colors[i]);
+            props[1] = props[0];
+            let data = MeshData::new(&mesh, &props, orb_shaders::layout::FILL_ROW_WORDS as u32);
+            h.renderer
+                .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data, &Default::default())
+                .unwrap();
+            tiles[i] = Some(tile);
+        }
+        // Tiles 0, 1, 2: the red fill on top.
+        h.renderer.set_tile_order(0, &tiles.map(Option::unwrap));
+        pixel(&h.render(), 32, 32)
+    };
+    for arrivals in [[0, 1, 2], [2, 1, 0], [1, 2, 0], [2, 0, 1]] {
+        assert_eq!(draw(arrivals), [255, 0, 0, 255], "arrived {arrivals:?}");
+    }
+}
+
 #[test]
 fn heatmap_composites_in_layer_order_and_hides_without_recording() {
     let mut h = Harness::new();

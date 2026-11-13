@@ -232,12 +232,7 @@ mod tests {
         let reference = unbounded.pixels();
         let (zoomed, _) = zoom_out(capacity);
         let pixels = zoomed.pixels();
-        // A layer left out differs by far more than a level or two; tile
-        // seams, which blend by the order the path brought tiles in on the
-        // GPU driver (#200), by that little.
-        let differing = (pixels.chunks(4).zip(reference.chunks(4)))
-            .filter(|(a, b)| a.iter().zip(*b).any(|(x, y)| x.abs_diff(*y) > 2))
-            .count();
+        let differing = crate::common::differing_pixels(&pixels, &reference);
         assert_eq!(differing, 0, "pixels differ from an unbounded scene");
     }
 
