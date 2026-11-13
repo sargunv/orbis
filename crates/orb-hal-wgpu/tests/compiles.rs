@@ -32,7 +32,7 @@ fn one_at_a_time_compiles_one_at_a_time() {
         "pipelines",
         PIPELINES as usize,
     ))));
-    gpu.inject_slow_compile("slow", SLOW);
+    gpu.inject_slow_compile(&["slow"], SLOW);
     let module = gpu.create_shader_module(&ShaderModuleDesc {
         label: "slow",
         source: SHADER.into(),

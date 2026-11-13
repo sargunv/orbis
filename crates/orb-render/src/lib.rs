@@ -1550,9 +1550,12 @@ impl Renderer {
         if then != was {
             self.swap_kind(gpu, then);
         }
-        self.assign_stacks_as(on);
         self.full = on;
         self.request_set(gpu);
+        // After the set, which puts the stacks back as terrain is now: on
+        // terrain the draped nodes draw into the drape, which the terrain
+        // draws, and wait for both.
+        self.assign_stacks_as(on);
         let mut wanted = Vec::new();
         for i in 0..self.nodes.len() {
             if !self.scene_cull(i).visible && !self.nodes[i].drawn {

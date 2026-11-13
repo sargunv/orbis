@@ -208,6 +208,15 @@ impl Root {
     pub(crate) fn running(&self) -> bool {
         self.light.running() || self.sky.running() || self.terrain.running()
     }
+
+    /// Holds the terrain's rise at its start this frame: a terrain turned
+    /// on that waits for its pipelines rises once it draws, rather than
+    /// while nothing shows it.
+    pub(crate) fn hold_terrain(&mut self) {
+        for ease in &mut self.terrain.running {
+            ease.span = None;
+        }
+    }
 }
 
 /// Values that ease slot by slot, each field's slots together.

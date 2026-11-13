@@ -5,8 +5,8 @@ use orb_hal_wgpu::WgpuGpu;
 use crate::Error;
 
 /// A fault tests inject: `hang`, compiles never finish, as in a driver
-/// hung in its compiler; `slow:<label>:<ms>`, compiles of pipelines of that
-/// label take that much longer.
+/// hung in its compiler; `slow:<label>[,<label>…]:<ms>`, compiles of
+/// pipelines of those labels take that much longer.
 const FAULT: &str = "ORB_FAULT_INJECTION";
 
 /// A device on the default adapter, and which adapter it is: a phrase for
@@ -21,7 +21,8 @@ pub(crate) fn make() -> Result<(WgpuGpu, String), Error> {
         .and_then(|f| f.rsplit_once(':'))
         .and_then(|(label, ms)| Some((label, ms.parse().ok()?)))
     {
-        gpu.inject_slow_compile(label, std::time::Duration::from_millis(ms));
+        let labels: Vec<&str> = label.split(',').collect();
+        gpu.inject_slow_compile(&labels, std::time::Duration::from_millis(ms));
     }
     if fault == "hang" {
         gpu.inject_compile_hang();

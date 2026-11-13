@@ -770,7 +770,7 @@ pub struct Map {
     pub(crate) drape_refused: bool,
     /// The terrain waits to turn on, or to go, for the pipelines the map
     /// draws with then ([`orb_render::Renderer::terrain_ready_as`]): the
-    /// map isn't idle.
+    /// map isn't idle, and a terrain turned on rises once it stops.
     terrain_waits: bool,
     /// The last frame's viewport, which the views' worths of cached tiles
     /// are counted by ([`Map::cache_limit`]).
@@ -1976,6 +1976,9 @@ impl Map {
             .style
             .as_ref()
             .map(|s| Arc::clone(&s.worker.plan().style));
+        if self.terrain_waits {
+            self.root.hold_terrain();
+        }
         let root = self.root.frame(model.as_deref(), zoom, frame_time);
         self.root_frame = Some(root);
         let at = crate::light::atmosphere_view(

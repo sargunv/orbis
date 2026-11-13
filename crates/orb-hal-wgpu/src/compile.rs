@@ -511,9 +511,9 @@ mod native {
         /// Fault injection: tasks stall in their job until the compiler
         /// closes, as in a driver hung in its compiler.
         hang: std::sync::atomic::AtomicBool,
-        /// Fault injection: compiles of pipelines of this label take this
-        /// much longer, as on a device compiling cold.
-        slow: Mutex<Option<(String, Duration)>>,
+        /// Fault injection: compiles of pipelines of these labels take
+        /// this much longer, as on a device compiling cold.
+        slow: Mutex<Option<(Vec<String>, Duration)>>,
         /// Called from a task when a compile finishes.
         compiled: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
         /// The jobs compiling and since when, by task.
@@ -718,10 +718,11 @@ mod native {
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
-        /// Makes compiles of pipelines labelled `label` take `by` longer
-        /// (fault injection for tests of what waits for them).
-        pub(crate) fn inject_slow(&self, label: &str, by: Duration) {
-            *self.shared.slow.lock().expect("compile watch poisoned") = Some((label.into(), by));
+        /// Makes compiles of pipelines labelled one of `labels` take `by`
+        /// longer (fault injection for tests of what waits for them).
+        pub(crate) fn inject_slow(&self, labels: &[&str], by: Duration) {
+            let labels = labels.iter().map(|&l| l.to_owned()).collect();
+            *self.shared.slow.lock().expect("compile watch poisoned") = Some((labels, by));
         }
 
         /// Moves a queued job to the front.
@@ -914,7 +915,7 @@ mod native {
         }
         drop(busy);
         let slow = shared.slow.lock().expect("compile watch poisoned").clone();
-        if let Some((_, by)) = slow.filter(|(label, _)| job.label() == label) {
+        if let Some((_, by)) = slow.filter(|(labels, _)| labels.iter().any(|l| l == job.label())) {
             std::thread::sleep(by);
         }
         let built = job.compile(device, shared.loss.get());

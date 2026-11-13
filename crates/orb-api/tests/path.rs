@@ -1014,21 +1014,13 @@ fn a_resized_terrain_map_draws_its_next_frame() {
     }
 }
 
-/// Turning terrain on raises it from flat over the style's transition,
-/// and turning it off eases it flat and then drops it, with the map's
-/// tiles drawn on every frame between: a fill under Tokyo's layers covers
-/// the ground, so no frame shows the background (once, removing terrain
-/// left the drape no room while the terrain fell, and every frame of the
-/// fall drew the labels alone; and since terrain draws in the map's own
-/// passes, whose pipelines differ with and without it, a map loaded with
-/// terrain dropped it before its flat pipelines compiled, and drew the
-/// background alone for a few frames); the frames between differ from
-/// both ends (they ease rather than jump), and at rest the map draws what
-/// a fresh map with or without the terrain does at that camera. Each turn
-/// starts from a fresh map, which has none of the other kind's pipelines.
-#[test]
-fn turning_terrain_on_and_off_eases_with_every_tile_drawn() {
-    let (hills, _dem) = hills();
+/// Tokyo over the test hills, with and without their terrain, and the
+/// terrain: its background magenta under a fill of the background's own
+/// colour that covers the ground, so that a frame shows no tile where it
+/// shows the magenta, or nothing ([`bare`]). Its scratch DEM lives as
+/// long as the guard.
+fn terrain_turns() -> (String, String, &'static str, common::Scratch) {
+    let (hills, dem) = hills();
     let ground = r#""ground": {"type": "geojson", "data": {"type": "Polygon",
         "coordinates": [[[139.2, 35.2], [140.3, 35.2], [140.3, 36.2], [139.2, 36.2], [139.2, 35.2]]]}},"#;
     let style = |terrain: &str| {
@@ -1047,32 +1039,62 @@ fn turning_terrain_on_and_off_eases_with_every_tile_drawn() {
     };
     let terrain = r#"{"source": "hills", "exaggeration": 1.5}"#;
     let with = style(&format!(r#""terrain": {terrain},"#));
-    let without = style("");
-    let at = (STATION, 14.5, 30.0, 55.0);
+    (with, style(""), terrain, dem)
+}
+
+/// Pixels of a frame of [`terrain_turns`]' styles that show no tile: the
+/// background's magenta, however the terrain shades it (nothing in
+/// Tokyo's style is near it), or nothing at all, where neither the
+/// terrain nor the map's layers drew (a terrain waiting for its pipeline
+/// leaves the target clear).
+fn bare(pixels: &[u8]) -> usize {
+    (pixels.chunks(4))
+        .filter(|p| p[3] < 255 || u16::from(p[1]) + 96 < u16::from(p[0].min(p[2])))
+        .count()
+}
+
+/// Where [`terrain_turns`]' maps look: steep enough that the terrain's
+/// hills show.
+const TERRAIN_TURN_AT: At = (STATION, 14.5, 30.0, 55.0);
+
+/// A map of `style` at [`TERRAIN_TURN_AT`], idle, and the clock its
+/// frames are timed by, in milliseconds: settling times its frames on
+/// from the last one's.
+fn idle_at(runtime: &Runtime, target: &mut Target, style: &str) -> (Map, impl Fn() -> f64 + use<>) {
+    let mut map = Map::new(runtime, options());
+    map.set_constraints(steep());
+    map.set_style_json(style).unwrap();
+    map.jump_to(&camera(TERRAIN_TURN_AT));
+    let started = std::time::Instant::now();
+    let clock = move || started.elapsed().as_secs_f64() * 1000.0;
+    map.render(target, clock()).unwrap();
+    common::settle(&mut map, target);
+    (map, clock)
+}
+
+/// Sets the map's terrain to `terrain`, JSON (`null` for none).
+fn set_terrain(map: &mut Map, terrain: &str) {
+    let tx = format!(r#"[["setTerrain", {terrain}]]"#);
+    map.edit(&orb_api::Transaction::from_commands(&tx).unwrap())
+        .unwrap();
+}
+
+/// Turning terrain on raises it from flat over the style's transition,
+/// and turning it off eases it flat and then drops it, with the map's
+/// tiles drawn on every frame between (once, removing terrain left the
+/// drape no room while the terrain fell, and every frame of the fall drew
+/// the labels alone); the frames between differ from both ends (they ease
+/// rather than jump), and at rest the map draws what a fresh map with or
+/// without the terrain does at that camera.
+#[test]
+fn turning_terrain_on_and_off_eases_with_every_tile_drawn() {
+    let (with, without, terrain, _dem) = terrain_turns();
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
-    // The background's magenta, however the terrain shades it: nothing in
-    // Tokyo's style is near it.
-    let bare = |pixels: &[u8]| {
-        (pixels.chunks(4))
-            .filter(|p| u16::from(p[1]) + 96 < u16::from(p[0].min(p[2])))
-            .count()
-    };
     let turn = |(start, terrain, end): (&str, &str, &str), name: &str| {
         let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
-        let mut map = Map::new(&runtime, options());
-        map.set_constraints(steep());
-        map.set_style_json(start).unwrap();
-        map.jump_to(&camera(at));
-        // The frames' clock, in milliseconds: settling times its frames
-        // on from the last one's.
-        let started = std::time::Instant::now();
-        let clock = || started.elapsed().as_secs_f64() * 1000.0;
-        map.render(&mut target, clock()).unwrap();
-        common::settle(&mut map, &mut target);
+        let (mut map, clock) = idle_at(&runtime, &mut target, start);
         let mut frames = vec![target.read_pixels().unwrap()];
-        let tx = format!(r#"[["setTerrain", {terrain}]]"#);
-        map.edit(&orb_api::Transaction::from_commands(&tx).unwrap())
-            .unwrap();
+        set_terrain(&mut map, terrain);
         // Past the style's transition, 300 ms, at 60 frames a second.
         let mut t = clock();
         for _ in 0..30 {
@@ -1083,7 +1105,7 @@ fn turning_terrain_on_and_off_eases_with_every_tile_drawn() {
         common::settle(&mut map, &mut target);
         frames.push(target.read_pixels().unwrap());
         for (i, frame) in frames.iter().enumerate() {
-            assert_eq!(bare(frame), 0, "{name}: frame {i} shows the background");
+            assert_eq!(bare(frame), 0, "{name}: frame {i} shows no tile");
         }
         let (first, last) = (&frames[0], frames.last().unwrap());
         assert_ne!(first, last, "{name} changed nothing");
@@ -1093,7 +1115,7 @@ fn turning_terrain_on_and_off_eases_with_every_tile_drawn() {
             "{name}: the map jumped rather than eased"
         );
         let camera = map.camera();
-        let (fresh, fresh_camera) = fresh_at(&runtime, &mut target, end, at);
+        let (fresh, fresh_camera) = fresh_at(&runtime, &mut target, end, TERRAIN_TURN_AT);
         assert_eq!(
             camera, fresh_camera,
             "{name}: the camera differs from a fresh map's"
@@ -1102,6 +1124,66 @@ fn turning_terrain_on_and_off_eases_with_every_tile_drawn() {
     };
     turn((&without, terrain, &with), "terrain-on");
     turn((&with, "null", &without), "terrain-off");
+}
+
+/// The child's role in
+/// [`turning_terrain_on_or_off_waits_for_the_pipelines_it_draws_with`].
+const SLOW_CHILD: &str = "ORB_TEST_SLOW_TERRAIN_CHILD";
+
+/// Terrain draws in the map's own passes, whose pipelines differ with and
+/// without it: a map takes its terrain, or drops it once it has fallen
+/// flat, only once the pipelines it then draws with are made, so that no
+/// frame between draws without the ground however long they take.
+/// Turning terrain on waits for the terrain's own pipeline, and rises
+/// once it draws, not while it waits; turning it off waits for the flat
+/// fills'. Each turn starts from a fresh map, which has made none of the
+/// other kind's. In a child process, whose device compiles those slowly
+/// (set from the environment).
+#[test]
+fn turning_terrain_on_or_off_waits_for_the_pipelines_it_draws_with() {
+    let test = "turning_terrain_on_or_off_waits_for_the_pipelines_it_draws_with";
+    if std::env::var_os(SLOW_CHILD).is_none() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env(SLOW_CHILD, "1")
+            .env("ORB_FAULT_INJECTION", "slow:terrain,fill:300")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&child.stderr);
+        assert!(child.status.success(), "{stderr}");
+        return;
+    }
+    let (with, without, terrain, _dem) = terrain_turns();
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let turn = |(start, terrain): (&str, &str), name: &str| {
+        let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+        let (mut map, clock) = idle_at(&runtime, &mut target, start);
+        let first = target.read_pixels().unwrap();
+        set_terrain(&mut map, terrain);
+        // At 60 frames a second, however long each takes to draw: the
+        // terrain rises or falls over as many frames as on a fast device.
+        let mut t = clock();
+        let started = std::time::Instant::now();
+        for frame in 1.. {
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "{name}: never idle"
+            );
+            let Some(report) = map.render(&mut target, t).unwrap() else {
+                std::thread::sleep(Duration::from_millis(4));
+                continue;
+            };
+            t += 1000.0 / 60.0;
+            let pixels = target.read_pixels().unwrap();
+            assert_eq!(bare(&pixels), 0, "{name}: frame {frame} shows no tile");
+            if report.idle {
+                assert_ne!(first, pixels, "{name} changed nothing");
+                return;
+            }
+        }
+    };
+    turn((&without, terrain), "terrain-on");
+    turn((&with, "null"), "terrain-off");
 }
 
 /// A map loaded with terrain, turned flat before the flat view's tiles
