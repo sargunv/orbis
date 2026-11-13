@@ -4,10 +4,11 @@
 // map's labels. Requests and replies are Rust's messages (orb-web's `jobs`
 // and `placement` modules); this file only carries them.
 //
-// Spawner → worker: {backend, module, deferred?, port, placement}: the
-// map's compiled build, with its deferred half once the map has it, and
-// `placement` true for the placement worker; then {deferred} when the map
-// gets the deferred half later. A job worker transfers each reply's
+// Spawner → worker: {backend, module, modules, port, placement}: the
+// map's compiled build, with the feature modules the map has, and
+// `placement` true for the placement worker; then, on the port, {module,
+// compiled} for each feature module the map loads later, ahead of the
+// work that needs it. A job worker transfers each reply's
 // message, packed tile or DEM pixels and image tile's ImageBitmap; the
 // placement worker answers each frame with its commit, transferred, or
 // with `{error}` when it couldn't place it. A trapped worker says it is
@@ -19,9 +20,10 @@ import type {
 import {
   bindings,
   instantiate,
-  takeDeferred,
+  takeModule,
   type Backend,
   type Bindings,
+  type ModuleName,
 } from "./builds.ts";
 import { onRegionsChanged } from "./regions.ts";
 import { askPage } from "./requests.ts";
@@ -30,17 +32,28 @@ import { loadShaper } from "./shaper.ts";
 interface Start {
   backend: Backend;
   module: WebAssembly.Module;
-  deferred?: WebAssembly.Module;
+  modules: [ModuleName, WebAssembly.Module][];
   port: MessagePort;
   placement?: boolean;
 }
 
-self.onmessage = async ({
-  data,
-}: MessageEvent<Start | { deferred: WebAssembly.Module }>) => {
-  if (data.deferred) takeDeferred(data.deferred);
-  if (!("port" in data)) return;
-  const { backend, module, port, placement } = data;
+/** A feature module the map loaded, sent ahead of the work needing it. */
+interface ModuleMessage {
+  module: ModuleName;
+  compiled: WebAssembly.Module;
+}
+
+/** Takes a feature module the map sent, if `data` is one. */
+function moduleMessage(data: unknown): boolean {
+  const { module, compiled } = (data ?? {}) as Partial<ModuleMessage>;
+  if (module === undefined || !compiled) return false;
+  takeModule(module, compiled);
+  return true;
+}
+
+self.onmessage = async ({ data }: MessageEvent<Start>) => {
+  const { backend, module, modules, port, placement } = data;
+  for (const [name, compiled] of modules) takeModule(name, compiled);
   const glue = await bindings(backend);
   instantiate(glue, { backend, module });
   // A trap (a Rust panic) leaves the wasm unusable: the worker says it is
@@ -69,6 +82,7 @@ function placer(
 ): (e: MessageEvent) => void {
   const placer: Placer = new glue.PlacementWorker();
   return ({ data }) => {
+    if (moduleMessage(data)) return;
     try {
       if (data?.trap) placer.trap();
       const reply = placer.receive(data);
@@ -98,7 +112,7 @@ function jobs(
   // The page's request transform, asked for each fetch while it has one.
   const page = askPage(port);
   return async ({ data }) => {
-    if (page.answer(data)) return;
+    if (moduleMessage(data) || page.answer(data)) return;
     const { requestHook } = data as { requestHook?: boolean };
     if (requestHook !== undefined) {
       glue.setRequestHook(requestHook ? page.hook : undefined);

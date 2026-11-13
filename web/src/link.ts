@@ -66,13 +66,7 @@ export async function directLink(
     call(method, ...args) {
       // As from a worker: the wasm map is freed.
       if (stopped) return Promise.reject(new Error("the map was removed"));
-      try {
-        return Promise.resolve(
-          (engine[method] as (...a: unknown[]) => never)(...args),
-        );
-      } catch (e) {
-        return Promise.reject(e);
-      }
+      return engine.call(method, args) as Promise<never>;
     },
     input: (kind, args, time) => engine.input(kind, args, time),
     listen,

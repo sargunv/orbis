@@ -1,74 +1,180 @@
-//! core.wasm in two: what a map's first frames run, and the rest
-//! (`core-deferred.wasm`), which loads once the map is idle, or the first
-//! time the map calls into it (web/src/builds.ts).
+//! core.wasm by feature: the code of plain vector maps (MVT on Web
+//! Mercator) stays in it, and each feature a style declares goes to a
+//! module of its own, [`MODULES`], which the map fetches once its style
+//! declares that feature, beside TileJSON, and instantiates against
+//! core.wasm's memory and table in each of its threads (web/src/builds.ts,
+//! orb-runtime's `modules.rs`).
 //!
-//! The line is [`LIST`], which `pnpm -C web coverage --tour --write` has
-//! [`write_list`] rewrite from what its scenes ran: functions none ran are
-//! deferred, and those one ran stay (`+`), as do those an earlier list kept,
-//! so that later runs only add to them. A function is named by its name
-//! without its crates' hashes ([`unhashed`]), at three levels: that name,
-//! the name with its module paths dropped ([`short`]), and that with its
-//! closures' numbers dropped too ([`loose`]). The list holds, for each
-//! group of the build's functions that share a loose name, the loose name
-//! if they agree, else the short names that do, else the full names that
-//! do, each as its FNV-1a 64 hash ([`key`]). A build finds each function's
-//! class under the first of its names the list holds, so moving a module,
-//! renaming a crate or adding a closure before another leaves the line
-//! where it was; only code whose type or function names changed falls out
-//! of it.
+//! A function goes to a module when its name, without its crates' hashes
+//! ([`unhashed`]), names one of the module's paths ([`Module::paths`]), and
+//! so do the functions only that module's code calls, directly or through
+//! others ([`assign`]). The rest stays in core.wasm: what JS, a table or
+//! core.wasm's other code reaches, and what more than one module calls.
 //!
-//! A function the list doesn't name, new or renamed since it was written,
-//! stays in core.wasm unless only deferred functions call it, directly or
-//! through others ([`only_called_deferred`]). Such functions are mostly
-//! new code, and most new code runs on first frames (two thirds of what a
-//! list 53 commits old didn't name ran in the coverage scenes), so
-//! deferring them would have first frames fetch core-deferred.wasm
-//! synchronously. The build reports how many functions, and how much
-//! code, the list doesn't name.
+//! The API's module starts at the exports JS calls for queries, edits,
+//! the style's document, images, snapshots and offline regions, which JS
+//! makes wait for the module (web/src/engine.ts), and takes what only they
+//! call: code nothing else reaches, by construction rather than by a
+//! profile of what scenes ran.
 //!
-//! binaryen's `wasm-split` moves the deferred functions out. core.wasm then
-//! imports a placeholder for each one it calls, from [`NAMESPACE`], and
-//! calls them through a table of them; the deferred module, made with
-//! core.wasm's exports, writes the real functions into that table. A
-//! custom section, [`SECTION`], names the table's export, and its absence
-//! tells the loader the module is whole. Both halves carry another,
-//! [`PAIR`], a hash of the deferred half: a deferred half from another
-//! build would link to the wrong functions, or not at all, so the loader
-//! takes only its own.
+//! binaryen's `wasm-split --multi-split` moves them out. core.wasm then
+//! imports a placeholder for each function a module holds that core.wasm
+//! calls, from `placeholder.<module>`, and calls it through a table; the
+//! module, made with core.wasm's exports, writes the real functions into
+//! that table. The runtime never calls into a module it hasn't loaded, so
+//! a placeholder throws: a call is a bug in a module's paths or in the
+//! runtime's gate, and the e2e `split` check finds both. Every module of a
+//! build carries [`PAIR`], a hash of its modules: one from another build
+//! (a stale copy, a cache) would write other functions into the table, so
+//! the loader takes only its own.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use wasmparser::{
-    CompositeInnerType, ElementItems, ElementKind, ExternalKind, KnownCustom, Name, Operator,
-    Parser, Payload, TypeRef, ValType,
-};
+use wasmparser::{ElementItems, ExternalKind, Operator, Parser, Payload, TypeRef};
 
-/// The functions to defer (see the module docs).
-pub(crate) const LIST: &str = "web/deferred.txt";
-/// Where core.wasm imports its placeholders from.
-const NAMESPACE: &str = "placeholder.deferred";
-/// What wasm-split prefixes to the secondary module's name (`deferred`) to
-/// make [`NAMESPACE`].
-const PREFIX: &str = "placeholder";
-/// The custom section naming the placeholder table's export.
-const SECTION: &str = "orbis.deferred";
-/// The custom section in both halves naming their pair: the FNV-1a 64
-/// hash of the deferred half's bytes, in hex.
+/// A feature's module.
+pub(crate) struct Module {
+    /// Its name: `<build>-<name>.wasm`, and orb-runtime's `Module`.
+    pub(crate) name: &'static str,
+    /// The paths whose functions it holds: a crate or a module of one,
+    /// matched in a function's name.
+    paths: &'static [&'static str],
+    /// Functions of those paths that maps without the feature run too.
+    except: &'static [&'static str],
+}
+
+/// The feature modules, as orb-runtime's `Module` names them: what each
+/// holds, and when the map loads it.
+pub(crate) const MODULES: &[Module] = &[
+    // A source's tiles in MLT, as its `encoding`, TileJSON or archive says.
+    Module {
+        name: "mlt",
+        paths: &["mlt_core::", "fastpfor::", "fsst::", "orb_tile::mlt::"],
+        except: &[],
+    },
+    // A `pmtiles://` source.
+    Module {
+        name: "archive",
+        paths: &["orb_source::pmtiles::", "orb_source::gzip::"],
+        except: &[],
+    },
+    // An `mbtiles://` source.
+    Module {
+        name: "sqlite",
+        paths: &[
+            "orb_sqlite::",
+            "orb_source::mbtiles::",
+            "orb_runtime::native_db::",
+        ],
+        except: &[],
+    },
+    // A `raster-dem` source: terrain, hillshade and color-relief.
+    Module {
+        name: "dem",
+        paths: &[
+            "orb_tile::dem::",
+            "orb_runtime::terrain::",
+            "orb_runtime::elevation::",
+            "orb_render::terrain::",
+        ],
+        except: &[],
+    },
+    // A projection but Web Mercator, or a source in another CRS.
+    Module {
+        name: "globe",
+        paths: &[
+            "orb_crs::warp::",
+            "orb_crs::sphere::",
+            "orb_crs::epsg::",
+            "orb_crs::family::azimuthal::",
+            "orb_crs::family::conic::",
+            "orb_crs::family::datum::",
+            "orb_crs::family::ellipsoid::",
+            "orb_crs::family::oblique::",
+            "orb_crs::family::pseudo::",
+            "orb_crs::family::tm::",
+            "orb_runtime::globe::",
+        ],
+        // Every map has its warps, empty on Web Mercator, and a sphere frame.
+        except: &[
+            "orb_runtime::globe::GlobeWarps>::new",
+            "orb_runtime::globe::GlobeWarps>::end_frame",
+            "orb_crs::sphere::frame",
+        ],
+    },
+    // A `geojson` source.
+    Module {
+        name: "geojson",
+        paths: &["orb_tile::geojson::", "orb_runtime::geojson::"],
+        // A source's options are read with the style, before it waits.
+        except: &["orb_tile::geojson::Options"],
+    },
+    // Queries, edits, the style's document, images, snapshots and offline
+    // regions: on idle, or before the first call that needs it. JS calls
+    // these exports only once the module is in (web/src/engine.ts's
+    // `API_CALLS`, regions.ts's `loadCore`).
+    Module {
+        name: "api",
+        paths: &[
+            "orbismap_addImage",
+            "orbismap_updateImage",
+            "orbismap_removeImage",
+            "orbismap_hasImage",
+            "orbismap_edit",
+            "orbismap_getLayer",
+            "orbismap_getSource",
+            "orbismap_getStyle",
+            "orbismap_layerIds",
+            "orbismap_sourceIds",
+            "orbismap_hitTest",
+            "orbismap_queryCluster",
+            "orbismap_queryRendered",
+            "orbismap_querySource",
+            "orbismap_setStyleUrl",
+            "orbismap_beginSnapshot",
+            "orbismap_snapshotFrame",
+            "orbismap_endSnapshot",
+            "orbismap_cancelSnapshot",
+            "orbismap_readNextFrame",
+            "downloadRegion",
+            "deleteRegion",
+            "listRegions",
+            // What they run, which a table or a callback's closure reaches
+            // (edits not: a style URL loaded over another applies as one).
+            "orb_runtime::map::Map>::query_",
+            "orb_runtime::query::Query",
+            "orb_runtime::query::Scene",
+            "orb_runtime::query::ScreenHit",
+            "orb_runtime::query::Picking",
+            "orb_runtime::offline::download",
+            "orb_runtime::offline::Job",
+            "orb_runtime::offline::Then",
+            "orb_runtime::offline::import",
+            "orb_runtime::offline::Import",
+            "orb_runtime::offline::font_stacks",
+        ],
+        except: &[],
+    },
+];
+
+/// Where core.wasm imports a module's placeholders from: this, then the
+/// module's name.
+const PLACEHOLDERS: &str = "placeholder";
+/// The custom section every module of a build carries, core.wasm too:
+/// the FNV-1a 64 hash of its feature modules' bytes, in hex.
 const PAIR: &str = "orbis.pair";
 
-/// What a split moved.
+/// Functions this small don't start a module: binaryen folds identical
+/// bodies into one function of any of their names, and a small one is
+/// likeliest to be core.wasm's too. Only one module's code calling it
+/// still moves it.
+const MIN_SEED_BYTES: usize = 24;
+
+/// What the split moved: per module, its functions and their code bytes.
 pub(crate) struct Split {
-    /// Functions deferred.
-    pub(crate) deferred: usize,
-    /// Of those, the ones the list doesn't defer but only deferred
-    /// functions call ([`only_called_deferred`]).
-    pub(crate) inferred: usize,
-    /// Functions the list doesn't name, and their code bytes.
-    pub(crate) unnamed: (usize, usize),
-    /// Of those, the ones that stayed in core.wasm, and their code bytes.
-    pub(crate) unnamed_kept: (usize, usize),
+    pub(crate) modules: Vec<(&'static str, usize, usize)>,
 }
 
 /// `name` without its crates' hashes (`orb_style[48b542d477ccbf4d]` →
@@ -105,320 +211,75 @@ pub(crate) fn unhashed(name: &str) -> String {
     out
 }
 
-fn ident_start(b: u8) -> bool {
-    b.is_ascii_alphabetic() || b == b'_'
-}
-
-fn ident(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-/// `name` with its module paths dropped, each path down to its last
-/// segment (`<orb_web::map::Map>::draw` → `<Map>::draw`,
-/// `core::ptr::drop_glue::<alloc::vec::Vec<u8>>` → `drop_glue::<Vec<u8>>`):
-/// what moving a module or renaming a crate leaves as it was.
-pub(crate) fn short(name: &str) -> String {
-    let bytes = name.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        // A path starts where an identifier does, after neither another
-        // identifier's bytes nor `::`.
-        let starts =
-            ident_start(bytes[i]) && (i == 0 || !(ident(bytes[i - 1]) || bytes[i - 1] == b':'));
-        if starts {
-            // Drops each `segment::` another identifier follows.
-            loop {
-                let end = i + bytes[i..].iter().take_while(|&&b| ident(b)).count();
-                if bytes[end..].starts_with(b"::")
-                    && bytes.get(end + 2).copied().is_some_and(ident_start)
-                {
-                    i = end + 2;
-                } else {
-                    break;
-                }
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8(out).expect("whole segments dropped from UTF-8")
-}
-
-/// [`short`]`(name)` without its closures' and shims' numbers
-/// (`{closure#3}` → `{closure}`) or binaryen's number for a name that
-/// repeats (a last `[1]`): what adding a closure before another leaves as
-/// it was.
-pub(crate) fn loose(name: &str) -> String {
-    let short = short(name);
-    let bytes = short.as_bytes();
-    let digits = |from: usize| {
-        from + bytes[from..]
-            .iter()
-            .take_while(|b| b.is_ascii_digit())
-            .count()
-    };
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'#' {
-            let end = digits(i + 1);
-            if end > i + 1 && bytes.get(end) == Some(&b'}') {
-                i = end;
-                continue;
-            }
-        }
-        if bytes[i] == b'[' && i > 0 && bytes[i - 1] == b'>' {
-            let end = digits(i + 1);
-            if end > i + 1 && end + 1 == bytes.len() && bytes[end] == b']' {
-                break;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8(out).expect("ASCII dropped from UTF-8")
-}
-
-fn fnv(text: &str) -> u64 {
-    fnv_bytes(text.as_bytes())
-}
-
-fn fnv_bytes(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &b| {
-        (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+/// The module whose paths `name` names, if one does: a function that
+/// such a path defines, as a free function or a method of a type there
+/// (`orb_tile::mlt::decode`, `<orb_tile::mlt::Layer>::new`, `<mlt_core::X
+/// as Y>::f`). Code that only names such a type, as std's generics
+/// instantiated for it do, runs wherever the type's values go, which may
+/// be where the feature is off (dropping an empty `Option` of it): it
+/// goes to the module only if only the module's code calls it.
+fn seed(name: &str) -> Option<usize> {
+    let name = unhashed(name);
+    let own = name.strip_prefix('<').unwrap_or(&name);
+    MODULES.iter().position(|m| {
+        m.paths.iter().any(|p| own.starts_with(p)) && !m.except.iter().any(|p| own.starts_with(p))
     })
 }
 
-/// A function's names in the list, finest first: FNV-1a 64 of
-/// [`unhashed`]`(name)`, of [`short`] of that and of [`loose`] of that.
-pub(crate) fn key(name: &str) -> [u64; 3] {
-    let full = unhashed(name);
-    [fnv(&full), fnv(&short(&full)), fnv(&loose(&full))]
-}
-
-/// [`LIST`]'s classes, by key: true for a function that stays in core.wasm.
-#[derive(Default)]
-pub(crate) struct List(HashMap<u64, bool>);
-
-impl List {
-    /// Whether the function of these [`key`]s stays (`Some(true)`) or is
-    /// deferred, under the first of them the list holds.
-    fn class(&self, keys: [u64; 3]) -> Option<bool> {
-        keys.iter().find_map(|key| self.0.get(key).copied())
+/// Each function's module, from `seeds` (a module's paths name it): also
+/// each function only one module's functions reach, through functions of
+/// no module, and that nothing else reaches: not JS, a table nor
+/// core.wasm's other code.
+fn assign(functions: &Functions, seeds: &[Option<usize>]) -> Vec<Option<usize>> {
+    let n = functions.defined.len();
+    // What reaches each function: core.wasm (`usize::MAX`), or modules.
+    const CORE: usize = usize::MAX;
+    let mut reached: Vec<HashSet<usize>> = vec![HashSet::new(); n];
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    for (i, function) in functions.defined.iter().enumerate() {
+        match seeds[i] {
+            Some(module) => stack.push((i, module)),
+            None if function.reachable => stack.push((i, CORE)),
+            None => {}
+        }
     }
-}
-
-/// Reads [`LIST`]: hashes in hex, one per line, `+` before those that
-/// stay, besides `#` comments. A hash listed both ways stays.
-pub(crate) fn read_list(root: &Path) -> Result<List, String> {
-    let path = root.join(LIST);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(List::default()),
-        Err(e) => return Err(format!("{}: {e}", path.display())),
-    };
-    let mut list = List::default();
-    for line in text.lines().map(str::trim) {
-        if line.is_empty() || line.starts_with('#') {
+    let mut seen: HashSet<(usize, usize)> = HashSet::new();
+    while let Some((i, from)) = stack.pop() {
+        if !seen.insert((i, from)) {
             continue;
         }
-        let (kept, hex) = match line.strip_prefix('+') {
-            Some(hex) => (true, hex),
-            None => (false, line),
-        };
-        let key = u64::from_str_radix(hex, 16).map_err(|e| format!("{LIST}: {line}: {e}"))?;
-        *list.0.entry(key).or_default() |= kept;
-    }
-    Ok(list)
-}
-
-/// The list for functions `(name, kept)`: per loose name their functions
-/// agree on, that; else per short name they agree on, that; else per full
-/// name, that (see the module docs). Sorted, deferred first.
-fn list_lines(functions: &[(&str, bool)]) -> Vec<String> {
-    let keyed: Vec<([u64; 3], bool)> = functions
-        .iter()
-        .map(|&(name, kept)| (key(name), kept))
-        .collect();
-    let mut out: Vec<(bool, u64)> = Vec::new();
-    // Emits, per key at `level` of `members`, the key if they agree, else
-    // the next level's.
-    fn emit(
-        keyed: &[([u64; 3], bool)],
-        members: &[usize],
-        level: usize,
-        out: &mut Vec<(bool, u64)>,
-    ) {
-        let mut groups: HashMap<u64, Vec<usize>> = HashMap::new();
-        for &i in members {
-            groups.entry(keyed[i].0[level]).or_default().push(i);
-        }
-        for (key, group) in groups {
-            let kept = keyed[group[0]].1;
-            if group.iter().all(|&i| keyed[i].1 == kept) {
-                out.push((kept, key));
-            } else if level > 0 {
-                emit(keyed, &group, level - 1, out);
+        for &callee in &functions.defined[i].callees {
+            let callee = callee as usize;
+            if seeds[callee].is_none() {
+                reached[callee].insert(from);
+                stack.push((callee, from));
             }
         }
     }
-    emit(&keyed, &(0..keyed.len()).collect::<Vec<_>>(), 2, &mut out);
-    out.sort_unstable();
-    out.dedup();
-    out.into_iter()
-        .map(|(kept, key)| format!("{}{key:016x}", if kept { "+" } else { "" }))
+    (0..n)
+        .map(|i| {
+            if seeds[i].is_some() || functions.defined[i].reachable {
+                return seeds[i];
+            }
+            match reached[i].iter().collect::<Vec<_>>()[..] {
+                [&only] if only != CORE => Some(only),
+                _ => None,
+            }
+        })
         .collect()
 }
 
-/// Rewrites [`LIST`] from `profile`, wasm-split's profile of the module at
-/// `names` (`cargo xtask web --names`): what ran in it, or what the list
-/// there already kept, stays, and the rest is deferred.
-pub(crate) fn write_list(root: &Path, names: &Path, profile: &Path) -> Result<(), String> {
-    let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
-    let wasm = read(names)?;
-    let profile = read(profile)?;
-    let mut imported = 0u32;
-    let mut defined = 0u32;
-    let mut named: HashMap<u32, &str> = HashMap::new();
-    for payload in Parser::new(0).parse_all(&wasm) {
-        match payload.map_err(|e| e.to_string())? {
-            Payload::ImportSection(reader) => {
-                for import in reader.into_imports() {
-                    if matches!(import.map_err(|e| e.to_string())?.ty, TypeRef::Func(_)) {
-                        imported += 1;
-                    }
-                }
-            }
-            Payload::FunctionSection(reader) => defined = reader.count(),
-            Payload::CustomSection(section) => {
-                if let KnownCustom::Name(reader) = section.as_known() {
-                    for name in reader {
-                        if let Name::Function(map) = name.map_err(|e| e.to_string())? {
-                            for naming in map {
-                                let naming = naming.map_err(|e| e.to_string())?;
-                                named.insert(naming.index, naming.name);
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    // An 8-byte hash of the module, then each defined function's first
-    // call, 0 for one that never ran.
-    let stamps: Vec<bool> = profile
-        .get(8..)
-        .unwrap_or_default()
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|stamp| *stamp != [0; 4])
-        .collect();
-    if stamps.len() != defined as usize {
-        return Err(format!(
-            "the profile stamps {} functions; {} defines {defined}: was it taken of an older build?",
-            stamps.len(),
-            names.display()
-        ));
-    }
-    let previous = read_list(root)?;
-    let functions: Vec<(&str, bool)> = (0..defined)
-        .filter_map(|i| {
-            let name = *named.get(&(imported + i))?;
-            let ran = stamps[i as usize];
-            let kept = ran || previous.class(key(name)) == Some(true);
-            Some((name, kept))
-        })
-        .collect();
-    let lines = list_lines(&functions);
-    let header = "\
-# What core.wasm leaves to core-deferred.wasm, which loads once the map is
-# idle or first calls one of them: the functions no scene of `pnpm -C web
-# coverage --tour` has run. Each line is a hash of names (xtask/src/split.rs),
-# a `+` before those that stay in core.wasm. Written by `pnpm -C web coverage
-# --tour --write`.
-";
-    let path = root.join(LIST);
-    std::fs::write(&path, format!("{header}{}\n", lines.join("\n")))
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    let kept = functions.iter().filter(|(_, kept)| *kept).count();
-    eprintln!(
-        "{LIST}: {} functions deferred and {kept} kept, in {} lines",
-        functions.len() - kept,
-        lines.len()
-    );
-    Ok(())
-}
-
-/// Functions that stay in core.wasm with all they reach, whatever the
-/// list says, by the start of their names: wasm-bindgen's runtime, which
-/// runs wherever JS throws into an import that catches, where browsers
-/// throw over different calls (Firefox's `configure` of wgpu's
-/// `rgba16float` canvas probe) that no coverage profile's scenes stand
-/// for.
-const ALWAYS: &[&str] = &["__wbindgen_", "__externref_"];
-
-/// Keeps `roots`, and every function they call directly or through
-/// others, in core.wasm.
-fn keep_reached(functions: &Functions, roots: impl Iterator<Item = usize>, moved: &mut [bool]) {
-    let mut reached = vec![false; moved.len()];
-    let mut stack: Vec<usize> = roots.collect();
-    while let Some(i) = stack.pop() {
-        if std::mem::replace(&mut reached[i], true) {
-            continue;
-        }
-        moved[i] = false;
-        stack.extend(functions.defined[i].callees.iter().map(|&c| c as usize));
-    }
-}
-
-/// Adds to `moved` every function that only moved functions call, directly
-/// or through others. One renamed since the list was written (its old
-/// name stale in the list, its new one in neither half of it), or added
-/// since, can then only run once core-deferred.wasm has, so it goes there
-/// too. What stays is what core.wasm can call before then: the functions
-/// JS or a table can reach, those a run saw run (`seen`), and what they
-/// call through functions that stay, recursion included. Only core.wasm
-/// calls a deferred function through a placeholder, so a v128 in the
-/// signature of one this moves doesn't matter.
-fn only_called_deferred(functions: &Functions, seen: &[bool], moved: &mut [bool]) {
-    let mut stays = vec![false; moved.len()];
-    let mut stack = Vec::new();
-    for (i, function) in functions.defined.iter().enumerate() {
-        if !moved[i] && (function.reachable || seen[i]) {
-            stays[i] = true;
-            stack.push(i);
-        }
-    }
-    while let Some(i) = stack.pop() {
-        for &callee in &functions.defined[i].callees {
-            let callee = callee as usize;
-            if !moved[callee] && !stays[callee] {
-                stays[callee] = true;
-                stack.push(callee);
-            }
-        }
-    }
-    for (moved, stays) in moved.iter_mut().zip(stays) {
-        *moved |= !stays;
-    }
-}
-
-/// Splits `whole` (core.wasm, without names) into `primary` and
-/// `secondary`, deferring the functions `list` keys; `symbols` is the
-/// symbol map wasm-opt wrote for `whole`, which names its functions by
-/// index. With nothing to defer, `primary` is `whole` and `secondary` an
-/// empty module.
+/// Splits `whole` (core.wasm, without names) into `primary` and a module
+/// per feature, `<prefix><name>.wasm`; `symbols` is the symbol map
+/// wasm-opt wrote for `whole`, which names its functions by index.
+/// Returns where each module went, by [`MODULES`]' order.
 pub(crate) fn split(
     whole: &Path,
     symbols: &Path,
     primary: &Path,
-    secondary: &Path,
-    list: &List,
+    prefix: &str,
     features: &[&str],
-) -> Result<Split, String> {
+) -> Result<(Split, Vec<PathBuf>), String> {
     let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
     let functions = functions(&read(whole)?)?;
     let symbols = String::from_utf8(read(symbols)?).map_err(|e| e.to_string())?;
@@ -430,92 +291,145 @@ pub(crate) fn split(
             Some((index.parse().ok()?, name))
         })
         .collect();
-    let mut moved = vec![false; functions.defined.len()];
-    let mut seen = vec![false; functions.defined.len()];
-    let mut unnamed = vec![false; functions.defined.len()];
-    for (i, function) in (0u32..).zip(&functions.defined) {
-        let at = i as usize;
-        let Some(name) = names.get(&(functions.imported + i)) else {
+    let seeds: Vec<Option<usize>> = (0u32..)
+        .zip(&functions.defined)
+        .map(|(i, function)| {
+            let name = names.get(&(functions.imported + i))?;
+            (function.size >= MIN_SEED_BYTES || function.exported)
+                .then(|| seed(name))
+                .flatten()
+        })
+        .collect();
+    let modules = assign(&functions, &seeds);
+    let mut manifest = String::new();
+    let mut split = Split {
+        modules: Vec::new(),
+    };
+    for (m, module) in MODULES.iter().enumerate() {
+        let held: Vec<usize> = (0..modules.len())
+            .filter(|&i| modules[i] == Some(m))
+            .collect();
+        let bytes = held.iter().map(|&i| functions.defined[i].size).sum();
+        split.modules.push((module.name, held.len(), bytes));
+        if held.is_empty() {
             continue;
-        };
-        match list.class(key(name)) {
-            Some(kept) => {
-                seen[at] = kept;
-                // A placeholder is a JS function, and JS can't pass a v128.
-                moved[at] = !kept && !function.v128;
-            }
-            // binaryen's own functions (`byn$mgfn-shared$…`, the body
-            // functions it merged share) are no list's to name: they go
-            // where their callers do.
-            None => unnamed[at] = !name.starts_with("byn$"),
+        }
+        if !manifest.is_empty() {
+            manifest.push('\n');
+        }
+        manifest.push_str(module.name);
+        manifest.push('\n');
+        for i in held {
+            // binaryen names a function the module leaves unnamed by its
+            // index among those it defines.
+            manifest.push_str(&i.to_string());
+            manifest.push('\n');
         }
     }
-    let always = (0u32..).zip(&functions.defined).filter_map(|(i, _)| {
-        let name = names.get(&(functions.imported + i))?;
-        ALWAYS
-            .iter()
-            .any(|p| name.starts_with(p))
-            .then_some(i as usize)
-    });
-    keep_reached(&functions, always, &mut moved);
-    let listed = moved.iter().filter(|&&m| m).count();
-    only_called_deferred(&functions, &seen, &mut moved);
-    let mut split = String::new();
-    for (i, _) in moved.iter().enumerate().filter(|(_, m)| **m) {
-        // binaryen names a function the module leaves unnamed by its
-        // index among those it defines.
-        split.push_str(&i.to_string());
-        split.push('\n');
+    let dir = primary.parent().expect("a file in a directory");
+    let paths: Vec<PathBuf> = MODULES
+        .iter()
+        .map(|m| dir.join(format!("{prefix}{}.wasm", m.name)))
+        .collect();
+    for path in &paths {
+        let _ = std::fs::remove_file(path);
     }
-    let deferred = moved.iter().filter(|&&m| m).count();
-    let tally = |kept: bool| {
-        (0..moved.len())
-            .filter(|&i| unnamed[i] && (!kept || !moved[i]))
-            .fold((0, 0), |(n, bytes), i| {
-                (n + 1, bytes + functions.defined[i].size)
-            })
-    };
-    let result = Split {
-        deferred,
-        inferred: deferred - listed,
-        unnamed: tally(false),
-        unnamed_kept: tally(true),
-    };
-    if deferred == 0 {
-        std::fs::copy(whole, primary).map_err(|e| format!("{}: {e}", primary.display()))?;
-        std::fs::write(secondary, b"\0asm\x01\0\0\0")
-            .map_err(|e| format!("{}: {e}", secondary.display()))?;
-        return Ok(result);
-    }
-    // Kept beside `whole`: the indices deferred, which the symbol map names.
-    let split_file = whole.with_extension("deferred");
-    std::fs::write(&split_file, split).map_err(|e| format!("{}: {e}", split_file.display()))?;
+    let manifest_file = whole.with_extension("modules");
+    std::fs::write(&manifest_file, manifest)
+        .map_err(|e| format!("{}: {e}", manifest_file.display()))?;
     crate::run(
         Command::new("wasm-split")
+            .arg("--multi-split")
             .args(features)
-            .arg(format!("--placeholder-namespace={PREFIX}"))
-            .arg(format!("--split-funcs=@{}", split_file.display()))
+            .arg(format!("--placeholder-namespace-prefix={PLACEHOLDERS}"))
+            .arg("--placeholdermap")
+            .arg(format!("--manifest={}", manifest_file.display()))
+            .arg(format!("--out-prefix={}/{prefix}", dir.display()))
             .arg(whole)
-            .arg("-o1")
-            .arg(primary)
-            .arg("-o2")
-            .arg(secondary),
+            .arg("-o")
+            .arg(primary),
     )?;
-    if let Some((other, _)) = imports(&read(primary)?)?
+    // Each placeholder's function by name, for a call into a module not
+    // loaded (whose error names its placeholder).
+    let map = primary.with_extension("wasm.placeholders");
+    let named: String = std::fs::read_to_string(&map)
+        .map_err(|e| format!("{}: {e}", map.display()))?
+        .lines()
+        .filter_map(|line| {
+            let (slot, function) = line.split_once(':')?;
+            let i: usize = function.trim().parse().ok()?;
+            let module = modules
+                .get(i)
+                .copied()
+                .flatten()
+                .map_or("?", |m| MODULES[m].name);
+            let name = names
+                .get(&(functions.imported + i as u32))
+                .map_or_else(|| function.to_string(), |n| unhashed(n));
+            Some(format!("{slot}\t{module}\t{name}\n"))
+        })
+        .collect();
+    let _ = std::fs::remove_file(&map);
+    let placeholders = whole.with_extension("placeholders");
+    std::fs::write(&placeholders, named).map_err(|e| format!("{}: {e}", placeholders.display()))?;
+    // A build's modules know each other by the hash of theirs.
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for path in paths.iter().filter(|p| p.exists()) {
+        for b in read(path)? {
+            hash = (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    let pair = format!("{hash:016x}");
+    for path in std::iter::once(primary).chain(paths.iter().map(PathBuf::as_path)) {
+        if path.exists() {
+            append_section(path, PAIR, pair.as_bytes())?;
+        }
+    }
+    // A module with nothing in it is an empty one, for the loader.
+    for path in &paths {
+        if !path.exists() {
+            std::fs::write(path, b"\0asm\x01\0\0\0")
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+    }
+    let known: HashSet<String> = MODULES
+        .iter()
+        .map(|m| format!("{PLACEHOLDERS}.{}", m.name))
+        .collect();
+    if let Some(other) = imports(&read(primary)?)?
         .into_iter()
-        .find(|(module, _)| module.starts_with(PREFIX) && module != NAMESPACE)
+        .find(|module| module.starts_with(PLACEHOLDERS) && !known.contains(module))
     {
         return Err(format!(
-            "wasm-split imported a placeholder from `{other}`, not `{NAMESPACE}`"
+            "wasm-split imported placeholders from `{other}`, which names no module"
         ));
     }
-    let deferred = read(secondary)?;
-    let table = placeholder_table(&deferred)?;
-    append_section(primary, SECTION, table.as_bytes())?;
-    let pair = format!("{:016x}", fnv_bytes(&deferred));
-    append_section(primary, PAIR, pair.as_bytes())?;
-    append_section(secondary, PAIR, pair.as_bytes())?;
-    Ok(result)
+    Ok((split, paths))
+}
+
+/// Appends a custom section `name` holding `payload` to the module at `path`.
+fn append_section(path: &Path, name: &str, payload: &[u8]) -> Result<(), String> {
+    let mut wasm = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut body = Vec::new();
+    leb128(&mut body, name.len());
+    body.extend_from_slice(name.as_bytes());
+    body.extend_from_slice(payload);
+    wasm.push(0);
+    leb128(&mut wasm, body.len());
+    wasm.extend_from_slice(&body);
+    std::fs::write(path, wasm).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn leb128(out: &mut Vec<u8>, mut value: usize) {
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
 }
 
 struct Functions {
@@ -524,11 +438,11 @@ struct Functions {
 }
 
 struct Function {
-    /// Whether its signature takes or gives a v128.
-    v128: bool,
     /// Whether anything but a direct call reaches it: an export, the
     /// start function, a table or a `ref.func`.
     reachable: bool,
+    /// Whether it's an export, which JS calls.
+    exported: bool,
     /// The defined functions it calls, by their index among those.
     callees: Vec<u32>,
     /// Its body's bytes.
@@ -537,29 +451,23 @@ struct Function {
 
 /// The module's functions, and what they call.
 fn functions(wasm: &[u8]) -> Result<Functions, String> {
-    let mut types = Vec::new();
     let mut imported = 0u32;
     let mut defined = Vec::new();
     // Functions reached other than by a direct call, in the module's
     // index space.
     let mut reached = Vec::new();
+    let mut exports = Vec::new();
     let mut bodies = 0;
+    let ref_funcs = |ops: wasmparser::OperatorsReader<'_>, reached: &mut Vec<u32>| {
+        for op in ops {
+            if let Operator::RefFunc { function_index } = op.map_err(|e| e.to_string())? {
+                reached.push(function_index);
+            }
+        }
+        Ok::<_, String>(())
+    };
     for payload in Parser::new(0).parse_all(wasm) {
         match payload.map_err(|e| e.to_string())? {
-            Payload::TypeSection(reader) => {
-                for group in reader {
-                    for ty in group.map_err(|e| e.to_string())?.into_types() {
-                        types.push(match &ty.composite_type.inner {
-                            CompositeInnerType::Func(f) => f
-                                .params()
-                                .iter()
-                                .chain(f.results())
-                                .any(|t| *t == ValType::V128),
-                            _ => false,
-                        });
-                    }
-                }
-            }
             Payload::ImportSection(reader) => {
                 for import in reader.into_imports() {
                     if matches!(import.map_err(|e| e.to_string())?.ty, TypeRef::Func(_)) {
@@ -569,10 +477,10 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
             }
             Payload::FunctionSection(reader) => {
                 for ty in reader {
-                    let ty = ty.map_err(|e| e.to_string())?;
+                    ty.map_err(|e| e.to_string())?;
                     defined.push(Function {
-                        v128: types.get(ty as usize).copied().unwrap_or(false),
                         reachable: false,
+                        exported: false,
                         callees: Vec::new(),
                         size: 0,
                     });
@@ -583,6 +491,7 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
                     let export = export.map_err(|e| e.to_string())?;
                     if export.kind == ExternalKind::Func {
                         reached.push(export.index);
+                        exports.push(export.index);
                     }
                 }
             }
@@ -590,13 +499,7 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
             Payload::GlobalSection(reader) => {
                 for global in reader {
                     let global = global.map_err(|e| e.to_string())?;
-                    for op in global.init_expr.get_operators_reader() {
-                        if let Operator::RefFunc { function_index } =
-                            op.map_err(|e| e.to_string())?
-                        {
-                            reached.push(function_index);
-                        }
-                    }
+                    ref_funcs(global.init_expr.get_operators_reader(), &mut reached)?;
                 }
             }
             Payload::ElementSection(reader) => {
@@ -610,13 +513,7 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
                         ElementItems::Expressions(_, items) => {
                             for item in items {
                                 let item = item.map_err(|e| e.to_string())?;
-                                for op in item.get_operators_reader() {
-                                    if let Operator::RefFunc { function_index } =
-                                        op.map_err(|e| e.to_string())?
-                                    {
-                                        reached.push(function_index);
-                                    }
-                                }
+                                ref_funcs(item.get_operators_reader(), &mut reached)?;
                             }
                         }
                     }
@@ -658,84 +555,28 @@ fn functions(wasm: &[u8]) -> Result<Functions, String> {
             function.reachable = true;
         }
     }
+    for index in exports {
+        if let Some(function) = index
+            .checked_sub(imported)
+            .and_then(|i| defined.get_mut(i as usize))
+        {
+            function.exported = true;
+        }
+    }
     Ok(Functions { imported, defined })
 }
 
-/// The module's imports, as (module, name).
-fn imports(wasm: &[u8]) -> Result<Vec<(String, String)>, String> {
-    let mut out = Vec::new();
+/// The modules a module imports from.
+fn imports(wasm: &[u8]) -> Result<HashSet<String>, String> {
+    let mut out = HashSet::new();
     for payload in Parser::new(0).parse_all(wasm) {
         if let Payload::ImportSection(reader) = payload.map_err(|e| e.to_string())? {
             for import in reader.into_imports() {
-                let import = import.map_err(|e| e.to_string())?;
-                out.push((import.module.to_string(), import.name.to_string()));
+                out.insert(import.map_err(|e| e.to_string())?.module.to_string());
             }
         }
     }
     Ok(out)
-}
-
-/// The export name of the table the deferred module writes its functions
-/// into: the one table its element segments fill, which it imports.
-fn placeholder_table(secondary: &[u8]) -> Result<String, String> {
-    let mut tables = Vec::new();
-    let mut filled = HashSet::new();
-    for payload in Parser::new(0).parse_all(secondary) {
-        match payload.map_err(|e| e.to_string())? {
-            Payload::ImportSection(reader) => {
-                for import in reader.into_imports() {
-                    let import = import.map_err(|e| e.to_string())?;
-                    if matches!(import.ty, TypeRef::Table(_)) {
-                        tables.push(import.name.to_string());
-                    }
-                }
-            }
-            Payload::ElementSection(reader) => {
-                for element in reader {
-                    if let ElementKind::Active { table_index, .. } =
-                        element.map_err(|e| e.to_string())?.kind
-                    {
-                        filled.insert(table_index.unwrap_or(0));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    match filled.into_iter().collect::<Vec<_>>()[..] {
-        [table] => tables.get(table as usize).cloned().ok_or_else(|| {
-            format!("the deferred module fills table {table}, which it doesn't import")
-        }),
-        ref other => Err(format!(
-            "the deferred module fills {} tables; the loader expects one",
-            other.len()
-        )),
-    }
-}
-
-/// Appends a custom section `name` holding `payload` to the module at `path`.
-fn append_section(path: &Path, name: &str, payload: &[u8]) -> Result<(), String> {
-    let mut wasm = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut body = Vec::new();
-    leb128(&mut body, name.len());
-    body.extend_from_slice(name.as_bytes());
-    body.extend_from_slice(payload);
-    wasm.push(0);
-    leb128(&mut wasm, body.len());
-    wasm.extend_from_slice(&body);
-    std::fs::write(path, wasm).map_err(|e| format!("{}: {e}", path.display()))
-}
-
-fn leb128(out: &mut Vec<u8>, mut value: usize) {
-    loop {
-        let byte = (value & 0x7f) as u8;
-        value >>= 7;
-        if value == 0 {
-            out.push(byte);
-            return;
-        }
-        out.push(byte | 0x80);
-    }
 }
 
 #[cfg(test)]
@@ -757,142 +598,43 @@ mod tests {
     }
 
     #[test]
-    fn defers_what_only_deferred_functions_call() {
-        let function = |callees: &[u32]| Function {
-            v128: false,
-            reachable: false,
-            callees: callees.to_vec(),
-            size: 0,
-        };
-        // 0 is listed, and calls 1, 3, 4, 5 and 6. 1 calls 2, which calls
-        // itself, and 8, which calls 9, which calls 8 back. 3 the exported
-        // 7 calls too, 4 was seen running and calls 10, 5 is exported, and
-        // 6 takes a v128. 7 also calls 11, which calls 12, which calls 11.
-        let mut defined = vec![
-            function(&[1, 3, 4, 5, 6]),
-            function(&[2, 8]),
-            function(&[2]),
-            function(&[]),
-            function(&[10]),
-            function(&[]),
-            function(&[]),
-            function(&[3, 11]),
-            function(&[9]),
-            function(&[8]),
-            function(&[]),
-            function(&[12]),
-            function(&[11]),
-        ];
-        defined[5].reachable = true;
-        defined[6].v128 = true;
-        defined[7].reachable = true;
-        let functions = Functions {
-            imported: 0,
-            defined,
-        };
-        let mut seen = vec![false; 13];
-        seen[4] = true;
-        let mut moved = vec![false; 13];
-        moved[0] = true;
-        only_called_deferred(&functions, &seen, &mut moved);
-        let moved: Vec<usize> = (0..13).filter(|&i| moved[i]).collect();
-        assert_eq!(moved, [0, 1, 2, 6, 8, 9]);
+    fn paths_name_their_modules() {
+        let at = |name| seed(name).map(|m| MODULES[m].name);
+        assert_eq!(at("<mlt_core[0a1b]::decoder::Parser>::parse"), Some("mlt"));
+        assert_eq!(at("<orb_tile::mlt::Layer as Drop>::drop"), Some("mlt"));
+        assert_eq!(at("core::ptr::drop_in_place::<orb_tile::mlt::Layer>"), None);
+        assert_eq!(at("<orb_source::pmtiles::Reader>::lookup"), Some("archive"));
+        assert_eq!(at("orb_tile::mvt::decode"), None);
     }
 
     #[test]
-    fn keeps_what_the_runtime_reaches() {
-        let function = |callees: &[u32]| Function {
-            v128: false,
-            reachable: false,
+    fn a_module_takes_what_only_its_code_calls() {
+        let function = |callees: &[u32], reachable| Function {
+            reachable,
+            exported: false,
             callees: callees.to_vec(),
-            size: 0,
+            size: 100,
         };
-        // 0, the runtime's, calls 1, which calls 2 and back to 0; 3 calls 2
-        // too, and is listed, as all but 0 are.
+        // 0 is exported and calls 1 (module 0's) and 2. 1 calls 3 and 4; 3
+        // calls 5. 4 is called by 6 (module 1's) too, and 2 calls 7, which
+        // 1 calls as well.
         let functions = Functions {
             imported: 0,
             defined: vec![
-                function(&[1]),
-                function(&[0, 2]),
-                function(&[]),
-                function(&[2]),
+                function(&[1, 2], true),
+                function(&[3, 4, 7], false),
+                function(&[7], false),
+                function(&[5], false),
+                function(&[], false),
+                function(&[], false),
+                function(&[4], false),
+                function(&[], false),
             ],
         };
-        let mut moved = vec![false, true, true, true];
-        keep_reached(&functions, [0].into_iter(), &mut moved);
-        assert_eq!(moved, [false, false, false, true]);
-    }
-
-    #[test]
-    fn short_drops_module_paths() {
+        let seeds = [None, Some(0), None, None, None, None, Some(1), None];
         assert_eq!(
-            short("<orb_web::map::Map>::draw::{closure#0}"),
-            "<Map>::draw::{closure#0}"
+            assign(&functions, &seeds),
+            [None, Some(0), None, Some(0), None, Some(0), Some(1), None]
         );
-        assert_eq!(
-            short("core::ptr::drop_glue::<alloc::vec::Vec<orb_tile::Layer>>"),
-            "drop_glue::<Vec<Layer>>"
-        );
-        assert_eq!(
-            short("<[f32] as core::fmt::Debug>::fmt"),
-            "<[f32] as Debug>::fmt"
-        );
-        assert_eq!(short("orb_host::redacted_url"), "redacted_url");
-        assert_eq!(short("x::<[u8; 16usize]>"), "x::<[u8; 16usize]>");
-        assert_eq!(short("main"), "main");
-        assert_eq!(short("a::b::"), "b::");
-    }
-
-    #[test]
-    fn loose_drops_closure_numbers() {
-        assert_eq!(
-            loose("<orb_web::map::Map>::draw::{closure#3}::{shim:vtable#0}"),
-            "<Map>::draw::{closure}::{shim:vtable}"
-        );
-        assert_eq!(loose("core::sort::<u32>[1]"), "sort::<u32>");
-        assert_eq!(loose("f::<[u8; 1]>"), "f::<[u8; 1]>");
-        assert_eq!(loose("a#1"), "a#1");
-    }
-
-    #[test]
-    fn keys_hash_each_level() {
-        // The first is the full name's: what lists written before the
-        // other levels hold.
-        assert_eq!(key("")[0], 0xcbf2_9ce4_8422_2325);
-        assert_eq!(key("a")[0], 0xaf63_dc4c_8601_ec8c);
-        assert_eq!(key("core[0123]::f"), key("core::f"));
-        assert_eq!(key("a::f")[1], key("b::f")[1]);
-        assert_ne!(key("a::f")[0], key("b::f")[0]);
-    }
-
-    #[test]
-    fn a_list_survives_moves_and_keeps_what_disagrees_apart() {
-        let lines = list_lines(&[
-            ("orb_web::map::draw", true),
-            ("orb_web::map::draw::{closure#0}", false),
-            ("orb_web::map::draw::{closure#1}", false),
-            // The same short name, kept in one module and not the other.
-            ("<orb_a::Paint>::new", true),
-            ("<orb_b::Paint>::new", false),
-            // The same full name twice, either way: neither is listed.
-            ("dup", true),
-            ("dup", false),
-        ]);
-        let mut list = List::default();
-        for line in &lines {
-            let (kept, hex) = line
-                .strip_prefix('+')
-                .map_or((false, line.as_str()), |h| (true, h));
-            list.0.insert(u64::from_str_radix(hex, 16).unwrap(), kept);
-        }
-        let class = |name| list.class(key(name));
-        // Moved to another module, and a closure added before the others.
-        assert_eq!(class("orb_web::surface::draw"), Some(true));
-        assert_eq!(class("orb_web::surface::draw::{closure#2}"), Some(false));
-        assert_eq!(class("<orb_a::Paint>::new"), Some(true));
-        assert_eq!(class("<orb_b::Paint>::new"), Some(false));
-        assert_eq!(class("<orb_c::Paint>::new"), None);
-        assert_eq!(class("dup"), None);
-        assert_eq!(lines.len(), 4);
     }
 }

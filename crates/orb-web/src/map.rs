@@ -491,6 +491,9 @@ pub async fn create_map(
         wake: Arc::new(move || wake(id)),
     };
     let mut map = Map::new(services, None);
+    // Feature modules load as styles declare them (web/src/builds.ts);
+    // the page says which this thread has.
+    map.set_modules(orb_runtime::modules::Modules::NONE);
     if mobile() {
         map.set_frame_budget(orb_runtime::FrameBudget::MOBILE);
     }
@@ -527,6 +530,21 @@ pub struct NewDevice(Canvas);
 
 #[wasm_bindgen]
 impl OrbisMap {
+    /// The feature modules the map waits for, a bit each in orb-runtime's
+    /// `Modules::NAMES` order (`core-<name>.wasm`): load them in every
+    /// thread of the map, then say so with [`OrbisMap::set_modules`].
+    #[wasm_bindgen(js_name = modulesWanted)]
+    pub fn modules_wanted(&self) -> u32 {
+        self.map.modules_wanted().bits().into()
+    }
+
+    /// The feature modules every thread of the map has, as bits.
+    #[wasm_bindgen(js_name = setModules)]
+    pub fn set_modules(&mut self, bits: u32) {
+        let loaded = orb_runtime::modules::Modules::from_bits(bits as u8);
+        self.map.set_modules(loaded);
+    }
+
     /// The current style JSON, including successful edits.
     #[wasm_bindgen(js_name = getStyle)]
     pub fn get_style(&self) -> Result<String, JsError> {

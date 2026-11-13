@@ -5,7 +5,13 @@
 // (map.ts) reaches it through a link (link.ts) and hears from it by
 // reports: the map's state after each frame, with its events.
 
-import type { Backend, Build } from "./builds.ts";
+import {
+  isModuleName,
+  MODULE_NAMES,
+  type Backend,
+  type Build,
+  type ModuleName,
+} from "./builds.ts";
 import { frameLoop } from "./frames.ts";
 import { startHost, type Core, type CoreOptions, type Host } from "./hosts.ts";
 import type {
@@ -136,8 +142,30 @@ function plain<T extends object>(object: T): T {
 const STABLE_MS = 30_000;
 /** How long after each loss of a run a new device is made. */
 const BACKOFF_MS = [0, 250, 1000];
-/** How long a map that hasn't been idle waits to fetch core-deferred.wasm. */
-const DEFER_AT_MOST = 5000;
+/** How long a map that hasn't been idle waits to fetch its API module. */
+const API_AT_MOST = 5000;
+
+/** The calls that run the API's module (queries, edits, the style's
+ * document, images, snapshots), which waits for it if it isn't in yet. */
+const API_CALLS = new Set<string>([
+  "hitTest",
+  "queryRendered",
+  "querySource",
+  "queryCluster",
+  "getStyle",
+  "getLayer",
+  "getSource",
+  "layerIds",
+  "sourceIds",
+  "hasImage",
+  "setStyleUrl",
+  "edit",
+  "addImage",
+  "updateImage",
+  "removeImage",
+  "snapshot",
+  "readPixels",
+]);
 
 export class Engine {
   #host: Host;
@@ -173,6 +201,11 @@ export class Engine {
   #shown = -Infinity;
   /** The time a test runner's clock gives frames, on this thread's clock. */
   #frameClock: number | undefined;
+  /** The feature modules asked for (builds.ts). */
+  #asked = new Set<ModuleName>();
+  /** Calls waiting for the API's module, in order: later calls wait
+   * behind them, so the map takes calls in the order they came. */
+  #waiting: Promise<unknown> | undefined;
 
   private constructor(
     host: Host,
@@ -226,14 +259,64 @@ export class Engine {
     engine = new Engine(host, setup, report);
     // The first frame takes the style in and asks for its tiles.
     engine.wake();
-    // What the first frames don't run comes once the map is idle, out of
-    // their way, or after a while for a map that doesn't settle.
-    setTimeout(() => host.fetchDeferred(), DEFER_AT_MOST);
+    // The API's module comes once the map is idle, out of the first
+    // frames' way, or after a while for a map that doesn't settle.
+    const started = engine;
+    setTimeout(() => started.#want(["api"]).catch(() => {}), API_AT_MOST);
     return engine;
   }
 
   get #core(): Core {
     return this.#host.core;
+  }
+
+  /** Calls `method`: at once, or once the API's module is in, for a call
+   * that needs it, and any call made while one waits. */
+  call(method: string, args: unknown[]): Promise<unknown> {
+    const run = () =>
+      (this[method as keyof Engine] as (...a: unknown[]) => unknown)(...args);
+    const needs = API_CALLS.has(method) && !this.#host.modules().has("api");
+    if (!needs && !this.#waiting) {
+      try {
+        return Promise.resolve(run());
+      } catch (e) {
+        return Promise.reject(e);
+      }
+    }
+    const result = (this.#waiting ?? this.#want(["api"])).then(run);
+    const waiting = result.catch(() => {});
+    this.#waiting = waiting;
+    void waiting.then(() => {
+      if (this.#waiting === waiting) this.#waiting = undefined;
+    });
+    return result;
+  }
+
+  /** Loads feature modules in every thread of the map, then tells the
+   * map which it has; a module that fails to load is an `error`. */
+  #want(names: readonly string[]): Promise<void> {
+    const loads = names.filter(isModuleName).map((name) => {
+      const first = !this.#asked.has(name);
+      this.#asked.add(name);
+      return this.#host.loadModules([name]).then(
+        () => {
+          if (this.#removed) return;
+          const loaded = this.#host.modules();
+          let bits = 0;
+          MODULE_NAMES.forEach((name, i) => {
+            if (loaded.has(name)) bits |= 1 << i;
+          });
+          this.#core.setModules(bits);
+        },
+        (e) => {
+          // Asked for again by the next frame that wants it.
+          this.#asked.delete(name);
+          if (first) this.#fail(`core-${name}.wasm didn't load: ${e}`);
+          throw e;
+        },
+      );
+    });
+    return Promise.all(loads).then(() => {});
   }
 
   /** The GPU API the map draws with. */
@@ -619,6 +702,13 @@ export class Engine {
     }
     const stats = plain(frame) as unknown as FrameStats;
     frame.free();
+    // A style waits for the modules its features need.
+    const bits = this.#core.modulesWanted();
+    if (bits) {
+      const wanted = MODULE_NAMES.filter((_, i) => bits & (1 << i));
+      if (wanted.some((name) => !this.#asked.has(name)))
+        void this.#want(wanted).catch(() => {});
+    }
     stats.inputTime = this.#inputTime;
     this.#stats = stats;
     this.#drain();
@@ -710,7 +800,7 @@ export class Engine {
     for (const event of this.#core.takeEvents() as CoreEvent[]) {
       switch (event.type) {
         case "idle":
-          this.#host.fetchDeferred();
+          void this.#want(["api"]).catch(() => {});
           out.push({ type: event.type, data: {} });
           break;
         case "styleload":

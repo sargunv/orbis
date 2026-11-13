@@ -9,12 +9,12 @@
 // frames.
 
 import { Annotations } from "./annotations.ts";
-import { pickBuild, type BackendChoice } from "./builds.ts";
+import { loadModule, pickBuild, type BackendChoice } from "./builds.ts";
 import type { EngineEvent, MapState, Pixels, Report } from "./engine.ts";
 import { Emitter, type Listener } from "./events.ts";
 import { allowed, attachInput, type Allowed } from "./input.ts";
 import { directLink, workerLink, type Link } from "./link.ts";
-import { preloadStyle } from "./preload.ts";
+import { preloadStyle, styleModules } from "./preload.ts";
 import {
   transaction,
   type FeatureTarget,
@@ -935,6 +935,12 @@ async function startOnPage(
   preloadStyle(preload, size[2], setup.camera?.zoom);
   const build = pickBuild(undefined, backend);
   build.catch(() => {});
+  // The modules the style declares download beside its TileJSON.
+  void Promise.all([build, styleModules()]).then(
+    ([{ backend }, names]) =>
+      names.forEach((name) => loadModule(backend, name).catch(() => {})),
+    () => {},
+  );
   // A page whose map runs in a worker never loads the bindings.
   const engine = import("./engine.ts");
   const workers = spawnWorkers(build, jobWorkers ?? defaultJobWorkers());

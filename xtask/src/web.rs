@@ -1,9 +1,10 @@
 //! `cargo xtask web`: builds `core.wasm` and its JS bindings into
-//! `web/pkg/`, split in two along `web/deferred.txt` (split.rs) into
-//! `core.wasm`, what a map's first frames run, and `core-deferred.wasm`,
-//! which loads later; reports their sizes, raw, brotli and by crate
-//! (twiggy); then `core-gl.wasm`, the same crates on WebGL 2 for browsers
-//! without a WebGPU adapter, and `shaper.wasm`.
+//! `web/pkg/`, split by feature (split.rs) into `core.wasm`, what plain
+//! vector maps run, and a module per feature (`core-<feature>.wasm`),
+//! which a map loads once its style declares the feature; reports their
+//! sizes, raw, brotli and by crate (twiggy); then `core-gl.wasm`, the same
+//! crates on WebGL 2 for browsers without a WebGPU adapter, split the same
+//! way, and `shaper.wasm`.
 //! Size is watched, not a gate: it warns when a module grows past its
 //! watch level, and never fails. `--names` also writes core.wasm whole,
 //! with its function names, for `pnpm -C web coverage`.
@@ -21,17 +22,14 @@ const OUT_DIR: &str = "web/pkg";
 /// Where `cargo xtask web --names` writes `core.wasm` whole, with its
 /// function names.
 const NAMED_CORE: &str = "target/web/core-names.wasm";
-/// `core.wasm` whole, and wasm-opt's symbol map of it, for the split.
-const WHOLE_CORE: &str = "target/web/core-whole.wasm";
 
-/// The brotli sizes, in KiB, past which `core.wasm`, `core-deferred.wasm`,
-/// `core-gl.wasm` and `shaper.wasm` warn: a few percent above what each weighs now, so
+/// The brotli sizes, in KiB, past which `core.wasm`, `core-gl.wasm` and
+/// `shaper.wasm` warn: a few percent above what each weighs now, so
 /// crossing one means something grew. Find what in the per-crate report;
 /// if the growth earns its bytes, raise the level to the new size plus the
 /// same margin, and when a change shrinks a module, lower it.
-const CORE_WATCH_KIB: usize = 720;
-const CORE_DEFERRED_WATCH_KIB: usize = 260;
-const CORE_GL_WATCH_KIB: usize = 1220;
+const CORE_WATCH_KIB: usize = 830;
+const CORE_GL_WATCH_KIB: usize = 1140;
 const SHAPER_WATCH_KIB: usize = 380;
 
 /// Crates whose code the size report attributes separately.
@@ -84,41 +82,15 @@ pub(crate) fn build(options: Options) -> Result<(), String> {
     let core = module(&root, "orb-web", "core", &[], panics, Some(names))?;
     report_crates(&core.built);
     let js = std::fs::read(out.join("core.js")).map_err(|e| format!("core.js: {e}"))?;
-    let deferred = core.deferred.as_ref().expect("core.wasm splits");
     eprintln!(
-        "core.wasm: {} KiB raw, {} KiB brotli ({} bytes); core-deferred.wasm: {} KiB raw, \
-         {} KiB brotli, {} functions ({} of them only deferred ones call); core.js {} KiB \
-         raw ({OUT_DIR})",
+        "core.wasm: {} KiB raw, {} KiB brotli ({} bytes); core.js {} KiB raw ({OUT_DIR})",
         core.raw / 1024,
         core.brotli / 1024,
         core.brotli,
-        deferred.raw / 1024,
-        deferred.brotli / 1024,
-        deferred.split.deferred,
-        deferred.split.inferred,
         js.len() / 1024,
     );
-    let split::Split {
-        unnamed: (unnamed, unnamed_bytes),
-        unnamed_kept: (kept, kept_bytes),
-        ..
-    } = deferred.split;
-    if unnamed > 0 {
-        eprintln!(
-            "{} doesn't name {unnamed} functions ({} KiB of code), new or renamed since \
-             `pnpm -C web coverage --tour --write` wrote it: {kept} of them ({} KiB) stay \
-             in core.wasm, as kept code reaches them",
-            split::LIST,
-            unnamed_bytes / 1024,
-            kept_bytes / 1024,
-        );
-    }
+    report_modules("core", &core.modules);
     watch("core.wasm", core.brotli, CORE_WATCH_KIB);
-    watch(
-        "core-deferred.wasm",
-        deferred.brotli,
-        CORE_DEFERRED_WATCH_KIB,
-    );
     build_gl(&root, panics)?;
     // `font-faces` drawing, loaded the first time a style declares a file.
     let shaper = module(&root, "orb-shaper", "shaper", &[], false, None)?;
@@ -134,13 +106,15 @@ pub(crate) fn build(options: Options) -> Result<(), String> {
 /// The same map on WebGL 2, fetched only where WebGPU has no adapter.
 fn build_gl(root: &Path, panics: bool) -> Result<(), String> {
     let features = ["--no-default-features", "--features", "gl"];
-    let gl = module(root, "orb-web", "core-gl", &features, panics, None)?;
+    let gl = module(root, "orb-web", "core-gl", &features, panics, Some(false))?;
     report_crates(&gl.built);
     eprintln!(
-        "core-gl.wasm: {} KiB raw, {} KiB brotli (WebGL 2 only)",
+        "core-gl.wasm: {} KiB raw, {} KiB brotli ({} bytes; WebGL 2 only)",
         gl.raw / 1024,
         gl.brotli / 1024,
+        gl.brotli,
     );
+    report_modules("core-gl", &gl.modules);
     watch("core-gl.wasm", gl.brotli, CORE_GL_WATCH_KIB);
     Ok(())
 }
@@ -155,16 +129,23 @@ fn watch(name: &str, brotli: usize, level_kib: usize) {
     }
 }
 
-/// `cargo xtask deferred <profile>`: rewrites [`split::LIST`] from a
-/// coverage profile of [`NAMED_CORE`].
-pub(crate) fn write_list(args: &[String]) -> Result<(), String> {
-    let [profile] = args else {
-        return Err(
-            "deferred: takes the profile (`pnpm -C web coverage --tour --write` gives it)".into(),
+/// Prints each feature module's size, and what it holds.
+fn report_modules(build: &str, modules: &[Feature]) {
+    let total: usize = modules.iter().map(|m| m.brotli).sum();
+    eprintln!(
+        "{build}'s feature modules ({} KiB brotli in all):",
+        total / 1024
+    );
+    for m in modules {
+        eprintln!(
+            "  {build}-{}.wasm: {} KiB raw, {} KiB brotli, {} functions ({} KiB of code)",
+            m.name,
+            m.raw / 1024,
+            m.brotli / 1024,
+            m.functions,
+            m.code / 1024,
         );
-    };
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    split::write_list(&root, &root.join(NAMED_CORE), Path::new(profile))
+    }
 }
 
 pub(crate) fn pages() -> Result<(), String> {
@@ -180,20 +161,24 @@ struct Sizes {
     brotli: usize,
     /// The module cargo built, before wasm-opt, with its function names.
     built: std::path::PathBuf,
-    /// The deferred half of a split module.
-    deferred: Option<Deferred>,
+    /// A split module's feature modules.
+    modules: Vec<Feature>,
 }
 
-struct Deferred {
+/// A feature module of a split build.
+struct Feature {
+    name: &'static str,
     raw: usize,
     brotli: usize,
-    split: split::Split,
+    functions: usize,
+    /// Its functions' code bytes in the whole module.
+    code: usize,
 }
 
 /// Builds `package` with `features` (cargo's feature arguments), binds it
 /// as `<name>.js` and `<name>_bg.wasm` in [`OUT_DIR`] and shrinks it.
-/// `split` splits it along [`split::LIST`], the rest into
-/// `<name>-deferred.wasm`; `Some(true)` also writes it whole with its
+/// `split` splits it by feature into `<name>-<feature>.wasm` beside it
+/// ([`split::MODULES`]); `Some(true)` also writes it whole with its
 /// function names to [`NAMED_CORE`].
 fn module(
     root: &Path,
@@ -249,6 +234,17 @@ fn module(
     expose_instantiation(&out, name)?;
     let wasm = out.join(format!("{name}_bg.wasm"));
     let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
+    // A module built to say why it panics stays whole, its feature
+    // modules empty, so its stacks name every function.
+    let unsplit = panics && split.is_some();
+    let split = split.filter(|_| !panics);
+    if unsplit {
+        for module in split::MODULES {
+            let path = out.join(format!("{name}-{}.wasm", module.name));
+            std::fs::write(&path, b"\0asm\x01\0\0\0")
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+    }
     let Some(names) = split else {
         // A module built to say why it panics names its functions in the
         // stacks it logs too (`-g`): it's never shipped.
@@ -262,7 +258,7 @@ fn module(
             raw: bytes.len(),
             brotli: brotli(&bytes)?,
             built,
-            deferred: None,
+            modules: Vec::new(),
         });
     };
     let named = root.join(NAMED_CORE);
@@ -274,22 +270,27 @@ fn module(
     }
     // Shrunk with its names, binaryen optimizes a little less: the split
     // takes them from the symbol map instead.
-    let whole = root.join(WHOLE_CORE);
+    let whole = root.join(format!("target/web/{name}-whole.wasm"));
     let symbols = whole.with_extension("symbols");
     run(wasm_opt(&wasm, &whole).arg(format!("--symbolmap={}", symbols.display())))?;
-    let deferred = out.join(format!("{name}-deferred.wasm"));
-    let list = split::read_list(root)?;
-    let split = split::split(&whole, &symbols, &wasm, &deferred, &list, FEATURES)?;
-    let (bytes, rest) = (read(&wasm)?, read(&deferred)?);
+    let (split, paths) = split::split(&whole, &symbols, &wasm, &format!("{name}-"), FEATURES)?;
+    let bytes = read(&wasm)?;
+    let mut modules = Vec::new();
+    for (&(name, functions, code), path) in split.modules.iter().zip(&paths) {
+        let module = read(path)?;
+        modules.push(Feature {
+            name,
+            raw: module.len(),
+            brotli: brotli(&module)?,
+            functions,
+            code,
+        });
+    }
     Ok(Sizes {
         raw: bytes.len(),
         brotli: brotli(&bytes)?,
         built,
-        deferred: Some(Deferred {
-            raw: rest.len(),
-            brotli: brotli(&rest)?,
-            split,
-        }),
+        modules,
     })
 }
 

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { Bindings } from "./builds.ts";
-import { DeferredLoadError } from "./trap.ts";
+import type { Bindings, ModuleName } from "./builds.ts";
+import { ModuleNotLoadedError } from "./trap.ts";
 
-// A split build in miniature: core.wasm's `call` reaches its deferred
-// function through slot 0 of its table, a placeholder until the deferred
-// half writes the function (42) there.
+// A split build in miniature: core.wasm's `call` reaches a module's
+// function through slot 0 of its table, a placeholder until the module
+// (here named `deferred`) writes the function (42) there.
 const PRIMARY = [
   0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 127, 2, 26, 1, 20, 112, 108,
   97, 99, 101, 104, 111, 108, 100, 101, 114, 46, 100, 101, 102, 101, 114, 114,
@@ -34,8 +34,8 @@ function module(wasm: number[], sections: Record<string, string>) {
   return new WebAssembly.Module(new Uint8Array(bytes));
 }
 
-/** This build's halves in a fresh context (`builds.ts`'s state is its
- * context's), the deferred half's pair `pair`. */
+/** This build in a fresh context (`builds.ts`'s state is its
+ * context's), and a module of it whose pair is `pair`. */
 async function context(pair: string) {
   const builds = await import(`./builds.ts?${pair}`);
   let instance: WebAssembly.Instance | undefined;
@@ -43,28 +43,33 @@ async function context(pair: string) {
     __wbg_get_imports: () => ({}),
     __wbg_finalize_init: (i: WebAssembly.Instance) => (instance = i),
   } as unknown as Bindings;
-  const primary = module(PRIMARY, {
-    "orbis.deferred": "table",
-    "orbis.pair": "0123456789abcdef",
-  });
+  const primary = module(PRIMARY, { "orbis.pair": "0123456789abcdef" });
   builds.instantiate(glue, { backend: "webgpu", module: primary });
   const call = instance!.exports.call as () => number;
-  return { builds, call, deferred: module(DEFERRED, { "orbis.pair": pair }) };
+  const name = "deferred" as ModuleName;
+  return {
+    builds,
+    call,
+    name,
+    split: module(DEFERRED, { "orbis.pair": pair }),
+  };
 }
 
-test("a split build's deferred half writes its functions into the table", async () => {
-  const { builds, call, deferred } = await context("0123456789abcdef");
-  builds.takeDeferred(deferred);
+test("a call into a module not in yet throws, as a trap", async () => {
+  const { call } = await context("0123456789abcdef");
+  assert.throws(call, (e) => e instanceof ModuleNotLoadedError);
+});
+
+test("a build's module writes its functions into the table", async () => {
+  const { builds, call, name, split } = await context("0123456789abcdef");
+  builds.takeModule(name, split);
   assert.equal(call(), 42);
 });
 
-test("another build's deferred half stops the map rather than link into it", async () => {
-  const { builds, call, deferred } = await context("fedcba9876543210");
-  const another = {
-    name: "DeferredLoadError",
-    message: "core-deferred.wasm didn't load: it is another build's",
-  };
-  assert.throws(() => builds.takeDeferred(deferred), another);
-  // A call that needs it can't go on, and traps as the map's calls do.
-  assert.throws(call, (e) => e instanceof DeferredLoadError);
+test("another build's module stays out rather than link into it", async () => {
+  const { builds, call, name, split } = await context("fedcba9876543210");
+  assert.throws(() => builds.takeModule(name, split), {
+    message: "core-deferred.wasm is another build's",
+  });
+  assert.throws(call, (e) => e instanceof ModuleNotLoadedError);
 });

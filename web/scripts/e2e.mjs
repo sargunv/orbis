@@ -79,9 +79,10 @@
 //   `?backend=webgl2` draws WebGL 2, its renderer row saying so, and Auto
 //   starts it again on WebGPU at the same camera.
 // - `split`: the Tokyo extract and the Globe, offline, reach their first
-//   idle without calling into core-deferred.wasm (a call would fetch it
-//   synchronously: web/deferred.txt defers something first frames run,
-//   and `pnpm coverage --tour --write` refreshes it), then fetch it.
+//   idle with no call into a feature module the map hasn't loaded (each
+//   throws: a bug in xtask/src/split.rs's paths or the map's gate), having
+//   fetched only the modules their styles declare, each once, and the
+//   API's once.
 // - `webgl2`: in a Chromium without WebGPU (#140), the scenario in the
 //   worker and on the page; the Tokyo extract at two views, pitched
 //   terrain, and the extract on the globe over terrain pitched 79° at
@@ -1778,6 +1779,9 @@ async function failing(browser, server) {
     const events = [];
     map.on("error", ({ message }) => events.push(message));
     const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
+    // The missing style's error may report after its snapshot failed.
+    await settle();
+    events.length = 0;
     map.trap();
     await settle();
     const call = await map.getStyle().then(
@@ -2275,22 +2279,36 @@ async function offline(browser, server) {
 }
 
 async function split(browser, server) {
+  // The feature modules each entry's style may declare: the extract is a
+  // PMTiles archive, and the Globe's style adds terrain and hillshade, the
+  // globe and GeoJSON to the extract.
   const entries = [
-    ["tokyo", () => {}],
-    ["globe", (page) => offlineGlobe(page, server)],
+    ["tokyo", () => {}, ["archive"]],
+    [
+      "globe",
+      (page) => offlineGlobe(page, server),
+      ["archive", "dem", "geojson", "globe"],
+    ],
   ];
-  for (const [entry, offline] of entries) {
+  const MODULE =
+    /\/core(?:-gl)?-(mlt|archive|sqlite|dem|globe|geojson|api)[-.][^/]*$/;
+  for (const [entry, offline, declared] of entries) {
     // Offline, the Globe's tiles fail and say so: `failing` checks that.
     const page = await browser.newPage({
       viewport: { width: 800, height: 600 },
     });
-    // How each request for core-deferred.wasm went: `fetch` once the map is
-    // idle, `xhr` from a placeholder, in any of the map's threads.
-    const loads = [];
+    const fetched = [];
+    let idle = false;
     page.context().on("request", (r) => {
-      if (/\/core-deferred[^/]*\.wasm/.test(r.url()))
-        loads.push(r.resourceType());
+      const name = r.url().match(MODULE)?.[1];
+      if (name) fetched.push({ name, idle });
     });
+    const unloaded = [];
+    const note = (text) => {
+      if (/before loading it/.test(text)) unloaded.push(text);
+    };
+    page.on("pageerror", (e) => note(e.message));
+    page.on("console", (m) => note(m.text()));
     await offline(page);
     await page.goto(`${server.url}?style=${entry}`);
     await page.waitForFunction(
@@ -2298,17 +2316,30 @@ async function split(browser, server) {
       null,
       { timeout: 60_000 },
     );
-    assert.ok(
-      !loads.includes("xhr"),
-      `${entry}: its first frames called into core-deferred.wasm; \`pnpm coverage --tour --write\` refreshes web/deferred.txt`,
+    idle = true;
+    assert.deepEqual(
+      unloaded,
+      [],
+      `${entry}: called into a module it hadn't loaded`,
     );
+    // The API's module comes on idle, after a while, or for a call the
+    // app makes: when doesn't matter, as long as nothing called into it
+    // first.
+    const before = fetched.map((f) => f.name).filter((n) => n !== "api");
+    assert.ok(
+      before.every((name) => declared.includes(name)),
+      `${entry}: fetched ${before} before idle; its style declares ${declared}`,
+    );
+    assert.equal(new Set(before).size, before.length, `${entry}: each once`);
     const deadline = Date.now() + 10_000;
-    while (!loads.includes("fetch") && Date.now() < deadline)
+    while (!fetched.some((f) => f.name === "api") && Date.now() < deadline)
       await page.waitForTimeout(100);
-    assert.deepEqual(loads, ["fetch"], `${entry}: fetched once idle`);
+    const api = fetched.filter((f) => f.name === "api");
+    assert.equal(api.length, 1, `${entry}: fetched the API's module once`);
+    assert.deepEqual(unloaded, [], `${entry}: called into a module unloaded`);
     await page.close();
     console.log(
-      `split: ${entry} idle without core-deferred.wasm, then fetched it`,
+      `split: ${entry} idle with ${before.join(", ") || "no feature modules"}, and the API's ${api[0].idle ? "once idle" : "before"}`,
     );
   }
 }
@@ -2514,6 +2545,8 @@ async function compare(browser, server) {
     const other = () =>
       page.evaluate(async () => {
         const style = (await app.compare.styles())[1];
+        // GL JS has none while a style it was given loads.
+        if (!style) return null;
         return {
           projection: style.projection?.type ?? "mercator",
           labels: [
@@ -2525,10 +2558,12 @@ async function compare(browser, server) {
           ],
         };
       });
-    assert.deepEqual(await other(), {
-      projection: "mercator",
-      labels: ["visible"],
-    });
+    await settles(
+      page,
+      other,
+      { projection: "mercator", labels: ["visible"] },
+      "GL JS starts as the map",
+    );
     await openOptions(page);
     await option(page, "labels").click();
     await option(page, "projection").locator('[data-value="globe"]').click();
@@ -3579,13 +3614,10 @@ const CHROMIUM_ONLY = {
   compare: "MapLibre Native's web build is measured in Chromium alone",
 };
 // Checks a browser fails for a reason left to fix, and why.
-const SPLIT_UNSEEN =
-  "its first frames call into core-deferred.wasm (1 or 2 synchronous loads): code it runs that Chromium doesn't, which `pnpm coverage` (Chromium alone) can't see";
 const KNOWN = {
   webkit: {
     readback:
       "WebKit's VideoFrame converts a bitmap's colours, so images decode through a canvas, which fingerprinting protection perturbs",
-    split: SPLIT_UNSEEN,
   },
 };
 const launchers = {

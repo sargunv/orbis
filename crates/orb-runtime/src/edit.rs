@@ -84,10 +84,15 @@ impl Map {
             self.events.push(crate::MapEvent::StyleData { generation });
             return Ok(generation);
         }
-        if patch.changes.contains(&Change::Restyle) {
+        // An edit that adds a feature whose module the host hasn't loaded
+        // installs the style again once it has: no job runs its code
+        // before then ([`crate::modules`]).
+        let needed = crate::modules::of_style(style.doc.style());
+        if patch.changes.contains(&Change::Restyle) || !self.modules.contains(needed) {
             let doc = style.doc.clone();
             self.install(doc);
-            return Ok(self.version);
+            // The version it's installed at, now or once the modules are in.
+            return Ok(self.version + u64::from(self.pending_install.is_some()));
         }
         // A new projection: the globe changes at once; vector tiles lay
         // out again for its curvature from the jobs' cached data, and the

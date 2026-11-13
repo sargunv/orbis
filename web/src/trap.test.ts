@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { DeferredLoadError, guard, isTrap, trapError } from "./trap.ts";
+import { ModuleNotLoadedError, guard, isTrap, trapError } from "./trap.ts";
 
 /** A stand-in for the wasm map: its own borrow, as wasm-bindgen's. */
 class Fake {
@@ -90,12 +90,11 @@ test("a trap outside a call stops the map too", () => {
   }
 });
 
-test("a deferred half that didn't load stops the map as a trap, not a bug", () => {
-  const url = new URL("http://127.0.0.1/assets/core-deferred-1a2b.wasm");
-  const failed = new DeferredLoadError(url, new Error("NetworkError"));
+test("a call into a module not loaded stops the map as a trap", () => {
+  const failed = new ModuleNotLoadedError("dem");
   assert.ok(isTrap(failed));
   assert.equal(
     trapError(failed).message,
-    "the map stopped: core-deferred-1a2b.wasm didn't load: NetworkError",
+    "the map stopped: it called into core-dem.wasm before loading it, a bug in Orbis",
   );
 });

@@ -41,18 +41,16 @@ cargo xtask <task>
                Android emulator and starts it; --leakcheck checks that maps
                dropped there leave no GPU resources behind
   web [--names] [--panics] [--gl]
-               build core.wasm, split along web/deferred.txt into what a
-               map's first frames run and core-deferred.wasm, and
-               core-gl.wasm (WebGL 2) into web/pkg, and report sizes;
+               build core.wasm and core-gl.wasm (WebGL 2) into web/pkg,
+               each split into what plain vector maps run and a module per
+               feature a style declares, and the API's (xtask/src/split.rs),
+               and report sizes;
                --names also writes core.wasm whole, with its function
                names, to target/web/core-names.wasm (for `pnpm -C web coverage`);
                --panics builds both to say on the console why they panic,
                core-gl.wasm with its function names in the stacks (bigger:
                for debugging, never to ship); --gl builds
                core-gl.wasm alone
-  deferred <profile>  rewrite web/deferred.txt from wasm-split's profile
-               of target/web/core-names.wasm (`pnpm -C web coverage --tour
-               --write` runs it)
   pages        build the Pages site (web, then Vite) into web/dist; the
                Pages workflow runs it and deploys on every push to main
   rt [--suite <suite>] [--filter <substring>] [--platform native|chrome|chrome-webgl2|android-chrome|android-chrome-webgl2|firefox|webkit|lavapipe|all|native-cpu|native-cpu-tex|native-webgl2|native-gl]
@@ -116,7 +114,6 @@ fn main() -> ExitCode {
             gl: args.iter().any(|a| a == "--gl"),
         }),
         Some("pages") => web::pages(),
-        Some("deferred") => web::write_list(&args[1..]),
         Some("rt") => rt(&args[1..]),
         Some("bench") if args.iter().any(|a| a == "--compare") => compare::bench(&args[1..]),
         Some("bench") => {

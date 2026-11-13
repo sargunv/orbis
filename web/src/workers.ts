@@ -1,6 +1,6 @@
 // The job workers and the placement worker, spawned by the map.
 
-import { deferredModule, type Build } from "./builds.ts";
+import { heldModules, type Build } from "./builds.ts";
 
 /** The default: `clamp(hardwareConcurrency − 2, 1, 4)`. */
 export function defaultJobWorkers(): number {
@@ -55,7 +55,7 @@ function spawn(build: Build | Promise<Build>, placement: boolean): Spawned {
         {
           backend,
           module,
-          deferred: deferredModule(),
+          modules: heldModules(),
           port: channel.port2,
           placement,
         },

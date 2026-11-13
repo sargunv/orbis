@@ -22,6 +22,7 @@ use crate::MapEvent;
 use crate::frame::*;
 use crate::jobs::{Jobs, TileResult};
 use crate::meshes::*;
+use crate::modules::Modules;
 use crate::resident::*;
 use crate::state::FeatureStates;
 use crate::style::StylePlan;
@@ -683,6 +684,9 @@ struct PlanKey {
 /// A gap the style uses on the frames' renderer, and the layers it touches.
 type Degraded = (crate::Gap, Vec<String>);
 
+/// A style an install revises: its id and its jobs' worker.
+type Revised = (u64, Arc<TileWorker>);
+
 /// A map: a style, a camera and the tiles they need, drawn by
 /// [`render`](Self::render).
 pub struct Map {
@@ -788,6 +792,15 @@ pub struct Map {
     /// The latest request is a style URL still loading: the style drawn
     /// is not the one asked for, so the map is not loaded.
     pub(crate) style_fetching: bool,
+    /// The feature modules the host has loaded ([`crate::modules`]).
+    pub(crate) modules: Modules,
+    /// Those the map waits for, which the host is asked for.
+    pub(crate) modules_wanted: Modules,
+    /// A style waiting for its modules, installed once they're in: its
+    /// document, and the id and worker of the style it revises.
+    pub(crate) pending_install: Option<(StyleDoc, Option<Revised>)>,
+    /// Messages waiting for modules: a source's TileJSON naming MLT.
+    pub(crate) held: Vec<Message>,
     /// Why the latest style request failed: nothing will load until
     /// another style replaces it.
     pub(crate) style_error: Option<String>,
@@ -1021,6 +1034,10 @@ impl Map {
             root_frame: None,
             style_request: 0,
             style_fetching: false,
+            modules: Modules::ALL,
+            modules_wanted: Modules::NONE,
+            pending_install: None,
+            held: Vec::new(),
             style_error: None,
             style_unparsed: false,
             style_fetch: Abort::NEVER,
@@ -1473,6 +1490,8 @@ impl Map {
     /// one drawn, which would otherwise settle a still of the old style.
     fn style_loaded(&self) -> bool {
         !self.style_fetching
+            && self.pending_install.is_none()
+            && self.held.is_empty()
             && self.style.as_ref().is_some_and(|s| {
                 s.sprites.loading == 0
                     && s.sprites.pixels_loading == 0
@@ -1480,6 +1499,42 @@ impl Map {
                         .iter()
                         .all(|source| !matches!(source, SourceState::Resolving))
             })
+    }
+
+    /// Tells the map which feature modules its host has loaded: all of
+    /// them unless a host says otherwise. A style waiting for them is
+    /// installed now, and messages waiting for them are taken again.
+    pub fn set_modules(&mut self, loaded: Modules) {
+        self.modules = loaded;
+        self.modules_wanted = self.modules_wanted.without(loaded);
+        self.install_pending();
+        if self.modules_wanted.is_empty() {
+            for message in std::mem::take(&mut self.held) {
+                let _ = self.sender.send(message);
+            }
+            self.events.wake();
+        }
+    }
+
+    /// The feature modules the map waits for, which its host should load
+    /// and then tell it of ([`Map::set_modules`]).
+    pub fn modules_wanted(&self) -> Modules {
+        self.modules_wanted
+    }
+
+    /// Installs the style waiting for modules, if they're all in.
+    fn install_pending(&mut self) {
+        let ready = self
+            .pending_install
+            .as_ref()
+            .is_some_and(|(doc, _)| self.modules.contains(crate::modules::of_style(doc.style())));
+        if !ready {
+            return;
+        }
+        let (doc, previous) = self.pending_install.take().expect("waiting");
+        // The style it revised may have gone meanwhile.
+        let previous = previous.filter(|(id, _)| self.style.as_ref().is_some_and(|s| s.id == *id));
+        self.install_revision(doc, previous.as_ref().map(|(id, worker)| (*id, worker)));
     }
 
     /// Replaces the style with a v8 document. Its tiles load as frames
@@ -1562,6 +1617,20 @@ impl Map {
     /// style again as a new revision of its jobs' style, which keeps their
     /// cached tile frames.
     fn install_revision(&mut self, doc: StyleDoc, previous: Option<(u64, &Arc<TileWorker>)>) {
+        // The style runs no code of a module the host hasn't loaded.
+        let needed = crate::modules::of_style(doc.style());
+        if !self.modules.contains(needed) || self.pending_install.is_some() {
+            self.modules_wanted |= needed.without(self.modules);
+            let previous = previous.map(|(id, worker)| (id, Arc::clone(worker)));
+            // A later document replaces one still waiting.
+            let previous = match self.pending_install.take() {
+                Some((_, waiting)) => waiting.or(previous),
+                None => previous,
+            };
+            self.pending_install = Some((doc, previous));
+            self.events.wake();
+            return self.install_pending();
+        }
         self.version += 1;
         self.warned.clear();
         self.labels.invalidate();
@@ -2483,9 +2552,10 @@ impl Map {
     /// at rest, and one coarsened to the device's room keeps it.)
     fn drape_resizes(&self, gpu: &dyn Gpu, renderer: &Renderer) -> bool {
         let terrain = self.style.as_ref().and_then(|s| s.terrain.as_ref());
-        let room = renderer.drape_room(gpu) as usize;
         renderer.terrain_on()
-            && terrain.is_some_and(|t| t.covered.0 > t.covered.1 && t.covered.1 < room)
+            && terrain.is_some_and(|t| {
+                t.covered.0 > t.covered.1 && t.covered.1 < renderer.drape_room(gpu) as usize
+            })
     }
 
     /// Whether the terrain's tiles take other drape slots at rest: those
@@ -3148,7 +3218,13 @@ impl Map {
         view: &View,
         report: &mut FrameReport,
     ) -> Option<orb_render::FrameTerrain> {
-        let cover_room = Self::cover_room(gpu, renderer);
+        // Asked only of a style with terrain: the drape's room is the DEM
+        // module's code (`crate::modules`).
+        let terrain = self.style.as_ref().and_then(|s| s.worker.plan().terrain());
+        let cover_room = match terrain {
+            Some(_) => Self::cover_room(gpu, renderer),
+            None => 0,
+        };
         let style = self.style.as_mut()?;
         let plan = style.worker.plan();
         let root = self.root_frame.expect("eased before the terrain");
@@ -3783,6 +3859,52 @@ mod tests {
         }
         let name = map.style.as_ref().unwrap().worker.plan().style.name.clone();
         assert_eq!(name.as_deref(), Some("b"));
+    }
+
+    /// A style that declares a feature waits for its module, and a later
+    /// style replaces one still waiting; what needs none goes in at once.
+    #[test]
+    fn a_style_waits_for_the_modules_it_declares() {
+        let fetch = Arc::new(crate::testing::HeldFetch::default());
+        let mut map = Map::new(crate::testing::services(fetch), None);
+        map.set_modules(Modules::NONE);
+        let named = |map: &Map| {
+            let style = map.style.as_ref()?;
+            style.worker.plan().style.name.clone()
+        };
+        let geojson = r#"{"version":8,"name":"g","sources":{"g":{"type":"geojson",
+            "data":{"type":"FeatureCollection","features":[]}}},"layers":[]}"#;
+        let terrain = r#"{"version":8,"name":"t","sources":{"d":{"type":"raster-dem",
+            "tiles":["https://x/{z}/{x}/{y}.png"]}},"layers":[]}"#;
+        map.set_style_json(geojson).unwrap();
+        assert_eq!(named(&map), None);
+        assert_eq!(map.modules_wanted(), Modules::GEOJSON);
+        assert!(!map.style_loaded());
+        map.set_style_json(terrain).unwrap();
+        assert_eq!(map.modules_wanted(), Modules::GEOJSON | Modules::DEM);
+        map.set_modules(Modules::GEOJSON);
+        assert_eq!(named(&map), None, "the terrain still waits");
+        map.set_modules(Modules::GEOJSON | Modules::DEM);
+        assert_eq!(named(&map).as_deref(), Some("t"));
+        assert!(map.modules_wanted().is_empty());
+        map.set_style_json(&style("plain")).unwrap();
+        assert_eq!(named(&map).as_deref(), Some("plain"));
+        // An edit that adds a feature waits for its module too.
+        map.set_modules(Modules::NONE);
+        let add = crate::Transaction::from_commands(
+            r#"[["addSource", "g", {"type": "geojson", "data": {"type": "FeatureCollection", "features": []}}]]"#,
+        )
+        .unwrap();
+        let generation = map.edit(&add).unwrap();
+        assert_eq!(map.modules_wanted(), Modules::GEOJSON);
+        let sources = |map: &Map| {
+            let style = map.style.as_ref().expect("a style");
+            style.worker.plan().style.sources.len()
+        };
+        assert_eq!(sources(&map), 0);
+        map.set_modules(Modules::GEOJSON);
+        assert_eq!(sources(&map), 1);
+        assert_eq!(map.version, generation);
     }
 
     /// A map dropped gives up its style URL's fetch, and a style URL

@@ -4,14 +4,19 @@
 // placement workers instantiate that compiled module with the same
 // build's bindings.
 //
-// core.wasm holds what a map's first frames run, and core-deferred.wasm
-// the rest (xtask/src/split.rs), which the map fetches once it is idle
-// and hands to its workers. Until then core.wasm calls each deferred
-// function through a placeholder: the first call fetches and compiles
-// core-deferred.wasm on the spot, which writes the real functions into
-// core.wasm's table, and goes on.
+// Each build holds what plain vector maps run, and leaves each feature a
+// style may declare to a module of its own (xtask/src/split.rs):
+// `core-<name>.wasm` and `core-gl-<name>.wasm`. A map asks for a module
+// once its style declares the feature, and its style waits until every
+// thread of the map has the module: this context fetches and compiles it
+// once, instantiates it against the build's memory and table, which
+// writes its functions into the build's table, and hands it to the
+// workers before the map sends them work that needs it. Nothing loads
+// synchronously: core.wasm calls a module's functions through
+// placeholders until it's in, and a placeholder's call throws, a bug in
+// the split's paths or in the map's gate.
 
-import { DeferredLoadError } from "./trap.ts";
+import { ModuleNotLoadedError } from "./trap.ts";
 
 /** The GPU API a map draws with. */
 export type Backend = "webgpu" | "webgl2";
@@ -38,6 +43,63 @@ const WASM = {
   webgl2: new URL("../pkg/core-gl_bg.wasm", import.meta.url),
 };
 
+/** The feature modules, as orb-runtime's `Modules` names them. */
+export type ModuleName =
+  | "mlt"
+  | "archive"
+  | "sqlite"
+  | "dem"
+  | "globe"
+  | "geojson"
+  | "api";
+
+/** The feature modules in orb-runtime's `Modules::NAMES` order, which
+ * the map's module bits follow. */
+export const MODULE_NAMES: readonly ModuleName[] = [
+  "mlt",
+  "archive",
+  "sqlite",
+  "dem",
+  "globe",
+  "geojson",
+  "api",
+];
+
+/** Each build's feature modules: literal URLs, which the bundler hashes. */
+const MODULES: Record<Backend, Record<ModuleName, URL>> = {
+  webgpu: {
+    mlt: new URL("../pkg/core-mlt.wasm", import.meta.url),
+    archive: new URL("../pkg/core-archive.wasm", import.meta.url),
+    sqlite: new URL("../pkg/core-sqlite.wasm", import.meta.url),
+    dem: new URL("../pkg/core-dem.wasm", import.meta.url),
+    globe: new URL("../pkg/core-globe.wasm", import.meta.url),
+    geojson: new URL("../pkg/core-geojson.wasm", import.meta.url),
+    api: new URL("../pkg/core-api.wasm", import.meta.url),
+  },
+  webgl2: {
+    mlt: new URL("../pkg/core-gl-mlt.wasm", import.meta.url),
+    archive: new URL("../pkg/core-gl-archive.wasm", import.meta.url),
+    sqlite: new URL("../pkg/core-gl-sqlite.wasm", import.meta.url),
+    dem: new URL("../pkg/core-gl-dem.wasm", import.meta.url),
+    globe: new URL("../pkg/core-gl-globe.wasm", import.meta.url),
+    geojson: new URL("../pkg/core-gl-geojson.wasm", import.meta.url),
+    api: new URL("../pkg/core-gl-api.wasm", import.meta.url),
+  },
+};
+
+/** Where a build imports a module's placeholders from: this, then the
+ * module's name. */
+const PLACEHOLDERS = "placeholder.";
+/** The custom section every module of a split build carries, naming its
+ * build: a module takes only its own build's instance. */
+const PAIR = "orbis.pair";
+
+/** The build `module` names, if it names one. */
+const pair = (module: WebAssembly.Module) => {
+  const [section] = WebAssembly.Module.customSections(module, PAIR);
+  return section && new TextDecoder().decode(section);
+};
+
 /** Each build's bindings, an import apiece: as a conditional's two arms,
  * the minifier merged their preloads into one, and the page preloaded
  * core-gl.js for WebGPU (and not core.js). */
@@ -52,33 +114,31 @@ export function bindings(backend: Backend): Promise<Bindings> {
   return BINDINGS[backend]();
 }
 
-/** The deferred half of each build that has one. */
-const DEFERRED: Partial<Record<Backend, URL>> = {
-  webgpu: new URL("../pkg/core-deferred.wasm", import.meta.url),
-};
-/** The custom section of a split module naming its placeholder table's
- * export; a whole module has none. */
-const SECTION = "orbis.deferred";
-/** The custom section both halves of a split build carry, naming their
- * pair: a deferred half takes only its own primary. */
-const PAIR = "orbis.pair";
-/** Where a split module imports its placeholders from. */
-const PLACEHOLDERS = "placeholder.deferred";
+const compile = (url: URL, init?: RequestInit) =>
+  WebAssembly.compileStreaming(fetch(url, init));
 
-const compile = (backend: Backend) =>
-  WebAssembly.compileStreaming(fetch(WASM[backend]));
-
-/** This context's map instance, while its deferred half isn't in. */
-let waiting:
-  | { instance: WebAssembly.Instance; module: WebAssembly.Module; url: URL }
+/** This context's instance of its build, once made, and the modules it
+ * calls through placeholders: none for a whole build (a profiled or
+ * panicking one), which holds every module's code. */
+let instance:
+  | {
+      backend: Backend;
+      exports: WebAssembly.Exports;
+      split: Set<string>;
+      pair: string | undefined;
+    }
   | undefined;
-/** The compiled deferred half, once this context has it. */
-let deferred: WebAssembly.Module | undefined;
-let fetching: Promise<WebAssembly.Module> | undefined;
+/** The modules this context has, compiled, and those linked into its
+ * instance. */
+const held = new Map<ModuleName, WebAssembly.Module>();
+const linked = new Set<ModuleName>();
+/** Modules this context is fetching. */
+const fetching = new Map<ModuleName, Promise<WebAssembly.Module>>();
 const started = new WeakSet<Bindings>();
 
 /** Binds `glue` to an instance of `build`'s module: this context's map
- * code (once per context, as wasm-bindgen's `initSync`). */
+ * code (once per context, as wasm-bindgen's `initSync`), with the modules
+ * this context already has. */
 export function instantiate(
   glue: Bindings,
   build: Pick<Build, "backend" | "module">,
@@ -90,129 +150,119 @@ export function instantiate(
     string,
     WebAssembly.ModuleImports
   >;
-  const [section] = WebAssembly.Module.customSections(module, SECTION);
-  const url = DEFERRED[build.backend];
-  let table: WebAssembly.Table | undefined;
-  if (section && url) {
-    // Each placeholder is named by its slot in the table.
-    imports[PLACEHOLDERS] = new Proxy(
+  const split = new Set<string>();
+  for (const { module: from } of WebAssembly.Module.imports(module)) {
+    if (!from.startsWith(PLACEHOLDERS) || imports[from]) continue;
+    const name = from.slice(PLACEHOLDERS.length);
+    split.add(name);
+    imports[from] = new Proxy(
       {},
       {
-        get:
-          (_, slot) =>
-          (...args: unknown[]) => {
-            link();
-            return table!.get(Number(slot))(...args);
-          },
+        get: (_, slot) => () => {
+          throw new ModuleNotLoadedError(name, String(slot));
+        },
       },
     );
   }
-  const instance = new WebAssembly.Instance(module, imports);
-  if (section && url) {
-    table = instance.exports[
-      new TextDecoder().decode(section)
-    ] as WebAssembly.Table;
-    waiting = { instance, module, url };
-    if (deferred) link();
+  const made = new WebAssembly.Instance(module, imports);
+  instance = {
+    backend: build.backend,
+    exports: made.exports,
+    split,
+    pair: pair(module),
+  };
+  glue.__wbg_finalize_init(made, module);
+  for (const name of held.keys()) {
+    // Another build's module stays out: asked for again, it loads again.
+    try {
+      link(name);
+    } catch (e) {
+      console.warn(e);
+    }
   }
-  glue.__wbg_finalize_init(instance, module);
+}
+
+/** Writes module `name`'s functions into this context's instance, if
+ * both are here and it isn't yet. Another build's module (a stale copy, a
+ * cache) would write other functions into the table: it throws, and stays
+ * out. */
+function link(name: ModuleName): void {
+  const module = held.get(name);
+  if (!instance || !module || linked.has(name)) return;
+  if (instance.split.has(name)) {
+    if (pair(module) !== instance.pair) {
+      held.delete(name);
+      throw new Error(`core-${name}.wasm is another build's`);
+    }
+    new WebAssembly.Instance(module, { primary: instance.exports });
+  }
+  linked.add(name);
+}
+
+/** Hands this context module `name`, compiled elsewhere: its instance
+ * takes it now, or when it's made. */
+export function takeModule(name: ModuleName, module: WebAssembly.Module) {
+  if (!held.has(name)) held.set(name, module);
+  link(name);
+}
+
+/** Fetches and compiles `backend`'s module `name` (once per context), and
+ * links it into this context's instance; resolves to it compiled, for
+ * the context's workers. */
+export function loadModule(
+  backend: Backend,
+  name: ModuleName,
+): Promise<WebAssembly.Module> {
+  const have = held.get(name);
+  if (have) return Promise.resolve(have);
+  let load = fetching.get(name);
+  if (!load) {
+    // The API's module isn't on a first frame's way.
+    const init = name === "api" ? ({ priority: "low" } as RequestInit) : {};
+    load = compile(MODULES[backend][name], init).then(
+      (module) => {
+        takeModule(name, module);
+        return module;
+      },
+      (e) => {
+        // Asked again, it's fetched again.
+        fetching.delete(name);
+        throw e;
+      },
+    );
+    fetching.set(name, load);
+  }
+  return load;
+}
+
+/** The modules this context has, compiled: what a worker it spawns
+ * starts with. */
+export function heldModules(): [ModuleName, WebAssembly.Module][] {
+  return [...held];
+}
+
+/** Whether `name` is a feature module's name. */
+export function isModuleName(name: string): name is ModuleName {
+  return name in MODULES.webgpu;
 }
 
 let loaded: Promise<Bindings> | undefined;
 
 /** core.wasm's bindings, instantiated on this thread if nothing here has
- * yet, with its deferred half: what a page whose map runs in a worker
- * loads for regions. */
+ * yet, with its API module: what a page whose map runs in a worker loads
+ * for regions. */
 export function loadCore(): Promise<Bindings> {
   loaded ??= (async () => {
     const glue = await bindings("webgpu");
-    if (started.has(glue)) return glue;
-    const build = {
-      backend: "webgpu" as const,
-      module: await compile("webgpu"),
-    };
-    instantiate(glue, build);
-    await fetchDeferred(build);
+    if (!started.has(glue))
+      instantiate(glue, {
+        backend: "webgpu",
+        module: await compile(WASM.webgpu),
+      });
+    await loadModule(instance?.backend ?? "webgpu", "api");
     return glue;
   })();
   return loaded;
-}
-
-/** Starts fetching `build`'s deferred half, if it has one, and resolves
- * to it compiled (once per context); this context's instance takes it
- * as soon as it compiles. */
-export function fetchDeferred(
-  build: Pick<Build, "backend" | "module">,
-): Promise<WebAssembly.Module> | undefined {
-  const url = DEFERRED[build.backend];
-  if (!url || !WebAssembly.Module.customSections(build.module, SECTION).length)
-    return undefined;
-  fetching ??= WebAssembly.compileStreaming(
-    fetch(url, { priority: "low" } as RequestInit),
-  ).then(
-    (module) => {
-      takeDeferred(module);
-      return module;
-    },
-    (e) => {
-      // A placeholder's call can still fetch it.
-      fetching = undefined;
-      throw e;
-    },
-  );
-  return fetching;
-}
-
-/** This context's deferred half, compiled, if it has it. */
-export function deferredModule(): WebAssembly.Module | undefined {
-  return deferred;
-}
-
-/** Hands this context the compiled deferred half, which its instance
- * takes now or when it is made. */
-export function takeDeferred(module: WebAssembly.Module): void {
-  deferred ??= module;
-  if (waiting) link();
-}
-
-/** Makes the deferred half with this context's instance's exports, which
- * writes its functions into the instance's table: compiled already, or
- * fetched and compiled now, for a placeholder called before. */
-function link(): void {
-  if (!waiting) return;
-  const { instance, module, url } = waiting;
-  try {
-    deferred ??= new WebAssembly.Module(fetchNow(url));
-    // Another build's deferred half (a stale copy, a cache) would write
-    // other functions into the table, or fail to link, its error thrown
-    // through the Rust frames of the call that needed it.
-    const pair = (m: WebAssembly.Module) =>
-      new TextDecoder().decode(WebAssembly.Module.customSections(m, PAIR)[0]);
-    if (pair(deferred) !== pair(module))
-      throw new Error("it is another build's");
-    new WebAssembly.Instance(deferred, { primary: instance.exports });
-  } catch (e) {
-    throw new DeferredLoadError(url, e);
-  }
-  waiting = undefined;
-}
-
-/** `url`'s bytes, synchronously, as a placeholder needs them. */
-function fetchNow(url: URL): ArrayBuffer {
-  const request = new XMLHttpRequest();
-  request.open("GET", url.href, false);
-  // A page's synchronous requests can't ask for bytes, only for text.
-  const page = typeof document !== "undefined";
-  if (page) request.overrideMimeType("text/plain; charset=x-user-defined");
-  else request.responseType = "arraybuffer";
-  request.send();
-  if (request.status !== 200)
-    throw new Error(`${url.pathname}: HTTP ${request.status}`);
-  if (!page) return request.response as ArrayBuffer;
-  const text = request.responseText;
-  const bytes = new Uint8Array(text.length);
-  for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
-  return bytes.buffer;
 }
 
 /** Why WebGPU gives no adapter here, if it doesn't. */
@@ -238,12 +288,12 @@ export function pickBuild(
   choice: BackendChoice = "auto",
 ): Promise<Build> {
   if (choice === "webgl2")
-    return compile("webgl2").then((module) => ({
+    return compile(WASM.webgl2).then((module) => ({
       backend: "webgl2",
       module,
       forced: true,
     }));
-  const likely = gpu ? compile("webgpu") : undefined;
+  const likely = gpu ? compile(WASM.webgpu) : undefined;
   likely?.catch(() => {});
   return (async () => {
     const missing = await noWebgpu(gpu);
@@ -257,7 +307,7 @@ export function pickBuild(
       throw new Error(`Orbis can't draw with WebGPU, as asked: ${missing}`);
     return {
       backend: "webgl2",
-      module: await compile("webgl2"),
+      module: await compile(WASM.webgl2),
       noWebgpu: missing,
     };
   })();

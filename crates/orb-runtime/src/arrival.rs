@@ -376,12 +376,30 @@ impl Map {
                 }
                 let def = plan.source_def(index);
                 let tms = self.surface.source_tms(&def.id, false);
-                let endpoint = match (result, self.surface.plan(&tms, plan.image_kind(index))) {
+                let endpoint = match (&result, self.surface.plan(&tms, plan.image_kind(index))) {
                     (Err(e), _) => Err(format!("TileJSON: {e}")),
                     (Ok(_), Err(e)) => Err(e),
-                    (Ok(text), Ok(warp)) => TileEndpoint::resolve(&def.kind, Some(&text), tms)
+                    (Ok(text), Ok(warp)) => TileEndpoint::resolve(&def.kind, Some(text), tms)
                         .map(|endpoint| (endpoint, warp)),
                 };
+                // Tiles in MLT wait for its decoders.
+                let mlt = crate::modules::Modules::MLT;
+                if let Ok((endpoint, _)) = &endpoint
+                    && endpoint.encoding == orb_style::Encoding::Mlt
+                    && plan.image_kind(index).is_none()
+                    && matches!(def.kind, orb_style::SourceKind::Vector(_))
+                    && !self.modules.contains(mlt)
+                {
+                    self.modules_wanted |= mlt;
+                    self.held.push(Message::TileJson {
+                        generation,
+                        source,
+                        result,
+                        head: None,
+                    });
+                    self.events.wake();
+                    return;
+                }
                 let image = plan.image_kind(index).is_some();
                 if endpoint.is_ok() {
                     self.events.push(MapEvent::SourceChanged {

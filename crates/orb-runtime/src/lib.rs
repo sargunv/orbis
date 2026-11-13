@@ -24,6 +24,7 @@ mod line;
 mod loader;
 mod map;
 mod meshes;
+pub mod modules;
 #[cfg(feature = "sqlite")]
 pub mod native_db;
 #[cfg(feature = "sqlite")]

@@ -581,8 +581,8 @@ async function run(server, engine) {
             slow.push({ what, at: Math.round(t), ms: Math.round(ms) });
         }
       };
-      // A placeholder's synchronous load of core-deferred.wasm: its
-      // request and its compile.
+      // Modules made on the calling thread: a feature module's compile
+      // or instantiation (builds.ts).
       const Module = WebAssembly.Module;
       WebAssembly.Module = function (bytes) {
         return timed("new WebAssembly.Module", () => new Module(bytes));
@@ -1003,8 +1003,8 @@ async function run(server, engine) {
         // the browser compiled into the moves.
         lastCompileMs: Math.max(0, ...pipelines.map((p) => p.settled ?? 0)),
       }),
-      // When the page fetched each wasm file (core-deferred.wasm late, in
-      // the moves, is a placeholder's synchronous load).
+      // When the page fetched each wasm file (a feature module's, as the
+      // style declared it).
       wasm,
       ...(camera && {
         camera: [

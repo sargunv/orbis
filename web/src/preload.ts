@@ -1,11 +1,23 @@
 // What a new map fetches first, fetched while core.wasm downloads and
-// compiles: its style, its sources' TileJSON, its sprite and its labels'
-// first glyphs. The map's own
+// compiles: its style, its sources' TileJSON, its sprite, its labels'
+// first glyphs, and the names of the feature modules its style declares
+// (builds.ts). The map's own
 // fetches of those URLs take these responses (once each, through the
 // page's request transform) rather than fetch again; one not taken in a
 // minute is dropped.
 
+import type { ModuleName } from "./builds.ts";
 import { transformed } from "./requests.ts";
+
+/** The feature modules the preloaded style declares, once it's read. */
+let declared: (names: ModuleName[]) => void = () => {};
+const declaring = new Promise<ModuleName[]>((resolve) => (declared = resolve));
+
+/** The feature modules the style `preloadStyle` read declares: what the
+ * map will ask for, which can download while core.wasm compiles. */
+export function styleModules(): Promise<ModuleName[]> {
+  return declaring;
+}
 
 const preloads = new Map<
   string,
@@ -60,7 +72,12 @@ export function preloadStyle(
 }
 
 interface StyleParts {
-  sources?: Record<string, { url?: unknown }>;
+  sources?: Record<
+    string,
+    { url?: unknown; type?: unknown; encoding?: unknown }
+  >;
+  terrain?: unknown;
+  projection?: unknown;
   sprite?: unknown;
   glyphs?: unknown;
   zoom?: unknown;
@@ -74,6 +91,25 @@ interface StyleParts {
       "text-font"?: unknown;
     };
   }[];
+}
+
+/** The feature modules a style declares, as orb-runtime's
+ * `modules::of_style` reads them; MLT that only a TileJSON names comes
+ * later. */
+function modulesOf(doc: StyleParts): ModuleName[] {
+  const names = new Set<ModuleName>();
+  if (doc.terrain) names.add("dem");
+  const projection = doc.projection as { type?: unknown } | undefined;
+  if (projection && projection.type !== "mercator") names.add("globe");
+  for (const source of Object.values(doc.sources ?? {})) {
+    const url = typeof source?.url === "string" ? source.url : "";
+    if (url.startsWith("pmtiles://")) names.add("archive");
+    if (url.startsWith("mbtiles://")) names.add("sqlite");
+    if (source?.type === "raster-dem") names.add("dem");
+    if (source?.type === "geojson") names.add("geojson");
+    if (source?.encoding === "mlt") names.add("mlt");
+  }
+  return [...names];
 }
 
 /** The style spec's `text-font` default. */
@@ -100,6 +136,7 @@ function preloadParts(
       typeof source?.url === "string" ? resolve(source.url) : undefined;
     if (url) preload(url);
   }
+  declared(modulesOf(doc));
   const sprites =
     typeof doc.sprite === "string"
       ? [doc.sprite]

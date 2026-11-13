@@ -1,13 +1,13 @@
 // Which of core.wasm's functions a map's first frames run, by scene, and
-// what a module split along that line weighs; `--write` has `cargo xtask
-// deferred` set that line in web/deferred.txt for `cargo xtask web`, which
-// moves what no scene ran into core-deferred.wasm (xtask/src/split.rs).
+// what a module split along that line weighs; and which functions of the
+// build's feature modules (xtask/src/split.rs) each scene ran, which tells
+// a module's paths that take code a scene without the feature runs.
 //
 //   cargo xtask web --names
 //   pnpm coverage [--scenes=liberty,paris,globe,terrain,raster,tokyo,
 //     tokyo-mlt,protomaps,versatiles,world,world-warm,berlin,app,app-tokyo,
 //     app-offline,app-page,tokyo-page,chicago,nepal,norway,sanfrancisco,uruguay] [--tour]
-//     [--out=<dir>] [--reuse] [--write]
+//     [--out=<dir>] [--reuse] [--show=<n>]
 //
 // The last five are MapLibre Native's real-world render tests, offline
 // from the render-test cache `cargo xtask h2h` checks out, when it has.
@@ -31,9 +31,8 @@
 //   first frame needs, and the rest, which could load later;
 // - the code only that scene ran, and that none ran, split out of the
 //   rest: what a module of that feature would take off every other load;
-// - what the build's split defers that ran (which would load
-//   core-deferred.wasm before first idle); `--write`, with every scene
-//   and `--tour`, rewrites web/deferred.txt from what none ran;
+// - what each scene ran of each feature module the build splits out
+//   (`--show` names that many of each's largest functions);
 // - code by crate and by module of ours, with the share each scene ran (a
 //   function's crate is the first `orb_` crate in its name, else its first).
 // Profiles and modules stay in `--out` (by default target/coverage), for
@@ -70,7 +69,7 @@ if (!existsSync(named))
   );
 const out = option("out", join(root, "target/coverage"));
 // The build's split: core.wasm whole, the symbol map naming its
-// functions, and the indices it deferred (xtask/src/web.rs).
+// functions, and the indices each feature module took (xtask/src/web.rs).
 const WHOLE = join(root, "target/web/core-whole");
 mkdirSync(out, { recursive: true });
 
@@ -533,18 +532,16 @@ const columns = Object.keys(profiles);
 const bytes = (filter) =>
   funcs.reduce((sum, f, i) => sum + (filter(i) ? f.size : 0), 0);
 const code = bytes(() => true);
-const [shipped, rest] = ["core_bg.wasm", "core-deferred.wasm"].map((f) =>
-  readFileSync(join(root, "web/pkg", f)),
-);
+const shipped = readFileSync(join(root, "web/pkg/core_bg.wasm"));
 const lines = [
-  `core.wasm: ${funcs.length} functions, ${kib(code)} of code; as shipped (web/pkg), ${kib(shipped.length)} raw and ${kib(brotli(shipped))} brotli, and core-deferred.wasm ${kib(rest.length)} raw and ${kib(brotli(rest))} brotli`,
+  `core.wasm: ${funcs.length} functions, ${kib(code)} of code; as shipped (web/pkg), ${kib(shipped.length)} raw and ${kib(brotli(shipped))} brotli`,
   "",
-  `| profile | functions run | code run | code beyond ${scenes[0]} | first-frame module | deferred module |`,
+  `| profile | functions run | code run | code beyond ${scenes[0]} | first-frame module | the rest's module |`,
   "|---|---|---|---|---|---|",
 ];
 for (const scene of columns) {
   const primary = join(out, `${scene}.primary.wasm`),
-    secondary = join(out, `${scene}.deferred.wasm`);
+    secondary = join(out, `${scene}.rest.wasm`);
   split(
     "--split",
     "--strip-debug",
@@ -618,13 +615,11 @@ if (scenes.length > 1) {
   );
 }
 
-// What the build's split moved into core-deferred.wasm (by name: the split
-// cut core-whole.wasm, which binaryen optimized apart from core-names.wasm)
-// that ran here: it would load that module before the scene's first idle.
-// `--write` has `cargo xtask deferred` rewrite web/deferred.txt from what
-// no scene ran.
+// What each scene ran of each feature module (by name: the split cut
+// core-whole.wasm, which binaryen optimized apart from core-names.wasm):
+// a scene whose style doesn't declare a module's feature must run none of
+// it, or its map would call into a module it never loads.
 {
-  const anyRan = (i) => scenes.some((s) => ran[s][i]);
   const { imported } = functions(readFileSync(`${WHOLE}.wasm`));
   const symbols = new Map(
     readFileSync(`${WHOLE}.symbols`, "utf8")
@@ -635,33 +630,39 @@ if (scenes.length > 1) {
         return [Number(line.slice(0, colon)), line.slice(colon + 1)];
       }),
   );
-  const split = new Set(
-    readFileSync(`${WHOLE}.deferred`, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((i) => symbols.get(imported + Number(i))),
-  );
-  const stale = funcs
-    .filter((f, i) => anyRan(i) && split.has(f.name))
-    .sort((a, b) => b.size - a.size);
+  // Sections apart by a blank line: a module's name, then its functions'
+  // indices among those defined.
+  const modules = new Map();
+  for (const section of readFileSync(`${WHOLE}.modules`, "utf8").split(
+    "\n\n",
+  )) {
+    const [name, ...indices] = section.split("\n").filter(Boolean);
+    if (!name) continue;
+    for (const i of indices)
+      modules.set(symbols.get(imported + Number(i)), name);
+  }
   lines.push(
     "",
-    stale.length
-      ? `${stale.length} functions the build defers ran here (${kib(stale.reduce((s, f) => s + f.size, 0))}), so these scenes load core-deferred.wasm early; \`--tour --write\` refreshes web/deferred.txt. The largest: ${stale
-          .slice(0, 10)
-          .map((f) => `\`${f.name.replace(HASH, "").slice(0, 100)}\``)
-          .join(", ")}`
-      : `Nothing the build defers ran here.`,
+    "| profile | feature modules' functions it ran |",
+    "|---|---|",
   );
-  if (args.includes("--write")) {
-    if (!tour || scenes.length !== Object.keys(SCENES).length || !cache)
-      throw new Error(
-        "--write takes every scene, the real-world ones too (`cargo xtask h2h mirror` checks out their cache), and --tour: the list defers what none ran",
-      );
-    execFileSync("cargo", ["xtask", "deferred", join(out, "union.profile")], {
-      cwd: root,
-      stdio: "inherit",
+  for (const scene of columns) {
+    const by = new Map();
+    funcs.forEach((f, i) => {
+      const module = ran[scene][i] && modules.get(f.name);
+      if (module) by.set(module, [...(by.get(module) ?? []), f]);
     });
+    const cells = [...by]
+      .map(
+        ([module, fs]) =>
+          `${module}: ${fs.length} (${fs
+            .sort((a, b) => b.size - a.size)
+            .slice(0, Number(option("show", 3)))
+            .map((f) => `\`${f.name.replace(HASH, "").slice(0, 80)}\``)
+            .join(", ")})`,
+      )
+      .join("; ");
+    lines.push(`| ${scene} | ${cells || "none"} |`);
   }
 }
 

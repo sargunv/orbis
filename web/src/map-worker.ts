@@ -5,10 +5,10 @@
 //
 // Page → worker: `ToWorker` (link.ts), and the page's answers to request
 // transform questions (requests.ts). Worker → page: `FromWorker`.
-import { pickBuild } from "./builds.ts";
+import { loadModule, pickBuild } from "./builds.ts";
 import { Engine, type MapState, type Report } from "./engine.ts";
 import type { FromWorker, ToWorker, WorkerInit } from "./link.ts";
-import { preloadStyle } from "./preload.ts";
+import { preloadStyle, styleModules } from "./preload.ts";
 import {
   askPage,
   setRequestTransform,
@@ -43,6 +43,12 @@ async function start(init: WorkerInit): Promise<void> {
   preloadStyle(init.preload, init.size[2], init.camera?.zoom);
   const build = pickBuild(gpu, init.backend);
   build.catch(() => {});
+  // The modules the style declares download beside its TileJSON.
+  void Promise.all([build, styleModules()]).then(
+    ([{ backend }, names]) =>
+      names.forEach((name) => loadModule(backend, name).catch(() => {})),
+    () => {},
+  );
   const workers = spawnWorkers(build, init.jobWorkers);
   let ready: MapState;
   try {
@@ -93,9 +99,7 @@ self.onmessage = ({ data }: MessageEvent<ToWorker>) => {
   } else if ("call" in data) {
     const { call, method, args } = data;
     const map = engine!;
-    new Promise((resolve) =>
-      resolve((map[method] as (...a: unknown[]) => unknown)(...args)),
-    ).then(
+    map.call(method, args).then(
       (result) =>
         post({ reply: call, result, state: map.state() }, buffers(result)),
       (e) =>

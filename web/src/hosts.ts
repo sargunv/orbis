@@ -4,10 +4,11 @@
 import type { OrbisMap as Core } from "../pkg/core.js";
 import {
   bindings,
-  fetchDeferred,
   instantiate,
+  loadModule,
   type Backend,
   type Build,
+  type ModuleName,
 } from "./builds.ts";
 import { takePreload } from "./preload.ts";
 import { onRegionsChanged } from "./regions.ts";
@@ -67,9 +68,11 @@ export interface Host {
   readonly jobWorkers: number;
   /** Draws on a new GPU after a loss, on the same canvas. */
   recover(): Promise<void>;
-  /** Fetches the build's deferred half, if it has one, for the map and
-   * its workers (once). */
-  fetchDeferred(): void;
+  /** Loads feature modules into the map and its workers: resolves once
+   * every one of them has them. */
+  loadModules(names: readonly ModuleName[]): Promise<void>;
+  /** The feature modules the map and its workers have. */
+  modules(): ReadonlySet<ModuleName>;
   destroy(): void;
 }
 
@@ -237,7 +240,7 @@ export async function startHost(
   };
   callbacks.setup(core);
   let size: [number, number, number] | undefined;
-  let deferring = false;
+  const loaded = new Set<ModuleName>();
   return {
     core,
     backend: build.backend,
@@ -255,20 +258,21 @@ export async function startHost(
       core.recovered(await core.newDevice(canvas));
       if (size) core.resize(...size);
     },
-    fetchDeferred() {
-      if (deferring || stopped) return;
-      deferring = true;
-      // Workers spawned after this get it with their build.
-      fetchDeferred(build)?.then(
-        (deferred) => {
-          if (stopped) return;
-          for (const { worker } of [...jobs, placement])
-            worker.postMessage({ deferred });
-        },
-        // A placeholder's call fetches it then.
-        (e) => console.warn("core-deferred.wasm:", e),
+    async loadModules(names) {
+      await Promise.all(
+        names.map(async (name) => {
+          const module = await loadModule(build.backend, name);
+          if (stopped || loaded.has(name)) return;
+          // On the ports the map's work goes over, so a worker has the
+          // module before any work that needs it; workers spawned later
+          // start with it (workers.ts).
+          for (const port of [...ports, placement.port])
+            port.postMessage({ module: name, compiled: module });
+          loaded.add(name);
+        }),
       );
     },
+    modules: () => loaded,
     destroy: () => {
       if (stopped) return;
       destroy();
