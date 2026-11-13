@@ -37,7 +37,7 @@ use std::ops::{Add, Mul, Sub};
 use glam::DVec2;
 use orb_tile::{Ancestor, GeometryType, Layer};
 
-use crate::clip::{ClippedLine, clip_polyline};
+use crate::clip::{ClippedLine, clip_polyline, length};
 use crate::fill::pack_position;
 use crate::{Mesh, MeshBuilder};
 
@@ -297,10 +297,6 @@ fn subdivide(line: &mut ClippedLine, step: [f64; 2]) {
     }
     line.points = points;
     line.seam = line.seam.zip(seam).map(|((_, d), at)| (at, d));
-}
-
-fn length(a: [i64; 2], b: [i64; 2]) -> f64 {
-    (b[0] as f64 - a[0] as f64).hypot(b[1] as f64 - a[1] as f64)
 }
 
 /// Where GL JS resets a line's distance as it lays the whole line out: at

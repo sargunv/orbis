@@ -16,6 +16,11 @@ pub(crate) struct ClippedLine {
     pub(crate) seam: Option<(usize, f64)>,
 }
 
+/// The distance from `a` to `b`.
+pub(crate) fn length(a: [i64; 2], b: [i64; 2]) -> f64 {
+    (b[0] as f64 - a[0] as f64).hypot(b[1] as f64 - a[1] as f64)
+}
+
 /// Clips segments independently, without introducing edges along the square,
 /// into `out` (cleared first). Consecutive duplicates and zero-length
 /// intersections are discarded. A ring crossing the square becomes open
@@ -30,8 +35,6 @@ pub(crate) fn clip_polyline(
     out: &mut Vec<ClippedLine>,
 ) {
     out.clear();
-    let length =
-        |a: [i64; 2], b: [i64; 2]| (b[0] as f64 - a[0] as f64).hypot(b[1] as f64 - a[1] as f64);
     let inside = |p: &[i64; 2]| {
         p.iter()
             .all(|&c| (i64::from(min)..=i64::from(max)).contains(&c))
