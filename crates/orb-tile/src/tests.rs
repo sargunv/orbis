@@ -129,8 +129,8 @@ fn zero_padding_is_skipped() {
     let mut padded = geometry_fixture();
     padded.extend([0; 16]);
     assert_eq!(
-        mvt::decode(&padded).unwrap().layers[0].geometry_types(),
-        mvt::decode(&geometry_fixture()).unwrap().layers[0].geometry_types()
+        mvt::decode(&padded).unwrap().layers,
+        mvt::decode(&geometry_fixture()).unwrap().layers
     );
 }
 
@@ -141,8 +141,10 @@ fn all_geometry_types_and_ids() {
     assert_eq!(layer.name(), "test");
     assert_eq!(layer.extent(), 4096);
     assert_eq!(
-        layer.geometry_types(),
-        &[
+        (0..layer.len())
+            .map(|f| layer.geometry_type(f))
+            .collect::<Vec<_>>(),
+        [
             GeometryType::Point,
             GeometryType::Point,
             GeometryType::LineString,

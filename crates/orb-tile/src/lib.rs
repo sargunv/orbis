@@ -214,10 +214,6 @@ impl Layer {
         self.types[feature]
     }
 
-    pub fn geometry_types(&self) -> &[GeometryType] {
-        &self.types
-    }
-
     pub fn geometry(&self, feature: usize) -> FeatureGeometry<'_> {
         let parts = self.feature_parts[feature] as usize..self.feature_parts[feature + 1] as usize;
         FeatureGeometry::new(self, parts)
