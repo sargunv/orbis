@@ -605,7 +605,7 @@ export class OrbisMap {
    * batch shows whole in one frame (`elevationsshown`), terrain, hillshade
    * and the elevations the camera and labels read together. A batch given
    * before the last one shows replaces it: pace by `elevationsshown`. For
-   * heights made in a worker, `elevationPort()` skips the page. */
+   * heights made in a worker, `elevationPort()` takes them packed. */
   setHostElevations(
     source: string,
     side: number,
@@ -620,11 +620,12 @@ export class OrbisMap {
     return this.#call("hostElevations", source, side, zxy, heights);
   }
 
-  /** A port that takes `setHostElevations`'s batches straight to the map's
-   * thread, for heights an app makes in a worker of its own: post it
-   * there, send `ElevationPortMessage`s on it (transferring their
-   * buffers), and hear each batch's `ElevationPortReply` and, once it
-   * shows, `ElevationPortShown`. The page's thread never sees them. */
+  /** A port that takes `setHostElevations`'s batches straight to the map,
+   * for heights an app makes in a worker of its own: post it there, send
+   * `ElevationPortMessage`s on it (transferring their buffers), and hear
+   * each batch's `ElevationPortReply` and, once it shows,
+   * `ElevationPortShown`. The batches reach the map as the worker packed
+   * them, without passing through the app's code on the page. */
   elevationPort(): MessagePort {
     const { port1, port2 } = new MessageChannel();
     this.#call("elevationPort", port2).catch(() => port1.close());
