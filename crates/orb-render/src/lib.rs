@@ -2221,10 +2221,12 @@ impl Renderer {
     }
 
     /// Asks for the terrain's pipelines, a shaded hillshade's where a
-    /// hillshade may shade, its depth's in the 3D layers' passes, and the
-    /// drape atlas's mips.
+    /// hillshade may shade, its depth's in the 3D layers' passes where the
+    /// style has a 3D layer, and the drape atlas's mips.
     fn request_terrain(&mut self, gpu: &mut dyn Gpu, shaded: bool) {
-        let three_d = self.extrusions.format();
+        let three_d = (self.nodes.iter())
+            .any(|n| n.family == Family::FillExtrusion)
+            .then(|| self.extrusions.format());
         let layers = &self.terrain_layers;
         let shaded = shaded || layers.iter().any(terrain::TerrainLayer::shaded);
         let beneath = layers.iter().any(terrain::TerrainLayer::reads_beneath);

@@ -519,9 +519,11 @@ pub(crate) struct Terrain {
     /// stacks or not, and those that read the map beneath ([`Kind`]).
     pipelines: [Option<RenderPipelineId>; 3],
     /// The terrain's depth alone, before anything tests it: in the map's
-    /// passes ([`MAP`]) and in the 3D layers' ([`THREE_D`]), each with the
-    /// attachments it was made for.
+    /// passes ([`MAP`]), and in the 3D layers' ([`THREE_D`]) where theirs
+    /// differ (multisampled), each with the attachments it was made for;
+    /// and the 3D layers' attachments, once asked for.
     depth_pipelines: [Option<(Attachments, RenderPipelineId)>; 2],
+    three_d: Option<Attachments>,
     /// Clearing the pages' slots.
     clear: RenderPipelineId,
     grid: DataTable,
@@ -720,6 +722,7 @@ impl Terrain {
             clear_layout,
             pipelines: [None; 3],
             depth_pipelines: [None; 2],
+            three_d: None,
             clear,
             grid: grid_buffer,
             grid_indices,
@@ -1114,12 +1117,13 @@ impl Terrain {
     /// Asks for the pipelines the terrain draws with: its layers' in the
     /// map's passes, a shaded hillshade's where one is (`shaded`), one
     /// reading the map beneath where a layer does (`beneath`), and its
-    /// depth alone there and in the 3D layers' passes, of `three_d`: the
-    /// pipeline set's ([`Renderer::set_pipelines`](crate::Renderer::set_pipelines)).
+    /// depth alone there and in the 3D layers' passes, of `three_d`, where
+    /// the style has them: the pipeline set's
+    /// ([`Renderer::set_pipelines`](crate::Renderer::set_pipelines)).
     pub(crate) fn request_pipelines(
         &mut self,
         gpu: &mut dyn Gpu,
-        three_d: TargetFormat,
+        three_d: Option<TargetFormat>,
         (shaded, beneath): (bool, bool),
     ) {
         self.pipeline(gpu, Kind::Plain);
@@ -1130,11 +1134,13 @@ impl Terrain {
             self.pipeline(gpu, Kind::Beneath);
         }
         self.depth_pipeline(gpu, MAP, self.target);
-        let three_d = Attachments {
-            depth: true,
-            ..three_d.into()
-        };
-        self.depth_pipeline(gpu, THREE_D, three_d);
+        if let Some(three_d) = three_d {
+            let three_d = Attachments {
+                depth: true,
+                ..three_d.into()
+            };
+            self.depth_pipeline(gpu, THREE_D, three_d);
+        }
         self.occlusion_pipeline(gpu);
     }
 
@@ -1154,7 +1160,22 @@ impl Terrain {
     /// Whether the pipeline of the terrain's depth alone in the map's
     /// passes ([`MAP`]) or the 3D layers' ([`THREE_D`]) compiled.
     pub(crate) fn depth_ready(&self, gpu: &mut dyn Gpu, at: usize) -> bool {
-        self.depth_pipelines[at].is_some_and(|(_, p)| gpu.pipeline_ready(p.into()))
+        self.depth_pipeline_at(at)
+            .is_some_and(|p| gpu.pipeline_ready(p.into()))
+    }
+
+    /// The pipeline of the terrain's depth alone in the map's passes
+    /// ([`MAP`]) or the 3D layers' ([`THREE_D`]), once made: the map's
+    /// serves both where their attachments are alike.
+    fn depth_pipeline_at(&self, at: usize) -> Option<RenderPipelineId> {
+        let wanted = if at == MAP {
+            Some(self.target)
+        } else {
+            self.three_d
+        };
+        (self.depth_pipelines.iter().flatten())
+            .find(|(made, _)| Some(*made) == wanted)
+            .map(|&(_, p)| p)
     }
 
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
@@ -1203,12 +1224,19 @@ impl Terrain {
 
     /// Makes the pipeline of the terrain's depth alone into `target`'s
     /// passes, the map's ([`MAP`]) or the 3D layers' ([`THREE_D`]), unless
-    /// it is made for them: its fragments add nothing to the colour.
+    /// it is made for them, or for the map's passes where the 3D layers'
+    /// are alike: its fragments add nothing to the colour.
     fn depth_pipeline(&mut self, gpu: &mut dyn Gpu, at: usize, target: Attachments) {
+        if at == THREE_D {
+            self.three_d = Some(target);
+        }
         if self.depth_pipelines[at].is_some_and(|(made, _)| made == target) {
             return;
         }
         self.depth_pipelines[at].take().map(|(_, p)| p).release(gpu);
+        if at == THREE_D && target == self.target {
+            return;
+        }
         let pipeline = Draw {
             label: "terrain depth alone",
             fragment: (&TERRAIN_SHADER, "fs_terrain_hidden"),
@@ -1439,7 +1467,7 @@ impl Terrain {
     /// surface, which every layer's draw then shades once. Nothing while
     /// the terrain can't draw this frame.
     pub(crate) fn depth_commands(&self, at: usize) -> Vec<RenderCommand> {
-        let Some((_, pipeline)) = self.depth_pipelines[at].filter(|_| self.drawn.is_some()) else {
+        let Some(pipeline) = self.depth_pipeline_at(at).filter(|_| self.drawn.is_some()) else {
             return Vec::new();
         };
         let mut commands = vec![RenderCommand::SetPipeline(pipeline)];
