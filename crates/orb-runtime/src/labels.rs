@@ -682,17 +682,6 @@ fn quad_chunks(placed: &[PlacedSymbol], sort_keys: &[SortKeyRange]) -> Vec<orb_l
     chunks
 }
 
-/// Milliseconds between placements while the camera moves: every third
-/// frame at 60 Hz, with room for the display's jitter. Placing on every
-/// moving frame kept the placement lane busy for most of a rotation and
-/// the map thread applying a commit on nearly every frame; between
-/// placements labels stay on their anchors. At this cadence the gestures
-/// bench's paths bring back as few of the labels they drop within a
-/// second (its label returns) as placing on every frame did; at 100 ms,
-/// a third of GL JS's and MapLibre Native's 300, a rotation brought back
-/// a third more.
-pub(crate) const MOVING_CADENCE: f64 = 45.0;
-
 impl Labels {
     /// Labels placed on `lane`, with `options`' label settings.
     pub(crate) fn new(lane: Arc<dyn PlacementLane>, options: LabelOptions) -> Self {
@@ -1158,20 +1147,17 @@ impl Labels {
         self.last_frame = None;
     }
 
-    /// Whether `frame` needs placing: it differs from the last one placed
-    /// (clock aside), nothing is out on the lane, and, while the camera
-    /// `moving`, [`MOVING_CADENCE`] has passed since the last was asked
-    /// for. At rest a change places at once, so the frame a map comes to
-    /// rest on is placed in full, as a fresh map's is.
-    pub(crate) fn wants_placement(&self, frame: &orb_symbol::Frame, moving: bool) -> bool {
-        if self.in_flight.is_some() {
-            return false;
-        }
-        match &self.last_frame {
-            None => true,
-            Some(last) if same_inputs(last, frame) => false,
-            Some(last) => !moving || frame.now - last.now >= MOVING_CADENCE,
-        }
+    /// Whether `frame` needs placing: nothing is out on the lane, and it
+    /// differs from the last one placed (clock aside). Placement paces
+    /// itself: one starts when the last commits, whatever the camera does,
+    /// so the lane's speed sets the rate and the frame a map comes to rest
+    /// on is placed in full, as a fresh map's is.
+    pub(crate) fn wants_placement(&self, frame: &orb_symbol::Frame) -> bool {
+        self.in_flight.is_none()
+            && self
+                .last_frame
+                .as_ref()
+                .is_none_or(|last| !same_inputs(last, frame))
     }
 
     /// Whether the last placement asked was of `frame`'s inputs, and has

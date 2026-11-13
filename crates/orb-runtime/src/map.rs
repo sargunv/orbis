@@ -193,8 +193,8 @@ pub struct FrameReport {
     /// way. What the device did meanwhile (`gpu`) happened mid-gesture.
     pub input: bool,
     /// Label placements asked of the placement lane in this frame and
-    /// the preparations since the last drawn: while the camera moves, one
-    /// each 45 ms at most.
+    /// the preparations since the last drawn: one at a time, the next
+    /// once the last has committed.
     pub placements: u32,
     /// What the device did since the last frame drawn, in its
     /// preparations and in it: pipelines asked for, memory made, bytes
@@ -561,12 +561,6 @@ const RESIZES: u8 = 8;
 /// would otherwise keep it from ever going idle.
 const FRUITLESS: u8 = 2;
 
-/// How long after input last held the camera, or after the first frame,
-/// background compiles wait for a map that doesn't rest, in milliseconds
-/// of frame time: longer than a pause between a user's moves, in which a
-/// compile would run into the next (in Firefox each holds frames back).
-const BACKGROUND_QUIET_MS: f64 = 1000.0;
-
 /// What tiles and styles let go of between frames, released at the next:
 /// from the renderer, or from the runtime's image atlas.
 #[derive(Debug, Default)]
@@ -795,8 +789,6 @@ pub struct Map {
     /// The first frame's time: frames' time counts from it (fades,
     /// transitions and the shaders' time run on frame time).
     pub(crate) born: Option<f64>,
-    /// The time of the last frame input held the camera in.
-    held_at: Option<f64>,
     /// The time of the frame being drawn, or the last one.
     pub(crate) frame_time: f64,
     /// When the last raster tile to arrive finishes fading in.
@@ -1015,7 +1007,6 @@ impl Map {
         Self {
             mode: RenderMode::Continuous,
             born: None,
-            held_at: None,
             frame_time: 0.0,
             image_fades_until: f64::NEG_INFINITY,
             picking: Default::default(),
@@ -2501,18 +2492,6 @@ impl Map {
         self.events
             .frame(report.loaded, report.settled && !moving && !held);
         report.idle &= !moving;
-        // Pipelines no view has needed yet compile when the user's hand
-        // is off the map: never while input holds the camera, and else once
-        // the map rests (idle), or once input has been quiet a while
-        // ([`BACKGROUND_QUIET_MS`]), so a map that animates or loads without
-        // end still compiles them, but a pause between a user's moves
-        // doesn't. A frame that needs one sooner asks for it.
-        if held {
-            self.held_at = Some(self.frame_time);
-        }
-        let since = self.held_at.or(self.born).unwrap_or(self.frame_time);
-        let quiet = self.frame_time - since >= BACKGROUND_QUIET_MS;
-        gpu.pause_background_compiles(held || !(report.idle || quiet));
         self.globe_warps.end_frame();
         report.scene = renderer.stats();
         report.memory = self.memory(renderer);
@@ -3253,9 +3232,7 @@ impl Map {
         // what has arrived so far is work no picture keeps. Tile mode
         // placed three to seven times a tile, over its whole grid.
         let wanted = loaded || self.mode == RenderMode::Continuous;
-        // A continuous map places on a cadence while its camera moves.
-        let moving = self.mode == RenderMode::Continuous && !self.camera_rested;
-        if wanted && self.labels.wants_placement(&frame, moving) {
+        if wanted && self.labels.wants_placement(&frame) {
             self.labels.placing(&frame);
             let placing = self.services.clock.now();
             let done = self.reply(move |committed| Message::Placed { epoch, committed });

@@ -157,8 +157,6 @@ pub struct WgpuGpu {
     background: bool,
     /// Background pipelines compiling that no frame asked for.
     background_pending: std::collections::HashSet<PipelineId>,
-    /// Background compiles wait ([`Gpu::pause_background_compiles`]).
-    background_paused: bool,
     /// Pipelines compiled that a frame asked for ([`PipelineCounts::made`]).
     made: u32,
     /// A compile that ran past the watchdog's limit, or failed: the device
@@ -525,7 +523,6 @@ impl WgpuGpu {
             surface: None,
             background: false,
             background_pending: Default::default(),
-            background_paused: false,
             made: 0,
             hung: None,
             compiled: Vec::new(),
@@ -1055,10 +1052,10 @@ impl WgpuGpu {
     }
 
     /// Lets background compiles start only while no compile a frame waits
-    /// for is pending and they aren't paused: they are what is left once
-    /// the view has what it needs.
+    /// for is pending: they are what is left once the view has what it
+    /// needs.
     fn gate_background(&mut self) {
-        let open = self.pending == 0 && !self.background_paused;
+        let open = self.pending == 0;
         self.compiler.open_background(&self.device, open);
     }
 
@@ -2061,13 +2058,6 @@ impl Gpu for WgpuGpu {
 
     fn set_background_compiles(&mut self, on: bool) {
         self.background = on && !self.caps.compiles_hold_presents;
-    }
-
-    fn pause_background_compiles(&mut self, paused: bool) {
-        if self.background_paused != paused {
-            self.background_paused = paused;
-            self.gate_background();
-        }
     }
 
     fn presents_wait(&mut self) -> bool {

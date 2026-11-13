@@ -1076,51 +1076,39 @@ mod tests {
         assert_eq!(shown, 1.0, "the label was placed and faded in");
     }
 
-    /// While the camera moves, labels place every third 60 Hz frame at
-    /// most; the frame it comes to rest on places at once.
+    /// Placement paces itself: whenever the lane is free and the camera
+    /// changed, the frame asks for one, moving or not, and never while one
+    /// is out.
     #[test]
-    fn moving_maps_place_labels_on_a_cadence() {
+    fn labels_place_whenever_the_lane_is_free() {
         let mut offscreen = null_island(
             r#"{"version":8,
             "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
             "layers":[{"id":"label","type":"symbol","source":"s","layout":{"text-field":"Null Island"}}]}"#,
         );
+        let timeout = std::time::Duration::from_secs(10);
         let started = std::time::Instant::now();
-        while !offscreen.frame().idle && started.elapsed() < std::time::Duration::from_secs(10) {
+        while !offscreen.frame().idle && started.elapsed() < timeout {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         let mut camera = *offscreen.map.camera();
-        let (mut placements, mut placed_last) = (0, false);
-        for _ in 0..30 {
+        for _ in 0..10 {
             camera.bearing += 1.0;
             offscreen.map.jump_to_state(camera);
-            let asked = offscreen.frame().placements;
-            placements += asked;
-            placed_last = asked > 0;
-            // The lane answers well within a frame.
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        // 30 frames at 60 Hz, three or more apart.
-        assert!((1..=10).contains(&placements), "{placements} placements");
-        if placed_last {
-            // A slow answer shifted the cadence onto the last frame: one
-            // more, a frame after it, doesn't place.
-            camera.bearing += 1.0;
-            offscreen.map.jump_to_state(camera);
-            assert_eq!(offscreen.frame().placements, 0);
-        }
-        // At rest the view places as soon as the lane is free: the last
-        // moving frame placed wasn't the last.
-        let (started, mut placements) = (std::time::Instant::now(), 0);
-        while started.elapsed() < std::time::Duration::from_secs(10) {
-            let report = offscreen.frame();
-            placements += report.placements;
-            if report.idle {
-                break;
+            // The last placement committed: the first frame that moves asks
+            // for the next at once.
+            assert_eq!(offscreen.frame().placements, 1);
+            // Until it commits, frames ask for none.
+            let started = std::time::Instant::now();
+            loop {
+                let report = offscreen.frame();
+                if report.loaded || started.elapsed() > timeout {
+                    break;
+                }
+                assert_eq!(report.placements, 0, "a placement is out");
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        assert_eq!(placements, 1);
     }
 
     /// Until the map is first idle, labels show at once rather than fade,
