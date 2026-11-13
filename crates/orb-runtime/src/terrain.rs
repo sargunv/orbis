@@ -1525,7 +1525,7 @@ impl TerrainElevation {
         }
         id.truncate(id_len);
         let id = String::from_utf8(id).map_err(|_| bad())?;
-        let tms = TileMatrixSet::by_id(&id).map_err(|e| format!("elevation pyramid: {e:?}"))?;
+        let tms = TileMatrixSet::by_id(&id).map_err(|e| format!("elevation pyramid: {e}"))?;
         let mut elevation = Self::empty(tms, exaggeration);
         elevation.zooms = DemZooms {
             delta,

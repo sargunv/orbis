@@ -143,7 +143,7 @@ pub enum Interpolation {
 }
 
 /// `match` labels, sorted for binary search, each with its output index.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum MatchLabels {
     Number(Vec<(f64, u32)>),
     String(Vec<(Box<str>, u32)>),
@@ -160,7 +160,7 @@ pub(crate) enum Subject {
 /// Legacy filters, lowered to GL JS's internal `filter-*` operators, which
 /// keep the legacy semantics: a missing property or a type mismatch is
 /// `false`, never an error.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum LegacyFilter {
     /// `filter-==`, `filter-<`, …; `!=` is lowered to `!` around `==`.
     Compare {
@@ -177,7 +177,7 @@ pub(crate) enum LegacyFilter {
     Has(Subject),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Call {
     Let,
     Var,
@@ -216,7 +216,7 @@ pub(crate) enum ColorSpace {
     Hcl,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Op {
     Call(Call, Vec<NodeId>),
     Literal(Value<'static>),

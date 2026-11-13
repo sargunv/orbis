@@ -197,6 +197,10 @@ Advice that cost time to learn, not rules:
   two drivers are held word for word by `orb-runtime`'s `drivers` test, so a
   change to `driver/cpu.rs` should say in its commit why the GPU driver needs no
   twin of it.
+- The web's builds write a derived `Debug` as its type's or variant's name alone
+  (`-Zfmt-debug=shallow`, `xtask/src/web.rs`), so code that compares, hashes or
+  parses `{:?}` output works natively and breaks only on the web. Compare with
+  `PartialEq`, and give what a message must show a `Display`.
 - Firefox with a WebGPU adapter draws with WebGPU, by measurement: in cold
   `pnpm session` runs on Firefox 159 (alps, manhattan and globe, interleaved)
   its WebGL 2 in a worker drew a first frame at 0.2–0.9 s against WebGPU's 1.9–4

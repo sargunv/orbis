@@ -5,7 +5,7 @@ use crate::{CanonicalTile, FeatureGeometry, json::Json};
 use orb_tile::GeometryType;
 type Point = [f64; 2];
 type Polygon = Vec<Vec<Point>>;
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Geometry {
     Point(Point),
     Line(Vec<Point>),

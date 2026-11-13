@@ -50,7 +50,7 @@ fn body(row: &mut Row, data: usize, compressed: usize) -> Result<Option<Vec<u8>>
     }
     miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&bytes, MAX_BODY)
         .map(Some)
-        .map_err(|e| format!("a compressed body didn't inflate: {e:?}"))
+        .map_err(|e| format!("a compressed body didn't inflate: {e}"))
 }
 
 impl<'p, P: Pages + ?Sized> NativeDatabase<'p, P> {

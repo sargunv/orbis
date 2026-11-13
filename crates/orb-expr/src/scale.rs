@@ -426,7 +426,7 @@ impl Splitter {
         let own = |op: &Op| {
             let mut op = op.clone();
             op.map_children(|_| 0);
-            format!("{op:?}")
+            op
         };
         if na.ty != nb.ty || own(&na.op) != own(&nb.op) {
             return false;
