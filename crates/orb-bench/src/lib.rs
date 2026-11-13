@@ -436,7 +436,6 @@ pub fn run(
             return stutter::run(runtime, settings, about, (style, &alps), progress)
                 .map(Report::Stutter);
         }
-
         Experiment::Session => {
             let alps = format!("file://{}", data.join("alps.json").display());
             return session::run(settings, about, (style, &alps), progress).map(Report::Session);

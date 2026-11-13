@@ -361,7 +361,7 @@ fn flight_legs() -> Vec<(CameraTarget, FlyOptions)> {
             let center = &leg["center"];
             (
                 CameraTarget {
-                    center: Some(orb_api::Geodetic::new(
+                    center: Some(Geodetic::new(
                         center[0].as_f64().expect("lon"),
                         center[1].as_f64().expect("lat"),
                     )),

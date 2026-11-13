@@ -6,15 +6,15 @@
 //! [--warm] [--dump prefix]`.
 //!
 //! Without a style URL it loads the committed Tokyo extract; `alps` is the
-//! Alps terrain style (live tiles) at its view. `stutter` is `--experiment stutter`, whose Liberty scenarios draw
-//! OpenFreeMap's live Liberty unless a style URL (say, `cargo xtask h2h
-//! mirror`'s) stands in. `session` is `--experiment session` at 1440×900,
-//! `pnpm session`'s native twin, on live Liberty and the Alps style.
-//! `--views` reads cameras in mln-rs's `views.txt` format, keeping those
-//! whose style column is the style URL's last path segment (`liberty` for
-//! `…/styles/liberty`). `--capture N` asks the graphics debugger the bench
-//! runs under (Xcode, RenderDoc) to capture the runtime's frame N, from 1.
-//! Prints the Markdown report.
+//! Alps terrain style (live tiles) at its view. `stutter` is `--experiment
+//! stutter`, whose Liberty scenarios draw OpenFreeMap's live Liberty unless
+//! a style URL (say, `cargo xtask h2h mirror`'s) stands in. `session` is
+//! `--experiment session` at 1440×900, `pnpm session`'s native twin, on
+//! live Liberty and the Alps style. `--views` reads cameras in mln-rs's
+//! `views.txt` format, keeping those whose style column is the style URL's
+//! last path segment (`liberty` for `…/styles/liberty`). `--capture N` asks
+//! the graphics debugger the bench runs under (Xcode, RenderDoc) to capture
+//! the runtime's frame N, from 1. Prints the Markdown report.
 
 #![forbid(unsafe_code)]
 
@@ -94,7 +94,6 @@ fn run() -> Result<(), String> {
         style = orb_bench::LIBERTY.to_string();
         about_data = format!("{style}, and the Alps terrain style");
     }
-
     if let Some(path) = &views_file {
         let name = style_name(&style);
         settings.views = orb_bench::read_views(path, name)?;
