@@ -1,6 +1,6 @@
 //! What each frame applies of what arrived, and in which order: the
-//! [`Budget`] a frame spends on arrivals ([`FrameBudget`]), what it has
-//! spent, and the tiles parked after the view left them.
+//! [`Budget`] a frame spends on arrivals, what it has spent, and the
+//! tiles parked after the view left them.
 //!
 //! Frames are the one time the map works ([`Map::render`]). Arrived
 //! loads wait in the map's inbox and apply nearest the view's focus
@@ -8,7 +8,6 @@
 //! least one result, so arrivals never stall, and stops once its time or
 //! its bytes run out.
 //!
-//! [`FrameBudget`]: crate::FrameBudget
 //! [`Map::render`]: crate::Map::render
 
 use std::collections::VecDeque;
@@ -19,8 +18,18 @@ use crate::jobs::TileResult;
 use crate::map::Message;
 use crate::resident::HostData;
 
-/// What a frame may spend applying what arrived: tiles' and edits' results
-/// (their uploads, and the room made for them) and label commits.
+/// What a frame may spend applying what arrived since the last before it
+/// draws: tiles' and edits' results (their uploads, and the room made for
+/// them), label commits and stale drape slots, counted from the frame's
+/// start. However often the host hears of arrivals, a frame spends no
+/// more, and tiles that arrive together spread over frames rather than
+/// stalling one, at least one a frame. It is one budget whatever the
+/// camera does: a map held still loads as one let go. The web's frames,
+/// on the display's refresh, are the one time its map works: what
+/// arrives between them only queues, its wake asking for the next. Native
+/// hosts also spend it in the upkeep a report asks for
+/// ([`Map::prepare`](crate::Map::prepare)) and, drawing nothing, in
+/// [`Map::apply_arrivals`](crate::Map::apply_arrivals).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Budget {
     /// Time on the map's thread from the frame's start, in milliseconds.
@@ -32,6 +41,24 @@ pub struct Budget {
     /// left stale redraw over the frames after, the longest stale first
     /// ([`Terrain::plan`](crate::terrain::Terrain::plan)).
     pub drape_texels: u64,
+}
+
+impl Budget {
+    /// A desktop's, the default: a third of a 60 Hz frame and 8 MiB. What
+    /// a frame applies costs it again in the cull's candidates and drape
+    /// slots, so the bytes bound it as much as the time. Drape slots:
+    /// eight whole colour slots (an M6 redraws one in about 0.4 ms).
+    pub const DESKTOP: Self = Self {
+        ms: 6.0,
+        bytes: 8 << 20,
+        drape_texels: 8 << 20,
+    };
+    /// A phone's or a tablet's.
+    pub const MOBILE: Self = Self {
+        ms: 3.0,
+        bytes: 2 << 20,
+        drape_texels: 2 << 20,
+    };
 }
 
 /// What the current frame has spent of its [`Budget`]'s bytes: its time

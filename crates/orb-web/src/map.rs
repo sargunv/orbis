@@ -488,7 +488,7 @@ pub async fn create_map(
     // the page says which this thread has.
     map.set_modules(orb_runtime::modules::Modules::NONE);
     if mobile() {
-        map.set_frame_budget(orb_runtime::FrameBudget::MOBILE);
+        map.set_frame_budget(orb_runtime::Budget::MOBILE);
     }
     map.set_placement_lane(lane);
     // The page plays video sources (`web/src/videos.ts`).
@@ -1222,7 +1222,7 @@ impl OrbisMap {
             });
         }
         let started = orb_host::Clock::now(&crate::host::WebClock);
-        self.take_replies(started + self.map.frame_budget_now().ms);
+        self.take_replies(started + self.map.frame_budget().ms);
         // Decoding them spent the frame's time for arrivals.
         self.map.arrivals_began(started);
         let viewport = self.viewport();

@@ -151,14 +151,10 @@ mod tests {
     #[test]
     fn tiles_larger_than_a_frame_s_bytes_go_up_in_pieces() {
         let cap = 256 << 10;
-        let budget = orb_runtime::Budget {
+        let tight = orb_runtime::Budget {
             ms: 1000.0,
             bytes: cap,
-            ..orb_runtime::FrameBudget::DESKTOP.resting
-        };
-        let tight = orb_runtime::FrameBudget {
-            moving: budget,
-            resting: budget,
+            ..orb_runtime::Budget::DESKTOP
         };
         let capacity = crate::common::SceneCapacity::default();
         let mut pieces = crate::common::Offscreen::new(&tokyo(14.0), capacity).unwrap();
@@ -1611,7 +1607,7 @@ mod tests {
     }
 
     impl Fed {
-        fn new(pitch: f64, budget: Option<orb_runtime::FrameBudget>) -> Self {
+        fn new(pitch: f64, budget: Option<orb_runtime::Budget>) -> Self {
             let camera = orb_camera::CameraState {
                 bearing: 20.0,
                 pitch,
@@ -1629,7 +1625,7 @@ mod tests {
         fn with(
             style: &str,
             camera: orb_camera::CameraState,
-            budget: Option<orb_runtime::FrameBudget>,
+            budget: Option<orb_runtime::Budget>,
         ) -> Self {
             let services = crate::common::native_services(std::sync::Arc::new(|| {}));
             let mut map = orb_runtime::Map::new(services, Some(camera));
@@ -1736,15 +1732,13 @@ mod tests {
     /// GPU memory moves meanwhile.
     #[test]
     fn no_frame_shows_two_batches_of_heights() {
-        // A tile's heights a frame.
-        let one = orb_runtime::Budget {
+        // A tile's heights a frame, and every stale drape slot: the drape
+        // follows a batch within the frame's budget like any other change,
+        // which is another test's.
+        let budget = orb_runtime::Budget {
             ms: 1000.0,
             bytes: 1,
-            ..orb_runtime::FrameBudget::DESKTOP.resting
-        };
-        let budget = orb_runtime::FrameBudget {
-            moving: one,
-            resting: one,
+            drape_texels: u64::MAX,
         };
         let steps = [ground(0, 25.0), ground(1, 25.0), ground(2, 25.0)];
         let mut fresh = Fed::new(0.0, None);

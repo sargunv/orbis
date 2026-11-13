@@ -181,9 +181,6 @@ pub(crate) struct HostHeights {
     /// The batch going in, per source key.
     batches: FxHashMap<u32, Batch>,
     issued: u64,
-    /// A batch showed this frame: the drape slots it changed redraw in it,
-    /// whatever the frame's drape budget.
-    pub(crate) showed: bool,
 }
 
 impl HostHeights {
@@ -372,7 +369,6 @@ impl Map {
         renderer: &mut Renderer,
         deadline: f64,
     ) {
-        self.host_heights.showed = false;
         if self.host_heights.batches.is_empty() {
             return;
         }
@@ -539,7 +535,6 @@ impl Map {
                 }
             }
         }
-        self.host_heights.showed = true;
         self.events.push(crate::MapEvent::ElevationsShown {
             source: batch.source,
             batch: batch.id,

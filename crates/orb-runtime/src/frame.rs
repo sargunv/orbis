@@ -610,20 +610,9 @@ impl Map {
         view: &View,
     ) -> Option<DrapePlan> {
         let time = self.shader_time();
-        // A camera a host jumps frame by frame moves as one under input.
-        // A batch of the app's heights shows whole: what drapes from it
-        // redraws in this frame, though the slots stay where a continuous
-        // map's are (an unbounded budget is a still map's, which moves
-        // every tile to its place).
-        let showed = self.host_heights.showed;
-        let texels = (self.mode == RenderMode::Continuous).then(|| match showed {
-            true => u64::MAX,
-            false => {
-                self.frame_budget
-                    .at(self.moves() == orb_render::Moves::Held)
-                    .drape_texels
-            }
-        });
+        // A still map redraws every stale slot in its one frame.
+        let texels =
+            (self.mode == RenderMode::Continuous).then_some(self.frame_budget.drape_texels);
         let Some(style) = &mut self.style else {
             return None;
         };

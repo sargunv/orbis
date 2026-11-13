@@ -32,65 +32,6 @@ use orb_source::endpoint::{TileEndpoint, TileLocation};
 /// Logical pixel size of vector/background tiles and pattern origins.
 pub(crate) const TILE_PX: f64 = 512.0;
 
-/// What a frame may spend applying what arrived since the last before it
-/// draws: tiles' and edits' results, label commits, and the bytes they
-/// upload ([`crate::schedule`]), counted from the frame's start: however
-/// often the host hears of arrivals, a frame spends no more, and tiles
-/// that arrive together spread over frames rather than stalling one, at
-/// least one a frame. A frame whose camera moves draws the move on time;
-/// one at rest has the rest of the frame to spare, and loads sooner. The
-/// web's frames, on the display's refresh, are the one time its map
-/// works: what arrives between them only queues, its wake asking for the
-/// next. Native hosts also spend a budget in the upkeep a report asks for
-/// ([`Map::prepare`]) and, drawing nothing, in [`Map::apply_arrivals`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FrameBudget {
-    /// While the camera moves or input holds it.
-    pub moving: crate::Budget,
-    /// At rest.
-    pub resting: crate::Budget,
-}
-
-impl FrameBudget {
-    /// A desktop's, the default, in a 60 Hz frame: a quarter of it and
-    /// 4 MiB while moving, most of it and 16 MiB at rest (with a quarter,
-    /// Liberty's views took 13 % longer to their first idle in Chromium
-    /// than with as long as arrivals took). What a frame applies costs it
-    /// again in the cull's candidates and drape slots, so the bytes bound
-    /// it as much as the time. Drape slots: four whole colour slots while
-    /// moving, sixteen at rest (an M6 redraws one in about 0.4 ms).
-    pub const DESKTOP: Self = Self {
-        moving: crate::Budget {
-            ms: 4.0,
-            bytes: 4 << 20,
-            drape_texels: 4 << 20,
-        },
-        resting: crate::Budget {
-            ms: 12.0,
-            bytes: 16 << 20,
-            drape_texels: 16 << 20,
-        },
-    };
-    /// A phone's or a tablet's.
-    pub const MOBILE: Self = Self {
-        moving: crate::Budget {
-            ms: 2.0,
-            bytes: 1 << 20,
-            drape_texels: 1 << 20,
-        },
-        resting: crate::Budget {
-            ms: 8.0,
-            bytes: 4 << 20,
-            drape_texels: 4 << 20,
-        },
-    };
-
-    /// A frame's, as the camera moves or rests.
-    pub fn at(&self, moving: bool) -> crate::Budget {
-        if moving { self.moving } else { self.resting }
-    }
-}
-
 /// GPU images shared by the maps in one Runtime / host-service set. The
 /// first render initializes them on that Runtime's device.
 #[derive(Clone, Debug, Default)]
@@ -162,7 +103,7 @@ pub struct FrameReport {
     /// preparations or in it.
     pub tiles_arrived: u32,
     /// Bytes of tiles' and edits' results and label commits the frame
-    /// uploaded: within its [`FrameBudget`]'s, but for a first one that
+    /// uploaded: within its [`Budget`](crate::Budget)'s, but for a first one that
     /// can't go up in pieces (an image tile's texels, an edit's, a
     /// commit).
     pub tile_bytes: u64,
@@ -724,7 +665,7 @@ pub struct Map {
     placements_counted: u64,
     /// Arrived tiles wait for the next beat: this one spent its budget.
     pub(crate) tiles_deferred: bool,
-    /// What this frame has spent of its [`FrameBudget`].
+    /// What this frame has spent of its [`Budget`](crate::Budget).
     pub(crate) beat: crate::schedule::Beat,
     /// Tiles' results waiting their turn.
     pub(crate) inbox: crate::schedule::Inbox,
@@ -846,7 +787,7 @@ pub struct Map {
     /// changes, and goes idle.
     fruitless: u8,
     /// What a frame may spend on arrivals.
-    pub(crate) frame_budget: FrameBudget,
+    pub(crate) frame_budget: crate::Budget,
     /// When the host began the next frame's work on what arrived, on the
     /// services' clock ([`Map::arrivals_began`]).
     pub(crate) arrivals_began: Option<f64>,
@@ -1069,7 +1010,7 @@ impl Map {
             sized: true,
             camera_rested: true,
             fruitless: 0,
-            frame_budget: FrameBudget::DESKTOP,
+            frame_budget: crate::Budget::DESKTOP,
             arrivals_began: None,
             release_cached: false,
             tile_cache: true,
@@ -1214,21 +1155,22 @@ impl Map {
     /// Begins a frame's spending on arrivals at `now`: its bytes, and its
     /// deadline, which it returns.
     fn open_beat(&mut self, now: f64) -> f64 {
-        let budget = self.frame_budget.at(self.is_moving());
+        let budget = self.frame_budget;
         self.beat = crate::schedule::Beat::new(budget.bytes);
         now + budget.ms
     }
 
     /// Sets what each frame may spend applying what arrived
-    /// ([`FrameBudget::DESKTOP`], the default, or [`FrameBudget::MOBILE`]).
-    pub fn set_frame_budget(&mut self, budget: FrameBudget) {
+    /// ([`Budget::DESKTOP`](crate::Budget::DESKTOP), the default, or
+    /// [`Budget::MOBILE`](crate::Budget::MOBILE)).
+    pub fn set_frame_budget(&mut self, budget: crate::Budget) {
         self.frame_budget = budget;
     }
 
-    /// What the next frame may spend on what arrived, moving or at rest:
-    /// a host that decodes arrivals for it does so within its time.
-    pub fn frame_budget_now(&self) -> crate::Budget {
-        self.frame_budget.at(self.is_moving())
+    /// What each frame may spend on what arrived: a host that decodes
+    /// arrivals for it does so within its time.
+    pub fn frame_budget(&self) -> crate::Budget {
+        self.frame_budget
     }
 
     /// Says the host began the next frame's work on what arrived at `at`
@@ -1917,7 +1859,7 @@ impl Map {
     /// Draws the frame shown at `frame_time` (the host's frame timestamp,
     /// on the clock its input times use, in milliseconds) into `target`
     /// with `renderer`: applies arrived data within the frame's
-    /// [`FrameBudget`], takes the style's camera if nothing moved it,
+    /// [`Budget`](crate::Budget), takes the style's camera if nothing moved it,
     /// advances gestures and animations to it, loads what the view needs
     /// and renders. This is the map's beat: a host calls it on the
     /// display's refresh while the last report asks for frames (or a wake

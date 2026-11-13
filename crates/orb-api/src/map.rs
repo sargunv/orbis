@@ -232,7 +232,7 @@ impl Map {
         let mut map = orb_runtime::Map::new(runtime.services(wake.clone()), options.camera);
         // Phones and tablets do less a frame than desktops.
         if cfg!(any(target_os = "android", target_os = "ios")) {
-            map.set_frame_budget(orb_runtime::FrameBudget::MOBILE);
+            map.set_frame_budget(orb_runtime::Budget::MOBILE);
         }
         map.set_options(&options);
         // Measurements and the fixtures' cull check draw with nothing

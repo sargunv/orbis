@@ -21,7 +21,7 @@ use orb_source::endpoint::TileEndpoint;
 
 impl Map {
     /// Applies what arrived until `deadline` on the services' clock and
-    /// within the frame's bytes ([`FrameBudget`], [`crate::schedule`]):
+    /// within the frame's bytes ([`Budget`], [`crate::schedule`]):
     /// every message in the order it came but tiles' results, which queue;
     /// then the tile going up in pieces, edits' results in their order,
     /// loads nearest the view's focus first, and the tiles waiting for
@@ -29,7 +29,7 @@ impl Map {
     /// rather than stalling one, and a tile larger than what a frame has
     /// left goes up over several ([`Uploading`]).
     ///
-    /// [`FrameBudget`]: crate::FrameBudget
+    /// [`Budget`]: crate::Budget
     pub(crate) fn apply_messages(
         &mut self,
         gpu: &mut dyn Gpu,

@@ -229,7 +229,7 @@ export class Engine {
     this.#report = report;
     // The map's one beat: all its work (what arrived, the camera, loads,
     // labels, the draw) runs in a frame on the display's refresh, within
-    // the frame's budget (orb-runtime's `FrameBudget`). Input, calls and
+    // the frame's budget (orb-runtime's `Budget`). Input, calls and
     // wakes between frames only queue and ask for the next.
     this.#loop = frameLoop(
       (now) => this.#tick(now),

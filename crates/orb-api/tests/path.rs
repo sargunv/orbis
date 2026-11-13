@@ -673,7 +673,7 @@ fn a_zoom_within_a_drape_step_redraws_no_slots() {
 }
 
 /// A zoom that crosses a drape step every frame, as a fast wheel zoom
-/// does, redraws no more slots a frame than its budget holds (four whole
+/// does, redraws no more slots a frame than its budget holds (eight whole
 /// colour slots on a desktop), the slots it leaves stale drawn as they
 /// were meanwhile, the longest stale first; at rest the map draws what a
 /// fresh one does.
@@ -720,7 +720,7 @@ fn a_zoom_across_a_drape_step_each_frame_redraws_within_its_budget() {
     }
     common::settle(&mut map, &mut target);
     let gestured = target.read_pixels().unwrap();
-    assert!(most <= 4, "{most} slots redrawn in a frame");
+    assert!(most <= 8, "{most} slots redrawn in a frame");
     assert!(redrawn >= 20, "{redrawn} slots redrawn over the zoom");
     let (fresh, _) = fresh_at(
         &runtime,
