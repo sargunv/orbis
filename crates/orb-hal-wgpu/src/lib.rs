@@ -219,9 +219,9 @@ pub struct WgpuGpu {
     /// Set when the device made by `offscreen` is lost.
     #[cfg(not(target_arch = "wasm32"))]
     lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// What the driver said when it lost the device.
+    /// Which thread wgpu told of the loss, and what the driver said.
     #[cfg(not(target_arch = "wasm32"))]
-    lost_reason: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    loss: compile::Loss,
     /// D3D12's shader compiler, on a D3D12 device `offscreen` made.
     #[cfg(not(target_arch = "wasm32"))]
     shader_compiler: Option<String>,
@@ -553,7 +553,7 @@ impl WgpuGpu {
             #[cfg(not(target_arch = "wasm32"))]
             lost: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
-            lost_reason: Default::default(),
+            loss: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             shader_compiler: None,
         };
@@ -1127,7 +1127,7 @@ impl WgpuGpu {
     /// What the driver said when the device was lost, if it was.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn lost_reason(&self) -> Option<String> {
-        self.lost_reason.lock().expect("loss poisoned").clone()
+        self.loss.reason.get().cloned()
     }
 
     /// Loses the device on purpose (`destroy`), to exercise recovery.
@@ -1145,21 +1145,12 @@ impl WgpuGpu {
     /// other uncaptured error still panics, as it would without this.
     #[cfg(not(target_arch = "wasm32"))]
     fn watch_loss(&self) {
-        let loss = compile::Loss {
-            thread: Default::default(),
-            reason: self.lost_reason.clone(),
-        };
+        let loss = self.loss.clone();
         self.compiler.watch_loss(loss.clone());
         let lost = self.lost.clone();
         self.device.set_device_lost_callback(move |why, message| {
-            loss.reason
-                .lock()
-                .expect("loss poisoned")
-                .get_or_insert_with(|| format!("{why:?}: {message}"));
-            loss.thread
-                .lock()
-                .expect("loss poisoned")
-                .get_or_insert_with(|| std::thread::current().id());
+            loss.reason.get_or_init(|| format!("{why:?}: {message}"));
+            loss.thread.get_or_init(|| std::thread::current().id());
             lost.store(true, std::sync::atomic::Ordering::Relaxed);
         });
         let lost = self.lost.clone();

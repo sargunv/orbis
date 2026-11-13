@@ -336,8 +336,7 @@ impl Job {
         // wgpu loses the device in the call that failed, so a loss this
         // thread saw while it built is this pipeline's; one from elsewhere
         // (another compile, `WgpuGpu::lose`) isn't.
-        let lost_here =
-            || loss.and_then(|l| *l.thread.lock().ok()?) == Some(std::thread::current().id());
+        let lost_here = || loss.and_then(|l| l.thread.get()) == Some(&std::thread::current().id());
         let lost_before = lost_here();
         // A driver that fails to compile or link a shader (GLES) is an
         // internal error.
@@ -349,7 +348,7 @@ impl Job {
         let error = invalid.or(pollster::block_on(internal.pop()));
         match (built, error) {
             (Ok(_), None) if !lost_before && lost_here() => {
-                let reason = (loss.and_then(|l| l.reason.lock().ok()?.clone()))
+                let reason = (loss.and_then(|l| l.reason.get()))
                     .map(|r| format!(" ({r})"))
                     .unwrap_or_default();
                 Err(format!("the device was lost making it{reason}"))
@@ -456,9 +455,9 @@ pub(crate) use native::Compiler;
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Loss {
     /// The thread wgpu told of the loss.
-    pub(crate) thread: std::sync::Arc<std::sync::Mutex<Option<std::thread::ThreadId>>>,
+    pub(crate) thread: std::sync::Arc<std::sync::OnceLock<std::thread::ThreadId>>,
     /// What the driver said.
-    pub(crate) reason: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    pub(crate) reason: std::sync::Arc<std::sync::OnceLock<String>>,
 }
 #[cfg(webgpu)]
 pub(crate) use webgpu::Compiler;
