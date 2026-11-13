@@ -12,10 +12,16 @@
 //! core.wasm's other code reaches, and what more than one module calls.
 //!
 //! The API's module starts at the exports JS calls for queries, edits,
-//! the style's document, images, snapshots and offline regions, which JS
-//! makes wait for the module (web/src/engine.ts), and takes what only they
-//! call: code nothing else reaches, by construction rather than by a
-//! profile of what scenes ran.
+//! the style's document, images, snapshots, offline regions, fitting
+//! bounds, host-fed heights and video controls, which JS makes wait for
+//! the module (web/src/engine.ts), and takes what only they call: code
+//! nothing else reaches, by construction rather than by a profile of what
+//! scenes ran.
+//!
+//! A name is one function's alone: neither LLVM nor binaryen folds two
+//! functions with one body into one of their names here (web.rs), which
+//! would give a module a function core.wasm calls too; [`split`] folds
+//! them within each module after.
 //!
 //! binaryen's `wasm-split --multi-split` moves them out. core.wasm then
 //! imports a placeholder for each function a module holds that core.wasm
@@ -51,9 +57,10 @@ pub(crate) struct Module {
 
 /// What a map runs before its gate asks for any module: a style read,
 /// parsed or edited, and the modules it needs worked out from it
-/// (orb-runtime's `modules.rs`). What these reach stays in core.wasm
-/// whatever path names it: the maths of a projection a style names, the
-/// GeoJSON features a style's document copies.
+/// (orb-runtime's `modules.rs`). What these reach stays out of the feature
+/// modules whatever path names it: the maths of a projection a style
+/// names, the GeoJSON features a style's document copies. An edit, which
+/// only the API makes, may run the API's module's code.
 const BEFORE_GATE: &[&str] = &[
     "orb_style::v8::read",
     "orb_style::v8::parse",
@@ -99,8 +106,29 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_runtime::terrain::",
             "orb_runtime::elevation::",
             "orb_render::terrain::",
+            // An app's heights for a raster-dem source it feeds, once
+            // given (`Map::set_host_elevations`, the API's, checks the
+            // source first).
+            "orb_runtime::host_heights::",
+            "orb_runtime::map::Map>::load_heights",
+            "orb_runtime::map::Map>::stage_heights",
+            "orb_runtime::map::Map>::show_batch",
+            "orb_runtime::map::Map>::heights_layers",
+            // The drape, once the style's terrain resolved.
+            "orb_runtime::frame::DrapePlan",
+            "orb_render::Renderer>::terrain",
+            "orb_render::Renderer>::set_terrain_tiles",
+            "orb_render::Renderer>::request_terrain",
+            "orb_render::Renderer>::reserve_drape",
+            "orb_render::Renderer>::carry_drape",
+            "orb_render::Renderer>::set_drape_paint",
+            "orb_render::Renderer>::publish_dems",
+            "orb_render::Renderer>::pad_dems",
+            "orb_camera::View>::unproject_terrain",
         ],
-        except: &[],
+        // Every map has an empty store of host heights, and turns the
+        // terrain off.
+        except: &["orb_runtime::host_heights::HostHeights>::"],
         needs: &[],
     },
     // A projection but Web Mercator, or a source in another CRS.
@@ -118,6 +146,13 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_crs::family::pseudo::",
             "orb_crs::family::tm::",
             "orb_runtime::globe::",
+            // Covers of the globe, of a projection's low-zoom plane and of
+            // sources in another CRS, and the globe's labels.
+            "orb_camera::View>::cover_globe",
+            "orb_camera::View>::cover_warped",
+            "orb_camera::View>::cover_low",
+            "orb_camera::GlobeFrustum",
+            "orb_symbol::placement::view::TileGlobe",
         ],
         // Every map has its warps, empty on Web Mercator, and a sphere frame.
         except: &[
@@ -161,9 +196,20 @@ pub(crate) const MODULES: &[Module] = &[
             "orbismap_endSnapshot",
             "orbismap_cancelSnapshot",
             "orbismap_readNextFrame",
+            "orbismap_cameraForBounds",
+            "orbismap_hostElevations",
+            "orbismap_reloadHostTiles",
+            "orbismap_retryFailedTiles",
+            "orbismap_controlVideo",
             "downloadRegion",
             "deleteRegion",
             "listRegions",
+            "orb_web::regions::_::__wasm_bindgen_generated_downloadRegion",
+            "orb_web::regions::_::__wasm_bindgen_generated_deleteRegion",
+            "orb_web::regions::_::__wasm_bindgen_generated_listRegions",
+            "orb_web::regions::download_region",
+            "orb_web::regions::delete_region",
+            "orb_web::regions::list_regions",
             // What they run, which a table or a callback's closure reaches
             // (edits not: a style URL loaded over another applies as one).
             "orb_runtime::map::Map>::query_",
@@ -177,6 +223,10 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_runtime::offline::import",
             "orb_runtime::offline::Import",
             "orb_runtime::offline::font_stacks",
+            // A style loaded over another applies as an edit, which only
+            // setStyleUrl (and orbismap_edit) start.
+            "orb_runtime::map::Map>::diff_document",
+            "orb_runtime::map::Map>::edit",
         ],
         except: &[],
         needs: &[],
@@ -189,12 +239,6 @@ const PLACEHOLDERS: &str = "placeholder";
 /// The custom section every module of a build carries, core.wasm too:
 /// the FNV-1a 64 hash of its feature modules' bytes, in hex.
 const PAIR: &str = "orbis.pair";
-
-/// Functions this small don't start a module: binaryen folds identical
-/// bodies into one function of any of their names, and a small one is
-/// likeliest to be core.wasm's too. Only one module's code calling it
-/// still moves it.
-const MIN_SEED_BYTES: usize = 24;
 
 /// What the split moved: per module, its functions and their code bytes.
 pub(crate) struct Split {
@@ -238,15 +282,72 @@ pub(crate) fn unhashed(name: &str) -> String {
 /// The module whose paths `name` names, if one does: a function that
 /// such a path defines, as a free function or a method of a type there
 /// (`orb_tile::mlt::decode`, `<orb_tile::mlt::Layer>::new`, `<mlt_core::X
-/// as Y>::f`). Code that only names such a type, as std's generics
-/// instantiated for it do, runs wherever the type's values go, which may
-/// be where the feature is off (dropping an empty `Option` of it): it
-/// goes to the module only if only the module's code calls it.
+/// as Y>::f`), with its closures (`<<f::{closure#0} as FnOnce>::call_once`).
+/// So does code generic over one of those closures
+/// (`future_to_promise::<f::{closure#0}>`, its drop glue): only a value of
+/// the closure runs it, and only `f` makes one. That a name is one
+/// function's alone takes a build that folds no two functions with one
+/// body into one of their names, as LLVM and binaryen would (web.rs).
+/// Code that only names a module's
+/// type, as std's generics instantiated for it do, runs wherever the
+/// type's values go, which may be where the feature is off (dropping an
+/// empty `Option` of it): it goes to the module only if only the module's
+/// code calls it.
 fn seed(name: &str) -> Option<usize> {
+    // A body binaryen shares among similar functions, of any module's.
+    if name.starts_with("byn$") {
+        return None;
+    }
     let name = unhashed(name);
-    let own = name.strip_prefix('<').unwrap_or(&name);
-    MODULES.iter().position(|m| {
-        m.paths.iter().any(|p| own.starts_with(p)) && !m.except.iter().any(|p| own.starts_with(p))
+    let named = |own: &str| {
+        MODULES.iter().position(|m| {
+            m.paths.iter().any(|p| names(own, p)) && !m.except.iter().any(|p| names(own, p))
+        })
+    };
+    if let Some(m) = named(name.trim_start_matches('<')) {
+        return Some(m);
+    }
+    // The closures named in its generic arguments: the path before each
+    // `::{closure#`, back to the `<`, `(`, `,` or space that opens it.
+    let mut found = None;
+    for (at, _) in name.match_indices("::{closure#") {
+        let Some(owner) = owner(&name[..at]) else {
+            continue;
+        };
+        match (found, named(owner.trim_start_matches('<'))) {
+            (_, None) => {}
+            (None, Some(m)) => found = Some(m),
+            (Some(a), Some(b)) if a == b => {}
+            // Closures of two modules': neither's alone.
+            (Some(_), Some(_)) => return None,
+        }
+    }
+    found
+}
+
+/// The path that ends `text`, back to the `<`, `(`, `,` or space that
+/// opens it outside its own angle brackets (`<a::B<C>>::f` of
+/// `x::<<a::B<C>>::f`); `None` when nothing does: the name's own path.
+fn owner(text: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    for (i, c) in text.char_indices().rev() {
+        match c {
+            '>' => depth += 1,
+            '<' if depth > 0 => depth -= 1,
+            '<' | '(' | ',' | ' ' if depth == 0 => return Some(&text[i + 1..]),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether `path` names function `own`: it starts `own` and ends where
+/// a name does (`Renderer>::terrain` names `terrain`'s closures, not
+/// `terrain_on`), unless it ends in `::` or `_`, a prefix of names.
+fn names(own: &str, path: &str) -> bool {
+    own.strip_prefix(path).is_some_and(|rest| {
+        path.ends_with([':', '_'])
+            || !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
     })
 }
 
@@ -274,7 +375,7 @@ fn ungated(functions: &Functions, seeds: &[Option<usize>], roots: &[bool]) -> Ve
     seeds
         .iter()
         .zip(before)
-        .map(|(&seed, before)| seed.filter(|_| !before))
+        .map(|(&seed, before)| seed.filter(|&m| !before || MODULES[m].name == "api"))
         .collect()
 }
 
@@ -367,12 +468,8 @@ pub(crate) fn split(
         })
         .collect();
     let name = |i: usize| names.get(&(functions.imported + i as u32)).copied();
-    let seeds: Vec<Option<usize>> = (functions.defined.iter().enumerate())
-        .map(|(i, function)| {
-            (function.size >= MIN_SEED_BYTES || function.exported)
-                .then(|| seed(name(i)?))
-                .flatten()
-        })
+    let seeds: Vec<Option<usize>> = (0..functions.defined.len())
+        .map(|i| seed(name(i)?))
         .collect();
     let roots: Vec<bool> = (0..functions.defined.len())
         .map(|i| name(i).is_some_and(before_gate))
@@ -465,6 +562,20 @@ pub(crate) fn split(
     let _ = std::fs::remove_file(&map);
     let placeholders = whole.with_extension("placeholders");
     std::fs::write(&placeholders, named).map_err(|e| format!("{}: {e}", placeholders.display()))?;
+    // Functions with one body fold into one, within each module alone
+    // (`whole` was optimized without).
+    for path in std::iter::once(primary).chain(paths.iter().map(PathBuf::as_path)) {
+        if path.exists() {
+            crate::run(
+                Command::new("wasm-opt")
+                    .arg("--duplicate-function-elimination")
+                    .args(features)
+                    .arg(path)
+                    .arg("-o")
+                    .arg(path),
+            )?;
+        }
+    }
     // A build's modules know each other by the hash of theirs.
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for path in paths.iter().filter(|p| p.exists()) {
@@ -698,6 +809,32 @@ mod tests {
         assert_eq!(at("core::ptr::drop_in_place::<orb_tile::mlt::Layer>"), None);
         assert_eq!(at("<orb_source::pmtiles::Reader>::lookup"), Some("archive"));
         assert_eq!(at("orb_tile::mvt::decode"), None);
+        // A path ends where a name does.
+        assert_eq!(at("<orb_render::Renderer>::pad_dems"), Some("dem"));
+        assert_eq!(at("<orb_render::Renderer>::pad_dems_later"), None);
+        // A closure goes with the function that makes it, and so does
+        // code generic over it, but not code generic over a module's type.
+        assert_eq!(
+            at("<<orb_tile::mlt::decode::{closure#0} as FnOnce<()>>::call_once"),
+            Some("mlt")
+        );
+        assert_eq!(
+            at(
+                "js_sys::future_to_promise::<<orb_tile::mlt::Layer>::new::{closure#1}>::{closure#0}"
+            ),
+            Some("mlt")
+        );
+        assert_eq!(
+            at(
+                "<x::Iter<orb_tile::mlt::Layer> as Iterator>::fold::<usize, <usize as Sum>::sum<y::Map<orb_tile::mlt::Layer>>::{closure#0}>"
+            ),
+            None
+        );
+        // A body binaryen shares among similar functions is any module's.
+        assert_eq!(
+            at("byn$mgfn-shared$<orb_tile::mlt::decode::{closure#0}>"),
+            None
+        );
     }
 
     #[test]
@@ -737,6 +874,12 @@ mod tests {
         functions.defined[2].callees.push(1);
         let modules = assign(&functions, &ungated(&functions, &seeds, &before));
         assert_eq!(modules, [None, None, None, None, None, None, Some(1), None]);
+        // Unless the module is the API's, whose calls come only once it's
+        // in: an edit runs before the gate, and only the API makes one.
+        let api = MODULES.iter().position(|m| m.name == "api");
+        let seeds = [None, api, None, None, None, None, Some(1), None];
+        let modules = assign(&functions, &ungated(&functions, &seeds, &before));
+        assert_eq!(modules[1], api);
         assert!(before_gate("<orb_style[0a1b]::v8::doc::StyleDoc>::apply"));
         assert!(!before_gate("orb_runtime::map::Map::frame"));
     }

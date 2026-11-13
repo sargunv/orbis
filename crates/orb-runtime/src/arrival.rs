@@ -781,7 +781,7 @@ impl Map {
         let mut build = match result {
             Ok(TileOutcome::Built(build)) => build,
             Err(e) => {
-                let message = format!("tile {tile:?}: {e}");
+                let message = format!("tile {tile}: {e}");
                 self.events.push(MapEvent::Error { message });
                 pyramid.insert_failed(tile, self.services.clock.now());
                 return Applied::Done;
@@ -1054,7 +1054,7 @@ impl Map {
                 return Applied::Uploading(build, reserved);
             }
             Err(Some(e)) => {
-                self.warnings.push(format!("tile {tile:?}: {e}"));
+                self.warnings.push(format!("tile {tile}: {e}"));
                 pyramid.insert_empty(tile);
                 return Applied::Done;
             }
@@ -1069,7 +1069,7 @@ impl Map {
             // have changed), as after a failed fetch.
             Err(None) => {
                 let message = format!(
-                    "tile {tile:?} doesn't fit in scene memory with the tiles in view; \
+                    "tile {tile} doesn't fit in scene memory with the tiles in view; \
                      what's loaded stands in until it's tried again"
                 );
                 self.events.push(MapEvent::Error { message });

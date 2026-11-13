@@ -190,7 +190,7 @@ impl WorkerJobs {
         for (request, done) in loads {
             if self.quarantined(load_key(&request)) {
                 done(Ok(quarantine(format!(
-                    "tile {:?} is left out from now on: {message} loading it a second time",
+                    "tile {} is left out from now on: {message} loading it a second time",
                     request.tile
                 ))));
             } else {

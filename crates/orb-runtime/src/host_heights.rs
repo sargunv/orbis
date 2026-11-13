@@ -278,7 +278,7 @@ impl Map {
         let n = (side as usize).pow(2);
         if let Some((tile, h)) = tiles.iter().find(|(_, h)| h.len() != n || n == 0) {
             return Err(format!(
-                "tile {tile:?} has {} heights, not {side}×{side}",
+                "tile {tile} has {} heights, not {side}×{side}",
                 h.len()
             ));
         }

@@ -149,7 +149,8 @@ const API_AT_MOST = 5000;
 const MODULE_RETRY = 2000;
 
 /** The calls that run the API's module (queries, edits, the style's
- * document, images, snapshots), which waits for it if it isn't in yet. */
+ * document, images, snapshots, fitting bounds, host-fed heights, video
+ * controls), which waits for it if it isn't in yet. */
 const API_CALLS = new Set<string>([
   "hitTest",
   "queryRendered",
@@ -168,6 +169,11 @@ const API_CALLS = new Set<string>([
   "removeImage",
   "snapshot",
   "readPixels",
+  "cameraForBounds",
+  "hostElevations",
+  "reloadHostTiles",
+  "retryFailedTiles",
+  "controlVideo",
 ]);
 
 export class Engine {
@@ -566,20 +572,16 @@ export class Engine {
   elevationPort(port: MessagePort): void {
     this.#ports.push(port);
     port.onmessage = ({ data }: MessageEvent<ElevationPortMessage>) => {
-      let reply: ElevationPortReply;
-      try {
-        const { source, side, zxy, heights } = data;
-        reply = {
-          id: data.id,
-          ...this.hostElevations(source, side, zxy, heights),
-        };
-      } catch (e) {
-        reply = {
-          id: data.id,
-          error: String(e instanceof Error ? e.message : e),
-        };
-      }
-      port.postMessage(reply);
+      const { id, source, side, zxy, heights } = data;
+      void this.call("hostElevations", [source, side, zxy, heights])
+        .then(
+          (answer) => ({ id, ...(answer as HostElevationsAnswer) }),
+          (e: unknown) => ({
+            id,
+            error: String(e instanceof Error ? e.message : e),
+          }),
+        )
+        .then((reply: ElevationPortReply) => port.postMessage(reply));
     };
   }
   reloadHostTiles(source: string): void {

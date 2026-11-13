@@ -391,7 +391,7 @@ impl Map {
             }
             Ok(TileOutcome::Cancelled) => return,
             Err(e) => {
-                self.warnings.push(format!("tile {tile:?}: {e}"));
+                self.warnings.push(format!("tile {tile}: {e}"));
                 return;
             }
         };

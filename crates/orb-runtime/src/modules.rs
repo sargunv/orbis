@@ -5,9 +5,10 @@
 //! installed until it is in (edits go to it meanwhile), a source whose
 //! TileJSON names MLT sends no tile requests until its decoders are, and
 //! an app's GeoJSON answer for a tile it feeds waits for GeoJSON's code.
-//! What runs before that gate (reading, parsing and editing a style, and
+//! What runs before that gate (reading and parsing a style, and
 //! [`of_style`]) stays in the code every map has, whatever it calls
-//! (`cargo xtask web`'s split). Native hosts have every module from the
+//! (`cargo xtask web`'s split); editing one, which only the API starts,
+//! goes with the API's module. Native hosts have every module from the
 //! start.
 
 use orb_style::{Encoding, SourceKind, Style};

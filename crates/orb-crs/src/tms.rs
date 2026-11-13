@@ -15,6 +15,13 @@ pub struct TileIndex {
     pub row: u32,
 }
 
+/// `z/col/row`, as messages name a tile.
+impl std::fmt::Display for TileIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}/{}", self.z, self.col, self.row)
+    }
+}
+
 impl TileIndex {
     pub const fn new(z: u8, col: u32, row: u32) -> Self {
         Self { z, col, row }

@@ -28,8 +28,8 @@ const NAMED_CORE: &str = "target/web/core-names.wasm";
 /// crossing one means something grew. Find what in the per-crate report;
 /// if the growth earns its bytes, raise the level to the new size plus the
 /// same margin, and when a change shrinks a module, lower it.
-const CORE_WATCH_KIB: usize = 830;
-const CORE_GL_WATCH_KIB: usize = 1140;
+const CORE_WATCH_KIB: usize = 775;
+const CORE_GL_WATCH_KIB: usize = 1060;
 const SHAPER_WATCH_KIB: usize = 380;
 
 /// Crates whose code the size report attributes separately.
@@ -195,7 +195,10 @@ fn module(
     // and a flag stable Rust keeps unstable, so this build alone sets
     // RUSTC_BOOTSTRAP. Nothing reads a panic's location either: without
     // its file, line and column the modules carry no source paths of the
-    // machine that built them.
+    // machine that built them. std is built for size too: its sorts are
+    // a merge sort and a heapsort rather than driftsort and ipnsort,
+    // which every element type instantiated anew (19 KiB of core.wasm),
+    // and its number formatting is the compact one.
     let mut args = vec![
         "build",
         "--quiet",
@@ -206,14 +209,19 @@ fn module(
         "--profile",
         "wasm-release",
         "-Zbuild-std=std,panic_abort",
+        "-Zbuild-std-features=optimize_for_size",
     ];
     // `--panics`: messages, formatted and logged by orb-web's hook.
     if panics {
         args.extend(["--features", "panic-messages"]);
     } else {
+        // A derived `Debug` writes only its type's or variant's name
+        // (10 KiB): what a message must show has a `Display`, as a tile's
+        // `z/col/row` does. LLVM folds no functions with one body into
+        // one: the split takes each function by its name (split.rs).
         args.extend([
             "--config",
-            r#"target.wasm32-unknown-unknown.rustflags = ["-Zunstable-options", "-Cpanic=immediate-abort", "-Zlocation-detail=none"]"#,
+            r#"target.wasm32-unknown-unknown.rustflags = ["-Zunstable-options", "-Cpanic=immediate-abort", "-Zlocation-detail=none", "-Zfmt-debug=shallow", "-Zmerge-functions=disabled"]"#,
         ]);
     }
     args.extend(features);
@@ -264,15 +272,25 @@ fn module(
     let named = root.join(NAMED_CORE);
     let dir = named.parent().expect("a file in a directory");
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // binaryen folds functions with one body into one of their names,
+    // which the split would then take for all of them: a closure of a
+    // module's whose body is a closure of core.wasm's too would leave
+    // core.wasm calling into the module. Whole, nothing is folded; the
+    // split folds within each module (split.rs).
+    let whole_opt = |output: &Path| {
+        let mut opt = wasm_opt(&wasm, output);
+        opt.arg("--skip-pass=duplicate-function-elimination");
+        opt
+    };
     if names {
-        run(wasm_opt(&wasm, &named).arg("-g"))?;
+        run(whole_opt(&named).arg("-g"))?;
         eprintln!("{name}.wasm with its names: {}", named.display());
     }
     // Shrunk with its names, binaryen optimizes a little less: the split
     // takes them from the symbol map instead.
     let whole = root.join(format!("target/web/{name}-whole.wasm"));
     let symbols = whole.with_extension("symbols");
-    run(wasm_opt(&wasm, &whole).arg(format!("--symbolmap={}", symbols.display())))?;
+    run(whole_opt(&whole).arg(format!("--symbolmap={}", symbols.display())))?;
     let (split, paths) = split::split(&whole, &symbols, &wasm, &format!("{name}-"), FEATURES)?;
     let bytes = read(&wasm)?;
     let mut modules = Vec::new();

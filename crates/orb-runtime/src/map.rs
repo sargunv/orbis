@@ -3572,7 +3572,7 @@ impl Map {
             Some(terrain) => match terrain.arrive(gpu, renderer, tile, result, now) {
                 Ok(kept) => kept,
                 Err(e) => {
-                    self.warnings.push(format!("terrain tile {tile:?}: {e}"));
+                    self.warnings.push(format!("terrain tile {tile}: {e}"));
                     false
                 }
             },

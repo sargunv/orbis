@@ -547,7 +547,7 @@ impl Terrain {
                 Ok(false) => host.release(gpu),
                 Err(e) => {
                     host.release(gpu);
-                    errors.push(format!("terrain tile {tile:?}: {e}"));
+                    errors.push(format!("terrain tile {tile}: {e}"));
                 }
             }
         }
