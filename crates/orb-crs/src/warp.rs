@@ -570,9 +570,9 @@ impl Warp {
         (area > 0.0 && area.is_finite()).then(|| area.sqrt())
     }
 
-    /// The tile's position on the target plane as quadratic patches, which
-    /// the GPU evaluates per vertex: the fewest equal patches,
-    /// at most 256, over the part of the tile the target projects
+    /// The tile's position on the target plane as quadratic patches, for
+    /// the GPU to evaluate per vertex: the fewest equal patches, at most
+    /// 256, over the part of the tile the target projects
     /// ([`Series::window`]) whose quadratics stay within `tolerance` of the
     /// tile's side of the true position, or `None` where that part leaves
     /// the target plane's domain, crosses a wrapping plane's seam or needs

@@ -58,10 +58,10 @@ pub fn poles(tms: &TileMatrixSet, tile: TileIndex) -> [bool; 2] {
     ]
 }
 
-/// A tile on the sphere as quadratic patches through exact positions, to
-/// within `tolerance` of the tile's side at its centre, which the GPU
-/// evaluates per vertex, or `None` where its projection
-/// doesn't reach or it needs more than 256 patches.
+/// A tile on the sphere as quadratic patches through exact positions, for
+/// the GPU to evaluate per vertex, to within `tolerance` of the tile's side
+/// at its centre, or `None` where its projection doesn't reach or it needs
+/// more than 256 patches.
 pub fn series(tms: &TileMatrixSet, tile: TileIndex, tolerance: f64) -> Option<Series<DVec3>> {
     let projection = tms.projection();
     let map = |uv: DVec2| {

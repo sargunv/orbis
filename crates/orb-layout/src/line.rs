@@ -22,8 +22,9 @@
 //! as GL JS's unclipped buckets do. The fragment shader must discard outside
 //! the actual tile square; what lies well past it chunks apart
 //! ([`MeshBuilder::set_focus`]), for the cull to drop. Clipped ends use butt
-//! caps. Sharp-corner vertices use MapLibre's 512-pixel tile at overscaling
-//! 1. Distance follows the pinned shader's two-tile-unit quantization.
+//! caps. Sharp-corner vertices use MapLibre's 512-pixel tile at an
+//! overscaling of 1. Distance follows the pinned shader's two-tile-unit
+//! quantization.
 //!
 //! Extrusion is ported from MapLibre GL JS's `src/data/bucket/line_bucket.ts`
 //! (addLine, addCurrentVertex, addHalfVertex and the fakeround pie slices) at
