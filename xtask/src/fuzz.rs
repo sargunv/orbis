@@ -67,6 +67,9 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
             &mut count,
         )?;
     }
+    if name == "sqlite" {
+        sqlite_seeds(&seeds, &mut count)?;
+    }
     eprintln!("fuzz {name}: {count} seeds in {}", seeds.display());
     crate::run(
         Command::new("cargo")
@@ -86,6 +89,86 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
             .arg(format!("-max_total_time={seconds}"))
             .arg(format!("-artifact_prefix={}/", artifacts.display())),
     )
+}
+
+/// Writes SQLite files the fixtures lack into `seeds`, on 1 KiB pages so
+/// that their trees have interior pages and their tiles overflow: MBTiles
+/// in both layouts, and a MapLibre Native offline database.
+fn sqlite_seeds(seeds: &Path, count: &mut usize) -> Result<(), String> {
+    let tile =
+        |z: u32, x: u32| -> Vec<u8> { (0..3000).map(|i| (i * 7 + z * 31 + x) as u8).collect() };
+    let schemas = [
+        (
+            "tiles.mbtiles",
+            "CREATE TABLE metadata (name text, value text);
+             CREATE TABLE tiles (zoom_level integer, tile_column integer, tile_row integer, tile_data blob);
+             CREATE UNIQUE INDEX tile_index ON tiles (zoom_level, tile_column, tile_row);
+             INSERT INTO metadata VALUES ('format', 'pbf'), ('minzoom', '0'), ('maxzoom', '3'),
+               ('json', '{\"vector_layers\":[{\"id\":\"x\"}]}');",
+            "INSERT INTO tiles VALUES (?1, ?2, ?3, ?4)",
+        ),
+        (
+            "deduplicated.mbtiles",
+            "CREATE TABLE metadata (name text, value text);
+             CREATE TABLE map (zoom_level integer, tile_column integer, tile_row integer, tile_id text);
+             CREATE TABLE images (tile_data blob, tile_id text);
+             CREATE UNIQUE INDEX map_index ON map (zoom_level, tile_column, tile_row);
+             CREATE UNIQUE INDEX images_id ON images (tile_id);
+             CREATE VIEW tiles AS SELECT zoom_level, tile_column, tile_row, tile_data
+               FROM map JOIN images ON images.tile_id = map.tile_id;
+             INSERT INTO metadata VALUES ('format', 'png');",
+            "INSERT INTO map VALUES (?1, ?2, ?3, ?1 || '/' || ?2 || '/' || ?3);
+             INSERT INTO images VALUES (?4, ?1 || '/' || ?2 || '/' || ?3);",
+        ),
+        (
+            "offline.db",
+            "CREATE TABLE regions (id INTEGER PRIMARY KEY AUTOINCREMENT, definition TEXT NOT NULL, description BLOB);
+             CREATE TABLE resources (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL UNIQUE,
+               kind INTEGER NOT NULL, expires INTEGER, modified INTEGER, etag TEXT, data BLOB,
+               compressed INTEGER NOT NULL DEFAULT 0, accessed INTEGER NOT NULL, must_revalidate INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE tiles (id INTEGER PRIMARY KEY AUTOINCREMENT, url_template TEXT NOT NULL,
+               pixel_ratio INTEGER NOT NULL, z INTEGER NOT NULL, x INTEGER NOT NULL, y INTEGER NOT NULL,
+               expires INTEGER, modified INTEGER, etag TEXT, data BLOB, compressed INTEGER NOT NULL DEFAULT 0,
+               accessed INTEGER NOT NULL, must_revalidate INTEGER NOT NULL DEFAULT 0,
+               UNIQUE (url_template, pixel_ratio, z, x, y));
+             CREATE TABLE region_resources (region_id INTEGER NOT NULL REFERENCES regions(id) ON DELETE CASCADE,
+               resource_id INTEGER NOT NULL REFERENCES resources(id), UNIQUE (region_id, resource_id));
+             CREATE TABLE region_tiles (region_id INTEGER NOT NULL REFERENCES regions(id) ON DELETE CASCADE,
+               tile_id INTEGER NOT NULL REFERENCES tiles(id), UNIQUE (region_id, tile_id));
+             INSERT INTO regions VALUES (1, '{\"style_url\":\"https://x/s.json\",\"bounds\":[1,2,3,4],\"min_zoom\":0,\"max_zoom\":3,\"pixel_ratio\":1}', x'6d');
+             INSERT INTO resources VALUES (1, 'https://x/s.json', 1, 0, 0, NULL, x'7b7d', 0, 0, 0);
+             INSERT INTO region_resources VALUES (1, 1);",
+            "INSERT INTO tiles (url_template, pixel_ratio, z, x, y, data, accessed) VALUES ('https://x/{z}/{x}/{y}.pbf', 1, ?1, ?2, ?3, ?4, 0);
+             INSERT INTO region_tiles VALUES (1, last_insert_rowid());",
+        ),
+    ];
+    for (name, schema, insert) in schemas {
+        let path = seeds.join(name);
+        let fail = |e: rusqlite::Error| format!("{}: {e}", path.display());
+        let db = rusqlite::Connection::open(&path).map_err(fail)?;
+        db.execute_batch("PRAGMA page_size = 1024;").map_err(fail)?;
+        db.execute_batch(schema).map_err(fail)?;
+        for z in 0..4u32 {
+            for x in 0..1u32 << z {
+                for y in 0..1u32 << z {
+                    let data = tile(z, x);
+                    let values: [&dyn rusqlite::ToSql; 4] = [&z, &x, &y, &data];
+                    for statement in insert.split(';').filter(|s| !s.trim().is_empty()) {
+                        let mut statement = db.prepare(statement).map_err(fail)?;
+                        // Each statement takes the first of `?1`…`?4` it numbers.
+                        for (i, value) in
+                            values.iter().enumerate().take(statement.parameter_count())
+                        {
+                            statement.raw_bind_parameter(i + 1, value).map_err(fail)?;
+                        }
+                        statement.raw_execute().map_err(fail)?;
+                    }
+                }
+            }
+        }
+        *count += 1;
+    }
+    Ok(())
 }
 
 /// Copies the files under `dir` with one of `extensions` into `seeds`,

@@ -119,7 +119,16 @@ impl<'a, P: Pages + ?Sized> Tree<'a, P> {
             if k <= max_local { k } else { min_local }
         };
         let end = at + local;
-        let mut out = Vec::with_capacity(length);
+        // Each overflow page holds `u - 4` bytes: a payload bigger than
+        // the file's pages hold is damage, not a reason to allocate it.
+        let per_page = u - 4;
+        if self
+            .count
+            .is_some_and(|count| (length - local).div_ceil(per_page) > count as usize)
+        {
+            return Err(Error::corrupt("a payload longer than its file"));
+        }
+        let mut out = Vec::with_capacity(length.min(local + 64 * per_page));
         out.extend_from_slice(
             node.data
                 .get(at..end)
@@ -129,8 +138,8 @@ impl<'a, P: Pages + ?Sized> Tree<'a, P> {
             return Ok(out);
         }
         let mut next = self.child(node, end)?;
-        // Each page adds at least a byte, so the chain can't cycle.
-        let per_page = u - 4;
+        // Each page adds at least a byte, so a chain that cycles ends by
+        // its length, which the file's pages bound.
         while out.len() < length {
             let left = length - out.len();
             let pages = left.div_ceil(per_page);

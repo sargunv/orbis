@@ -77,8 +77,8 @@ impl Pages for [u8] {
         let size = header.page_size as usize;
         (number as usize)
             .checked_sub(1)
-            .map(|i| i * size)
-            .and_then(|at| self.get(at..at + size))
+            .and_then(|i| i.checked_mul(size))
+            .and_then(|at| self.get(at..at.checked_add(size)?))
             .map(Arc::from)
             .ok_or_else(|| Error::corrupt(format!("page {number} is past the file's end")))
     }
