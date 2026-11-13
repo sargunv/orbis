@@ -70,6 +70,8 @@ impl Core {
         let _ = self.tx.send(Msg::Pump);
     }
 
+    /// Replaces the handler; the old one's user data is released after
+    /// the batches already sent to it.
     fn replace_handler(&self, handler: Option<EventHandler>) {
         let old = std::mem::replace(
             &mut *self
@@ -78,9 +80,8 @@ impl Core {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             handler,
         );
-        if let Some(old) = old {
-            old.release();
-        }
+        // Not under the lock: the release may run here.
+        drop(old);
     }
 }
 
@@ -213,37 +214,31 @@ pub(crate) enum Payload {
     },
 }
 
-/// A registered `mln_runtime_event_handler`.
+/// A registered `mln_runtime_event_handler`. The runtime thread and the
+/// sessions' threads each send it events, so each batch on its way holds
+/// the registration: replacing the handler releases its user data after
+/// the last batch.
 pub(crate) struct EventHandler {
     callback: unsafe extern "C" fn(*mut std::ffi::c_void, *const mln_event_batch_view),
-    user_data: UserData,
-    release_user_data: mln_user_data_release,
-    queue: u64,
+    registration: Arc<delivery::Registration>,
 }
 
 impl EventHandler {
     fn send(&self, events: Vec<Event>) {
-        let (callback, user_data) = (self.callback, self.user_data);
-        delivery::deliver(
-            self.queue,
-            Box::new(move || {
-                let mut events = events;
-                let c: Vec<mln_runtime_event> = events.iter_mut().map(c_event).collect();
-                let batch = mln_event_batch_view {
-                    size: std::mem::size_of::<mln_event_batch_view>() as u32,
-                    event_size: std::mem::size_of::<mln_runtime_event>() as u32,
-                    events: c.as_ptr(),
-                    event_count: c.len(),
-                };
-                // SAFETY: the caller's registration; the batch lives until it
-                // returns.
-                unsafe { callback(user_data.get(), &batch) };
-            }),
-        );
-    }
-
-    fn release(self) {
-        delivery::release_later(self.queue, self.release_user_data, self.user_data);
+        let callback = self.callback;
+        self.registration.deliver(move |registration| {
+            let mut events = events;
+            let c: Vec<mln_runtime_event> = events.iter_mut().map(c_event).collect();
+            let batch = mln_event_batch_view {
+                size: std::mem::size_of::<mln_event_batch_view>() as u32,
+                event_size: std::mem::size_of::<mln_runtime_event>() as u32,
+                events: c.as_ptr(),
+                event_count: c.len(),
+            };
+            // SAFETY: the caller's registration; the batch lives until it
+            // returns.
+            unsafe { callback(registration.user_data(), &batch) };
+        });
     }
 }
 
@@ -596,9 +591,11 @@ pub unsafe extern "C" fn mln_runtime_set_event_handler(
             let completion = Completion::from_c(completion)?;
             let handler = EventHandler {
                 callback,
-                user_data: UserData(h.user_data),
-                release_user_data: h.release_user_data,
-                queue: h.queue.0,
+                registration: delivery::Registration::new(
+                    UserData(h.user_data),
+                    h.release_user_data,
+                    h.queue.0,
+                ),
             };
             runtime.post(move |state| {
                 state.core.replace_handler(Some(handler));

@@ -2179,26 +2179,20 @@ pub unsafe extern "C" fn mln_map_remove_feature_state(
 /// layer without a `source-layer` reads, as a GeoJSON source's does.
 const GEOMETRY_LAYER: &str = "_geojsonTileLayer";
 
-/// A custom source's callbacks, released when the style drops the source.
+/// A custom source's callbacks, released once the style dropped the
+/// source and the calls already made of them have run: frames on the
+/// session's thread and commands on the runtime thread both call them.
 pub(crate) struct CustomSource {
     geometry: bool,
     fetch: TileCallback,
     cancel: Option<TileCallback>,
-    user_data: crate::base::UserData,
-    release_user_data: mln_user_data_release,
-    queue: u64,
+    registration: std::sync::Arc<crate::delivery::Registration>,
     /// The tiles asked for and not cancelled since.
     requested: HashSet<orb_api::TileIndex>,
 }
 
 type TileCallback =
     unsafe extern "C" fn(*mut std::ffi::c_void, mln_map, mln_buffer_view, mln_canonical_tile_id);
-
-impl Drop for CustomSource {
-    fn drop(&mut self) {
-        crate::delivery::release_later(self.queue, self.release_user_data, self.user_data);
-    }
-}
 
 impl CustomSource {
     /// Asks the host for a tile of source `id` of map `map`.
@@ -2224,23 +2218,19 @@ impl CustomSource {
     }
 
     fn call(&self, callback: TileCallback, map: u64, id: &str, tile: orb_api::TileIndex) {
-        let (fetch, user_data) = (callback, self.user_data);
         let id = id.to_string();
-        crate::delivery::deliver(
-            self.queue,
-            Box::new(move || {
-                let mut id = id;
-                let view = crate::base::lend(&mut id);
-                let tile = mln_canonical_tile_id {
-                    z: u32::from(tile.z),
-                    x: tile.col,
-                    y: tile.row,
-                };
-                // SAFETY: the source's registration; the id lives until it
-                // returns.
-                unsafe { fetch(user_data.get(), mln_map(map), view, tile) };
-            }),
-        );
+        self.registration.deliver(move |registration| {
+            let mut id = id;
+            let view = crate::base::lend(&mut id);
+            let tile = mln_canonical_tile_id {
+                z: u32::from(tile.z),
+                x: tile.col,
+                y: tile.row,
+            };
+            // SAFETY: the source's registration; the id lives until it
+            // returns.
+            unsafe { callback(registration.user_data(), mln_map(map), view, tile) };
+        });
     }
 }
 
@@ -2342,9 +2332,11 @@ pub unsafe extern "C" fn mln_map_add_custom_geometry_source(
                 fetch,
                 cancel: o.cancel_tile,
                 requested: HashSet::new(),
-                user_data: crate::base::UserData(o.user_data),
-                release_user_data: o.release_user_data,
-                queue: o.queue.0,
+                registration: crate::delivery::Registration::new(
+                    crate::base::UserData(o.user_data),
+                    o.release_user_data,
+                    o.queue.0,
+                ),
             };
             post(map, completion, false, true, move |entry: &mut MapEntry| {
                 add_custom(entry, id, json, source).map(|()| Value::None)
@@ -2383,9 +2375,11 @@ pub unsafe extern "C" fn mln_map_add_custom_vector_source(
                 fetch,
                 cancel: o.cancel_tile,
                 requested: HashSet::new(),
-                user_data: crate::base::UserData(o.user_data),
-                release_user_data: o.release_user_data,
-                queue: o.queue.0,
+                registration: crate::delivery::Registration::new(
+                    crate::base::UserData(o.user_data),
+                    o.release_user_data,
+                    o.queue.0,
+                ),
             };
             post(map, completion, false, true, move |entry: &mut MapEntry| {
                 add_custom(entry, id, json, source).map(|()| Value::None)

@@ -102,6 +102,49 @@ pub(crate) fn deliver_now(queue: u64, call: Call) {
     );
 }
 
+/// The user data of a registration that more than one library thread
+/// calls (an event handler, a custom source): each call on its way holds
+/// it, and its release goes to its queue once the registration and every
+/// such call are gone. A release sent when the registration went could
+/// otherwise reach the host before a call that another thread still held
+/// in its outbox.
+pub(crate) struct Registration {
+    user_data: UserData,
+    release: mln_user_data_release,
+    queue: u64,
+}
+
+impl Registration {
+    pub(crate) fn new(
+        user_data: UserData,
+        release: mln_user_data_release,
+        queue: u64,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            user_data,
+            release,
+            queue,
+        })
+    }
+
+    pub(crate) fn user_data(&self) -> *mut std::ffi::c_void {
+        self.user_data.get()
+    }
+
+    /// Delivers `call` on the registration's queue; the registration lives
+    /// until the call has run or will never run.
+    pub(crate) fn deliver(self: &Arc<Self>, call: impl FnOnce(&Self) + Send + 'static) {
+        let this = self.clone();
+        deliver(self.queue, Box::new(move || call(&this)));
+    }
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        release_later(self.queue, self.release, self.user_data);
+    }
+}
+
 /// Calls a registration's `release` with its user data once, on its queue.
 pub(crate) fn release_later(queue: u64, release: mln_user_data_release, user_data: UserData) {
     if let Some(release) = release {
@@ -476,5 +519,43 @@ pub unsafe extern "C" fn mln_delivery_queue_dispatch(
                 (call.run)();
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use super::*;
+
+    static ORDER: Mutex<Vec<&str>> = Mutex::new(Vec::new());
+
+    unsafe extern "C" fn release(_: *mut std::ffi::c_void) {
+        ORDER.lock().unwrap().push("release");
+    }
+
+    #[test]
+    fn a_registration_is_released_after_the_calls_other_threads_hold() {
+        let registration = Registration::new(UserData(std::ptr::null_mut()), Some(release), 0);
+        let (queued, wait) = (mpsc::channel(), mpsc::channel::<()>());
+        let library = std::thread::spawn({
+            let registration = registration.clone();
+            move || {
+                start_outbox();
+                registration.deliver(|_| ORDER.lock().unwrap().push("call"));
+                drop(registration);
+                queued.0.send(()).unwrap();
+                wait.1.recv().unwrap();
+                flush();
+            }
+        });
+        queued.1.recv().unwrap();
+        // The registration goes while its call waits in the other thread's
+        // outbox.
+        drop(registration);
+        assert!(ORDER.lock().unwrap().is_empty());
+        wait.0.send(()).unwrap();
+        library.join().unwrap();
+        assert_eq!(*ORDER.lock().unwrap(), ["call", "release"]);
     }
 }
