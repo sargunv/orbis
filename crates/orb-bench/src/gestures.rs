@@ -143,7 +143,8 @@ struct PathResult {
     name: &'static str,
     /// `Map::render` per frame, sorted.
     cpu: Vec<Duration>,
-    /// Each submission's GPU time (first pass's start to last one's end),
+    /// Each submission's GPU time (first pass's start, or the end of the
+    /// pass before it if later, to last one's end),
     /// sorted; empty without timestamp queries.
     gpu: Vec<Duration>,
     /// The render thread's placement work per frame
@@ -427,7 +428,7 @@ impl GesturesReport {
         writeln!(
             out,
             "Times in ms of `Map::render` (applying arrived tiles, uploads, placement, encoding); \
-             GPU: each submission's, from its first pass's start to its last one's end, where \
+             GPU: each submission's, from its first pass's start (or the end of the pass before, if later) to its last one's end, where \
              the device has timestamp queries; \
              settle: from the \
              path's end until the map is idle; candidate rebuilds: frames that laid the cull's \

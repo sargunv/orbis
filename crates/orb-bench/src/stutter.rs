@@ -202,8 +202,9 @@ struct Frame {
     instructions: Option<u64>,
     /// Per stage in [`STAGES`].
     stages: [Duration; STAGES.len()],
-    /// Its submissions' GPU time, each's from its first pass's start to
-    /// its last one's end, as the gestures and frames benches time them.
+    /// Its submissions' GPU time, each's from its first pass's start (or the
+    /// end of the pass before, if later) to its last one's end, as the
+    /// gestures and frames benches time them.
     gpu: Option<Duration>,
     /// The GPU's time by pass label, slowest first. On tiled GPUs passes
     /// overlap, so they sum to more than [`gpu`](Self::gpu), and a pass
@@ -515,7 +516,7 @@ impl StutterReport {
         writeln!(
             out,
             "Times in ms. CPU: `Map::render`; GPU: its submissions, from the first pass's start \
-             to the last one's end; worst of both: the slower of the two, what a display waits \
+             (or the end of the pass before, if later) to the last one's end; worst of both: the slower of the two, what a display waits \
              for; frames with layers compiling: frames that left a layer out while its \
              pipelines compiled; settle: from the path's end until the map is idle; render M instructions: those \
              `Map::render` retired on its thread over the path (macOS), which other work on the \

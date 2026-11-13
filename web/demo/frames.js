@@ -407,7 +407,7 @@ export async function runFrames({
       `#### ${engine.name}`,
       "",
       timestamps
-        ? "- GPU: timestamp queries around every pass (`setGpuTiming`), a frame's GPU time from its first pass's start to its last one's end"
+        ? "- GPU: timestamp queries around every pass (`setGpuTiming`), each pass from its start or the end of the pass before, whichever is later, a frame's GPU time from its first pass's to its last one's end"
         : "- GPU: **no timestamp queries: no GPU times**",
       "",
       "| view | interval mean | p50 | p90 | GPU mean | p90 | cull pass | main pass | extrusion pass | render CPU | encode+submit CPU | draws |",

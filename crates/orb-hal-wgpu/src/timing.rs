@@ -18,11 +18,15 @@ const QUERIES: u32 = 4096;
 #[derive(Clone, Debug, Default)]
 pub struct SubmitTimes {
     /// Pass labels and their GPU durations, in submission order; empty
-    /// without timestamp queries.
+    /// without timestamp queries. A pass's time runs from its start, or
+    /// the end of the pass before it (in this submission or an earlier
+    /// one) if that came later, to its end: on a tiled GPU a pass's start
+    /// lands as its vertex work starts, which runs ahead of the fragment
+    /// work of the passes before it, so from its own start it would count
+    /// theirs too, the frame before's included where two are in flight.
     pub passes: Vec<(String, Duration)>,
-    /// From the first pass's start to the last one's end: what the
-    /// submission took on the GPU. On tiled GPUs passes overlap, so their
-    /// durations sum to more.
+    /// From the first pass's start, or the end of the last pass before
+    /// it, to the last one's end: what the submission took on the GPU.
     pub span: Duration,
     /// Encoding the passes for wgpu and submitting them.
     pub cpu: Duration,
@@ -57,6 +61,9 @@ pub(crate) struct Timing {
     /// The greatest common divisor of the timestamp steps seen, in ticks:
     /// the timer's resolution, once enough passes are timed.
     step: Arc<AtomicU64>,
+    /// The latest pass end read, in ticks: where the next pass's time
+    /// starts if it started before.
+    last_end: Arc<AtomicU64>,
     /// Sets a take has read, for later submissions to write again: making
     /// one costs more than the passes it times (on Metal a counter sample
     /// buffer, some tens of µs), and a bench takes every frame.
@@ -104,6 +111,7 @@ impl Timing {
                 .then(Queries::default),
             submissions: Vec::new(),
             step: Arc::default(),
+            last_end: Arc::default(),
             spare: Arc::default(),
         }
     }
@@ -168,15 +176,22 @@ impl WgpuGpu {
         let done = self.work_done();
         let (device, queue) = (self.device.clone(), self.queue.clone());
         let period = f64::from(self.timestamp_period_ns());
-        let (submissions, used, step, spare) = match &mut self.timing {
+        let (submissions, used, step, spare, last_end) = match &mut self.timing {
             Some(timing) => (
                 std::mem::take(&mut timing.submissions),
                 // Later submissions write other sets until these are read.
                 timing.queries.as_mut().map(std::mem::take),
                 timing.step.clone(),
                 timing.spare.clone(),
+                timing.last_end.clone(),
             ),
-            None => (Vec::new(), None, Arc::default(), Arc::default()),
+            None => (
+                Vec::new(),
+                None,
+                Arc::default(),
+                Arc::default(),
+                Arc::default(),
+            ),
         };
         async move {
             // The passes' last samples are written once their work
@@ -228,16 +243,20 @@ impl WgpuGpu {
                 .map(|(passes, cpu, draws)| {
                     let ns = |ticks: u64| Duration::from_nanos((ticks as f64 * period) as u64);
                     let (mut start, mut end) = (u64::MAX, 0);
+                    let mut before = last_end.load(Ordering::Relaxed);
                     let passes = passes
                         .into_iter()
                         .map(|(label, first)| {
                             let [begin, finish] =
                                 [ticks[first as usize], ticks[first as usize + 1]];
+                            let begin = begin.max(before);
+                            before = before.max(finish);
                             start = start.min(begin);
                             end = end.max(finish);
                             (label, ns(finish.saturating_sub(begin)))
                         })
                         .collect();
+                    last_end.store(before, Ordering::Relaxed);
                     SubmitTimes {
                         passes,
                         span: ns(end.saturating_sub(start)),

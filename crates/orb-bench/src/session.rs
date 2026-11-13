@@ -359,8 +359,7 @@ struct Frame {
     t: f64,
     cpu: Duration,
     gpu: Option<Duration>,
-    /// Its costliest passes on the GPU, summed by label (tiled GPUs
-    /// overlap them: where work waits, not where it is).
+    /// Its costliest passes on the GPU, summed by label.
     passes: Vec<(String, Duration)>,
     /// The camera's zoom once drawn.
     zoom: f64,
@@ -827,7 +826,7 @@ impl SessionReport {
              centre: the first frame whose tiles under the view's centre all arrived; after \
              moves: from each move's end to that; settle: from the last input until the map is \
              idle. The slowest intervals' passes: the frame's three costliest GPU passes by \
-             label, summed (tiled GPUs overlap passes, whose times show where work waits)."
+             label, summed."
         )?;
         writeln!(out)?;
         writeln!(

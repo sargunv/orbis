@@ -493,8 +493,8 @@ function engineReport(rows, gl) {
       "path's end until the map is idle." +
       (gl
         ? ""
-        : " GPU: the frame's submission, from its first pass's start to its last one's end, where the device has " +
-          "timestamp queries (tiled GPUs overlap passes, whose times then sum to more); " +
+        : " GPU: the frame's submission, from its first pass's start (or the end of the pass before, if later) to its last one's end, where the device has " +
+          "timestamp queries; " +
           "uploaded and tiles arrived: since the frame before."),
   );
   for (const r of rows) {

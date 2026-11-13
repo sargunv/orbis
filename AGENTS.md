@@ -222,11 +222,16 @@ Advice that cost time to learn, not rules:
   use), a focused bench of it on against off pays for itself; most features
   don't need one. Measure it moving, not only at rest: what a pass costs as a
   city's buildings arrive mid-zoom is what stutters.
-- On tile-based GPUs (Apple, phones), per-pass GPU timestamps show where work
-  waits, not where it is, and passes overlap: their times sum to more than the
-  frame, and splitting a pass in two adds to the sum without adding to the
-  frame. Compare whole-frame times, from the first pass's start to the last
-  one's end, as every bench reports them.
+- On tile-based GPUs (Apple, phones), a pass's start timestamp lands when its
+  vertex work starts, ahead of the fragment work of the passes before it, the
+  frame before's included where two are in flight. orb-hal-wgpu times each pass
+  from its start or the previous pass's end, whichever is later, which Xcode's
+  Metal System Trace (`xcrun xctrace record --template 'Metal System Trace'`)
+  agrees with; raw spans read about twice the work. Chrome paced at 60 Hz runs a
+  light frame's GPU at low clocks, two to three times slower than the same work
+  unpaced: compare engines unpaced, at equal pixels (GL JS caps its canvas at
+  `maxCanvasSize`, 4096 a side by default). `fill_floor` (orb-hal-wgpu's
+  example) times what any full-screen pass costs on the device.
 - Size, performance, simplicity and correctness all count at once: take the best
   design, not the one that games a number. The build's watch levels are
   tripwires for a look, not budgets, and room under one isn't margin to spend.

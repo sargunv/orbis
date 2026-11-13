@@ -59,10 +59,9 @@
 // GL calls (ANGLE's waits on WebGL 2, #140) and its work in the worst
 // present gaps. `--gpu` times Orbis's GPU work over the moves by its
 // timestamp queries (`gpuTimes`: each frame's span, how many run past a
-// 120 Hz and a 60 Hz frame, each pass's sum; tiled GPUs overlap passes,
-// whose times show where work waits), its submissions in `--dump`'s file,
-// and GL JS's by a WebGL 2 timer query around each frame it renders (one
-// pass, `frame`), where the browser has them.
+// 120 Hz and a 60 Hz frame, each pass's sum), its submissions in
+// `--dump`'s file, and GL JS's by a WebGL 2 timer query around each frame
+// it renders (one pass, `frame`), where the browser has them.
 //
 // For each run it reports when the first frame came, the map's frame
 // intervals (as the page hears of them: Orbis's `render` events, GL JS's
@@ -1097,9 +1096,10 @@ async function run(server, engine) {
 }
 
 /** Orbis's GPU over the moves (`--gpu`), from its submissions'
- * timestamps: each drawing submission's span (its first pass's start to
- * its last one's end), how many spans run past a 120 Hz and a 60 Hz
- * frame, and each pass label's GPU milliseconds summed and at most. */
+ * timestamps: each drawing submission's span (its first pass's start, or
+ * the end of the pass before if later, to its last one's end), how many
+ * spans run past a 120 Hz and a 60 Hz frame, and each pass label's GPU
+ * milliseconds summed and at most. */
 function gpuPasses(submissions) {
   const drawn = submissions.filter((s) => s.passes.length);
   const by = {};
