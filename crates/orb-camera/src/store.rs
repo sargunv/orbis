@@ -233,6 +233,13 @@ pub struct Camera {
     /// Drags and their glides on the sphere turn the bearing with the
     /// planet.
     globe_free_bearing: bool,
+    /// The camera the app last asked for, and what the constraints made
+    /// of it then, while nothing has moved it since: a surface, viewport or
+    /// constraints that change keep to the camera asked for, not to what
+    /// the ones before made of it. A map made before its style says it is
+    /// a globe takes the camera given, not the one Mercator's limits held
+    /// it to; at rest it shows the same whichever came first.
+    asked: Option<(CameraState, CameraState)>,
 }
 
 impl Camera {
@@ -255,7 +262,37 @@ impl Camera {
             elevation_held: false,
             clamped: true,
             globe_free_bearing: false,
+            asked: Some((state, state)),
         }
+    }
+
+    /// Writes the state again under what changed: the camera asked for,
+    /// while nothing moved it since, or else the camera as it is.
+    fn rewrite(&mut self) {
+        // The terrain moves the target's elevation without moving it.
+        let flat = |s: CameraState| CameraState {
+            elevation: 0.0,
+            ..s
+        };
+        let next = match self.asked {
+            Some((asked, answered)) if flat(answered) == flat(self.state) => CameraState {
+                elevation: self.state.elevation,
+                ..asked
+            },
+            _ => {
+                self.asked = None;
+                self.state
+            }
+        };
+        self.write(next);
+        if let Some((_, answered)) = &mut self.asked {
+            *answered = self.state;
+        }
+    }
+
+    /// Records `asked`, just written, as the camera the app asked for.
+    fn asked_for(&mut self, asked: CameraState) {
+        self.asked = Some((asked, self.state));
     }
 
     /// Stands the target on `terrain`, or on the surface without it. Call
@@ -265,7 +302,7 @@ impl Camera {
             self.state.elevation = 0.0;
         }
         self.terrain = terrain;
-        self.write(self.state);
+        self.rewrite();
     }
 
     /// Whether the target stands on the terrain at rest (GL JS
@@ -274,7 +311,7 @@ impl Camera {
     /// the camera orbits a point that high.
     pub fn set_center_clamped_to_ground(&mut self, clamped: bool) {
         self.clamped = clamped;
-        self.write(self.state);
+        self.rewrite();
     }
 
     pub fn center_clamped_to_ground(&self) -> bool {
@@ -347,18 +384,18 @@ impl Camera {
         }
         self.surface = surface;
         self.stop();
-        self.write(self.state);
+        self.rewrite();
     }
 
     /// Resizes the viewport, keeping the camera to its constraints.
     pub fn set_viewport(&mut self, viewport: Viewport) {
         self.viewport = viewport;
-        self.write(self.state);
+        self.rewrite();
     }
 
     pub fn set_constraints(&mut self, constraints: Constraints) {
         self.constraints = constraints;
-        self.write(self.state);
+        self.rewrite();
     }
 
     /// Whether drags and their glides on the sphere turn the bearing with
@@ -450,6 +487,7 @@ impl Camera {
         self.modified = true;
         self.user = false;
         self.write(to);
+        self.asked_for(to);
     }
 
     /// Moves to `state` at once, as [`jump_to`](Self::jump_to) does, for
@@ -459,6 +497,7 @@ impl Camera {
         self.modified = true;
         self.user = false;
         self.write(state);
+        self.asked_for(state);
     }
 
     /// Animates to `target` (GL JS `easeTo`), starting at `start` on the
@@ -1107,6 +1146,36 @@ mod tests {
         assert_eq!(camera.state().roll, -170.0);
         // Without terrain nothing takes the elevation back.
         assert_eq!(camera.state().elevation, 300.0);
+    }
+
+    /// A camera asked for before the surface is known keeps to what was
+    /// asked when it comes: Mercator's limits hold a z1 camera at the
+    /// equator and zoom it in to fill a tall viewport, the globe doesn't.
+    /// Once the camera moves, a new surface keeps to where it is.
+    #[test]
+    fn a_new_surface_keeps_to_the_camera_asked_for() {
+        let asked = CameraState::new(Geodetic::new(84.0, 28.0), 1.0, &mercator());
+        let viewport = Viewport {
+            width: 800.0,
+            height: 1440.0,
+        };
+        let mut camera = Camera::new(asked, Surface::from(mercator()), viewport);
+        camera.set_viewport(viewport);
+        assert!(camera.state().target.lat.abs() < 1e-6);
+        assert!(camera.state().zoom(&mercator()) > 1.4);
+        let globe = Surface {
+            projection: mercator(),
+            globe: Some(orb_crs::Globe::V8),
+        };
+        camera.set_surface(globe);
+        assert!((camera.state().target.lat - 28.0).abs() < 1e-9);
+        assert!((camera.state().zoom(&mercator()) - 1.0).abs() < 1e-9);
+        camera.zoom_by(DVec2::new(400.0, 720.0), 0.25);
+        let moved = *camera.state();
+        camera.set_surface(globe);
+        assert_eq!(*camera.state(), moved);
+        camera.set_surface(Surface::from(mercator()));
+        assert!(camera.state().target.lat.abs() < 1e-6);
     }
 
     /// On the globe the least zoom bounds its size at any latitude, for
