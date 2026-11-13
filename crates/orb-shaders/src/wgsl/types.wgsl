@@ -267,10 +267,11 @@ fn point_cells(surface: bool) -> u32 {
     return select(1u, frame.surface_cells, surface);
 }
 
-// A render node's slice of the candidate and visible lists.
 // Words of a `NodeCull` row.
 const NODE_CULL_WORDS: u32 = 10u;
 
+// A cull row's slice of the candidate and visible lists: a render node's,
+// or its cut stream's, in one block of the scene's.
 struct NodeCull {
     // The node's first slot in the candidate and visible lists.
     visible_base: u32,
