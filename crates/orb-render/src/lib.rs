@@ -284,7 +284,7 @@ struct Node {
 }
 
 /// Whether a node painted with `a` draws with the pipelines it does
-/// painted with `b`, paint of its family.
+/// painted with `b`, both paint of its family.
 pub fn same_pipelines(a: &NodePaint, b: &NodePaint) -> bool {
     Shape::of(a) == Shape::of(b)
 }
