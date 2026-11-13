@@ -20,6 +20,10 @@ fn main() {
         .collect();
     reflect::write(&modules);
     strip();
+    let wasm = std::env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|a| a == "wasm32");
+    if wasm && std::env::var_os("CARGO_FEATURE_GLSL").is_none() {
+        minify::write(&modules);
+    }
     entries(&modules, std::env::var_os("CARGO_FEATURE_IR").is_some());
     // `glsl_only`: WebGL 2's web build (core-gl.wasm), whose pipelines
     // compile the GLSL written here, carries no WGSL.
@@ -333,24 +337,33 @@ fn strip() {
     for entry in std::fs::read_dir("src/wgsl").expect("reads src/wgsl") {
         let path = entry.expect("lists src/wgsl").path();
         let source = std::fs::read_to_string(&path).expect("reads a WGSL module");
-        let mut stripped = String::with_capacity(source.len());
-        for line in source.lines() {
-            let line = line.trim();
-            let code = if line.starts_with("//planes ") {
-                line
-            } else {
-                line.split_once("//")
-                    .map_or(line, |(code, _)| code)
-                    .trim_end()
-            };
-            if !code.is_empty() {
-                stripped.push_str(code);
-                stripped.push('\n');
-            }
-        }
-        std::fs::write(out.join(path.file_name().expect("a file")), stripped)
-            .expect("writes OUT_DIR/wgsl");
+        std::fs::write(
+            out.join(path.file_name().expect("a file")),
+            stripped(&source),
+        )
+        .expect("writes OUT_DIR/wgsl");
     }
+}
+
+/// `source` without its comments, indentation and blank lines, but its
+/// `//planes ` lines.
+fn stripped(source: &str) -> String {
+    let mut stripped = String::with_capacity(source.len());
+    for line in source.lines() {
+        let line = line.trim();
+        let code = if line.starts_with("//planes ") {
+            line
+        } else {
+            line.split_once("//")
+                .map_or(line, |(code, _)| code)
+                .trim_end()
+        };
+        if !code.is_empty() {
+            stripped.push_str(code);
+            stripped.push('\n');
+        }
+    }
+    stripped
 }
 
 mod reflect {
@@ -592,3 +605,259 @@ mod catalog;
 #[allow(dead_code, unreachable_pub)]
 #[path = "src/sources.rs"]
 mod sources;
+
+/// Renames the WGSL modules' own identifiers in `OUT_DIR/wgsl` to short
+/// ones, for the web's WebGPU build, whose binary carries them: a sixth of
+/// their bytes under brotli. Entry points and override constants keep
+/// their names, which pipelines and `specialise` ask for, and so does what
+/// WGSL itself names: built-ins, attributes' arguments, address spaces,
+/// swizzles and the members of built-in results. Every shader, renamed as
+/// the binary holds it, must still parse and validate.
+mod minify {
+    use std::collections::{HashMap, HashSet};
+
+    /// Names WGSL gives a meaning in some context, which a module may also
+    /// use as its own elsewhere: they keep their names everywhere.
+    const KEPT: &[&str] = &[
+        // Keywords that look like a name before a `:`.
+        "default",
+        "case",
+        // Address spaces and access modes.
+        "function",
+        "private",
+        "workgroup",
+        "uniform",
+        "storage",
+        "handle",
+        "read",
+        "write",
+        "read_write",
+        // Built-in results' members.
+        "fract",
+        "whole",
+        "exp",
+        "old_value",
+        "exchanged",
+    ];
+
+    fn is_word(c: u8) -> bool {
+        c.is_ascii_alphanumeric() || c == b'_'
+    }
+
+    /// Each identifier of `text` with where it starts, but those of a
+    /// `@builtin` or `@interpolate` attribute's arguments, of a number's
+    /// suffix, and of a directive (`enable`, `diagnostic`, `requires`).
+    fn identifiers(text: &str) -> Vec<(usize, &str)> {
+        let bytes = text.as_bytes();
+        let mut out = Vec::new();
+        let (mut i, mut quiet_until) = (0, 0);
+        while i < bytes.len() {
+            let c = bytes[i];
+            let run =
+                |from: usize| from + bytes[from..].iter().take_while(|&&b| is_word(b)).count();
+            if c == b'@' {
+                let end = run(i + 1);
+                if matches!(&text[i + 1..end], "builtin" | "interpolate")
+                    && let Some(close) = text[end..].find(')')
+                {
+                    quiet_until = end + close;
+                }
+                i = end;
+            } else if c.is_ascii_alphabetic() || c == b'_' {
+                let end = run(i);
+                let word = &text[i..end];
+                if matches!(word, "diagnostic" | "enable" | "requires") {
+                    quiet_until = i + text[i..].find(';').unwrap_or(text.len() - i);
+                }
+                if i >= quiet_until {
+                    out.push((i, word));
+                }
+                i = end;
+            } else if c.is_ascii_digit() {
+                i += bytes[i..]
+                    .iter()
+                    .take_while(|&&b| is_word(b) || b == b'.')
+                    .count();
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// The words of the Rust sources that put shaders together
+    /// (`catalog.rs`, `sources.rs`), whose literals hold WGSL the binary
+    /// keeps as it is (`const POINT_LABELS: bool = true;`): their names
+    /// keep theirs.
+    fn literal_words() -> HashSet<String> {
+        let mut words = HashSet::new();
+        for file in ["src/catalog.rs", "src/sources.rs"] {
+            let rust = std::fs::read_to_string(file).expect("reads the catalog");
+            words.extend(identifiers(&rust).into_iter().map(|(_, w)| w.to_string()));
+        }
+        words
+    }
+
+    /// The names `texts` declare as their own: functions, structs, aliases,
+    /// constants, variables and lets, parameters and members (a name
+    /// before a `:`), but entry points, override constants and the Rust
+    /// sources' words.
+    fn declared(texts: &[&str]) -> HashSet<String> {
+        let mut own = HashSet::new();
+        let literals = literal_words();
+        let mut kept: HashSet<&str> = KEPT.iter().copied().collect();
+        kept.extend(literals.iter().map(String::as_str));
+        for text in texts {
+            let words = identifiers(text);
+            for (k, &(at, word)) in words.iter().enumerate() {
+                let before = k.checked_sub(1).map(|k| words[k].1);
+                let after = text[at + word.len()..].trim_start();
+                match before {
+                    Some("override") => {
+                        kept.insert(word);
+                    }
+                    Some("fn") => {
+                        // An entry point: an attribute names its stage
+                        // between the last declaration's end and `fn`.
+                        let head = &text[..at];
+                        let attributes = &head[head.rfind(['}', ';']).map_or(0, |i| i + 1)..];
+                        if ["@vertex", "@fragment", "@compute"]
+                            .iter()
+                            .any(|a| attributes.contains(a))
+                        {
+                            kept.insert(word);
+                        } else {
+                            own.insert(word);
+                        }
+                    }
+                    Some("struct" | "alias" | "const" | "let" | "var") => {
+                        own.insert(word);
+                    }
+                    _ if after.starts_with(':') && !after.starts_with("::") => {
+                        own.insert(word);
+                    }
+                    _ => {}
+                }
+                // `var<…> name`.
+                if word == "var" && after.starts_with('<') {
+                    let close = after.find('>').expect("an address space closes");
+                    if let Some(&(_, name)) = identifiers(&after[close..]).first() {
+                        own.insert(name);
+                    }
+                }
+            }
+        }
+        let swizzle = |w: &str| {
+            w.len() <= 4
+                && (w.bytes().all(|b| b"xyzw".contains(&b))
+                    || w.bytes().all(|b| b"rgba".contains(&b)))
+        };
+        own.into_iter()
+            .filter(|w| !kept.contains(w) && !swizzle(w) && !w.starts_with("orb_"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Short names for what `texts` declare, the most used first, none of
+    /// them a word `texts` use (a built-in's, a kept name's): an upper-case
+    /// letter and what follows, which spells no WGSL keyword or reserved
+    /// word.
+    pub(crate) fn names(texts: &[&str]) -> HashMap<String, String> {
+        let own = declared(texts);
+        let mut used: HashMap<&str, usize> = HashMap::new();
+        let mut taken: HashSet<&str> = HashSet::new();
+        for text in texts {
+            for (_, word) in identifiers(text) {
+                taken.insert(word);
+                if own.contains(word) {
+                    *used.entry(word).or_default() += 1;
+                }
+            }
+        }
+        let mut order: Vec<(&str, usize)> = used.into_iter().collect();
+        order.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        const FIRST: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        const REST: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_";
+        let mut short = (0usize..)
+            .map(|mut n| {
+                let mut name = vec![FIRST[n % FIRST.len()]];
+                n /= FIRST.len();
+                while n > 0 {
+                    n -= 1;
+                    name.push(REST[n % REST.len()]);
+                    n /= REST.len();
+                }
+                String::from_utf8(name).expect("ASCII")
+            })
+            .filter(|n| !taken.contains(n.as_str()) && n != "NULL" && n != "Self");
+        (order.into_iter())
+            .map(|(word, _)| (word.to_string(), short.next().expect("names enough")))
+            .collect()
+    }
+
+    /// `text` with `names` renamed; a `//planes ` line keeps its marker.
+    pub(crate) fn rename(text: &str, names: &HashMap<String, String>) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut last = 0;
+        for (at, word) in identifiers(text) {
+            if let Some(name) = names.get(word)
+                && !text[..at].ends_with("//")
+            {
+                out.push_str(&text[last..at]);
+                out.push_str(name);
+                last = at + word.len();
+            }
+        }
+        out.push_str(&text[last..]);
+        out
+    }
+
+    pub(crate) fn write(modules: &[(&str, naga::Module)]) {
+        let dir = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"))
+            .join("wgsl");
+        let mut files: Vec<(std::path::PathBuf, String)> = std::fs::read_dir(&dir)
+            .expect("lists OUT_DIR/wgsl")
+            .map(|e| {
+                let path = e.expect("lists OUT_DIR/wgsl").path();
+                let text = std::fs::read_to_string(&path).expect("reads a module");
+                (path, text)
+            })
+            .collect();
+        files.sort();
+        let texts: Vec<&str> = files.iter().map(|(_, t)| t.as_str()).collect();
+        let names = names(&texts);
+        for (path, text) in &files {
+            std::fs::write(path, rename(text, &names)).expect("writes a module");
+        }
+        let validator = || {
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+        };
+        for (shader, (_, original)) in super::catalog::SHADERS.iter().zip(modules) {
+            let source = rename(&super::stripped(&shader.source()), &names);
+            let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|e| {
+                panic!("{} renamed: {}", shader.label, e.emit_to_string(&source))
+            });
+            if validator().validate(original).is_ok()
+                && let Err(e) = validator().validate(&module)
+            {
+                panic!("{} renamed: {}", shader.label, e.emit_to_string(&source));
+            }
+            // As many entry points, by the same names.
+            let entries = |m: &naga::Module| {
+                m.entry_points
+                    .iter()
+                    .map(|e| e.name.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                entries(&module),
+                entries(original),
+                "{} renamed",
+                shader.label
+            );
+        }
+    }
+}
