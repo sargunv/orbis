@@ -596,8 +596,11 @@ impl Renderer {
         }
         let extents = build.extents();
         let lens = extents.clone().map(|e| e.end - e.start);
+        // A tile with meshes that draw as points goes to the block for
+        // them, whole: its draws overlap other tiles' (`scene::Block`).
+        let points = (build.meshes.iter()).any(|m| self.scene.overlaps(m.node));
         let (block, ranges) = (self.scene)
-            .alloc_words(gpu, lens, None)
+            .alloc_words(gpu, lens, None, points)
             .map_err(|OutOfSpace| UploadError::NoRoom)?;
         Ok(Reserved {
             block,
@@ -840,12 +843,14 @@ impl Renderer {
         self.attach(gpu, mesh, rows)
     }
 
-    /// Halves the property rows, the chunk table and the image tile pages
-    /// while a view that emptied left them mostly free, copying what each
-    /// keeps (a quarter of it at most; blocks of vertices and indices go
-    /// whole once empty, copying nothing).
+    /// Halves one of the property rows, the chunk table, the block for
+    /// what draws as points and the image tile pages that a view that
+    /// emptied left mostly free, copying what it keeps (a quarter of it
+    /// at most; other blocks of vertices and indices go whole once empty,
+    /// copying nothing): one a frame, so that a view that emptied doesn't
+    /// pay for every move in one.
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) {
-        while self.scene.shrink(gpu) || self.images.shrink(gpu) {}
+        let _ = self.scene.shrink(gpu) || self.images.shrink(gpu);
     }
 
     /// How many world copies a symbol mesh keeps state words for.

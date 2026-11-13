@@ -922,13 +922,32 @@ impl NodeEntry {
 
 /// A block of the vertex and index pools ([`Scene`]'s): fixed in size,
 /// made when no block there has room for what comes, freed once empty.
+///
+/// But for the one that holds what draws as points (circles, heatmaps and
+/// symbols, and the tiles that have any): a node draws once a block, so
+/// where its tiles' draws overlap (a symbol or circle past its tile's
+/// edge, sort keys merged across tiles) one draw must hold them all for
+/// the tile order and sort keys to decide what is on top, rather than the
+/// order the tiles arrived in. That block moves into larger buffers as it
+/// fills, and smaller as it empties, copying what it holds.
 #[derive(Debug)]
 struct Block {
+    /// It holds what draws as points ([`Scene::overlaps`]).
+    points: bool,
     vertices: Arena,
     indices: Arena,
     /// Its frame block: the scene's, with where its rows start
     /// ([`Scene::block_words`]).
     frame: BufferId,
+}
+
+impl Block {
+    fn pool(&self, pool: BlockPool) -> &Arena {
+        match pool {
+            BlockPool::Vertices => &self.vertices,
+            BlockPool::Indices => &self.indices,
+        }
+    }
 }
 
 /// Which of its meshes' chunks a cull row's candidates hold, in which
@@ -1385,15 +1404,15 @@ impl Scene {
         if scene.moves_through_scratch() {
             scene.scratch(gpu, u64::from(c.compacted_words) * 2);
         }
-        scene.add_block(gpu, [c.vertex_words, c.index_words]);
+        scene.add_block(gpu, [c.vertex_words, c.index_words], false);
         scene.resized = Resized::default();
         scene
     }
 
     /// Makes a block of `words` vertex and index words in the first free
-    /// slot, its rows empty: they draw once its meshes arrive. Returns its
-    /// slot.
-    fn add_block(&mut self, gpu: &mut dyn Gpu, words: [u32; 2]) -> u32 {
+    /// slot, its rows empty: they draw once its meshes arrive; the one for
+    /// what draws as `points`, or another. Returns its slot.
+    fn add_block(&mut self, gpu: &mut dyn Gpu, words: [u32; 2], points: bool) -> u32 {
         let before = gpu.counters();
         let slot = match self.blocks.iter().position(Option::is_none) {
             Some(slot) => slot,
@@ -1413,6 +1432,7 @@ impl Scene {
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
         self.blocks[slot] = Some(Block {
+            points,
             vertices: Arena::new(words[0]),
             indices: Arena::new(words[1]),
             frame,
@@ -1432,7 +1452,9 @@ impl Scene {
         // An empty block of the first size stays where every block is
         // empty: it is the one a fresh scene has.
         let first = [self.first.vertex_words, self.first.index_words];
-        let fresh = |b: &Block| empty(b) && [b.vertices.capacity(), b.indices.capacity()] == first;
+        let fresh = |b: &Block| {
+            empty(b) && !b.points && [b.vertices.capacity(), b.indices.capacity()] == first
+        };
         let keep = (self.blocks.iter().flatten().all(empty))
             .then(|| {
                 self.blocks
@@ -1464,7 +1486,11 @@ impl Scene {
         self.shrink_row_tables(gpu);
         self.buffers_revision += 1;
         if self.blocks.iter().all(Option::is_none) {
-            self.add_block(gpu, [self.first.vertex_words, self.first.index_words]);
+            self.add_block(
+                gpu,
+                [self.first.vertex_words, self.first.index_words],
+                false,
+            );
         }
     }
 
@@ -2211,7 +2237,8 @@ impl Scene {
             0 | 1 if shared[p].is_some() => 0,
             _ => words[p].len(),
         });
-        let (block, ranges) = self.alloc_words(gpu, lens, block)?;
+        let points = self.overlaps(node);
+        let (block, ranges) = self.alloc_words(gpu, lens, block, points)?;
         for (pool, range) in ranges.iter().enumerate() {
             if !range.is_empty() {
                 self.write_pool(gpu, block, pool, range.start, words[pool]);
@@ -2238,44 +2265,46 @@ impl Scene {
         inserted
     }
 
+    /// Whether render `node` draws as points, its tiles' draws overlapping
+    /// one another's: its meshes go to the block for them ([`Block`]).
+    pub(crate) fn overlaps(&self, node: u32) -> bool {
+        self.nodes[node as usize].cull.draw == NodeDraw::Points
+    }
+
     /// Takes `lens` words of each pool (vertices, indices, property rows),
     /// all of them or none: the vertices and indices in one block, `block`
-    /// if given, else the first with room for both, else a new one. The
-    /// property rows grow to hold theirs. `Err` only past the device's
-    /// limits.
+    /// if given, else for what draws as `points` the block for them, grown
+    /// to hold them, else the first other with room for both, else a new
+    /// one. The property rows grow to hold theirs. `Err` only past the
+    /// device's limits.
     pub(crate) fn alloc_words(
         &mut self,
         gpu: &mut dyn Gpu,
         lens: [u32; 3],
         block: Option<u32>,
+        points: bool,
     ) -> Result<(u32, [Range<u32>; 3]), OutOfSpace> {
         let props = self.alloc_props(gpu, lens[2])?;
-        let fits = |b: &Block| b.vertices.fits_all([lens[0]]) && b.indices.fits_all([lens[1]]);
+        let need = [lens[0], lens[1]];
+        let fits = |b: &Block| b.vertices.fits_all([need[0]]) && b.indices.fits_all([need[1]]);
         let found = match block {
             Some(block) => self.blocks[block as usize]
                 .as_ref()
                 .is_some_and(fits)
                 .then_some(block),
-            None => (self
-                .blocks
-                .iter()
-                .position(|b| b.as_ref().is_some_and(fits)))
-            .map(|b| b as u32),
+            None if points => self.points_block(gpu, need),
+            None => (self.blocks.iter())
+                .position(|b| b.as_ref().is_some_and(|b| !b.points && fits(b)))
+                .map(|b| b as u32)
+                .or_else(|| {
+                    let words = self.block_for(need)?;
+                    Some(self.add_block(gpu, words, false))
+                }),
         };
-        let block = match (found, block) {
-            (Some(block), _) => block,
+        let Some(block) = found else {
             // Shared words lie in their block, or nowhere.
-            (None, Some(_)) => {
-                self.prop_arena.free(props);
-                return Err(OutOfSpace);
-            }
-            (None, None) => match self.block_for([lens[0], lens[1]]) {
-                Some(words) => self.add_block(gpu, words),
-                None => {
-                    self.prop_arena.free(props);
-                    return Err(OutOfSpace);
-                }
-            },
+            self.prop_arena.free(props);
+            return Err(OutOfSpace);
         };
         let b = self.blocks[block as usize].as_mut().expect("a block");
         let vertices = b.vertices.alloc(lens[0]).expect("checked");
@@ -2283,16 +2312,68 @@ impl Scene {
         Ok((block, [vertices, indices, props]))
     }
 
+    /// The block for what draws as points ([`Block`]), made or moved into
+    /// larger buffers to hold `need` more vertex and index words: the
+    /// smallest doublings that do, to the device's limit. `None` past it.
+    fn points_block(&mut self, gpu: &mut dyn Gpu, need: [u32; 2]) -> Option<u32> {
+        let largest = [
+            self.capacity.max_vertex_words,
+            self.capacity.max_index_words,
+        ];
+        let Some(slot) = (self.blocks.iter()).position(|b| b.as_ref().is_some_and(|b| b.points))
+        else {
+            let first = [self.first.vertex_words, self.first.index_words];
+            let words = [0, 1].map(|p| need[p].max(first[p]).min(largest[p]));
+            let fits = (0..2).all(|p| need[p] <= words[p]);
+            return fits.then(|| self.add_block(gpu, words, true));
+        };
+        for (p, pool) in BlockPool::ALL.into_iter().enumerate() {
+            let arena = self.blocks[slot].as_ref().expect("a block").pool(pool);
+            if arena.fits_all([need[p]]) {
+                continue;
+            }
+            let old = arena.capacity();
+            let held = arena.free_from(old);
+            let new = grown(old, u64::from(held) + u64::from(need[p]), largest[p]);
+            if new <= old || new - held < need[p] {
+                return None;
+            }
+            self.resize_block_pool(gpu, (slot, pool), new);
+        }
+        Some(slot as u32)
+    }
+
+    /// Moves pool `pool` of block `slot` into a buffer of `new` words, the
+    /// words it holds copied over at the same offsets.
+    fn resize_block_pool(&mut self, gpu: &mut dyn Gpu, (slot, pool): (usize, BlockPool), new: u32) {
+        let b = self.blocks[slot].as_mut().expect("a block");
+        let arena = match pool {
+            BlockPool::Vertices => &mut b.vertices,
+            BlockPool::Indices => &mut b.indices,
+        };
+        let old = arena.capacity();
+        let keep = arena.free_from(old).min(new);
+        if new > old {
+            arena.grow(old, new);
+        } else {
+            arena.shrink(old, new);
+        }
+        let before = gpu.counters();
+        (self.tables).resize_block(gpu, (slot, pool), u64::from(new), u64::from(keep));
+        self.resized.count(gpu, &before);
+        self.buffers_revision += 1;
+    }
+
     /// The vertex and index words of a new block that holds `need`: what
-    /// the blocks there hold together, so that what the scene holds
-    /// doubles with each block and a view takes few, or the first block's
-    /// size if more, to the device's limit. `None` if `need` is past it.
+    /// the blocks there hold together (the block for what draws as points
+    /// aside), so that what the scene holds doubles with each block and a
+    /// view takes few, or the first block's size if more, to the device's
+    /// limit. `None` if `need` is past it.
     fn block_for(&self, need: [u32; 2]) -> Option<[u32; 2]> {
         let c = &self.capacity;
         let held = |pool: fn(&Block) -> u32| -> u64 {
-            self.blocks
-                .iter()
-                .flatten()
+            (self.blocks.iter().flatten())
+                .filter(|b| !b.points)
                 .map(|b| u64::from(pool(b)))
                 .sum()
         };
@@ -2738,16 +2819,30 @@ impl Scene {
         self.scratch.map_or(0, |(_, bytes)| bytes)
     }
 
-    /// Halves the property rows or the chunk table while what it holds all
-    /// lies in its lowest quarter, down to its first size: a view that
-    /// emptied gives back what it grew them to, and each keeps room to
-    /// grow fourfold before it doubles again. At most one a call, copying
-    /// what it keeps: whether one shrank.
+    /// Halves the property rows, the chunk table or a pool of the block
+    /// for what draws as points while what it holds all lies in its lowest
+    /// quarter, down to its first size: a view that emptied gives back
+    /// what it grew them to, and each keeps room to grow fourfold before
+    /// it doubles again. At most one a call, copying what it keeps:
+    /// whether one shrank.
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
         let (props, chunks) = self.shrunk_sizes();
         if props < self.capacity.prop_words {
             self.resize_props(gpu, props);
             return true;
+        }
+        if let Some(slot) = (self.blocks.iter()).position(|b| b.as_ref().is_some_and(|b| b.points))
+        {
+            let first = [self.first.vertex_words, self.first.index_words];
+            for (p, pool) in BlockPool::ALL.into_iter().enumerate() {
+                let arena = self.blocks[slot].as_ref().expect("a block").pool(pool);
+                let old = arena.capacity();
+                let new = shrunk(old, arena.free_from(old), first[p]);
+                if new < old {
+                    self.resize_block_pool(gpu, (slot, pool), new);
+                    return true;
+                }
+            }
         }
         let (old, new) = (self.capacity.chunks, chunks);
         if new >= old {

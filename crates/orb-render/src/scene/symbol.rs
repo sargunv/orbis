@@ -316,10 +316,10 @@ fn symbol_words(data: &SymbolMeshData<'_>) -> u32 {
 
 impl Scene {
     /// Uploads symbol streams of `tile`, each for its render node, with
-    /// state words for one world copy, all in one block: a layer's icons
-    /// and text draw in one list, icons first, which another block's
-    /// draw would come after. They start hidden (zero opacity, not
-    /// placed). All of them or none.
+    /// state words for one world copy, in the block for what draws as
+    /// points (`Block`): a layer's icons and text, and every tile's, draw
+    /// in one list. They start hidden (zero opacity, not placed). All of
+    /// them or none.
     pub(crate) fn insert_symbol_meshes(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -334,7 +334,7 @@ impl Scene {
             .sum();
         self.reserve_chunks(gpu, chunks)?;
         let total = words.iter().sum();
-        let (block, [mut all, _, _]) = self.alloc_words(gpu, [total, 0, 0], None)?;
+        let (block, [mut all, _, _]) = self.alloc_words(gpu, [total, 0, 0], None, true)?;
         let mut ids = Vec::with_capacity(meshes.len());
         for (&(node, data), words) in meshes.iter().zip(words) {
             let vertices = all.start..all.start + words;

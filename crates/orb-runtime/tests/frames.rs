@@ -296,8 +296,9 @@ mod tests {
             memory.vertices.allocated > u64::from(small.vertex_words) * 4,
             "the view grew the pools: {memory:#?}"
         );
-        // Only the tables blocks don't hold copy what they keep as they
-        // grow: the property rows and the chunk table.
+        // Blocks copy nothing as the view fills them: what moves as it
+        // grows (the property rows, the chunk table, the block of what
+        // draws as points) copies no more than the rows and tables hold.
         assert!(
             copied <= memory.props.allocated + memory.tables,
             "{copied} bytes copied growing the scene: {memory:#?}"

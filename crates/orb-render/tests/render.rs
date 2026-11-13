@@ -1098,6 +1098,58 @@ fn circle_sort_keys_merge_across_tiles() {
     assert_eq!(pixel(&h.render(), 32, 32), [0, 255, 0, 255]);
 }
 
+/// Where one layer's circles from two tiles overlap, the tile order says
+/// which is on top, whichever arrived first and so whatever block of the
+/// pools each landed in: a frame never shows the order tiles came in.
+#[test]
+fn overlapping_tiles_draw_in_tile_order_whatever_block_they_landed_in() {
+    let mesh = orb_layout::point::layout(&point_at([2048, 2048]), &[0]);
+    let colors = [[0.0, 1.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]];
+    let draw = |arrivals: [usize; 2]| {
+        // A block holds one tile's circle: the second to arrive takes
+        // another.
+        let capacity = SceneCapacity {
+            vertex_words: mesh.vertices.len() as u32,
+            index_words: (mesh.indices.len() as u32).max(1),
+            max_vertex_words: 1 << 12,
+            max_index_words: 1 << 12,
+            ..Harness::SMALL
+        };
+        let mut h = Harness::with(4, 2, 8, capacity, None);
+        h.renderer.set_nodes(&mut h.gpu, &[Family::Circle]);
+        let NodePaint::Circle(mut paint) = circle_paint([0.0; 4]) else {
+            unreachable!()
+        };
+        paint.table_mask = 1;
+        h.renderer
+            .set_paint(&mut h.gpu, 0, &NodePaint::Circle(paint));
+        let mut tiles = [None; 2];
+        for i in arrivals {
+            let key = orb_render::TileKey {
+                source: 0,
+                tile: orb_crs::TileIndex::new(1, i as u32, 0),
+            };
+            let tile = h.renderer.add_tile(&mut h.gpu, key, None).unwrap();
+            h.renderer
+                .place(tile, EXTENT, &[full_view_tile(0.0)])
+                .unwrap();
+            let mut props = [0; orb_shaders::layout::CIRCLE_ROW_WORDS];
+            props[0] = orb_render::pack_color(colors[i]);
+            props[1] = props[0];
+            let data = MeshData::new(&mesh, &props, orb_shaders::layout::CIRCLE_ROW_WORDS as u32);
+            h.renderer
+                .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data, &Default::default())
+                .unwrap();
+            tiles[i] = Some(tile);
+        }
+        // Tile 0, then tile 1: the red circle on top.
+        h.renderer.set_tile_order(0, &tiles.map(Option::unwrap));
+        pixel(&h.render(), 32, 32)
+    };
+    assert_eq!(draw([0, 1]), [255, 0, 0, 255], "arrived in tile order");
+    assert_eq!(draw([1, 0]), [255, 0, 0, 255], "arrived in reverse");
+}
+
 #[test]
 fn heatmap_composites_in_layer_order_and_hides_without_recording() {
     let mut h = Harness::new();

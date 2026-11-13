@@ -59,6 +59,11 @@ pub(crate) enum BlockPool {
 
 impl BlockPool {
     pub(crate) const ALL: [Self; 2] = [Self::Vertices, Self::Indices];
+    /// A pool's buffer's usage: the block for what draws as points moves
+    /// into others, copying from it.
+    const USAGE: BufferUsages = BufferUsages::STORAGE
+        .union(BufferUsages::COPY_DST)
+        .union(BufferUsages::COPY_SRC);
 
     fn label(self) -> &'static str {
         match self {
@@ -744,7 +749,7 @@ impl Tables {
                 Backing::Storage => Place::Buffer(gpu.create_buffer(&BufferDesc {
                     label: pool.label(),
                     size: (words[i] * 4).max(16),
-                    usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                    usage: BlockPool::USAGE,
                 })),
                 #[cfg(cpu_driven)]
                 Backing::Texture => {
@@ -775,6 +780,59 @@ impl Tables {
         if let Some(mirror) = self.mirrors.indices.as_mut().and_then(|m| m.get_mut(block)) {
             *mirror = Vec::new();
             self.mirrors.revision += 1;
+        }
+    }
+
+    /// Moves pool `pool` of block `block` into one `words` long, its first
+    /// `keep` words copied over on the GPU at the same offsets (the copy
+    /// the CPU keeps of an index pool stays as it is).
+    pub(super) fn resize_block(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        (block, pool): (usize, BlockPool),
+        words: u64,
+        keep: u64,
+    ) {
+        #[cfg(cpu_driven)]
+        self.flush(gpu);
+        let place = &mut self.blocks[block].as_mut().expect("a block's pools")[pool as usize];
+        match *place {
+            Place::Buffer(mut buffer) => {
+                let desc = BufferDesc {
+                    label: pool.label(),
+                    size: (words * 4).max(16),
+                    usage: BlockPool::USAGE,
+                };
+                move_buffer(gpu, &mut buffer, &desc, keep * 4);
+                *place = Place::Buffer(buffer);
+            }
+            #[cfg(cpu_driven)]
+            Place::Texture { texture, .. } => {
+                let width = data_width(&gpu.caps().limits);
+                let moved = data_texture(gpu, pool.label(), rows(words, width));
+                let kept = match keep {
+                    0 => 0,
+                    _ => rows(keep, width).min(rows(words, width)),
+                };
+                if kept > 0 {
+                    gpu.submit(&[Pass::CopyTexture {
+                        source: texture,
+                        destination: moved,
+                        copies: vec![TextureCopy {
+                            from: [0; 3],
+                            to: [0; 3],
+                            size: [width, kept, 1],
+                        }],
+                    }]);
+                }
+                gpu.destroy_texture(texture);
+                *place = Place::Texture {
+                    texture: moved,
+                    base: 0,
+                };
+            }
+            #[cfg(cpu_driven)]
+            Place::Cpu => {}
         }
     }
 
