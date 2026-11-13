@@ -620,6 +620,9 @@ impl Map {
         let time = self.shader_time();
         // A still map redraws every stale slot in its one frame.
         let texels = (self.mode == RenderMode::Continuous).then_some(self.frame_budget.drape());
+        // A refusal keeps the map awake for the next frame that plans the
+        // drape, or that finds no terrain to plan it for.
+        self.drape_refused = false;
         let Some(style) = &mut self.style else {
             return None;
         };
@@ -639,10 +642,7 @@ impl Map {
         let room = renderer.drape_room(gpu);
         let slots = (terrain.slots_needed(still, room)).max(renderer.drape_slots());
         let layout = match renderer.reserve_drape(gpu, slots) {
-            Ok(layout) => {
-                self.drape_refused = false;
-                layout
-            }
+            Ok(layout) => layout,
             Err(full) => {
                 // The cover fits the atlas's room (`Terrain::update`)
                 // unless its stacks leave none for the view's tiles, or the
