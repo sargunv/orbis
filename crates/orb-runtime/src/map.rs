@@ -3042,12 +3042,14 @@ impl Map {
         view: &View,
         report: &mut FrameReport,
     ) -> Option<orb_render::FrameTerrain> {
-        // Asked only of a style with terrain: the drape's room is the DEM
-        // module's code (`crate::modules`).
-        let terrain = self.style.as_ref().and_then(|s| s.worker.plan().terrain());
+        // Asked only of a map with terrain, the style's or one still
+        // falling flat after the style dropped it: the drape's room is the
+        // DEM module's code (`crate::modules`).
+        let terrain = (self.style.as_ref())
+            .is_some_and(|s| s.terrain.is_some() || s.worker.plan().terrain().is_some());
         let cover_room = match terrain {
-            Some(_) => self.cover_room(gpu, renderer),
-            None => 0,
+            true => self.cover_room(gpu, renderer),
+            false => 0,
         };
         let style = self.style.as_mut()?;
         let plan = style.worker.plan();

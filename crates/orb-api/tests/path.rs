@@ -921,6 +921,132 @@ fn a_resized_terrain_map_draws_its_next_frame() {
     }
 }
 
+/// Turning terrain on raises it from flat over the style's transition,
+/// and turning it off eases it flat and then drops it, with the map's
+/// tiles drawn on every frame between: a fill under Tokyo's layers covers
+/// the ground, so no frame shows the background (once, removing terrain
+/// left the drape no room while the terrain fell, and every frame of the
+/// fall drew the labels alone); the frames between differ from both ends
+/// (they ease rather than jump), and at rest the map draws what a fresh
+/// map with or without the terrain does at that camera.
+#[test]
+fn turning_terrain_on_and_off_eases_with_every_tile_drawn() {
+    let (hills, _dem) = hills();
+    let ground = r#""ground": {"type": "geojson", "data": {"type": "Polygon",
+        "coordinates": [[[139.2, 35.2], [140.3, 35.2], [140.3, 36.2], [139.2, 36.2], [139.2, 35.2]]]}},"#;
+    let style = |terrain: &str| {
+        let style = tokyo(terrain, &format!("{hills}{ground}"));
+        let background = r##""background-color": "#f8f4f0"
+      }
+    },"##;
+        assert!(style.contains(background));
+        style.replacen(
+            background,
+            r##""background-color": "#ff00ff"}},
+            {"id": "ground", "type": "fill", "source": "ground",
+             "paint": {"fill-color": "#f8f4f0", "fill-antialias": false}},"##,
+            1,
+        )
+    };
+    let terrain = r#"{"source": "hills", "exaggeration": 1.5}"#;
+    let with = style(&format!(r#""terrain": {terrain},"#));
+    let without = style("");
+    let at = (STATION, 14.5, 30.0, 55.0);
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let mut map = Map::new(&runtime, options());
+    map.set_constraints(steep());
+    map.set_style_json(&without).unwrap();
+    map.jump_to(&camera(at));
+    // The frames' clock, in milliseconds: settling times its frames on
+    // from the last one's.
+    let started = std::time::Instant::now();
+    let clock = || started.elapsed().as_secs_f64() * 1000.0;
+    map.render(&mut target, clock()).unwrap();
+    common::settle(&mut map, &mut target);
+    // The background's magenta, however the terrain shades it: nothing in
+    // Tokyo's style is near it.
+    let bare = |pixels: &[u8]| {
+        (pixels.chunks(4))
+            .filter(|p| u16::from(p[1]) + 96 < u16::from(p[0].min(p[2])))
+            .count()
+    };
+    let mut turn = |terrain: &str, fresh_style: &str, name: &str| {
+        let mut frames = vec![target.read_pixels().unwrap()];
+        let tx = format!(r#"[["setTerrain", {terrain}]]"#);
+        map.edit(&orb_api::Transaction::from_commands(&tx).unwrap())
+            .unwrap();
+        // Past the style's transition, 300 ms, at 60 frames a second.
+        let mut t = clock();
+        for _ in 0..30 {
+            map.render(&mut target, t).unwrap();
+            frames.push(target.read_pixels().unwrap());
+            t += 1000.0 / 60.0;
+        }
+        common::settle(&mut map, &mut target);
+        frames.push(target.read_pixels().unwrap());
+        for (i, frame) in frames.iter().enumerate() {
+            assert_eq!(bare(frame), 0, "{name}: frame {i} shows the background");
+        }
+        let (first, last) = (&frames[0], frames.last().unwrap());
+        assert_ne!(first, last, "{name} changed nothing");
+        let middle = &frames[frames.len() / 3];
+        assert!(
+            middle != first && middle != last,
+            "{name}: the map jumped rather than eased"
+        );
+        let camera = map.camera();
+        let mut other = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+        let (fresh, fresh_camera) = fresh_at(&runtime, &mut other, fresh_style, at);
+        assert_eq!(
+            camera, fresh_camera,
+            "{name}: the camera differs from a fresh map's"
+        );
+        assert_same(name, (last.clone(), fresh));
+    };
+    turn(terrain, &with, "terrain-on");
+    turn("null", &without, "terrain-off");
+}
+
+/// Labels of tiles a view stopped drawing are held until a placement
+/// covers what replaced them and they've faded, on frame time: a host's
+/// display link has a clock of its own, not the runtime's. Let go by the
+/// runtime's clock, a map whose display link ran ahead of it kept them
+/// placed, faded out, for as long as it stayed idle: once idle, it culls
+/// what a fresh map there does, and draws the same.
+#[test]
+fn labels_left_behind_go_by_the_display_links_clock() {
+    let style = tokyo("", "");
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let idle = |map: &mut Map, target: &mut Target| {
+        (map.render_until_idle(target, Duration::from_secs(60)))
+            .unwrap()
+            .scene
+            .candidates
+    };
+    let mut map = Map::new(&runtime, options());
+    map.set_style_json(&style).unwrap();
+    map.jump_to(&camera((STATION, 15.8, 30.0, 0.0)));
+    let started = std::time::Instant::now();
+    map.render(
+        &mut target,
+        3.6e6 + started.elapsed().as_secs_f64() * 1000.0,
+    )
+    .unwrap();
+    idle(&mut map, &mut target);
+    let at = (STATION, 14.5, 30.0, 0.0);
+    map.jump_to(&camera(at));
+    let culled = idle(&mut map, &mut target);
+    let moved = target.read_pixels().unwrap();
+    drop(map);
+    let mut fresh = Map::new(&runtime, options());
+    fresh.set_style_json(&style).unwrap();
+    fresh.jump_to(&camera(at));
+    assert_eq!(culled, idle(&mut fresh, &mut target), "candidates culled");
+    assert_same("held-labels", (moved, target.read_pixels().unwrap()));
+}
+
 /// Tokyo's buildings (unless `buildings` is false) standing on low
 /// rolling ground under a sky, over a plain ground and under the
 /// comma-separated `above`, and nothing else: a frame of them pitched far

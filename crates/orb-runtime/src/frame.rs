@@ -513,7 +513,9 @@ impl Map {
             }
         }
         let held = &mut style.held[index];
-        let now = self.services.clock.now();
+        // Label fades run on frame time, which needn't be the services'
+        // clock (a host's display link has its own).
+        let now = self.frame_time;
         let holds = self.mode == RenderMode::Continuous;
         update_holds(
             &mut self.labels,
