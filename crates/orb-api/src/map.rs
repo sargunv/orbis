@@ -289,6 +289,12 @@ impl Map {
             .collect()
     }
 
+    /// The terrain as the last frame drew it, for measuring how still its
+    /// cover holds ([`orb_runtime::Map::terrain_probe`]).
+    pub fn terrain_probe(&self) -> Option<orb_runtime::TerrainProbe> {
+        self.map.terrain_probe(self.map.viewport())
+    }
+
     /// Calls `wake` from any thread when data arrives and the map needs a
     /// frame that it didn't need before: hosts that stop drawing while the
     /// map is idle resume on it. Commands and input on the host's thread

@@ -74,6 +74,16 @@ impl std::fmt::Debug for Services {
     }
 }
 
+/// The terrain as a frame drew it ([`Map::terrain_probe`]): the view, the
+/// surface's tiles, the terrain's cover of them and its elevations.
+#[derive(Clone, Debug)]
+pub struct TerrainProbe {
+    pub view: View,
+    pub tms: orb_crs::TileMatrixSet,
+    pub tiles: Vec<orb_crs::CoveredTile>,
+    pub elevation: Arc<crate::TerrainElevation>,
+}
+
 /// What a frame did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameReport {
@@ -3208,6 +3218,18 @@ impl Map {
     pub fn elevation(&self) -> Option<Arc<dyn orb_camera::Elevation>> {
         let terrain = self.style.as_ref()?.terrain.as_ref()?;
         Some(terrain.snapshot() as Arc<dyn orb_camera::Elevation>)
+    }
+
+    /// The terrain as the last frame drew it, for benches that measure how
+    /// still its cover holds from frame to frame; `None` without terrain.
+    pub fn terrain_probe(&self, viewport: Viewport) -> Option<TerrainProbe> {
+        let terrain = self.style.as_ref()?.terrain.as_ref()?;
+        Some(TerrainProbe {
+            view: self.view(viewport),
+            tms: self.surface.tms().clone(),
+            tiles: terrain.tiles.clone(),
+            elevation: terrain.snapshot(),
+        })
     }
 
     /// What the sources' plan reads ([`PlanKey`]); `None` while easing

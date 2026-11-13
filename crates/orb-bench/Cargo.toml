@@ -9,6 +9,7 @@ version.workspace = true
 [dependencies]
 glam.workspace = true
 orb-api.workspace = true
+orb-camera.workspace = true
 orb-crs.workspace = true
 orb-host-native.workspace = true
 orb-runtime.workspace = true

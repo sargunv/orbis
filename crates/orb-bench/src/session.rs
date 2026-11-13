@@ -14,7 +14,9 @@
 //! The sessions: `manhattan` (Liberty over Midtown, z13 wheel-zoomed to
 //! about z16 as the buildings load, tilted to 70, turned and dragged),
 //! `paris` (Liberty tilted from 60 to the limit, panned and turned),
-//! `alps` (the Alps terrain style at pitch 72) and `globe` (Liberty on the
+//! `alps` (the Alps terrain style at pitch 72), `rotate` (the Alps turned
+//! slowly at pitch 75 to 85, which reports how still the terrain's cover
+//! holds as it turns: [`crate::steadiness`]) and `globe` (Liberty on the
 //! globe with the Globe entry's Mapterhorn terrain, wheel-zoomed from z2
 //! over New York, tilting on the way) and `nepal` (the same, flung in and
 //! out between z1 and z7 over the Himalaya at a spun wheel's and a
@@ -211,6 +213,19 @@ const SESSIONS: &[Session] = &[
         pause: PAUSE,
     },
     Session {
+        name: "rotate",
+        style: Style::Alps,
+        at: [crate::ALPS.0, crate::ALPS.1, 12.0, -32.0, 78.0],
+        moves: &[
+            turn([300.0, 0.0], 4000.0),
+            turn([0.0, -60.0], 600.0),
+            turn([300.0, 0.0], 4000.0),
+            turn([0.0, 120.0], 600.0),
+            turn([-300.0, 0.0], 4000.0),
+        ],
+        pause: PAUSE,
+    },
+    Session {
         name: "globe",
         style: Style::Globe,
         at: [-73.9855, 40.758, 2.0, 0.0, 0.0],
@@ -350,6 +365,8 @@ struct Frame {
     /// The camera's zoom once drawn.
     zoom: f64,
     report: FrameReport,
+    /// The terrain it drew, on a plane (the steadiness reads it).
+    terrain: Option<orb_runtime::TerrainProbe>,
 }
 
 /// A session's run.
@@ -559,6 +576,10 @@ fn run_session(
                 passes,
                 zoom: map.camera().zoom(&crate::web_mercator()),
                 report,
+                // Kept, and measured once the session ends.
+                terrain: (session.style == Style::Alps)
+                    .then(|| map.terrain_probe())
+                    .flatten(),
             });
         }
         let t = now();
@@ -924,6 +945,7 @@ impl SessionReport {
             "GPU memory in MiB when the map settled after the moves, and the most it held in \
              any frame; the cache keeps at most as many tiles as the view draws."
         )?;
+        self.write_steadiness(out)?;
         for r in &self.results {
             writeln!(out)?;
             writeln!(out, "#### {}", r.name)?;
@@ -989,6 +1011,79 @@ impl SessionReport {
             writeln!(out, "- warning: {warning}")?;
         }
         Ok(())
+    }
+}
+
+impl SessionReport {
+    /// How still the terrain's cover held between successive frames, in
+    /// the sessions on the plane with terrain.
+    fn write_steadiness(&self, out: &mut String) -> std::fmt::Result {
+        let measured: Vec<_> = (self.results.iter())
+            .filter(|r| r.frames.iter().any(|f| f.terrain.is_some()))
+            .collect();
+        if measured.is_empty() {
+            return Ok(());
+        }
+        writeln!(
+            out,
+            "| session | frame pairs | ground re-zoomed mean | p95 | max | pairs re-zooming \
+             | ground coarser mean | tile drops | pairs dropping | near wobble \
+             p50 px | p95 | max |"
+        )?;
+        writeln!(out, "|{}", "---|".repeat(12))?;
+        for r in measured {
+            for what in ["all", "input"] {
+                let changes: Vec<crate::steadiness::Change> = (r.frames.windows(2))
+                    .filter(|w| what == "all" || w[1].report.input)
+                    .filter_map(|w| {
+                        let (a, b) = (w[0].terrain.as_ref()?, w[1].terrain.as_ref()?);
+                        Some(crate::steadiness::change(a, b))
+                    })
+                    .collect();
+                let n = changes.len().max(1) as f64;
+                let mut shares: Vec<f64> = changes.iter().map(|c| c.rezoomed_share()).collect();
+                let mut wobble: Vec<f64> = changes.iter().map(|c| c.wobble_px).collect();
+                shares.sort_by(f64::total_cmp);
+                wobble.sort_by(f64::total_cmp);
+                let at = |v: &[f64], q: f64| match v.is_empty() {
+                    true => 0.0,
+                    false => v[((v.len() - 1) as f64 * q).round() as usize],
+                };
+                let coarser: f64 = (changes.iter())
+                    .map(|c| f64::from(c.coarser) / f64::from(c.points.max(1)))
+                    .sum();
+                writeln!(
+                    out,
+                    "| {} {what} | {} | {:.2}% | {:.1}% | {:.1}% | {} | {:.2}% | {} | {} | {:.2} | \
+                     {:.2} | {:.2} |",
+                    r.name,
+                    changes.len(),
+                    100.0 * shares.iter().sum::<f64>() / n,
+                    100.0 * at(&shares, 0.95),
+                    100.0 * at(&shares, 1.0),
+                    changes.iter().filter(|c| c.rezoomed > 0).count(),
+                    100.0 * coarser / n,
+                    changes.iter().map(|c| c.drops).sum::<u32>(),
+                    changes.iter().filter(|c| c.drops > 0).count(),
+                    at(&wobble, 0.5),
+                    at(&wobble, 0.95),
+                    at(&wobble, 1.0),
+                )?;
+            }
+        }
+        writeln!(out)?;
+        writeln!(
+            out,
+            "Terrain steadiness between successive frames drawn (input: the later one drawn \
+             while input held the camera), sampled at a {}×{} grid of the screen: the share of \
+             the earlier frame's ground whose terrain tile took another zoom in the later one, \
+             and a coarser one; tile drops: the earlier cover's tiles an ancestor replaced; near \
+             wobble: the most a ground point in the screen's bottom quarter moved on screen as \
+             its elevation changed, beyond the camera's move.",
+            crate::steadiness::GRID[0],
+            crate::steadiness::GRID[1],
+        )?;
+        writeln!(out)
     }
 }
 

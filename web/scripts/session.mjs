@@ -6,7 +6,7 @@
 // the installed Firefox (headed, on WebGPU: serve.mjs's `launchFirefox`) or
 // Playwright's WebKit, in Orbis and the pinned GL JS on demo/load.html.
 //
-//   pnpm session [--session=manhattan|paris|alps|globe|nepal] [--browser=chromium|firefox|webkit]
+//   pnpm session [--session=manhattan|paris|alps|rotate|globe|nepal] [--browser=chromium|firefox|webkit]
 //     [--engines=orbis,gljs] [--runs=n] [--style=key|url] [--size=WxH]
 //     [--ratio=r] [--start=ms] [--input=ms] [--warm] [--driver] [--headed]
 //     [--worst=n] [--backend=webgpu|webgl2] [--pkgs=a,b] [--deep]
@@ -16,7 +16,8 @@
 // in to about z16 as the buildings load, tilts to 70, turns and drags
 // across the island; `paris` tilts Liberty over central Paris from pitch
 // 60 to the limit (85) and pans and turns there; `alps` drags, turns and
-// zooms the Alps terrain style at pitch 72; `globe` wheel-zooms the demo's
+// zooms the Alps terrain style at pitch 72; `rotate` turns it slowly at
+// pitch 75 to 85; `globe` wheel-zooms the demo's
 // Globe entry (terrain on) over New York from z2 to about z8.5, tilting
 // to the limit on the way; `nepal` flings the Globe entry in and out
 // between z1 and z7 over the Himalaya at a spun wheel's and a trackpad's
@@ -264,6 +265,20 @@ const SESSIONS = {
       (p) => drag(p, low, [0, -400], 800),
       (p) => wheel(p, c, 100, 12),
       (p) => drag(p, low, [-300, -200], 800),
+    ],
+  },
+  // Turned slowly at pitch 75 to 85 over the Alps terrain style: what a
+  // turn alone changes in the terrain's cover and its drape (the native
+  // session also reports how still the cover held).
+  rotate: {
+    style: "alps",
+    at: [...alps.center, 12, alps.bearing, 78],
+    moves: [
+      (p) => drag(p, c, [300, 0], 4000, "right"),
+      (p) => drag(p, c, [0, -60], 600, "right"),
+      (p) => drag(p, c, [300, 0], 4000, "right"),
+      (p) => drag(p, c, [0, 120], 600, "right"),
+      (p) => drag(p, c, [-300, 0], 4000, "right"),
     ],
   },
   // Flung in and out over the Himalaya on the Globe entry (terrain on),

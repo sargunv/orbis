@@ -30,6 +30,7 @@ mod load;
 mod quake;
 mod report;
 mod session;
+mod steadiness;
 mod stutter;
 mod tiles;
 
