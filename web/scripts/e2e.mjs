@@ -2749,21 +2749,26 @@ async function gestures(browser, server) {
     }, clear);
 
   /** A horizontal fling: `steps` moves of `dx` px, one a frame (the
-   * protocol answers each once a frame has taken it), released at once.
-   * Returns the measurements against mln-ffi's decay. */
+   * protocol answers each once a frame has taken it), released at once:
+   * the release goes out behind the last move rather than after its
+   * answer, which a loaded machine can hold past the 40 ms a release may
+   * follow its last move by and still glide. Returns the measurements
+   * against mln-ffi's decay. */
   async function fling(kind, dx, steps = 8) {
     await reset();
     await log(true);
     let x = 40;
     if (kind === "mouse") await mouse("mousePressed", x, 100);
     else await touch("touchStart", [[x, 100]]);
-    for (let i = 0; i < steps; i++) {
-      x += dx;
-      if (kind === "mouse") await mouse("mouseMoved", x, 100);
-      else await touch("touchMove", [[x, 100]]);
-    }
-    if (kind === "mouse") await mouse("mouseReleased", x, 100);
-    else await touch("touchEnd", []);
+    const move = (x) =>
+      kind === "mouse"
+        ? mouse("mouseMoved", x, 100)
+        : touch("touchMove", [[x, 100]]);
+    for (let i = 1; i < steps; i++) await move((x += dx));
+    await Promise.all([
+      move((x += dx)),
+      kind === "mouse" ? mouse("mouseReleased", x, 100) : touch("touchEnd", []),
+    ]);
     await camera();
     const { pointers, frames, atRelease } = await log(true);
     const moves = pointers
