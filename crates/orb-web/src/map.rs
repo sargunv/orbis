@@ -753,6 +753,11 @@ impl OrbisMap {
                     set(&object, "y", tile.row.into());
                     "tilerequest"
                 }
+                MapEvent::ElevationsShown { source, batch } => {
+                    set(&object, "source", source.into());
+                    set(&object, "batch", (batch as f64).into());
+                    "elevationsshown"
+                }
                 MapEvent::Video { source, request } => {
                     set(&object, "source", source.into());
                     let request = match request {
@@ -926,6 +931,43 @@ impl OrbisMap {
         self.map
             .host_tile(source, orb_crs::TileIndex::new(z, x, y), answer)
             .map_err(|e| JsError::new(&e))
+    }
+
+    /// Heights in metres for tiles of source `source`, a `raster-dem`
+    /// source the app feeds: tile `i` is `zxy[3i..3i + 3]`, its heights
+    /// `side`² of `heights` from `side² · i`, rows top to bottom. One
+    /// call is one step of the app's ground, shown whole in one frame
+    /// (`elevationsshown`). Returns the batch's number, then the tiles the
+    /// map doesn't hold, as `z, x, y` triples.
+    #[wasm_bindgen(js_name = hostElevations)]
+    pub fn host_elevations(
+        &mut self,
+        source: &str,
+        side: u32,
+        zxy: &[u32],
+        heights: js_sys::Float32Array,
+    ) -> Result<Vec<f64>, JsError> {
+        let n = side.pow(2);
+        if !zxy.len().is_multiple_of(3) || heights.length() as usize != n as usize * (zxy.len() / 3)
+        {
+            return Err(JsError::new("one z, x, y and side² heights per tile"));
+        }
+        // Each tile's heights copied once, straight from the page's array.
+        let tiles = (zxy.as_chunks::<3>().0.iter().zip(0u32..))
+            .map(|(&[z, x, y], i)| {
+                let h = heights.subarray(i * n, (i + 1) * n).to_vec();
+                (orb_crs::TileIndex::new(z as u8, x, y), h)
+            })
+            .collect();
+        let done = self
+            .map
+            .set_host_elevations(source, side, tiles)
+            .map_err(|e| JsError::new(&e))?;
+        let mut out = vec![done.batch as f64];
+        for t in done.dropped {
+            out.extend([f64::from(t.z), f64::from(t.col), f64::from(t.row)]);
+        }
+        Ok(out)
     }
 
     /// Asks for every tile of the app's source `source` again.

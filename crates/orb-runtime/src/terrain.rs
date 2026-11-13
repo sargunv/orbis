@@ -611,6 +611,18 @@ impl Terrain {
         Ok(false)
     }
 
+    /// DEM tile `tile`, in layer `layer`, stands on `grid` from now on:
+    /// the app's new heights, written over its layer. False if the tile
+    /// isn't in that layer.
+    pub(crate) fn set_heights(&mut self, tile: TileIndex, layer: u32, grid: &Arc<DemGrid>) -> bool {
+        let Some(dem) = self.pyramid.get_mut(tile).filter(|d| d.layer == layer) else {
+            return false;
+        };
+        dem.dem = Arc::new(Dem::new(Arc::clone(grid)));
+        self.stale = true;
+        true
+    }
+
     /// A layer of the DEM page: grown for where memory is
     /// [free](Moves::Free), or else made by evicting DEM tiles the cover no
     /// longer reads, least recently used first.
@@ -2150,6 +2162,64 @@ mod tests {
         }
         let (_, redraw, deferred) = plan(&mut terrain, true);
         assert_eq!((redraw.len(), deferred), (0, false));
+    }
+
+    /// Heights the app writes over resident DEM tiles cull the cover as a
+    /// terrain that loaded them does: the ranges, and so the tiles kept,
+    /// follow the new heights, not the ones the tiles arrived with.
+    #[test]
+    fn heights_written_over_cull_as_loaded_ones_do() {
+        let tms = tms();
+        let mercator = *tms.projection();
+        let mut camera =
+            orb_camera::CameraState::new(orb_crs::Geodetic::new(7.75, 46.02), 11.0, &mercator);
+        camera.pitch = 72.0;
+        let viewport = orb_camera::Viewport {
+            width: 1024.0,
+            height: 768.0,
+        };
+        let view = View::new(&camera, viewport, &orb_crs::Surface::plane(mercator));
+        let grid = |metres: f32| Arc::new(DemGrid::from_elevations(16, vec![metres; 256]).unwrap());
+        let (low, high) = (grid(50.0), grid(5200.0));
+        // Covers, and loads what each cover asks for, until it asks no more.
+        let converge = |terrain: &mut Terrain, heights: &Arc<DemGrid>| {
+            for _ in 0..32 {
+                terrain.elevation(&tms);
+                let asked = terrain.update((&view, &tms, camera.target), 1024);
+                if asked.is_empty() {
+                    break;
+                }
+                for tile in asked {
+                    let layer = terrain.pyramid.loading() as u32 + 1000 * u32::from(tile.z);
+                    let dem = Arc::new(Dem::new(Arc::clone(heights)));
+                    terrain.pyramid.insert(tile, DemTile { layer, dem });
+                    terrain.stale = true;
+                }
+            }
+            terrain.elevation(&tms);
+            terrain.update((&view, &tms, camera.target), 1024);
+            terrain.tiles.clone()
+        };
+        let mut fresh = terrain_with(&[]);
+        let tall = converge(&mut fresh, &high);
+        let mut moved = terrain_with(&[]);
+        let flat = converge(&mut moved, &low);
+        assert_ne!(
+            flat, tall,
+            "the heights don't change the cover: the test shows nothing"
+        );
+        let resident: Vec<(TileIndex, u32)> = (moved.pyramid.ready())
+            .map(|(tile, dem)| (tile, dem.layer))
+            .collect();
+        for (tile, layer) in resident {
+            assert!(moved.set_heights(tile, layer, &high));
+        }
+        assert_eq!(converge(&mut moved, &high), tall);
+        let range = |t: &mut Terrain| {
+            let rect = tms.tile_bounds(TileIndex::new(9, 267, 180));
+            t.elevation(&tms).range(rect, 9)
+        };
+        assert_eq!(range(&mut moved), range(&mut fresh));
     }
 
     /// A drawn tile's regions reach a terrain tile's slots only where they

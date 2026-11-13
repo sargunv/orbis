@@ -14,6 +14,7 @@ mod frame;
 mod geojson;
 mod globe;
 mod glyphs;
+mod host_heights;
 mod host_tiles;
 mod image;
 mod job_host;
@@ -63,6 +64,7 @@ pub use video::{NO_VIDEO, VideoRequest};
 pub use features::{FeatureRequest, FeaturesDone, TileFeature};
 pub use geojson::{ClusterQuery, ClusterRequest};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
+pub use host_heights::HostElevations;
 pub use job_host::{JobHost, Loaded};
 pub use jobs::{
     ImagePixels, JobReply, JobRequest, Jobs, PoolJobs, TileDone, TileImage, TileOutcome,

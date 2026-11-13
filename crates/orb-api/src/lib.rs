@@ -42,9 +42,9 @@ pub use orb_host::{
     RequestTransform, ResourceKind, redacted_url,
 };
 pub use orb_runtime::{
-    CameraState, ClusterQuery, FeatureTarget, FrameReport, FrameTimes, HOST_TILES, Hit, HostTile,
-    MapEvent, MapOptions, Memory, MissingTiles, Op, PoolMemory, Preview, Previews, Progress,
-    Resized, StyleDoc, StyleImage, Transaction, VideoRequest, json,
+    CameraState, ClusterQuery, FeatureTarget, FrameReport, FrameTimes, HOST_TILES, Hit,
+    HostElevations, HostTile, MapEvent, MapOptions, Memory, MissingTiles, Op, PoolMemory, Preview,
+    Previews, Progress, Resized, StyleDoc, StyleImage, Transaction, VideoRequest, json,
 };
 pub use regions::{RegionDefinition, RegionEvent, RegionInfo};
 pub use target::Target;

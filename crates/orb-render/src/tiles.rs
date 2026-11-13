@@ -356,7 +356,7 @@ impl Tiles {
         self.sources.get(&source).map(|s| s.page)
     }
 
-    fn layer_of(&self, source: u32, tile: TileIndex) -> Option<u32> {
+    pub(crate) fn layer_of(&self, source: u32, tile: TileIndex) -> Option<u32> {
         let found = *self.sources.get(&source)?.tiles.get(&tile)?;
         self.entry(found).image.as_ref().map(|i| i.layer)
     }

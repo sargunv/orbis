@@ -1570,4 +1570,228 @@ mod tests {
         std::fs::write(&tile, png).unwrap();
         tile
     }
+
+    /// Terrain, its color relief and its hillshade over one DEM source
+    /// the app feeds, 256 heights a side to a 512-pixel tile, as the
+    /// demo's Earthquake has it.
+    const FED: &str = r##"{"version": 8,
+        "sources": {"ground": {"type": "raster-dem", "encoding": "terrarium", "tileSize": 512,
+            "maxzoom": 11, "tiles": ["orbis-host:"]}},
+        "terrain": {"source": "ground", "exaggeration": 1.5},
+        "layers": [
+          {"id": "land", "type": "background", "paint": {"background-color": "#d8e0c8"}},
+          {"id": "colour", "type": "color-relief", "source": "ground", "paint": {
+            "color-relief-color": ["interpolate", ["linear"], ["elevation"],
+              0, "#3a7d44", 1500, "#c8b88a", 3000, "#ffffff"],
+            "color-relief-opacity": 0.6}},
+          {"id": "shade", "type": "hillshade", "source": "ground"}
+        ]}"##;
+
+    const FED_SIDE: u32 = 256;
+
+    /// The ground of step `step`, `swing` metres: hills over the Valais,
+    /// and rings rippling out from under the camera.
+    fn ground(step: u32, swing: f64) -> impl Fn(f64, f64) -> f32 {
+        move |lon, lat| {
+            let km = (lon - 7.75).hypot(lat - 46.02) * 111.0;
+            let phase = km * 0.8 - f64::from(step);
+            (1200.0 + 900.0 * (lon * 30.0).sin() * (lat * 40.0).cos() + swing * phase.sin()) as f32
+        }
+    }
+
+    /// Tile `tile`'s heights of `ground`, at its texels' centres.
+    fn heights(tile: orb_crs::TileIndex, ground: &dyn Fn(f64, f64) -> f32) -> Vec<f32> {
+        let (n, side) = (f64::from(1u32 << tile.z), f64::from(FED_SIDE));
+        (0..FED_SIDE * FED_SIDE)
+            .map(|i| {
+                let x = (f64::from(tile.col) + (f64::from(i % FED_SIDE) + 0.5) / side) / n;
+                let y = (f64::from(tile.row) + (f64::from(i / FED_SIDE) + 0.5) / side) / n;
+                let lat = (std::f64::consts::PI * (1.0 - 2.0 * y))
+                    .sinh()
+                    .atan()
+                    .to_degrees();
+                ground(x * 360.0 - 180.0, lat)
+            })
+            .collect()
+    }
+
+    /// A map of [`FED`] whose tile requests it answers with heights.
+    struct Fed {
+        offscreen: crate::common::Offscreen,
+        /// The tiles it gave heights, less those the map dropped.
+        given: std::collections::BTreeSet<orb_crs::TileIndex>,
+    }
+
+    impl Fed {
+        fn new(pitch: f64, budget: Option<orb_runtime::FrameBudget>) -> Self {
+            let services = crate::common::native_services(std::sync::Arc::new(|| {}));
+            let camera = orb_camera::CameraState {
+                bearing: 20.0,
+                pitch,
+                ..orb_camera::CameraState::new(
+                    orb_crs::Geodetic::new(7.75, 46.02),
+                    11.0,
+                    &crate::common::web_mercator(),
+                )
+            };
+            let mut map = orb_runtime::Map::new(services, Some(camera));
+            map.set_clear_color([1.0; 4]);
+            map.set_stable_labels(false);
+            if let Some(budget) = budget {
+                map.set_frame_budget(budget);
+            }
+            map.set_style_json(FED).unwrap();
+            Self {
+                offscreen: crate::common::Offscreen::with_map(map).unwrap(),
+                given: Default::default(),
+            }
+        }
+
+        /// A frame; the tiles it asked for get `ground`'s heights. Its events.
+        fn frame(
+            &mut self,
+            ground: &dyn Fn(f64, f64) -> f32,
+        ) -> (orb_runtime::FrameReport, Vec<orb_runtime::MapEvent>) {
+            let report = self.offscreen.frame();
+            let events = self.offscreen.map.take_events();
+            let asked: Vec<_> = (events.iter())
+                .filter_map(|e| match e {
+                    orb_runtime::MapEvent::TileRequest { tile, .. } => Some(*tile),
+                    _ => None,
+                })
+                .collect();
+            if !asked.is_empty() {
+                let tiles = asked.iter().map(|&t| (t, heights(t, ground))).collect();
+                let done = (self.offscreen.map)
+                    .set_host_elevations("ground", FED_SIDE, tiles)
+                    .unwrap();
+                assert!(
+                    done.dropped.is_empty(),
+                    "the map dropped tiles it asked for"
+                );
+                self.given.extend(asked);
+            }
+            for event in &events {
+                if let orb_runtime::MapEvent::Error { message } = event {
+                    panic!("{message}");
+                }
+            }
+            (report, events)
+        }
+
+        /// Frames until two in a row are idle; the last's report.
+        fn settle(&mut self, ground: &dyn Fn(f64, f64) -> f32) -> orb_runtime::FrameReport {
+            let started = std::time::Instant::now();
+            let mut was_idle = false;
+            loop {
+                let (report, _) = self.frame(ground);
+                if report.idle && was_idle {
+                    return report;
+                }
+                was_idle = report.idle;
+                assert!(started.elapsed().as_secs() < 120, "did not settle");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+
+        /// `ground`'s heights over every tile given before: one step.
+        fn step(&mut self, ground: &dyn Fn(f64, f64) -> f32) -> u64 {
+            let tiles = self
+                .given
+                .iter()
+                .map(|&t| (t, heights(t, ground)))
+                .collect();
+            let done = (self.offscreen.map)
+                .set_host_elevations("ground", FED_SIDE, tiles)
+                .unwrap();
+            for tile in done.dropped {
+                self.given.remove(&tile);
+            }
+            done.batch
+        }
+    }
+
+    /// Heights given over the tiles a map draws, terrain and the hillshade
+    /// and color relief on it, draw what a fresh map given those heights
+    /// draws: the same ground, shading, drape and cover, though the tiles
+    /// kept their layers and arrived with other heights. The camera stands
+    /// where a fresh one does.
+    #[test]
+    fn heights_given_over_drawn_tiles_draw_what_a_fresh_map_does() {
+        let (before, after) = (ground(0, 600.0), ground(3, 600.0));
+        let mut moved = Fed::new(60.0, None);
+        moved.settle(&before);
+        moved.step(&after);
+        moved.settle(&after);
+        let mut fresh = Fed::new(60.0, None);
+        fresh.settle(&after);
+        assert_eq!(moved.offscreen.map.camera(), fresh.offscreen.map.camera());
+        let differing =
+            crate::common::differing_pixels(&moved.offscreen.pixels(), &fresh.offscreen.pixels());
+        assert_eq!(differing, 0, "pixels differ from a fresh map's");
+    }
+
+    /// A batch of heights larger than a frame takes goes in over frames
+    /// and shows whole in one: every frame shows one step's heights on
+    /// every tile, never the tiles of one beside those of the next. A
+    /// batch given while one goes in replaces it, which never shows. No
+    /// GPU memory moves meanwhile.
+    #[test]
+    fn no_frame_shows_two_batches_of_heights() {
+        // A tile's heights a frame.
+        let one = orb_runtime::Budget {
+            ms: 1000.0,
+            bytes: 1,
+            ..orb_runtime::FrameBudget::DESKTOP.resting
+        };
+        let budget = orb_runtime::FrameBudget {
+            moving: one,
+            resting: one,
+        };
+        let steps = [ground(0, 25.0), ground(1, 25.0), ground(2, 25.0)];
+        let mut fresh = Fed::new(0.0, None);
+        fresh.settle(&steps[2]);
+        let last = fresh.offscreen.pixels();
+        let mut moved = Fed::new(0.0, Some(budget));
+        // GPU memory: the CPU driver's copies of its tables are the core's.
+        let gpu_memory = |report: orb_runtime::FrameReport| {
+            let mut memory = report.memory;
+            memory.scene.cpu_copies = 0;
+            memory
+        };
+        let memory = gpu_memory(moved.settle(&steps[0]));
+        let first = moved.offscreen.pixels();
+        assert_ne!(first, last, "the steps draw alike: the test shows nothing");
+        assert!(moved.given.len() >= 3, "{:?}", moved.given);
+        let replaced = moved.step(&steps[1]);
+        let (_, events) = moved.frame(&steps[1]);
+        assert!(events.is_empty(), "{events:?}");
+        assert_eq!(moved.offscreen.pixels(), first, "a part of a batch showed");
+        let batch = moved.step(&steps[2]);
+        let mut frames = 0;
+        loop {
+            let (report, events) = moved.frame(&steps[2]);
+            assert_eq!(gpu_memory(report), memory, "memory moved in frame {frames}");
+            frames += 1;
+            let shown: Vec<u64> = (events.iter())
+                .filter_map(|e| match e {
+                    orb_runtime::MapEvent::ElevationsShown { batch, .. } => Some(*batch),
+                    _ => None,
+                })
+                .collect();
+            assert!(!shown.contains(&replaced), "the replaced batch showed");
+            let pixels = moved.offscreen.pixels();
+            if shown.contains(&batch) {
+                let differing = crate::common::differing_pixels(&pixels, &last);
+                assert_eq!(differing, 0, "the batch's frame isn't wholly its own");
+                break;
+            }
+            assert_eq!(pixels, first, "frame {frames} showed a part of a batch");
+            assert!(frames < 500, "the batch never showed");
+        }
+        assert!(frames >= 3, "the batch went in whole in {frames} frames");
+        moved.settle(&steps[2]);
+        let differing = crate::common::differing_pixels(&moved.offscreen.pixels(), &last);
+        assert_eq!(differing, 0, "at rest, pixels differ from a fresh map's");
+    }
 }

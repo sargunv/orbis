@@ -45,6 +45,7 @@ impl Map {
             }
         }
         self.continue_upload(gpu, renderer);
+        self.apply_heights(gpu, renderer, deadline);
         while let Some(message) = self.inbox.edits.front() {
             let bytes = self.upload_cost(message);
             if !self.beat.affords(clock.now() < deadline, bytes) {
@@ -71,6 +72,7 @@ impl Map {
         self.inbox.loads = loads;
         let deferred = self.retry_waiting(gpu, renderer, deadline);
         self.tiles_deferred = deferred
+            || self.host_heights.pending()
             || self.uploading.is_some()
             || !self.inbox.edits.is_empty()
             || !self.inbox.loads.is_empty();
@@ -433,8 +435,13 @@ impl Map {
         else {
             unreachable!("a tile's result");
         };
-        let result = *result;
+        let mut result = *result;
         self.applied += 1;
+        // A tile of heights the app gives stands on those shown now: a
+        // batch shown since its load began shows on it too.
+        if let Ok(TileOutcome::Built(build)) = &mut result {
+            self.host_heights.refresh(source, tile, build);
+        }
         let host = match &result {
             Ok(TileOutcome::Built(build)) => Some(HostData::of(build)),
             _ => None,

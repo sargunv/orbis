@@ -527,6 +527,26 @@ impl Map {
             .map_err(Error::InvalidArgument)
     }
 
+    /// Heights in metres for tiles of source `id`, a `raster-dem` source
+    /// the app feeds (`"tiles": ["orbis-host:"]`): per tile, `side`² of
+    /// them, rows top to bottom. One call is one step of the app's ground:
+    /// it answers the tiles a [`MapEvent::TileRequest`] asked for, and
+    /// writes over the tiles drawn in place, showing them all in one frame
+    /// ([`MapEvent::ElevationsShown`]), terrain, hillshade and the
+    /// elevations the camera and labels read together. A call before the
+    /// last one shows replaces it. Says which tiles the map doesn't hold.
+    pub fn set_host_elevations(
+        &mut self,
+        id: &str,
+        side: u32,
+        tiles: Vec<(TileIndex, Vec<f32>)>,
+    ) -> Result<orb_runtime::HostElevations, Error> {
+        self.dirty = true;
+        self.map
+            .set_host_elevations(id, side, tiles)
+            .map_err(Error::InvalidArgument)
+    }
+
     /// Asks for every tile of the app's source `id` again, as its data
     /// changed; drawn tiles stay until the new ones replace them.
     pub fn reload_host_tiles(&mut self, id: &str) -> Result<(), Error> {

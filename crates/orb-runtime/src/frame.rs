@@ -611,10 +611,18 @@ impl Map {
     ) -> Option<DrapePlan> {
         let time = self.shader_time();
         // A camera a host jumps frame by frame moves as one under input.
-        let texels = (self.mode == RenderMode::Continuous).then(|| {
-            self.frame_budget
-                .at(self.moves() == orb_render::Moves::Held)
-                .drape_texels
+        // A batch of the app's heights shows whole: what drapes from it
+        // redraws in this frame, though the slots stay where a continuous
+        // map's are (an unbounded budget is a still map's, which moves
+        // every tile to its place).
+        let showed = self.host_heights.showed;
+        let texels = (self.mode == RenderMode::Continuous).then(|| match showed {
+            true => u64::MAX,
+            false => {
+                self.frame_budget
+                    .at(self.moves() == orb_render::Moves::Held)
+                    .drape_texels
+            }
         });
         let Some(style) = &mut self.style else {
             return None;
@@ -684,6 +692,7 @@ impl Map {
             .collect();
         let period = self.surface.period();
         let sources = &style.sources;
+        let host_heights = &self.host_heights;
         let draws = &style.draws;
         let paint = &style.paint;
         let revision = (self.version, style.states.writes(time), images_revision);
@@ -753,14 +762,18 @@ impl Map {
                         })
                         .copied()
                         .collect();
-                    // A DEM tile's borders come from its neighbours.
+                    // A DEM tile's borders come from its neighbours, and
+                    // its texels from the heights the app last gave it.
+                    let key = plan.sources[i].key;
+                    let heights = |t| host_heights.revision(key, t);
                     let borders = endpoint.dem_unpack.map(|_| {
                         let drawn = &drawn_tiles[&i];
                         orb_render::dem_neighbours(draw.tile, &|n| {
                             (pyramid.get(n).filter(|_| drawn.contains(&n)))
-                                .map(|r| crate::terrain::hash(r.gpu) as u32)
+                                .map(|r| crate::terrain::hash((r.gpu, heights(n))) as u32)
                         })
                     });
+                    let held = held.map(|gpu| (gpu, heights(draw.tile)));
                     let part = (i, draw.tile, draw.wrap, regions, meshes, held, borders);
                     let part = crate::terrain::hash(part);
                     for &stack in source_stacks[i].iter().filter(|&&s| s < stacks) {

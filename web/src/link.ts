@@ -152,10 +152,12 @@ export function workerLink(
     call(method, ...args) {
       if (stopped) return Promise.reject(new Error("the map was removed"));
       const call = next++;
-      // Video frames move to the worker rather than copy.
+      // Video frames and ports move to the worker rather than copy.
       post(
         { call, method, args },
-        args.filter((a) => a instanceof ImageBitmap) as ImageBitmap[],
+        args.filter(
+          (a) => a instanceof ImageBitmap || a instanceof MessagePort,
+        ) as Transferable[],
       );
       return new Promise((resolve, reject) =>
         waiting.set(call, { resolve, reject }),

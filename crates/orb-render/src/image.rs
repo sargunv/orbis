@@ -132,6 +132,14 @@ struct Page {
     kind: PageKind,
     page: TilePage,
     pending: Vec<DemPrepare>,
+    /// Per DEM layer, what it was last prepared from (whole): what a new
+    /// heights' publish prepares it, and its neighbours' borders, from.
+    prepared: rustc_hash::FxHashMap<u32, DemPrepare>,
+    /// DEM layers whose elevations were written over and not yet
+    /// published ([`Images::stage_dem`]): nothing draws the raw
+    /// elevations, so they show nothing until a prepare reads them, and
+    /// prepares that would wait.
+    staged: rustc_hash::FxHashSet<u32>,
     /// Raster layers uploaded since their mip levels were last made.
     mip_layers: Vec<u32>,
     /// Of those, the ones whose tile reaches past its area, and the
@@ -426,6 +434,8 @@ impl Images {
             kind,
             page: TilePage::new(gpu, &textures, layers),
             pending: Vec::new(),
+            prepared: Default::default(),
+            staged: Default::default(),
             mip_layers: Vec::new(),
             edges: Vec::new(),
             mips: None,
@@ -582,6 +592,58 @@ impl Images {
         let page = self.page_mut(id);
         page.page.free(layer);
         page.edges.retain(|e| e.0 != layer);
+        page.prepared.remove(&layer);
+        page.staged.remove(&layer);
+    }
+
+    /// Writes new elevations of the same size over DEM layer `layer`,
+    /// unseen until [`publish_dems`](Self::publish_dems): draws read the
+    /// prepared textures, never the raw one, and prepares that would read
+    /// the layer wait for the publish.
+    pub(crate) fn stage_dem(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        id: PageId,
+        layer: u32,
+        pixels: Pixels<'_>,
+    ) {
+        let page = self.page_mut(id);
+        assert!(page.kind.dem(), "only DEM pages hold elevations");
+        page.page.write(gpu, 0, layer, pixels);
+        page.staged.insert(layer);
+    }
+
+    /// Shows the elevations staged in `layers`, together: each is
+    /// prepared again whole, as last, and each layer padded from one of
+    /// them prepares again the borders toward it. Their prepares, and
+    /// those that waited for them, run in the next prepare pass.
+    pub(crate) fn publish_dems(&mut self, id: PageId, layers: &[u32]) {
+        let page = self.page_mut(id);
+        for layer in layers {
+            page.staged.remove(layer);
+        }
+        let mut jobs = Vec::new();
+        for (&layer, job) in &page.prepared {
+            if layers.contains(&layer) {
+                jobs.push(DemPrepare {
+                    borders: None,
+                    ..*job
+                });
+                continue;
+            }
+            let mask = (0..8)
+                .filter(|&k| job.neighbours[k].is_some_and(|n| layers.contains(&n)))
+                .fold(0u8, |mask, k| mask | 1 << k);
+            if mask != 0 {
+                jobs.push(DemPrepare {
+                    borders: Some(mask),
+                    ..*job
+                });
+            }
+        }
+        for job in jobs {
+            self.prepare_dem(id, job);
+        }
     }
 
     pub(crate) fn write_layer(
@@ -692,6 +754,13 @@ impl Images {
         // A job still waiting for the layer: this one takes its borders
         // too, or the whole tile if either does.
         let mut job = job;
+        page.prepared.insert(
+            job.layer,
+            DemPrepare {
+                borders: None,
+                ..job
+            },
+        );
         if let Some(at) = page.pending.iter().position(|j| j.layer == job.layer) {
             let waiting = page.pending.swap_remove(at);
             job.borders = waiting.borders.zip(job.borders).map(|(a, b)| a | b);
@@ -962,11 +1031,19 @@ mod prepare {
             page: &mut Page,
             passes: &mut Vec<Pass>,
         ) -> u32 {
-            if page.pending.is_empty() {
+            // Prepares that read elevations staged and not yet published
+            // wait for the publish, which shows them all at once.
+            let staged = &page.staged;
+            let (waiting, ready): (Vec<_>, Vec<_>) = page.pending.drain(..).partition(|job| {
+                staged.contains(&job.layer)
+                    || (job.neighbours.iter()).any(|n| n.is_some_and(|n| staged.contains(&n)))
+            });
+            page.pending = waiting;
+            if ready.is_empty() {
                 return 0;
             }
             let revision = page.page.revision();
-            let count = page.pending.len() as u32;
+            let count = ready.len() as u32;
             if page
                 .targets
                 .as_ref()
@@ -988,7 +1065,7 @@ mod prepare {
                     groups: Vec::new(),
                 }
             });
-            for (slot, job) in page.pending.drain(..).enumerate() {
+            for (slot, job) in ready.into_iter().enumerate() {
                 gpu.write_buffer(
                     targets.jobs,
                     slot as u64 * SLOT,

@@ -35,6 +35,8 @@ import type {
   GestureOptions,
   GpuSubmission,
   Hit,
+  HostElevationsAnswer,
+  HostElevationTile,
   LngLat,
   MapEvents,
   MapOptions,
@@ -604,6 +606,39 @@ export class OrbisMap {
       bytes,
       geojson,
     );
+  }
+
+  /** Heights in metres for tiles of a `raster-dem` source the app feeds
+   * (`"tiles": ["orbis-host:"]`), `side`² a tile: one step of the app's
+   * ground. Tiles a `tilerequest` asked for take them as their answer;
+   * tiles drawn keep their place and memory and are written over, and the
+   * batch shows whole in one frame (`elevationsshown`), terrain, hillshade
+   * and the elevations the camera and labels read together. A batch given
+   * before the last one shows replaces it: pace by `elevationsshown`. For
+   * heights made in a worker, `elevationPort()` skips the page. */
+  setHostElevations(
+    source: string,
+    side: number,
+    tiles: HostElevationTile[],
+  ): Promise<HostElevationsAnswer> {
+    const zxy = new Uint32Array(tiles.length * 3);
+    const heights = new Float32Array(tiles.length * side * side);
+    tiles.forEach((t, i) => {
+      zxy.set([t.z, t.x, t.y], i * 3);
+      heights.set(t.heights, i * side * side);
+    });
+    return this.#link.call("hostElevations", source, side, zxy, heights);
+  }
+
+  /** A port that takes `setHostElevations`'s batches straight to the map's
+   * thread, for heights an app makes in a worker of its own: post it
+   * there, send `ElevationPortMessage`s on it (transferring their
+   * buffers), and hear each batch's `ElevationPortReply` and, once it
+   * shows, `ElevationPortShown`. The page's thread never sees them. */
+  elevationPort(): MessagePort {
+    const { port1, port2 } = new MessageChannel();
+    this.#link.call("elevationPort", port2).catch(() => port1.close());
+    return port1;
   }
 
   /** Asks for every tile of the app's source again: its data changed. Drawn

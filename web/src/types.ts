@@ -427,8 +427,12 @@ export interface MapEvents {
   /** A right click, or a touch held still. */
   contextmenu: PointerEventData;
   /** The map needs a tile of a source the app feeds (`"tiles":
-   * ["orbis-host:"]`): answer with `setHostTile`. Once per tile until answered. */
+   * ["orbis-host:"]`): answer with `setHostTile`, or for a `raster-dem`
+   * source with heights (`setHostElevations`). Once per tile until answered. */
   tilerequest: { source: string; z: number; x: number; y: number };
+  /** A batch of heights the app gave (`setHostElevations`) shows, whole,
+   * from this frame on. */
+  elevationsshown: { source: string; shown: number };
   /** The style is in (GL JS `style.load`). */
   styleload: Record<string, never>;
   /** The style changed; frames show it in full from `generation`. */
@@ -461,4 +465,45 @@ export interface MapEvents {
   gaps: { gaps: Degradation[] };
   /** A frame was drawn. */
   render: FrameStats;
+}
+
+/** A tile of a host-fed `raster-dem` source and its heights in metres,
+ * `side`² of them, rows top to bottom. */
+export interface HostElevationTile {
+  z: number;
+  x: number;
+  y: number;
+  heights: Float32Array;
+}
+
+/** What the map did with a batch of heights. */
+export interface HostElevationsAnswer {
+  /** The batch, as `elevationsshown` names it once it shows. */
+  batch: number;
+  /** Its tiles the map neither draws nor loads: their heights went
+   * nowhere, and a `tilerequest` asks for each again when the map needs it. */
+  dropped: { z: number; x: number; y: number }[];
+}
+
+/** A batch an app's worker posts to `elevationPort()`'s port: tile `i` is
+ * `zxy[3i..3i + 3]`, its `side`² heights from `side² · i` of `heights`
+ * (transfer its buffer). */
+export interface ElevationPortMessage {
+  /** Echoed in the reply. */
+  id: number;
+  source: string;
+  side: number;
+  zxy: Uint32Array;
+  heights: Float32Array;
+}
+
+/** The port's answer to a batch. */
+export type ElevationPortReply =
+  | ({ id: number } & HostElevationsAnswer)
+  | { id: number; error: string };
+
+/** The port's word that a batch shows. */
+export interface ElevationPortShown {
+  shown: number;
+  source: string;
 }

@@ -20,6 +20,9 @@ import type {
   Constraints,
   Degradation,
   EaseOptions,
+  ElevationPortMessage,
+  ElevationPortReply,
+  ElevationPortShown,
   FitOptions,
   FlyOptions,
   FrameStats,
@@ -29,6 +32,7 @@ import type {
   GestureOptions,
   GpuSubmission,
   Hit,
+  HostElevationsAnswer,
   MapEvents,
   Padding,
   PointerEventData,
@@ -94,6 +98,7 @@ type CoreEvent =
   | { type: "animationend"; id: number; interrupted: boolean }
   | { type: "click" | "dblclick" | "contextmenu"; x: number; y: number }
   | { type: "tilerequest"; source: string; z: number; x: number; y: number }
+  | { type: "elevationsshown"; source: string; batch: number }
   | VideoEventObject;
 
 /** The input the page forwards: the wasm map's input methods. */
@@ -174,6 +179,8 @@ export class Engine {
   #report: (report: Report) => void;
   #loop: ReturnType<typeof frameLoop>;
   #events: EngineEvent[] = [];
+  /** Ports apps' workers feed heights through. */
+  #ports: MessagePort[] = [];
   #stats: FrameStats | undefined;
   #snapshotting = false;
   #snapshots: Promise<unknown> = Promise.resolve();
@@ -534,6 +541,42 @@ export class Engine {
     this.#core.hostTile(source, z, x, y, bytes, geojson);
     this.#request();
   }
+  /** One step of a host-fed `raster-dem` source's heights: tile `i` is
+   * `zxy[3i..3i + 3]`, its `side`² heights from `side² · i`. */
+  hostElevations(
+    source: string,
+    side: number,
+    zxy: Uint32Array,
+    heights: Float32Array,
+  ): HostElevationsAnswer {
+    const out = this.#core.hostElevations(source, side, zxy, heights);
+    this.#request();
+    const dropped = [];
+    for (let i = 1; i + 2 < out.length; i += 3)
+      dropped.push({ z: out[i]!, x: out[i + 1]!, y: out[i + 2]! });
+    return { batch: out[0]!, dropped };
+  }
+  /** Takes heights from an app's worker over `port` (`ElevationPortMessage`),
+   * answering each, and tells it each batch that shows. */
+  elevationPort(port: MessagePort): void {
+    this.#ports.push(port);
+    port.onmessage = ({ data }: MessageEvent<ElevationPortMessage>) => {
+      let reply: ElevationPortReply;
+      try {
+        const { source, side, zxy, heights } = data;
+        reply = {
+          id: data.id,
+          ...this.hostElevations(source, side, zxy, heights),
+        };
+      } catch (e) {
+        reply = {
+          id: data.id,
+          error: String(e instanceof Error ? e.message : e),
+        };
+      }
+      port.postMessage(reply);
+    };
+  }
   reloadHostTiles(source: string): void {
     this.#core.reloadHostTiles(source);
     this.#request();
@@ -672,6 +715,7 @@ export class Engine {
   remove(): void {
     if (this.#removed) return;
     this.#removed = true;
+    for (const port of this.#ports.splice(0)) port.close();
     this.#loop.stop();
     this.#host.destroy();
   }
@@ -870,6 +914,15 @@ export class Engine {
             data: { id: event.id, arrived: !event.interrupted },
           });
           break;
+        case "elevationsshown": {
+          const shown: ElevationPortShown = {
+            shown: event.batch,
+            source: event.source,
+          };
+          for (const port of this.#ports) port.postMessage(shown);
+          out.push({ type: "elevationsshown", data: shown });
+          break;
+        }
         case "tilerequest":
           out.push({
             type: "tilerequest",

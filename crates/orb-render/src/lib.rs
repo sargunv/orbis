@@ -1720,6 +1720,25 @@ impl Renderer {
         self.images.write_layer(gpu, page, layer, pixels);
     }
 
+    /// Writes new elevations of the same size over DEM layer `layer` of
+    /// `page`, unseen until [`publish_dems`](Self::publish_dems) shows
+    /// them: memory doesn't move, and no prepare reads the layer before.
+    pub fn stage_dem(&mut self, gpu: &mut dyn Gpu, page: PageId, layer: u32, pixels: Pixels<'_>) {
+        self.images.stage_dem(gpu, page, layer, pixels);
+    }
+
+    /// Shows the elevations staged in `layers` of `page` in the next
+    /// prepare pass, together: each layer prepared again, and the borders
+    /// its neighbours padded from it.
+    pub fn publish_dems(&mut self, page: PageId, layers: &[u32]) {
+        self.images.publish_dems(page, layers);
+    }
+
+    /// The page and layer of source `source`'s resident image tile `tile`.
+    pub fn image_layer(&self, source: u32, tile: orb_crs::TileIndex) -> Option<(PageId, u32)> {
+        Some((self.tiles.page(source)?, self.tiles.layer_of(source, tile)?))
+    }
+
     /// Queues a DEM tile for the next frame's prepare pass; a later job for
     /// the same layer replaces an earlier one.
     pub fn prepare_dem(&mut self, page: PageId, job: DemPrepare) {

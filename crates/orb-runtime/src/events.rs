@@ -104,6 +104,13 @@ pub enum MapEvent {
         source: String,
         tile: orb_crs::TileIndex,
     },
+    /// A batch of heights the app gave
+    /// ([`Map::set_host_elevations`](crate::Map::set_host_elevations))
+    /// shows, whole, from this frame on; or it had nothing the map draws.
+    ElevationsShown {
+        source: String,
+        batch: u64,
+    },
 }
 
 /// How a load went, for [`MapEvent::Tile`] and [`MapEvent::Sprite`].

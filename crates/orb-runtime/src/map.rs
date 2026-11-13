@@ -751,6 +751,8 @@ pub struct Map {
     pub(crate) services: Services,
     pub(crate) videos: crate::video::Videos,
     pub(crate) host_tiles: crate::host_tiles::HostTiles,
+    /// Heights the app gives its DEM sources, and their batches going in.
+    pub(crate) host_heights: crate::host_heights::HostHeights,
     /// The camera's only writer: the app's moves, the style's camera and
     /// gestures all go through it.
     pub(crate) camera: orb_camera::Camera,
@@ -1023,6 +1025,7 @@ impl Map {
             services,
             videos: Default::default(),
             host_tiles: Default::default(),
+            host_heights: Default::default(),
             camera: store,
             input: orb_camera::input::Interaction::default(),
             camera_seen: 0,
@@ -2902,24 +2905,46 @@ impl Map {
             *self.pending.entry(edit).or_default() += 1;
         }
         // A tile of a source the app feeds goes with the app's answer.
-        if host {
-            let data_tile = request.data_tile();
-            match self.host_tiles.answer(key, data_tile) {
-                Some(answer) => request.location = crate::TileLocation::Host(answer.clone()),
-                None => {
-                    if self.host_tiles.wait(key, data_tile, request, edit) {
-                        let style = self.style.as_ref().expect("checked above");
-                        let source = style.worker.plan().source_def(index).id.clone();
-                        self.events.push(crate::MapEvent::TileRequest {
-                            source,
-                            tile: data_tile,
-                        });
-                    }
-                    return;
+        match host {
+            true => self.load_host(index, key, request, edit, false),
+            false => self.load(request, edit, false),
+        }
+    }
+
+    /// Loads a tile of source `index` (keyed `key`), which the app feeds,
+    /// with the app's answer: its heights or tile, or once it answers.
+    fn load_host(
+        &mut self,
+        index: usize,
+        key: u32,
+        mut request: TileRequest,
+        edit: Option<u64>,
+        terrain: bool,
+    ) {
+        let data_tile = request.data_tile();
+        if let Some(packed) = self.host_heights.answer(key, data_tile) {
+            let packed = Arc::clone(packed);
+            return self.load_heights(request, edit, terrain, &packed);
+        }
+        match self.host_tiles.answer(key, data_tile) {
+            Some(answer) => {
+                request.location = crate::TileLocation::Host(answer.clone());
+                self.load(request, edit, terrain);
+            }
+            None => {
+                if self
+                    .host_tiles
+                    .wait(key, data_tile, (request, edit, terrain))
+                {
+                    let style = self.style.as_ref().expect("jobs need a style");
+                    let source = style.worker.plan().source_def(index).id.clone();
+                    self.events.push(crate::MapEvent::TileRequest {
+                        source,
+                        tile: data_tile,
+                    });
                 }
             }
         }
-        self.load(request, edit, false);
     }
 
     /// The app's answer for a tile of source `id`, a source it feeds
@@ -2945,11 +2970,12 @@ impl Map {
             return Err(format!("{id} isn't a source the app feeds"));
         }
         let (key, current) = (plan.sources[index].key, style.id);
-        for (mut request, edit) in self.host_tiles.answered(key, tile, answer.clone()) {
+        self.host_heights.forget(key, &|t| t == tile);
+        for (mut request, edit, terrain) in self.host_tiles.answered(key, tile, answer.clone()) {
             // Jobs of a replaced style have nothing to lay out.
             if request.style == current {
                 request.location = crate::TileLocation::Host(answer.clone());
-                self.load(request, edit, false);
+                self.load(request, edit, terrain);
             }
         }
         self.events.wake();
@@ -2990,6 +3016,7 @@ impl Map {
             which(tile) || (0..tile.z).any(|z| tile.ancestor(z).is_some_and(which))
         };
         let (asked, held) = self.host_tiles.forget(key, which);
+        self.host_heights.forget(key, which);
         (self.parked).drop_where(|s, tile| s == key && picks(tile), &mut self.retired.host);
         // Answers waiting for room hold the old data: their tiles load again.
         let generation = self.tile_generation;
@@ -3049,16 +3076,26 @@ impl Map {
 
     /// Sends a request to the jobs; its result comes back as a message.
     pub(crate) fn load(&mut self, request: TileRequest, edit: Option<u64>, terrain: bool) {
+        let done = self.tile_done(&request, edit, terrain);
+        self.services.jobs.load(request, done);
+    }
+
+    /// What answers `request`'s load into the map's inbox.
+    pub(crate) fn tile_done(
+        &self,
+        request: &TileRequest,
+        edit: Option<u64>,
+        terrain: bool,
+    ) -> crate::TileDone {
         let (generation, source, tile) = (self.tile_generation, request.source, request.tile);
-        let done = self.reply(move |result| Message::Tile {
+        self.reply(move |result| Message::Tile {
             generation,
             source,
             tile,
             edit,
             terrain,
             result: Box::new(result),
-        });
-        self.services.jobs.load(request, done);
+        })
     }
 
     /// Retires dropped buckets, rasterizes new glyphs and asks the lane to
@@ -3341,8 +3378,13 @@ impl Map {
             self.services.jobs.cancel(style.id, terrain.key, tile);
         }
         self.counts.loads += loads.len() as u32;
+        // A DEM source the app feeds loads with its answers.
+        let (host, index, key) = (endpoint.host(), terrain.source, terrain.key);
         for request in loads {
-            self.load(request, None, true);
+            match host {
+                true => self.load_host(index, key, request, None, true),
+                false => self.load(request, None, true),
+            }
         }
         Some(frame)
     }
@@ -3760,6 +3802,7 @@ impl Map {
             self.retired.reserved.push(up.reserved);
         }
         self.host_tiles.clear_stale();
+        self.host_heights.clear();
     }
 }
 
