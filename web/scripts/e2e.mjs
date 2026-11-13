@@ -1708,13 +1708,29 @@ async function failing(browser, server) {
     await page.waitForFunction(() => app.map, null, { timeout: 60_000 });
     await page.waitForTimeout(3000);
     await page.evaluate(() => app.show("tokyo"));
-    await page.waitForFunction(
-      () =>
-        app.scene === "tokyo" &&
-        document.getElementById("app").dataset.map === "idle",
-      null,
-      { timeout: 60_000 },
-    );
+    // A switch that never idles says what the map was doing: WebKit's
+    // once timed out here, with nothing to tell why.
+    await page
+      .waitForFunction(
+        () =>
+          app.scene === "tokyo" &&
+          document.getElementById("app").dataset.map === "idle",
+        null,
+        { timeout: 60_000 },
+      )
+      .catch(async (e) => {
+        const state = await page.evaluate(() => ({
+          scene: app.scene,
+          map: document.getElementById("app").dataset.map,
+          stats: app.map?.stats,
+        }));
+        throw new Error(
+          `${entry} → tokyo never idled: ${JSON.stringify(state)}`,
+          {
+            cause: e,
+          },
+        );
+      });
     assert.deepEqual(broke(errors), [], `${entry} → tokyo`);
     console.log(`failing: ${entry} with its tiles failing → tokyo draws`);
     if (entry !== "globe") await page.close();
