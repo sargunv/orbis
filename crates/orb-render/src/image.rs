@@ -368,24 +368,35 @@ impl Images {
         draw_layout: BindGroupLayoutId,
         family: Family,
     ) -> RenderPipelineId {
-        let (shader, layout) = match family {
-            Family::Raster => (&RASTER_SHADER, self.image_layout),
-            Family::Hillshade => (&HILLSHADE_SHADER, self.table_layout),
-            _ => (&COLOR_RELIEF_SHADER, self.table_layout),
+        let (shader, layout, untested) = match family {
+            Family::Raster => (&RASTER_SHADER, self.image_layout, "raster untested"),
+            Family::Hillshade => (&HILLSHADE_SHADER, self.table_layout, "hillshade untested"),
+            _ => (
+                &COLOR_RELIEF_SHADER,
+                self.table_layout,
+                "color relief untested",
+            ),
         };
         let blend = Some(BlendState::PremultipliedAlpha);
         let layouts = [draw_layout, layout];
         let draw = Draw::new(shader, &layouts, target, blend);
         let index = image_index(family);
+        // The tested pipeline first: frames wait for it, and draw every
+        // placement with it until the untested one compiles.
+        let tested = *pipelines.0[index].get_or_insert_with(|| draw.make(gpu));
+        if !crate::untested_variants(gpu.caps()) {
+            return tested;
+        }
         pipelines.0[3 + index].get_or_insert_with(|| {
             let constants: &[_] = &[(orb_shaders::CLIP_FRAGMENTS, 0.0)];
             Draw {
+                label: untested,
                 constants: [&[], constants],
                 ..draw
             }
             .make(gpu)
         });
-        *pipelines.0[index].get_or_insert_with(|| draw.make(gpu))
+        tested
     }
 
     /// Makes the pipeline shaded hillshades drape their slopes with, if

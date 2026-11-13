@@ -776,7 +776,6 @@ impl NodePaint {
         }
     }
 
-    /// How far drawn pixels can reach past a chunk's bounds.
     /// Whether a fill or line moves by a translation, which its
     /// fragments clip where it lands.
     pub(crate) fn translates(&self) -> bool {
@@ -788,6 +787,7 @@ impl NodePaint {
         }
     }
 
+    /// How far drawn pixels can reach past a chunk's bounds.
     pub(crate) fn cull_margin_px(&self) -> f32 {
         match self {
             Self::Circle(p) => p.radius + p.stroke_width + p.translate.length() + 1.0,

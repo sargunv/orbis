@@ -84,9 +84,21 @@ use scene::Backing;
 use scene::{DataTable, Scene, Table, Tables};
 
 /// Whether a family's nodes draw in two rows by their placements' clips
-/// (`scene`'s `Stream::Untested`): fills, lines and image tiles.
-fn splits(family: Family) -> bool {
-    matches!(family, Family::Fill | Family::Line) || family.is_image()
+/// (`scene`'s `Stream::Untested`): fills, lines and image tiles, on a
+/// device that makes their untested pipelines ([`untested_variants`]).
+fn splits(family: Family, untested: bool) -> bool {
+    untested && (matches!(family, Family::Fill | Family::Line) || family.is_image())
+}
+
+/// Whether the device draws placements that need no clip test in
+/// pipelines that test none ([`Untested`]): not one whose compiles hold
+/// its presents (Firefox's WebGPU), which compiles a style's whole set
+/// before its first frame. There Liberty's first view compiled cold in
+/// 2.10 s, and 2.86 s with the untested pipelines, for 0.1–0.4 ms of GPU
+/// time a frame at 5120×2880; its paint draws with rows for fewer
+/// compiles too ([`Renderer::rowed`]).
+fn untested_variants(caps: &Caps) -> bool {
+    !caps.compiles_hold_presents
 }
 
 /// Which of a split node's placements draw untested with `paint`, on a
@@ -1060,9 +1072,10 @@ impl Renderer {
         // with a row for each extrusion node's cut stream and each split
         // node's tested placements after them. Every node's group binds
         // its uniform again below.
+        let untested = untested_variants(gpu.caps());
         let seconds = families
             .iter()
-            .filter(|&&f| f == Family::FillExtrusion || splits(f))
+            .filter(|&&f| f == Family::FillExtrusion || splits(f, untested))
             .count();
         let count = (families.len() + seconds) as u32;
         let mut retired_uniforms = None;
@@ -1142,7 +1155,7 @@ impl Renderer {
                         labels: family.is_symbol(),
                         surface: false,
                         unclipped: family == Family::FillExtrusion,
-                        untested: splits(family).then_some(Untested::None),
+                        untested: splits(family, untested).then_some(Untested::None),
                         meshes: NodeMeshes::Own,
                     },
                     (false, false),
@@ -4076,6 +4089,7 @@ impl PaintPipelines {
         self.pipelines[index].make(gpu, variants, draw);
         let planes = gpu.caps().clip_distances;
         let vertex = match index / 4 {
+            _ if !untested_variants(gpu.caps()) => None,
             0 => Some(&FILL_SHADER),
             2 if planes => Some(&LINE_PLANES_SHADER),
             4 if planes => Some(&LINE_STYLED_PLANES_SHADER),

@@ -997,10 +997,9 @@ fn keeping_every_candidate_draws_the_same_pixels() {
     assert_eq!(cull_counters(&mut h), [2, mesh_indices, 2 * mesh_indices]);
 }
 
-/// The compacted node's chunks kept, indices written and indices drawn by
-/// the last cull (`cull.wgsl`'s counters).
-/// The cull's counters over every row: a node's, and its second
-/// stream's.
+/// The chunks kept, indices written and indices drawn by the last cull
+/// (`cull.wgsl`'s counters), summed over every row: each node's, and its
+/// second stream's.
 fn cull_counters(h: &mut Harness) -> [u32; 3] {
     let (args, _) = h.renderer.draw_args();
     let bytes = pollster::block_on(h.gpu.read_buffer(args));
