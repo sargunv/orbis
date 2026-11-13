@@ -331,19 +331,18 @@ pub(crate) const STEP: Duration = Duration::from_millis(16);
 
 /// A fresh directory for the regions of a runtime without a cache file,
 /// removed with it.
-fn temporary_state_dir() -> Result<std::path::PathBuf> {
+fn temporary_state_dir() -> std::path::PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let dir = std::env::temp_dir().join(format!(
+    // Made by the first region written to it: a runtime that keeps none,
+    // or isn't released, leaves nothing behind.
+    std::env::temp_dir().join(format!(
         "orbis-runtime-{}-{n}-{stamp:x}",
         std::process::id()
-    ));
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| Failure::native(format!("can't make the runtime's regions directory: {e}")))?;
-    Ok(dir)
+    ))
 }
 
 /// Runs the runtime thread until it's stopped; `temporary` is its regions
@@ -428,7 +427,7 @@ pub unsafe extern "C" fn mln_runtime_create(
             // database, offline regions last as long as the runtime.
             let temporary = match state_dir {
                 Some(_) => None,
-                None => Some(temporary_state_dir()?),
+                None => Some(temporary_state_dir()),
             };
             // The device waits for the first session that needs it.
             let runtime = orb_api::Runtime::new(&orb_api::RuntimeOptions {
