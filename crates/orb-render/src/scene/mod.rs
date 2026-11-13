@@ -1199,8 +1199,7 @@ pub(crate) struct Scene {
     /// later layout to tidy within its frame's moves ([`TIDY_BYTES`]).
     untidy: bool,
     /// The candidates were laid out in place since they were last laid out
-    /// from the start, their slices keeping the room they grew to: a
-    /// settling frame lays them out from the start, as a fresh scene.
+    /// from the start, their slices keeping the room they grew to.
     relaid: bool,
     /// The node rows as the last rebuild laid them out, with their cull
     /// parameters (margin, elevation, visibility) patched since.
@@ -2746,22 +2745,20 @@ impl Scene {
         words[layout::frame::PLACED_NODES] = self.rows as u32;
         gpu.write_buffer(self.buffers.frame, 0, bytemuck::cast_slice(&words));
         self.frame = words;
-        // A settling frame lays the candidates out from the start, as a
-        // fresh scene, in lists that hold what they need.
-        if settling && !self.candidates_dirty {
-            if self.relaid || self.untidy {
-                self.laid.clear();
-                self.candidates_dirty = true;
-            } else if self.shrink_lists(gpu) {
-                self.candidates_dirty = true;
-            }
+        // A settling frame gives back the room changes in place left in
+        // the lists: where they could shrink to what they hold, it lays
+        // the candidates out from the start, as a fresh scene, in lists
+        // that hold what they need. Not otherwise, as a layout from the
+        // start costs the frame the cull writing every slot.
+        if settling && self.relaid && self.lists_could_shrink() {
+            self.laid.clear();
+            self.candidates_dirty = true;
+        } else if settling && !self.candidates_dirty && self.shrink_lists(gpu) {
+            self.candidates_dirty = true;
         }
         let rebuilt = self.candidates_dirty;
         if self.candidates_dirty {
             self.candidates_dirty = false;
-            if settling && (self.relaid || self.untidy) {
-                self.laid.clear();
-            }
             self.lay_out_growing(gpu, |scene, gpu| scene.rebuild_candidates(gpu));
             if settling && self.shrink_lists(gpu) {
                 self.rebuild_candidates(gpu);
@@ -2773,9 +2770,12 @@ impl Scene {
             self.write_node_rows(gpu);
         }
         // What changes in place left untidy, or left out, is laid out in
-        // order again, a frame's moves at a time; with no room for that,
-        // from the start in lists grown to hold it all.
-        if self.untidy && !self.lay_out_changes(gpu, Some(TIDY_BYTES)) {
+        // order again, a frame's moves at a time, and all of it in a
+        // settling frame, which leaves the candidates as a fresh scene's;
+        // with no room for that, from the start in lists grown to hold it
+        // all.
+        let tidy = if settling { u64::MAX } else { TIDY_BYTES };
+        if self.untidy && !self.lay_out_changes(gpu, Some(tidy)) {
             self.laid.clear();
             self.lay_out_growing(gpu, Self::lay_out);
             self.untidy = false;

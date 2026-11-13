@@ -163,6 +163,11 @@ impl Space {
         }
     }
 
+    /// What it holds below its end, holes aside.
+    fn held(&self) -> u32 {
+        self.end - self.holes.iter().map(|h| h.end - h.start).sum::<u32>()
+    }
+
     fn free(&mut self, range: Range<u32>) {
         if range.is_empty() {
             return;
@@ -453,6 +458,20 @@ impl Scene {
         );
         self.relaid = false;
         (budget.compacted_short, budget.candidates_short)
+    }
+
+    /// Whether the candidates laid out from the start could leave the
+    /// candidate lists or the compacted indices in their lowest quarter,
+    /// for `Scene::shrink_lists`: what the nodes hold of them, holes
+    /// aside, with the half again a layout keeps them to grow into
+    /// (`NodePlan::growth`), lies there.
+    pub(super) fn lists_could_shrink(&self) -> bool {
+        let (c, first) = (self.capacity, self.first);
+        let laid = |held: u32| held + held / 2;
+        let rows = laid(self.laid.iter().map(|laid| laid.rows.held()).sum());
+        let words = laid(self.laid.iter().map(|laid| laid.words.held()).sum());
+        super::shrunk(c.candidates, rows, first.candidates) < c.candidates
+            || super::shrunk(c.compacted_words, words, first.compacted_words) < c.compacted_words
     }
 
     /// Lays out only what changed since the last layout; whether it could
