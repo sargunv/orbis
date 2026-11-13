@@ -137,7 +137,7 @@ pub(crate) fn string_to_number(s: &str) -> f64 {
     if !is_decimal_literal(unsigned) {
         return f64::NAN;
     }
-    s.parse().unwrap_or(f64::NAN)
+    crate::decimal::parse(s).unwrap_or(f64::NAN)
 }
 
 /// `digits [. digits?] | . digits`, then an optional exponent.

@@ -217,7 +217,7 @@ fn parse_args(s: &str, hue: bool) -> Option<Args<'_>> {
 fn number(s: &str) -> f64 {
     // The token is drawn from `[0-9e.+-]`, where JavaScript's unary `+` and
     // Rust's float grammar agree.
-    s.parse().unwrap_or(f64::NAN)
+    crate::decimal::parse(s).unwrap_or(f64::NAN)
 }
 
 fn alpha(a: Option<(&str, bool)>) -> f64 {

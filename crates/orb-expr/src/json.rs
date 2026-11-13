@@ -362,10 +362,10 @@ impl Parser<'_> {
                 return Err(self.error("invalid number"));
             }
         }
-        // The slice is ASCII and matches Rust's float grammar, which rounds
-        // correctly, as `JSON.parse` does.
+        // The slice is ASCII and a decimal literal, rounded correctly, as
+        // `JSON.parse` rounds it.
         let text = std::str::from_utf8(&self.text[start..self.pos]).expect("ASCII");
-        text.parse().map_err(|_| JsonError {
+        crate::decimal::parse(text).ok_or(JsonError {
             offset: start as u32,
             message: "invalid number",
         })

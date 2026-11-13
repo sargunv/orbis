@@ -291,7 +291,7 @@ fn quote(text: &str) -> String {
 fn tilejson(pages: &Cache, archive: &Archive) -> orb_sqlite::Result<String> {
     let db = &archive.db;
     let mut members = Vec::new();
-    let number = |text: Option<String>| text.and_then(|t| t.trim().parse::<f64>().ok());
+    let number = |text: Option<String>| text.and_then(|t| orb_expr::decimal::parse(t.trim()));
     let zoom_of =
         |entry: Option<Vec<Value>>| entry.and_then(|e| e.first().and_then(Value::as_integer));
     let index = match &archive.tiles {
@@ -322,7 +322,7 @@ fn tilejson(pages: &Cache, archive: &Archive) -> orb_sqlite::Result<String> {
     if let Some(bounds) = metadata(pages, db, "bounds")? {
         let values: Vec<f64> = bounds
             .split(',')
-            .filter_map(|v| v.trim().parse().ok())
+            .filter_map(|v| orb_expr::decimal::parse(v.trim()))
             .collect();
         if let [w, s, e, n] = values[..] {
             members.push(format!("\"bounds\":[{w},{s},{e},{n}]"));

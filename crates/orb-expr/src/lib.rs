@@ -19,6 +19,7 @@
 mod color;
 mod color_spaces;
 mod context;
+pub mod decimal;
 mod elevation;
 mod eval;
 mod eval_extra;
