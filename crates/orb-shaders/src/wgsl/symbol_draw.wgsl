@@ -24,9 +24,12 @@ const PASS_SKIP: u32 = 3u;
 struct SymbolOut {
     @builtin(position) position: vec4<f32>,
     // The page layer, the bitmap's padded rectangle's origin on it, and
-    // the quad's texels from there (see `atlas_uv`).
+    // the quad's texels from there (see `atlas_uv`), taken where the quad
+    // covers the pixel: multisampled (on terrain with antialiasing on),
+    // a pixel the quad's edge crosses would otherwise take them at its
+    // centre, off the quad, and read the bitmap packed beside it.
     @location(0) @interpolate(flat, either) layer: u32,
-    @location(1) tex: vec2<f32>,
+    @location(1) @interpolate(perspective, centroid) tex: vec2<f32>,
     @location(7) @interpolate(flat, either) origin: vec2<f32>,
     // Gamma scale, size and total opacity.
     @location(2) data: vec3<f32>,

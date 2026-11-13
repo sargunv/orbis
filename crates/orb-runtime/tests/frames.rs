@@ -814,6 +814,55 @@ mod tests {
         );
     }
 
+    /// Antialiasing reaches the terrain, which draws in the map's own
+    /// passes: the hills' silhouettes draw otherwise with it on (once,
+    /// it multisampled the 3D layers alone). Switched either way on a
+    /// settled map, over the hills alone and with buildings splitting
+    /// the passes, the map draws what a fresh one with that setting does:
+    /// nothing kept from the passes' other sample count shows, and labels
+    /// multisampled read their own bitmaps alone, wherever the atlas
+    /// packed them (once, a label's edge pixels read the next bitmap over,
+    /// and fresh maps differed by the order their glyphs arrived in).
+    #[test]
+    fn antialiasing_on_terrain_draws_as_a_fresh_map_either_way() {
+        for name in ["terrain", "terrain-buildings"] {
+            let scene = crate::common::scenes::scenes(&[name]).remove(0);
+            let (zoom, bearing, pitch) = scene.at;
+            let options = crate::common::Options {
+                style: Some(scene.url.clone()),
+                encoding: "mvt".into(),
+                at: Some((orb_crs::Geodetic::new(139.74, 35.685), zoom, bearing, pitch)),
+            };
+            let load = |antialias: bool| {
+                let mut offscreen =
+                    crate::common::Offscreen::new(&options, orb_runtime::SceneCapacity::default())
+                        .unwrap();
+                offscreen.map.set_antialias_3d(antialias);
+                settle(&mut offscreen);
+                offscreen
+            };
+            let fresh = [false, true].map(|antialias| load(antialias).pixels());
+            assert_ne!(
+                crate::common::differing_pixels(&fresh[0], &fresh[1]),
+                0,
+                "{name}: antialiasing changed nothing"
+            );
+            let mut switched = load(true);
+            for antialias in [false, true] {
+                switched.map.set_antialias_3d(antialias);
+                settle(&mut switched);
+                assert_eq!(
+                    crate::common::differing_pixels(
+                        &switched.pixels(),
+                        &fresh[usize::from(antialias)]
+                    ),
+                    0,
+                    "{name}: switched to antialias {antialias}"
+                );
+            }
+        }
+    }
+
     /// A layer that drew, hidden by its zoom while the pipelines it draws
     /// with change (here the 3D sample count), holds no frame back while
     /// it hides, and draws what a fresh map does when a zoom shows it
