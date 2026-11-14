@@ -38,7 +38,7 @@ mod tiles;
 pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
 pub use layer_composite::Blend;
 pub use terrain::{
-    DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeFull, DrapeLayout, SHEET_SLOTS, TERRAIN_EXTENT, TERRAIN_GRID,
+    DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeFull, DrapeLayout, MAX_SHRINK, TERRAIN_EXTENT, TERRAIN_GRID,
     TerrainDem, TerrainGlobe, TerrainPaint, TerrainTile,
 };
 
@@ -262,9 +262,6 @@ struct Node {
     /// A hillshade the terrain pass lights from the frame's bearing: it
     /// drapes its unlit slopes ([`Renderer::set_shaded_on_terrain`]).
     shaded: bool,
-    /// What it drapes changes with the zoom
-    /// ([`Renderer::set_drapes_by_zoom`]).
-    by_zoom: bool,
     /// Its style layer's key, layer opacity and blend mode
     /// (`*-layer-opacity`, `*-layer-blend`): below opacity 1 or blending
     /// other than normally, the layer composites once.
@@ -503,9 +500,9 @@ pub struct Renderer {
     terrain: Option<terrain::Terrain>,
     /// The DEM page the terrain reads, as `set_terrain` last gave it.
     terrain_page: Option<PageId>,
-    /// Since the device last refused the drape a sheet: the tile slots it
+    /// Since the device last refused the drape a texture: the tile slots it
     /// held then, which the drape's room keeps to, and the bytes of the
-    /// sheet refused ([`reserve_drape`](Self::reserve_drape)).
+    /// texture refused ([`reserve_drape`](Self::reserve_drape)).
     drape_ceiling: Option<(u32, u64)>,
     /// The drape pass's paint, frames and bundles, made for the first
     /// draped paint.
@@ -1130,7 +1127,7 @@ impl Renderer {
                 added.push(i as u32);
             }
             // A retained node keeps what decides its drape stack.
-            let (mut image, cull, (shaded, by_zoom)) = match node {
+            let (mut image, cull, shaded) = match node {
                 Some(node) => {
                     // Groups bind the uniform at the node's index.
                     (
@@ -1139,7 +1136,7 @@ impl Renderer {
                         node.heatmap,
                     )
                         .release(gpu);
-                    (node.image, node.cull, (node.shaded, node.by_zoom))
+                    (node.image, node.cull, node.shaded)
                 }
                 None => (
                     family.is_image().then(image::NodeImage::default),
@@ -1155,7 +1152,7 @@ impl Renderer {
                         untested: splits(family, untested).then_some(Untested::None),
                         meshes: NodeMeshes::Own,
                     },
-                    (false, false),
+                    false,
                 ),
             };
             let group = match &mut image {
@@ -1192,7 +1189,6 @@ impl Renderer {
                 terrain_layer: None,
                 blends_on_terrain: false,
                 shaded,
-                by_zoom,
                 composite: None,
                 solid: None,
                 drawn: false,
@@ -1259,11 +1255,7 @@ impl Renderer {
     /// the terrain layer lights them over the stack before and under the
     /// next, which draws the layers above it (up to
     /// [`terrain::MAX_SHADES`] hillshades a terrain layer; another starts
-    /// the next). A terrain layer without one whose
-    /// first nodes draw alike at every zoom and whose later ones don't
-    /// ([`set_drapes_by_zoom`](Self::set_drapes_by_zoom)) splits there
-    /// into a stack below and one above, so that zooming redraws only the
-    /// one above. Colour stacks come first, in order, then slope stacks,
+    /// the next). Colour stacks come first, in order, then slope stacks,
     /// which the drape keeps on a page of their own ([`DrapeLayout`]).
     fn assign_stacks(&mut self) {
         self.assign_stacks_as(self.terrain_on());
@@ -1277,7 +1269,6 @@ impl Renderer {
                 group: composite_group(node.composite),
                 blend: (node.composite).map_or(Blend::Normal, |(_, _, blend)| blend),
                 shaded: node.shaded,
-                by_zoom: node.by_zoom,
             })
             .collect();
         let stacks = drape_stacks(&inputs);
@@ -1317,21 +1308,6 @@ impl Renderer {
         n.shaded = shaded;
         if n.terrain_layer.is_some() {
             self.pipelines_stale = true;
-            self.restack(gpu);
-        }
-    }
-
-    /// Says whether what draped node `node` draws changes with the zoom:
-    /// sizes in pixels, or paint that follows the zoom. Draped nodes that
-    /// don't, under ones that do, keep a stack of their own, which zooming
-    /// doesn't redraw.
-    pub fn set_drapes_by_zoom(&mut self, gpu: &mut dyn Gpu, node: u32, by_zoom: bool) {
-        let n = &mut self.nodes[node as usize];
-        if n.by_zoom == by_zoom {
-            return;
-        }
-        n.by_zoom = by_zoom;
-        if n.terrain_layer.is_some() {
             self.restack(gpu);
         }
     }
@@ -1584,14 +1560,9 @@ impl Renderer {
         [!full, full]
     }
 
-    /// The terrain tiles the drape pages hold, 0 before they're made.
-    pub fn drape_slots(&self) -> u32 {
-        (self.terrain.as_ref()).map_or(0, |t| t.layout().tile_slots)
-    }
-
     /// How many terrain tiles the drape atlas can hold with this style's
     /// stacks: the most a terrain cover may have. Since the device refused
-    /// a sheet, the slots the drape held then
+    /// a texture, the tiles the drape held then
     /// ([`lift_drape_ceiling`](Self::lift_drape_ceiling)).
     pub fn drape_room(&self, gpu: &dyn Gpu) -> u32 {
         let room = terrain::room(gpu, self.drape_stacks());
@@ -1599,40 +1570,26 @@ impl Renderer {
             .map_or(room, |(slots, _)| room.min(slots))
     }
 
-    /// Lets the drape ask the device for sheets past those it held when
+    /// Lets the drape ask the device for textures past those it held when
     /// the device refused one, as a map whose memory settled does:
     /// whether it kept to fewer.
     pub fn lift_drape_ceiling(&mut self) -> bool {
         self.drape_ceiling.take().is_some()
     }
 
-    /// Makes the drape pages hold `tile_slots` terrain tiles' slots, one
-    /// per drape stack, in the fewest sheets that do ([`SHEET_SLOTS`]
-    /// slots each): sheets are added blank and the last let go, the rest
-    /// staying, slots and all, where they are. Pages of other stacks are
-    /// new and blank (a new layout generation). Fails past the
-    /// [`drape_room`](Self::drape_room), or where the device refuses a
-    /// sheet (which lets go of them all): the room then keeps to the slots
-    /// held before, so that the next frame's cover fits what the device
-    /// gave, until [`lift_drape_ceiling`](Self::lift_drape_ceiling).
-    pub fn reserve_drape(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        tile_slots: u32,
-    ) -> Result<DrapeLayout, DrapeFull> {
+    /// Makes the drape pages for this style's stacks, a slot per terrain
+    /// tile and stack, their textures made as slots need them
+    /// ([`redraw_drape`](Self::redraw_drape)). Pages of other stacks are
+    /// new and blank (a new layout generation). Fails where the stacks
+    /// leave no [`drape_room`](Self::drape_room), or since the device
+    /// refused a texture with none held.
+    pub fn reserve_drape(&mut self, gpu: &mut dyn Gpu) -> Result<DrapeLayout, DrapeFull> {
         if let Some((0, bytes)) = self.drape_ceiling {
             return Err(DrapeFull::Refused(bytes));
         }
         let stacks = self.drape_stacks();
         let terrain = self.terrain.as_mut().expect("terrain is on");
-        let held = terrain.layout().tile_slots;
-        let made = terrain
-            .reserve(gpu, (tile_slots, stacks), &mut self.downsampler)
-            .inspect_err(|full| {
-                if let DrapeFull::Refused(bytes) = *full {
-                    self.drape_ceiling = Some((held.min(tile_slots), bytes));
-                }
-            })?;
+        let made = terrain.reserve(gpu, stacks)?;
         let layout = terrain.layout();
         if made {
             // Stack layers and the main bundle's composites follow it.
@@ -1641,15 +1598,40 @@ impl Renderer {
         Ok(layout)
     }
 
-    /// Redraws these terrain tiles' drape slots this frame, at the side
-    /// each shrinks to ([`TerrainTile::shrink`]), in the stacks given, as
+    /// Redraws these terrain tiles' drape slots this frame, each `(tile
+    /// slot, shrink, stacks)` at its side, [`DRAPE_SLOT_PX`] halved
+    /// `shrink` times, in the stacks given, as
     /// a map at style zoom `zoom` draws: their drape placements are in the
     /// scene, and every draped node's paint was set at that zoom
     /// ([`set_drape_paint`](Self::set_drape_paint)). The drape pass's
-    /// frame takes it, for what its shaders blend by the zoom.
-    pub fn redraw_drape(&mut self, zoom: f64, tile_slots: &[(u32, u8, &[u8])]) {
+    /// frame takes it, for what its shaders blend by the zoom. Before the
+    /// frame's [`set_terrain_tiles`](Self::set_terrain_tiles), which draw
+    /// from the texels slots take here. Fails where the device refuses a
+    /// texture, which leaves every slot blank: the room then keeps to the
+    /// tiles held before, so that the next frame's cover fits what the
+    /// device gave, until [`lift_drape_ceiling`](Self::lift_drape_ceiling).
+    pub fn redraw_drape(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        zoom: f64,
+        tile_slots: &[(u32, u8, &[u8])],
+    ) -> Result<(), DrapeFull> {
+        let Some(terrain) = &mut self.terrain else {
+            return Ok(());
+        };
+        let held = terrain.held_slots();
+        let drawn = terrain.redraw(gpu, zoom, tile_slots, &mut self.downsampler);
+        if let Err(DrapeFull::Refused(bytes)) = drawn {
+            self.drape_ceiling = Some((held, bytes));
+        }
+        drawn
+    }
+
+    /// Lets go of the drape's textures no slot holds: in a frame that settles
+    /// the map, which then holds what a fresh one there does.
+    pub fn trim_drape(&mut self, gpu: &mut dyn Gpu) {
         if let Some(terrain) = &mut self.terrain {
-            terrain.redraw(zoom, tile_slots);
+            terrain.trim(gpu);
         }
     }
 
@@ -3974,8 +3956,6 @@ struct StackInput {
     blend: Blend,
     /// A hillshade the terrain lights between stacks.
     shaded: bool,
-    /// What it draws changes with the zoom.
-    by_zoom: bool,
 }
 
 /// The nodes' drape stacks and terrain layers.
@@ -4048,27 +4028,6 @@ fn drape_stacks(inputs: &[StackInput]) -> DrapeStacks {
         }
         nodes.push((stack, terrain_layer));
     }
-    // A layer without a shade whose zoom-free nodes come first splits
-    // above them: the stack below keeps its slots while the camera
-    // zooms.
-    for (index, layer) in layers.iter_mut().enumerate() {
-        if layer.shaded() {
-            continue;
-        }
-        let members: Vec<usize> = (0..nodes.len())
-            .filter(|&i| nodes[i].1 == Some(index as u8))
-            .collect();
-        let Some(split) =
-            (members.iter().position(|&i| inputs[i].by_zoom)).filter(|&split| split > 0)
-        else {
-            continue;
-        };
-        stacks = stacks.saturating_add(1);
-        layer.above = Some(stacks - 1);
-        for &i in &members[split..] {
-            nodes[i].0 = layer.above;
-        }
-    }
     // Colour stacks keep their order ahead of the slope stacks.
     let slopes: Vec<u8> = (layers.iter())
         .flat_map(|l| l.shades.iter().flatten().map(|s| s.slopes))
@@ -4080,7 +4039,6 @@ fn drape_stacks(inputs: &[StackInput]) -> DrapeStacks {
     };
     for layer in &mut layers {
         layer.below = layer.below.map(renumber);
-        layer.above = layer.above.map(renumber);
         for shade in layer.shades.iter_mut().flatten() {
             shade.slopes = renumber(shade.slopes);
             shade.above = shade.above.map(renumber);
@@ -4361,11 +4319,11 @@ mod tests {
     use terrain::{Shade, TerrainLayer};
 
     /// Drape stacks by case: per node, whether it drapes, its composite
-    /// group, whether it's a shaded hillshade and whether it draws by zoom;
-    /// then each node's stack and terrain layer, the layers and the counts.
+    /// group and whether it's a shaded hillshade; then each node's stack and
+    /// terrain layer, the layers and the counts.
     #[test]
     fn drape_stacks_by_case() {
-        let node = |draped, group, shaded, by_zoom| StackInput {
+        let node = |draped, group, shaded| StackInput {
             draped,
             group,
             blend: match group {
@@ -4373,12 +4331,10 @@ mod tests {
                 None => Blend::Normal,
             },
             shaded,
-            by_zoom,
         };
-        let plain = node(true, None, false, false);
-        let layer = |below, above| TerrainLayer {
+        let plain = node(true, None, false);
+        let layer = |below| TerrainLayer {
             below,
-            above,
             ..TerrainLayer::default()
         };
         // Hillshade `node` lit from slopes stack `slopes`, under `above`.
@@ -4405,7 +4361,7 @@ mod tests {
         let cases: Vec<Case> = vec![
             (
                 "terrain off",
-                vec![node(false, None, false, false); 2],
+                vec![node(false, None, false); 2],
                 DrapeStacks {
                     nodes: vec![(None, None); 2],
                     layers: vec![],
@@ -4417,31 +4373,31 @@ mod tests {
                 vec![plain, plain],
                 DrapeStacks {
                     nodes: vec![(Some(0), Some(0)); 2],
-                    layers: vec![layer(Some(0), None)],
+                    layers: vec![layer(Some(0))],
                     counts: [1, 0],
                 },
             ),
             (
                 "a node that doesn't drape ends the run",
-                vec![plain, node(false, None, false, false), plain],
+                vec![plain, node(false, None, false), plain],
                 DrapeStacks {
                     nodes: vec![(Some(0), Some(0)), (None, None), (Some(1), Some(1))],
-                    layers: vec![layer(Some(0), None), layer(Some(1), None)],
+                    layers: vec![layer(Some(0)), layer(Some(1))],
                     counts: [2, 0],
                 },
             ),
             (
                 "a layer that composites once has a terrain layer of its own",
-                vec![plain, node(true, Some(5), false, false)],
+                vec![plain, node(true, Some(5), false)],
                 DrapeStacks {
                     nodes: vec![(Some(0), Some(0)), (Some(1), Some(1))],
-                    layers: vec![layer(Some(0), None), layer(Some(1), None)],
+                    layers: vec![layer(Some(0)), layer(Some(1))],
                     counts: [2, 0],
                 },
             ),
             (
                 "a shaded hillshade's slopes stack after the colour stacks",
-                vec![plain, node(true, None, true, false), plain],
+                vec![plain, node(true, None, true), plain],
                 DrapeStacks {
                     nodes: vec![(Some(0), Some(0)), (Some(2), Some(0)), (Some(1), Some(0))],
                     layers: vec![shaded(Some(0), &[shade(1, 2, Some(1))])],
@@ -4450,11 +4406,7 @@ mod tests {
             ),
             (
                 "a second shaded hillshade shades the same terrain layer",
-                vec![
-                    node(true, None, true, false),
-                    plain,
-                    node(true, None, true, false),
-                ],
+                vec![node(true, None, true), plain, node(true, None, true)],
                 DrapeStacks {
                     nodes: vec![(Some(1), Some(0)), (Some(0), Some(0)), (Some(2), Some(0))],
                     layers: vec![shaded(None, &[shade(0, 1, Some(0)), shade(2, 2, None)])],
@@ -4463,7 +4415,7 @@ mod tests {
             ),
             (
                 "a third starts a terrain layer",
-                vec![node(true, None, true, false); 3],
+                vec![node(true, None, true); 3],
                 DrapeStacks {
                     nodes: vec![(Some(0), Some(0)), (Some(1), Some(0)), (Some(2), Some(1))],
                     layers: vec![
@@ -4475,7 +4427,7 @@ mod tests {
             ),
             (
                 "a blended shaded hillshade blends into the layer it lies on",
-                vec![plain, node(true, Some(5), true, false), plain],
+                vec![plain, node(true, Some(5), true), plain],
                 DrapeStacks {
                     nodes: vec![(Some(0), Some(0)), (Some(2), Some(0)), (Some(1), Some(0))],
                     layers: vec![shaded(Some(0), &[multiplied(1, 2, Some(1))])],
@@ -4486,8 +4438,8 @@ mod tests {
                 "after another shaded hillshade, it blends into its layer too",
                 vec![
                     plain,
-                    node(true, None, true, false),
-                    node(true, Some(5), true, false),
+                    node(true, None, true),
+                    node(true, Some(5), true),
                     plain,
                 ],
                 DrapeStacks {
@@ -4508,9 +4460,9 @@ mod tests {
                 "past a full layer, it blends into what that layer drew",
                 vec![
                     plain,
-                    node(true, None, true, false),
-                    node(true, None, true, false),
-                    node(true, Some(5), true, false),
+                    node(true, None, true),
+                    node(true, None, true),
+                    node(true, Some(5), true),
                     plain,
                 ],
                 DrapeStacks {
@@ -4533,29 +4485,11 @@ mod tests {
             ),
             (
                 "with nothing beneath it, it composites apart",
-                vec![node(true, Some(5), true, false), plain],
+                vec![node(true, Some(5), true), plain],
                 DrapeStacks {
                     nodes: vec![(Some(1), Some(0)), (Some(0), Some(1))],
-                    layers: vec![shaded(None, &[shade(0, 1, None)]), layer(Some(0), None)],
+                    layers: vec![shaded(None, &[shade(0, 1, None)]), layer(Some(0))],
                     counts: [1, 1],
-                },
-            ),
-            (
-                "zoom-free nodes first split from those drawn by zoom",
-                vec![plain, node(true, None, false, true), plain],
-                DrapeStacks {
-                    nodes: vec![(Some(0), Some(0)), (Some(1), Some(0)), (Some(1), Some(0))],
-                    layers: vec![layer(Some(0), Some(1))],
-                    counts: [2, 0],
-                },
-            ),
-            (
-                "nodes drawn by zoom first don't split",
-                vec![node(true, None, false, true), plain],
-                DrapeStacks {
-                    nodes: vec![(Some(0), Some(0)); 2],
-                    layers: vec![layer(Some(0), None)],
-                    counts: [1, 0],
                 },
             ),
         ];

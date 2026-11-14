@@ -1645,7 +1645,7 @@ mod tests {
             ms: 1000.0,
             bytes: 1,
             drape_texels: u64::MAX,
-            drape_sheets: usize::MAX,
+            drape_slots: usize::MAX,
         };
         let steps = [ground(0, 25.0), ground(1, 25.0), ground(2, 25.0)];
         let mut fresh = Fed::new(0.0, None);

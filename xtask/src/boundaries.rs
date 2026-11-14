@@ -158,8 +158,8 @@ const GPU_ONLY_FILES: &[(&str, Allows, &str)] = &[
     ),
     (
         "orb-render/src/terrain.rs",
-        Allows::Only(&["E::storage(", "STORAGE_BINDING"]),
-        "the drape clear's regions in storage: fetch_drape.wgsl over a data texture; drape mips: drawn ones",
+        Allows::Only(&["STORAGE_BINDING"]),
+        "drape mips written as storage: drawn ones, copied in",
     ),
     (
         "orb-render/src/scene/tables.rs",

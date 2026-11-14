@@ -5,21 +5,16 @@
 // tile's patches in space (`project.wgsl`'s `sphere_at`), raised along the
 // sphere's up, and its top and bottom rows' skirts close the poles.
 //
-// Drape slots are squares of the drape pages' sheets, `slot_px` texels
-// per side, 2 × 2 a sheet: layer `s` of a sheet holds colour stack `s`
-// (or layers `2s` and `2s + 1` its two rows, where `slot_rows` is 1), and
-// a tile's slot of it is place `slot % 4` of sheet `slot / 4`, which the
-// draw of the sheet's tiles binds. Slope stacks are on a page of their
-// own, at `slope_px` texels a side, likewise. A
-// terrain layer draws a stack's slots, two stacks' where the zoom splits
-// it, or a stack's below hillshades it shades from their slopes, each
-// under its stack above it (`terrain_shade.wgsl`), over the map at its
-// opacity. It draws in the map's pass after the terrain's depth alone
+// A tile's drape slots are layers of a texture of their side that the
+// draw of its tiles binds, as many texels as the tile shows at: a layer a
+// colour stack, those of its texture's `slot`th slot (colour stack `s` in
+// layer `slot * colour_stacks + s`). Slope stacks are in a texture of
+// their own, at half the texels, likewise. A
+// terrain layer draws a stack's slots, or
+// a stack's below hillshades it shades from their slopes, each under its
+// stack above it (`terrain_shade.wgsl`), over the map at its opacity. It
+// draws in the map's pass after the terrain's depth alone
 // (`fs_terrain_hidden`), so only the nearest surface shades.
-// A tile's slots are the top-left square of their place, its `shrink`
-// halving their page's side, which a tile that shows small draws few texels
-// of. Mip levels never mix slots, and samples keep to the slot at the level
-// they read, as a texture of its own would clamp to its edge.
 
 struct TerrainTile {
     // The tile's north-west corner in camera-relative world space.
@@ -31,10 +26,8 @@ struct TerrainTile {
     // Tile uv → DEM tile uv: `uv * dem_scale + dem_offset`.
     dem_offset: vec2<f32>,
     dem_scale: f32,
-    // Its block of drape slots, and how many times they halve their page's
-    // side.
+    // Its slots' place in their textures.
     slot: u32,
-    shrink: u32,
     // Tile uv → the uv of the slots it shows: `uv * slot_scale +
     // slot_offset`, its own, or while blank its part of an ancestor's.
     slot_offset: vec2<f32>,
@@ -59,16 +52,11 @@ struct Terrain {
     dem_dim: f32,
     // World units the skirts hang below the edges.
     skirt: f32,
-    // The colour page's slots' side.
-    slot_px: f32,
     // Terrain tiles drawn.
     tiles: u32,
-    // The slope page's slots' side.
-    slope_px: f32,
-    // Rows of slots a layer of the colour page's sheets holds, and of the
-    // slope page's: 2, or 1 where a stack takes a layer a row.
-    slot_rows: u32,
-    slope_rows: u32,
+    // Colour stacks, and slope stacks: each slot's layers in a texture.
+    colour_stacks: u32,
+    slope_stacks: u32,
 };
 
 // A hillshade a terrain layer shades: the slope stack (by its rank on
@@ -82,8 +70,8 @@ struct Shade {
     pad: u32,
 };
 
-// A terrain layer: the colour stack drawn below, and above it where no
-// hillshade is; how it fogs: FOG_CONTENT, or FOG_GROUND for the map's
+// A terrain layer: the colour stack drawn below its hillshades; how it
+// fogs: FOG_CONTENT, or FOG_GROUND for the map's
 // first terrain layer, the ground, which fogs where it draws nothing too,
 // or FOG_FADES for a layer in a blend mode, over ground fogged already; 1
 // where its first hillshade blends into the map beneath rather than a
@@ -92,12 +80,13 @@ struct Shade {
 // its hillshades (orb-render's `MAX_SHADES`).
 struct Layer {
     below: u32,
-    above: u32,
     fog: u32,
     backdrop: u32,
     opacity: f32,
     blend: u32,
-    pad: vec2<u32>,
+    pad0: u32,
+    pad1: u32,
+    pad2: u32,
     shades: array<Shade, 2>,
 };
 
@@ -145,8 +134,8 @@ struct TerrainOut {
     @builtin(position) @invariant position: vec4<f32>,
     // Uv in the slots it shows, y down.
     @location(0) uv: vec2<f32>,
-    // The tile's index, its block of drape slots and their shrink.
-    @location(1) @interpolate(flat, either) tile: vec3<u32>,
+    // Its slots' place in their textures.
+    @location(1) @interpolate(flat, either) slot: u32,
     @location(2) fog_depth: f32,
     // Mercator's slope stretch for a hillshade the layer shades
     // (`terrain_shade.wgsl`): per vertex rather than per fragment, which
@@ -188,7 +177,7 @@ fn vs_terrain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) insta
     let depth = select(plane_depth(world, z), clip.w - clip.z, globe);
     out.position = vec4<f32>(clip.xy, depth, clip.w);
     out.uv = uv * tile.slot_scale + tile.slot_offset;
-    out.tile = vec3<u32>(instance, tile.slot, tile.shrink);
+    out.slot = tile.slot;
     out.stretch = 1.0 / cos(radians(mix(tile.latitudes.x, tile.latitudes.y, uv.y)));
     // The view depth is the clip w, mixed as the globe hands over: fog
     // fades in as it does (`fog_opacity`).
@@ -210,50 +199,32 @@ fn fs_terrain_hidden() -> @location(0) vec4<f32> {
     return vec4<f32>(0.0);
 }
 
-// Where a fragment samples its tile's drape slots on a page of `slot_px`
-// texels a slot: the texel in a slot and the footprint's gradients, the
-// same in every slot of the page and side (the colour page's, or the slope
-// page's, shrunk as the tile's). Trilinear and
-// anisotropic, as GL JS samples its render-to-texture tiles, and kept in
-// the slot as a texture of its own would clamp to its edge.
+// Where a fragment samples its tile's drape slots, each a texture of its
+// own `slot_px` texels a side: uv and the footprint's gradients.
+// Trilinear and anisotropic, as GL JS samples its render-to-texture
+// tiles, and kept off the slot's edge by half a texel of the level the
+// sampler reads, the footprint shrunk where it would reach past it, on a
+// 1/512-texel grid. With the sampler's own clamp to the edge, what a
+// moved map showed at a seam differed from a fresh map's by a speck.
 struct DrapeSample {
-    texel: vec2<f32>,
+    uv: vec2<f32>,
     dx: vec2<f32>,
     dy: vec2<f32>,
 };
 
-fn drape_sample(in: TerrainOut, page_px: f32) -> DrapeSample {
-    // Exact: a power of two over one.
-    let slot_px = page_px / f32(1u << in.tile.z);
+fn drape_sample(in: TerrainOut, slot_px: f32) -> DrapeSample {
     let texel = in.uv * slot_px;
     let dx = dpdx(texel);
     let dy = dpdy(texel);
     // A texel of the level the sampler reads: the footprint's longer side
     // over up to 16 probes along it, no finer than its shorter side.
     let level_texel = max(max(length(dx), length(dy)) / 16.0, min(length(dx), length(dy)));
-    // Each probe reads half a texel of the coarser level around it: the
-    // sample keeps that far from the slot's edge. The probes span the
-    // footprint: near the edge it shrinks until they stay in the slot,
-    // rather than the sample moving further off the edge texels.
     let half = 0.5 * exp2(ceil(clamp(log2(level_texel), 0.0, log2(slot_px) - 1.0)));
     let p = clamp(texel, vec2<f32>(half), vec2<f32>(slot_px - half));
     let room = min(p, vec2<f32>(slot_px) - p) - half;
     let need = 0.5 * max(abs(dx), abs(dy));
     let fit = min(1.0, min(room.x / max(need.x, 1e-6), room.y / max(need.y, 1e-6)));
-    // On a 1/512-texel grid, finer than samplers resolve: added to any
-    // slot's corner in a sheet, exact in f32, and over the sheet's side, a
-    // power of two, exact as a texture coordinate too: a slot samples alike
-    // wherever it lies.
-    return DrapeSample(round(p * 512.0) / 512.0, dx * fit, dy * fit);
-}
-
-// Where tile slot `slot` of the stack of rank `rank` lies in a sheet whose
-// layers hold `rows` rows of slots: its layer, then its
-// column and row in the layer.
-fn sheet_place(slot: u32, rank: u32, rows: u32) -> vec3<u32> {
-    let at = slot % 4u;
-    let row = at / 2u;
-    return vec3<u32>(rank * (2u / rows) + row / rows, at % 2u, row % rows);
+    return DrapeSample(round(p * 512.0) / 512.0 / slot_px, dx * fit / slot_px, dy * fit / slot_px);
 }
 
 // Colour stack `stack`'s slot colour at `at`, none for NO_STACK.
@@ -261,20 +232,14 @@ fn drape_color(in: TerrainOut, at: DrapeSample, stack: u32) -> vec4<f32> {
     if stack == NO_STACK {
         return vec4<f32>(0.0);
     }
-    let place = sheet_place(in.tile.y, stack, terrain.slot_rows);
-    let size = vec2<f32>(textureDimensions(drape));
-    let corner = vec2<f32>(place.yz) * terrain.slot_px;
-    let uv = (corner + at.texel) / size;
-    return textureSampleGrad(drape, drape_sampler, uv, place.x, at.dx / size, at.dy / size);
+    let layer = in.slot * terrain.colour_stacks + stack;
+    return textureSampleGrad(drape, drape_sampler, at.uv, layer, at.dx, at.dy);
 }
 
-// Slope stack `rank`'s slot at `at` (a sample at `slope_px`).
+// Slope stack `rank`'s slot at `at`.
 fn slope_texel(in: TerrainOut, at: DrapeSample, rank: u32) -> vec4<f32> {
-    let place = sheet_place(in.tile.y, rank, terrain.slope_rows);
-    let size = vec2<f32>(textureDimensions(slope_atlas));
-    let corner = vec2<f32>(place.yz) * terrain.slope_px;
-    let uv = (corner + at.texel) / size;
-    return textureSampleGrad(slope_atlas, drape_sampler, uv, place.x, at.dx / size, at.dy / size);
+    let layer = in.slot * terrain.slope_stacks + rank;
+    return textureSampleGrad(slope_atlas, drape_sampler, at.uv, layer, at.dx, at.dy);
 }
 
 // `top` over `bottom`, premultiplied.
@@ -284,8 +249,8 @@ fn over(top: vec4<f32>, bottom: vec4<f32>) -> vec4<f32> {
 
 @fragment
 fn fs_terrain(in: TerrainOut) -> @location(0) vec4<f32> {
-    let at = drape_sample(in, terrain.slot_px);
-    let color = over(drape_color(in, at, layer.above), drape_color(in, at, layer.below));
+    let at = drape_sample(in, f32(textureDimensions(drape).x));
+    let color = drape_color(in, at, layer.below);
     return fogged(in, color) * layer.opacity;
 }
 

@@ -35,16 +35,15 @@ fn shade_color(in: TerrainOut, at: DrapeSample, k: u32) -> vec4<f32> {
 // The layer's colour: its stack below, each hillshade over it in its
 // blend mode, under the stack above that.
 fn shaded_color(in: TerrainOut) -> vec4<f32> {
-    let at = drape_sample(in, terrain.slot_px);
-    let slopes_at = drape_sample(in, terrain.slope_px);
+    let at = drape_sample(in, f32(textureDimensions(drape).x));
+    let slopes_at = drape_sample(in, f32(textureDimensions(slope_atlas).x));
     var color = drape_color(in, at, layer.below);
     for (var k = 0u; k < 2u && layer.shades[k].slopes != NO_STACK; k++) {
         let shade = layer.shades[k];
         color = blend_over(shade.blend, shade_color(in, slopes_at, k), color);
         color = over(drape_color(in, at, shade.above), color);
     }
-    // Without a hillshade, the stack above where the zoom splits the layer.
-    return over(drape_color(in, at, layer.above), color);
+    return color;
 }
 
 @fragment
@@ -63,8 +62,8 @@ fn fs_terrain_beneath(in: TerrainOut) -> @location(0) vec4<f32> {
     // The map, fogged already, under the hillshades blended into it,
     // faded as the fog thickens, which takes their place, and the stacks
     // above them fogged.
-    let at = drape_sample(in, terrain.slot_px);
-    let slopes_at = drape_sample(in, terrain.slope_px);
+    let at = drape_sample(in, f32(textureDimensions(drape).x));
+    let slopes_at = drape_sample(in, f32(textureDimensions(slope_atlas).x));
     let fade = 1.0 - atmosphere_fog_factor(atmosphere, in.fog_depth);
     var color = map;
     for (var k = 0u; k < 2u && layer.shades[k].slopes != NO_STACK; k++) {

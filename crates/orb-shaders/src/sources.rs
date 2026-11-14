@@ -26,10 +26,6 @@ const GL_SWAPS: &[(&str, &str)] = &[
         ),
     ),
     (
-        wgsl!("fetch_drape"),
-        concat!(wgsl!("data_texture"), wgsl!("fetch_drape_texture")),
-    ),
-    (
         wgsl!("fetch_regions"),
         concat!(wgsl!("data_texture"), wgsl!("fetch_regions_texture")),
     ),

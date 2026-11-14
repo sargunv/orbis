@@ -789,7 +789,7 @@ pub struct Map {
     pub(crate) release_cached: bool,
     /// Tiles out of view stay cached ([`Map::set_tile_cache`]).
     pub(crate) tile_cache: bool,
-    /// The device refused the drape a sheet, and the next frame draws the
+    /// The device refused the drape a texture, and the next frame draws the
     /// terrain within the slots the drape held ([`Map::plan_drape`]).
     pub(crate) drape_refused: bool,
     /// The terrain waits to turn on, or to go, for the pipelines the map
@@ -1992,7 +1992,7 @@ impl Map {
         }
         // A prepared frame leaves the terrain's cover and drape, whose
         // redraws are the drawn frame's, to the next one.
-        let drawing = target.is_some();
+        let drawing = target.map(|_| pixel_ratio);
         // Slots redrawn: the next frame drops their drape placements.
         let (frame_terrain, redrew) = match self.style.is_some() {
             true => {
@@ -2162,7 +2162,8 @@ impl Map {
     /// Brings the style's terrain, sources and drape to the view, with the
     /// frame's eased `root` values, and places their tiles, timing each
     /// stage into `times`, the tiles drawn for picking into `drawn`; with
-    /// `drawing`, a frame drawn and not only prepared. Returns the frame's
+    /// `drawing`, a frame drawn and not only prepared, on a target of that
+    /// pixel ratio. Returns the frame's
     /// terrain and whether drape slots were redrawn.
     fn update_scene(
         &mut self,
@@ -2170,7 +2171,7 @@ impl Map {
         renderer: &mut Renderer,
         view: &View,
         root: &crate::root::RootFrame,
-        drawing: bool,
+        drawing: Option<f32>,
         (report, times, drawn): (
             &mut FrameReport,
             &mut FrameTimes,
@@ -2182,7 +2183,7 @@ impl Map {
         // Terrain's DEM and cover first: the sources cover over its
         // elevations, and drape over its tiles.
         let at = clock.now();
-        if drawing {
+        if drawing.is_some() {
             frame_terrain = self.update_terrain(gpu, renderer, view, root, report);
         }
         let planning = clock.now();
@@ -2217,17 +2218,14 @@ impl Map {
         }
         let draping = clock.now();
         times.plan = micros(planning, draping);
-        let drape = match drawing {
-            true => self.plan_drape(gpu, renderer, view),
-            false => None,
-        };
+        let drape = drawing.and_then(|ratio| self.plan_drape(gpu, renderer, (view, ratio)));
         let placing = clock.now();
         times.drape = micros(draping, placing);
         let redrew = DrapeDrawn {
             redrew: drape.as_ref().is_some_and(|d| !d.redraw.is_empty()),
             deferred: drape.as_ref().is_some_and(|d| d.deferred),
         };
-        if drawing {
+        if drawing.is_some() {
             self.place_background(
                 gpu,
                 renderer,
@@ -3185,15 +3183,6 @@ impl Map {
             let on_surface = matches!(&style.sources[node.source],
                 SourceState::Ready { endpoint, .. } if endpoint.tms == *self.surface.tms());
             renderer.set_shaded_on_terrain(gpu, index as u32, viewport && on_surface);
-        }
-        // Draped layers that draw alike at every zoom keep slots of their
-        // own under those that don't, which zooming redraws.
-        for (index, node) in plan.nodes.iter().enumerate() {
-            if node.family.is_draped() {
-                let layer = &plan.style.layers[node.layer];
-                let by_zoom = crate::paint::drapes_by_zoom(layer);
-                renderer.set_drapes_by_zoom(gpu, index as u32, by_zoom);
-            }
         }
         let at = (view, self.surface.tms(), self.camera.state().target);
         let ground = (view.world_z(skirt), cover_room);

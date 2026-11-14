@@ -653,7 +653,7 @@ impl Map {
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
-        view: &View,
+        (view, pixel_ratio): (&View, f32),
     ) -> Option<DrapePlan> {
         let time = self.shader_time();
         // A still map redraws every stale slot in its one frame.
@@ -671,47 +671,14 @@ impl Map {
         let worker = Arc::clone(&style.worker);
         let plan = worker.plan();
         terrain.release_slots();
-        // The pages hold what the cover needs ([`Terrain::slots_needed`]),
-        // growing by a blank sheet of slots when it needs more. They let go
-        // of the sheets past it only in a frame that settles the map
+        // The pages make textures as slots need them, and let go of those no
+        // slot holds only in a frame that settles the map
         // ([`Map::trim_drape`]): neither copies a slot, and what a frame
         // shows doesn't depend on them.
-        let still = self.mode != RenderMode::Continuous;
-        let room = renderer.drape_room(gpu);
-        let slots = (terrain.slots_needed(still, room)).max(renderer.drape_slots());
-        let layout = match renderer.reserve_drape(gpu, slots) {
+        let layout = match renderer.reserve_drape(gpu) {
             Ok(layout) => layout,
             Err(full) => {
-                // The cover fits the atlas's room (`Terrain::update`)
-                // unless its stacks leave none for the view's tiles, or the
-                // device refused a sheet.
-                let warning = match full {
-                    DrapeFull::Room => {
-                        "too many drape stacks for the drape atlas; terrain is flat".into()
-                    }
-                    DrapeFull::Refused(bytes) => {
-                        // A device short of memory: what's kept out of view
-                        // goes first, and the next frame's cover keeps to
-                        // the slots the drape held, which the device gave
-                        // (`Renderer::drape_room`); the map asks for more
-                        // again once it settles (`trim_drape`).
-                        self.release_cached = true;
-                        let room = renderer.drape_room(gpu);
-                        self.drape_refused = room > 0;
-                        format!(
-                            "the GPU refused a drape sheet's {} MiB; terrain {} until the map \
-                             settles",
-                            bytes >> 20,
-                            if room > 0 {
-                                "covers the view in fewer tiles"
-                            } else {
-                                "is flat"
-                            }
-                        )
-                    }
-                };
-                self.warnings.push(warning);
-                renderer.set_terrain(gpu, None);
+                self.drape_full(gpu, renderer, full);
                 return None;
             }
         };
@@ -849,12 +816,17 @@ impl Map {
         };
         let terrain = style.terrain.as_mut().expect("checked above");
         let slots = (layout, texels);
-        let (tiles, redraw, deferred) = terrain.plan(&surface, view, slots, &content, &mut globe);
-        renderer.set_terrain_tiles(gpu, &tiles);
+        let footprint = (view, pixel_ratio);
+        let (tiles, redraw, deferred) =
+            terrain.plan(&surface, footprint, slots, &content, &mut globe);
         let slots: Vec<(u32, u8, &[u8])> = (redraw.iter())
             .map(|r| (r.slot, r.shrink, &r.stacks[..]))
             .collect();
-        renderer.redraw_drape(zoom, &slots);
+        if let Err(full) = renderer.redraw_drape(gpu, zoom, &slots) {
+            self.drape_full(gpu, renderer, full);
+            return None;
+        }
+        renderer.set_terrain_tiles(gpu, &tiles);
         let reaches = (redraw.iter())
             .map(|r| crate::terrain::Reach::of(&surface, r.tile, (zoom, sphere, reach_px)))
             .collect();
@@ -870,26 +842,47 @@ impl Map {
         })
     }
 
-    /// Lets the drape pages go of the sheets past the cover's tiles, in a
-    /// frame that settles the map: a cover that takes tiles and drops them
-    /// as the view moves keeps its pages until then, rather than making
-    /// and freeing the same sheets frame after frame, and a map at rest
-    /// holds what a fresh one there does.
-    /// A device that refused the drape a sheet is asked again for what the
-    /// cover needs in the frames after this one.
+    /// Turns the terrain flat for a frame whose drape the pages can't
+    /// hold, saying why. The cover fits the pages' room
+    /// (`Terrain::update`) unless the style's stacks leave none for the
+    /// view's tiles, or the device refused a texture.
+    fn drape_full(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer, full: DrapeFull) {
+        let warning = match full {
+            DrapeFull::Room => "too many drape stacks for the drape atlas; terrain is flat".into(),
+            DrapeFull::Refused(bytes) => {
+                // A device short of memory: what's kept out of view goes
+                // first, and the next frame's cover keeps to the tiles the
+                // drape held, which the device gave
+                // (`Renderer::drape_room`); the map asks for more again
+                // once it settles (`trim_drape`).
+                self.release_cached = true;
+                let room = renderer.drape_room(gpu);
+                self.drape_refused = room > 0;
+                format!(
+                    "the GPU refused a drape texture's {} MiB; terrain {} until the map settles",
+                    bytes >> 20,
+                    if room > 0 {
+                        "covers the view in fewer tiles"
+                    } else {
+                        "is flat"
+                    }
+                )
+            }
+        };
+        self.warnings.push(warning);
+        renderer.set_terrain(gpu, None);
+    }
+
+    /// Lets the drape pages go of the textures no slot holds, in a frame
+    /// that settles the map: a view that takes slots and drops them as it
+    /// moves keeps its textures until then, rather than making and freeing
+    /// the same ones frame after frame, and a map at rest holds what a
+    /// fresh one there does. A device that refused the drape a texture is
+    /// asked again for what the cover needs in the frames after this one.
     pub(crate) fn trim_drape(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
         renderer.lift_drape_ceiling();
-        let Some(terrain) = self.style.as_ref().and_then(|s| s.terrain.as_ref()) else {
-            return;
-        };
-        if !renderer.terrain_on() || renderer.drape_slots() == 0 {
-            return;
-        }
-        let still = self.mode != RenderMode::Continuous;
-        let slots = terrain.slots_needed(still, renderer.drape_room(gpu));
-        if slots < renderer.drape_slots() {
-            // Shrinking keeps within the room and makes nothing.
-            let _ = renderer.reserve_drape(gpu, slots);
+        if renderer.terrain_on() {
+            renderer.trim_drape(gpu);
         }
     }
 

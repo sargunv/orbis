@@ -135,42 +135,99 @@ pub(crate) struct Redraw {
     pub(crate) stacks: Vec<u8>,
 }
 
-/// The most a drape slot's side halves: to 64 texels a colour slot.
-const MAX_SHRINK: u8 = 4;
+/// Cells a side of the grid a terrain tile's footprint is measured over
+/// ([`shown_px`]).
+const FOOTPRINT_CELLS: usize = 8;
 
 /// How many times terrain tile `tile`'s drape slots halve their page's
-/// side in `view`: as many as leave √2 texels a logical pixel along its
-/// longest edge on screen, the least a tile of a flat view's cover gets
-/// (a zoom's tiles show at 362 to 724 pixels, for 1024 texels; fewer
-/// soften a checkerboard's edges). A tile of a pitched or globe view that
-/// shows smaller takes as few texels as it shows, a quarter of the
-/// drawing a halving; the terrain's cover keeps most at full size.
-/// Projected level with the camera's target, and at full size where a
-/// corner is behind the eye or beyond a globe's horizon: a function of the
-/// camera alone, as what slots show must be.
-pub(crate) fn slot_shrink(view: &View, tms: &TileMatrixSet, tile: CoveredTile) -> u8 {
+/// side in `view` on a target of `pixel_ratio` physical pixels a logical
+/// one: as many as leave √2 texels a logical pixel, or a texel a physical
+/// one where those are finer, across the tile at its largest on screen
+/// ([`shown_px`]). A flat view's tiles show at 362 to 724 pixels, which
+/// takes them all 1024 texels on a target of one physical pixel a logical
+/// one (fewer soften a checkerboard's edges). A tile of a pitched or globe
+/// view that shows smaller holds and draws as few texels as it shows, a
+/// quarter a halving, and one off screen the fewest: a function of the
+/// camera and the terrain's `ceiling` (its highest ground there could be)
+/// alone, as what slots show must be.
+pub(crate) fn slot_shrink(
+    (view, pixel_ratio): (&View, f64),
+    tms: &TileMatrixSet,
+    (tile, ceiling): (CoveredTile, Metres),
+) -> u8 {
+    let texels = shown_px(view, tms, (tile, ceiling)) * pixel_ratio.max(std::f64::consts::SQRT_2);
+    let room = f64::from(orb_render::DRAPE_SLOT_PX) / texels.max(1.0);
+    let most = f64::from(orb_render::MAX_SHRINK);
+    room.log2().floor().clamp(0.0, most) as u8
+}
+
+/// The logical pixels terrain tile `tile` spans in `view`, level with the
+/// camera's target, where it shows largest: its longest projected side,
+/// as large as any where it reaches behind the eye. On a globe, also where
+/// part of it shows larger, over a grid of [`FOOTPRINT_CELLS`] cells a
+/// side, the longest projected side of a cell that meets the viewport at
+/// some height from sea level to `ceiling`, the highest ground there could
+/// be, as many times as the grid has cells, leaving out corners beyond the
+/// horizon: a tile the horizon hides most of takes the part that shows. A
+/// flat view's tiles span their side.
+fn shown_px(view: &View, tms: &TileMatrixSet, (tile, ceiling): (CoveredTile, Metres)) -> f64 {
+    const N: usize = FOOTPRINT_CELLS;
     let b = tms.tile_bounds(tile.index);
     let period = tms.projection().wrap_period().unwrap_or(0.0);
     let shift = DVec2::new(f64::from(tile.wrap) * period, 0.0);
-    let corners = [
-        b.min,
-        DVec2::new(b.max.x, b.min.y),
-        b.max,
-        DVec2::new(b.min.x, b.max.y),
-    ];
-    let mut px = [DVec2::ZERO; 4];
-    for (out, corner) in px.iter_mut().zip(corners) {
-        let Some(at) = view.project(corner + shift) else {
-            return 0;
-        };
-        *out = at;
-    }
-    let edge = (0..4)
-        .map(|i| px[i].distance(px[(i + 1) % 4]))
+    let grid = |height: Option<Metres>| {
+        let mut at = [[None; N + 1]; N + 1];
+        for (j, row) in at.iter_mut().enumerate() {
+            for (i, point) in row.iter_mut().enumerate() {
+                let f = DVec2::new(i as f64, j as f64) / N as f64;
+                let p = b.min + b.size() * f + shift;
+                *point = match height {
+                    Some(h) => view.project_3d(p, h),
+                    None => view.project(p),
+                };
+            }
+        }
+        at
+    };
+    let level = grid(None);
+    let corners = [level[0][0], level[0][N], level[N][N], level[N][0]];
+    let mut most = (0..4)
+        .filter_map(|k| Some(corners[k]?.distance(corners[(k + 1) % 4]?)))
         .fold(0.0, f64::max);
-    let texels = edge * std::f64::consts::SQRT_2;
-    let room = f64::from(orb_render::DRAPE_SLOT_PX) / texels.max(1.0);
-    room.log2().floor().clamp(0.0, f64::from(MAX_SHRINK)) as u8
+    // Off the globe, a corner that doesn't project is behind the eye: the
+    // tile reaches under the camera, where it shows larger than anywhere;
+    // and a tile all in front shows at its longest side, wherever it lies.
+    if view.globe().is_none() {
+        return match corners.iter().all(Option::is_some) {
+            true => most,
+            false => f64::INFINITY,
+        };
+    }
+    let band = [grid(Some(Metres(0.0))), grid(Some(ceiling))];
+    let ring = |at: &[[Option<DVec2>; N + 1]; N + 1], i: usize, j: usize| {
+        [at[j][i], at[j][i + 1], at[j + 1][i + 1], at[j + 1][i]]
+    };
+    let viewport = view.viewport();
+    for j in 0..N {
+        for i in 0..N {
+            let (mut lo, mut hi) = (DVec2::INFINITY, DVec2::NEG_INFINITY);
+            for p in (band.iter()).flat_map(|at| ring(at, i, j)).flatten() {
+                (lo, hi) = (lo.min(p), hi.max(p));
+            }
+            let meets =
+                hi.x >= 0.0 && hi.y >= 0.0 && lo.x <= viewport.width && lo.y <= viewport.height;
+            if !meets {
+                continue;
+            }
+            let corners = ring(&level, i, j);
+            for k in 0..4 {
+                if let (Some(p), Some(q)) = (corners[k], corners[(k + 1) % 4]) {
+                    most = most.max(p.distance(q) * N as f64);
+                }
+            }
+        }
+    }
+    most
 }
 
 #[derive(Debug)]
@@ -672,35 +729,6 @@ impl Terrain {
                 .all(|(place, tile)| self.slots.get(tile).is_some_and(|s| s.index == place))
     }
 
-    /// One past the last tile slot held, drawn or retired: the pages hold
-    /// at least as many ([`Map::plan_drape`](crate::Map)).
-    pub(crate) fn slots_end(&self) -> u32 {
-        (self.slots.values().chain(self.retired.values()))
-            .map(|s| s.index + 1)
-            .max()
-            .unwrap_or(0)
-    }
-
-    /// The tile slots the drape pages need, of `room` at most: the cover's
-    /// tiles and every slot held past them. While a tile of a continuous
-    /// map's cover is out of its place they keep a slot free too, which a
-    /// move between two tiles that hold each other's places goes through,
-    /// so that moves fit the frame's budget ([`plan`](Self::plan)); a
-    /// still map moves every tile in its frame.
-    pub(crate) fn slots_needed(&self, still: bool, room: u32) -> u32 {
-        let tiles = self.tiles.len() as u32;
-        let held = (self.slots.len() + self.retired.len()) as u32;
-        let misplaced = !self.retired.is_empty()
-            || (0u32..)
-                .zip(&self.tiles)
-                .any(|(place, tile)| self.slots.get(tile).is_some_and(|s| s.index != place));
-        let wanted = match still || !misplaced {
-            true => tiles,
-            false => (tiles.max(held) + 1).min(room),
-        };
-        wanted.max(self.slots_end()).max(1)
-    }
-
     /// The nearest retired ancestor of `tile`, whose slot it shows while
     /// blank.
     fn stand_in(&self, tile: CoveredTile) -> Option<CoveredTile> {
@@ -724,7 +752,7 @@ impl Terrain {
     /// content, as `content` hashes it per stack, changed, and every stack
     /// of a tile whose slots' side in `view` did ([`slot_shrink`]).
     ///
-    /// What a frame redraws is bounded by `budget`'s texels and sheets
+    /// What a frame redraws is bounded by `budget`'s texels and slots
     /// (unbounded for none), so that it follows the screen, not how fast
     /// the zoom crosses the drape's steps or how many tiles a cover
     /// splits. Blank tiles go first: a tile the cover split shows its part
@@ -732,17 +760,18 @@ impl Terrain {
     /// ancestor (new ground, or a merge) is drawn whatever the budget.
     /// Then stale ones, the longest stale first, each drawn as it was
     /// until a frame redraws it. Of those alike, the ones that show
-    /// largest go first, then those nearest the view's centre, of the
-    /// slots of the budget's sheets. Each tile takes the slot of its place
-    /// in the cover, so that the cover's tiles fill the first sheets, as a
-    /// fresh map's do, and the sheets past them come free. A move is a
-    /// redraw, within the budget, into a place left free. Once none is
-    /// blank, stale or out of place, each slot holds what a fresh map's
-    /// does. On a globe, `globe` places a tile on the sphere.
+    /// largest go first, then those nearest the view's centre. Each tile
+    /// takes the slot of its place in the cover, whose place in the drape
+    /// grid it draws in, as a fresh map's does. A move is a redraw, within
+    /// the budget, into a place left free. Once none is blank, stale or
+    /// out of place, each slot holds what a fresh map's does. Slots' sides
+    /// follow their tiles' footprints in `view` on a target of its pixel
+    /// ratio ([`slot_shrink`]). On a globe, `globe` places a tile on the
+    /// sphere.
     pub(crate) fn plan(
         &mut self,
         tms: &TileMatrixSet,
-        view: &View,
+        (view, pixel_ratio): (&View, f32),
         (layout, budget): (DrapeLayout, Option<(u64, usize)>),
         content: &dyn Fn(CoveredTile) -> Vec<u64>,
         globe: &mut dyn FnMut(TileIndex) -> Option<orb_render::TerrainGlobe>,
@@ -768,10 +797,11 @@ impl Terrain {
             self.retired.clear();
             self.slots.retain(|t, s| places[t] == s.index);
         }
+        let ceiling = Metres(orb_camera::HIGHEST_GROUND.0 * self.exaggeration);
         let mut wants = Vec::new();
         for (place, &tile) in (0u32..).zip(&self.tiles) {
             let content = content(tile);
-            let shrink = slot_shrink(view, tms, tile);
+            let shrink = slot_shrink((view, f64::from(pixel_ratio)), tms, (tile, ceiling));
             let need = match self.slots.get(&tile) {
                 None => Need::Blank(self.stand_in(tile)),
                 Some(slot) if slot.index != place => Need::Move,
@@ -828,8 +858,8 @@ impl Terrain {
         // moved: where none could, the first takes a free slot, so that
         // the place it leaves frees another's (they took each other's).
         let (mut blocked, mut moved) = (None, false);
-        // The sheets the frame redraws slots of.
-        let mut sheets: Vec<u32> = Vec::new();
+        // The slots the frame redraws.
+        let mut slots = 0;
         for want in wants {
             let tile = self.tiles[want.place as usize];
             let forced = matches!(want.need, Need::Blank(None));
@@ -837,21 +867,10 @@ impl Terrain {
                 deferred = true;
                 continue;
             }
-            // Each sheet a frame redraws replays the drape's draws, so a
-            // continuous map's frame redraws slots of few: what else is
-            // due waits for a frame to come.
-            let target = match &want.need {
-                Need::Stale(_) => Some(self.slots[&tile].index),
-                Need::Move => Some(want.place),
-                Need::Blank(_) if !used.contains(&want.place) => Some(want.place),
-                Need::Blank(stand_in) => (0..layout.tile_slots)
-                    .find(|i| !used.contains(i))
-                    .or_else(|| stand_in.and_then(|s| self.retired.get(&s)).map(|r| r.index)),
-            };
-            let sheet = target.map(|slot| slot / orb_render::SHEET_SLOTS);
-            let new_sheet = sheet.is_some_and(|s| !sheets.contains(&s));
-            let most = budget.map_or(usize::MAX, |b| b.1);
-            if !forced && new_sheet && sheets.len() >= most {
+            // Each slot a frame redraws replays the drape's draws, so a
+            // continuous map's frame redraws few: what else is due waits
+            // for a frame to come.
+            if !forced && slots >= budget.map_or(usize::MAX, |b| b.1) {
                 deferred = true;
                 continue;
             }
@@ -899,9 +918,7 @@ impl Terrain {
                 }
             };
             used.insert(index);
-            if !sheets.contains(&(index / orb_render::SHEET_SLOTS)) {
-                sheets.push(index / orb_render::SHEET_SLOTS);
-            }
+            slots += 1;
             spent += (stacks.iter())
                 .map(|&s| u64::from(layout.slot_px(u32::from(s)) >> want.shrink).pow(2))
                 .sum::<u64>();
@@ -969,7 +986,6 @@ impl Terrain {
                 scale: (tms.tile_span(tile.index.z) / f64::from(orb_render::TERRAIN_EXTENT)) as f32,
                 dem,
                 slot: slot.index,
-                shrink: slot.shrink,
                 within: in_slot,
                 globe: globe(tile.index),
                 latitudes: orb_render::tile_latitudes(tile.index),
@@ -2040,7 +2056,8 @@ mod tests {
     }
 
     /// A terrain tile's slots take the texels it shows at: full in a view
-    /// straight down, fewer for a pitched view's far tiles.
+    /// straight down, fewer for a pitched view's far tiles, more of them
+    /// on a target of more physical pixels a logical one.
     #[test]
     fn slots_shrink_with_their_tiles_on_screen() {
         let tms = tms();
@@ -2049,15 +2066,16 @@ mod tests {
             width: 1024.0,
             height: 768.0,
         };
-        let shrinks = |zoom: f64, pitch: f64| {
+        let shrinks_at = |zoom: f64, pitch: f64, ratio: f64| {
             let target = orb_crs::Geodetic::new(7.75, 46.02);
             let mut camera = orb_camera::CameraState::new(target, zoom, &mercator);
             camera.pitch = pitch;
             let view = View::new(&camera, viewport, &orb_crs::Surface::plane(mercator));
             (view.cover(&tms, TERRAIN_TILE_PX, 22).into_iter())
-                .map(|t| (t, slot_shrink(&view, &tms, t)))
+                .map(|t| (t, slot_shrink((&view, ratio), &tms, (t, Metres(0.0)))))
                 .collect::<Vec<_>>()
         };
+        let shrinks = |zoom, pitch| shrinks_at(zoom, pitch, 1.0);
         // Straight down, every tile shows at 512 pixels or more.
         for zoom in [11.0, 11.5, 11.99] {
             assert!(shrinks(zoom, 0.0).iter().all(|&(_, s)| s == 0), "z{zoom}");
@@ -2074,6 +2092,15 @@ mod tests {
             near.len() >= 4 && near.iter().all(|&&(_, s)| s == 0),
             "{tilted:?}"
         );
+        // Twice the physical pixels: no slot smaller, some larger.
+        let sharp = shrinks_at(11.5, 70.0, 2.0);
+        assert!(
+            sharp
+                .iter()
+                .zip(&tilted)
+                .all(|(a, b)| a.0 == b.0 && a.1 <= b.1)
+        );
+        assert!(sharp.iter().zip(&tilted).any(|(a, b)| a.1 < b.1));
     }
 
     /// A tile the cover splits shows its part of its parent's slot until
@@ -2106,7 +2133,13 @@ mod tests {
         let budget = Some((1, usize::MAX));
         let plan = |terrain: &mut Terrain| {
             terrain.release_slots();
-            terrain.plan(&tms, &view, (layout, budget), &|_| vec![1], &mut |_| None)
+            terrain.plan(
+                &tms,
+                (&view, 1.0),
+                (layout, budget),
+                &|_| vec![1],
+                &mut |_| None,
+            )
         };
         terrain.tiles = vec![covered(parent)];
         let (_, redraw, deferred) = plan(&mut terrain);

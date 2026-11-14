@@ -113,15 +113,6 @@ pub const TERRAIN_SHADE_SHADER: Shader = Shader {
     compute: "",
 };
 
-/// Clears the drape slots a frame redraws.
-pub const DRAPE_SHADER: Shader = Shader {
-    label: "drape",
-    parts: &[wgsl!("fetch_drape"), wgsl!("drape")],
-    vertex: "vs_slot",
-    fragment: "fs_clear",
-    compute: "",
-};
-
 pub const SKY_SHADER: Shader = Shader {
     label: "sky",
     parts: &[TYPES, ATMOSPHERE, wgsl!("sky")],
@@ -480,7 +471,6 @@ pub const SHADERS: &[Shader] = &[
     COMPOSITE_REPLACE_SHADER,
     TERRAIN_SHADER,
     TERRAIN_SHADE_SHADER,
-    DRAPE_SHADER,
     EXTRUSION_SHADER,
     EXTRUSION_CUT_SHADER,
     EXTRUSION_PLANES_SHADER,

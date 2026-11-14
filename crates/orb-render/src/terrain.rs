@@ -3,27 +3,28 @@
 //! texture.
 //!
 //! Each terrain tile has a drape slot per drape stack (a run of draped
-//! layers between layers that draw in 3D or on screen, the part of one
-//! above its first layer whose drawing changes with the zoom, or a
-//! hillshade the terrain shades, whose stack holds its unlit slopes).
-//! Slots are squares of mipmapped pages (a tile that shows small draws the
-//! top-left square of its slots that it shows at,
-//! [`TerrainTile::shrink`]): colour stacks in one, slope stacks at half the
-//! texels a side in another, a layer of its page a stack (or two, a row of
-//! slots each, where GL would make one layer with two). A page is
-//! sheets of 2 × 2 slots, each a texture of its own, which lie side by
-//! side in one grid of drape space: pages grow by a sheet, blank, and
-//! shrink by sheets no slot holds, and no slot ever moves to another
-//! texture. A frame redraws only the slots the runtime marks: their drape
-//! placements, the draped nodes' only candidates, map them into the grid,
-//! so one pass a sheet's layer redraws its slots, replaying each stack's
-//! bundle of its draped nodes over them with the viewport on the sheet,
-//! then a compute pass a sheet downsamples their mip levels.
+//! layers between layers that draw in 3D or on screen, or a hillshade the
+//! terrain shades, whose stack holds its unlit slopes), of as many texels
+//! as the tile shows at (the runtime's `slot_shrink`), up to
+//! [`DRAPE_SLOT_PX`] a side. A tile's slots are a texture of their side,
+//! mipmapped, a layer a stack: colour stacks in one, slope stacks at half
+//! the texels a side in another (two tiles' a texture where GL would make
+//! one's layers with a layer more, [`slots_per_texture`]). The drape holds
+//! the texels its tiles show, no more: a slot of another side takes
+//! another texture, and a texture no slot holds goes once the map
+//! settles. A frame redraws only the slots the runtime marks: their drape
+//! placements, the draped nodes' only candidates, map each into its place
+//! in a grid of drape space, a function of its tile slot alone, and a pass
+//! a slot's stack replays the stack's bundle of its draped nodes with the
+//! viewport moving its place onto its texture's layer, which draws it
+//! alike in any texture; then a compute pass a texture downsamples its
+//! mip levels.
 //!
-//! The terrain draws in the map's own pass, each sheet's tiles with it
-//! bound, over a depth attachment that pass never stores: first its depth
-//! alone, then each terrain layer (a stack, two where the zoom splits it,
-//! or up to [`MAX_SHADES`] hillshades lit between stacks from their
+//! The terrain draws in the map's own pass, its tiles in the order the
+//! runtime gives them, each with its slots' textures bound, over a depth
+//! attachment that pass never stores: first its depth
+//! alone, then each terrain layer (a stack, or up to [`MAX_SHADES`]
+//! hillshades lit between stacks from their
 //! slopes' stacks and the frame's bearing) at the place of its first
 //! node, over what the map drew beneath it, every fragment but the
 //! nearest failing the depth test, and of those meeting at it (a skirt
@@ -40,67 +41,49 @@ use crate::release::Release;
 use crate::scene::{Backing, DataTable};
 use TextureViewDimension::D2Array;
 use orb_hal::*;
-use orb_shaders::{DRAPE_SHADER, Shader, TERRAIN_SHADE_SHADER, TERRAIN_SHADER};
+use orb_shaders::{Shader, TERRAIN_SHADE_SHADER, TERRAIN_SHADER};
 
-/// Drape texels per terrain tile side: twice the 512 logical pixels a
-/// terrain tile covers at its zoom, GL JS's quality factor.
+/// Drape texels per terrain tile side at most: twice the 512 logical
+/// pixels a terrain tile covers at its zoom, GL JS's quality factor.
 pub const DRAPE_SLOT_PX: u32 = 1024;
 
-/// Slope slots' texels per terrain tile side: half the drape's. A shaded
-/// hillshade's slopes come from DEM tiles of at most 512 pixels a side at
-/// the terrain tile's zoom, which a 512-texel slot holds sample for
-/// sample, and a quarter of the texels lets a viewport-lit hillshade cost
-/// a terrain tile a quarter slot rather than a whole one (#142).
+/// Slope slots' texels per terrain tile side at most: half the drape's. A
+/// shaded hillshade's slopes come from DEM tiles of at most 512 pixels a
+/// side at the terrain tile's zoom, which a 512-texel slot holds sample
+/// for sample, and a quarter of the texels lets a viewport-lit hillshade
+/// cost a terrain tile a quarter slot rather than a whole one (#142).
 pub(crate) const SLOPE_SLOT_PX: u32 = DRAPE_SLOT_PX / 2;
 
 /// The drape's pages by slot side: colour stacks, then slope stacks.
 const PAGE_PX: [u32; 2] = [DRAPE_SLOT_PX, SLOPE_SLOT_PX];
 
-/// Slots a side of a drape sheet: each a square of 2 × 2 slots, a texture
-/// of its own.
-const SHEET_SIDE: u32 = 2;
-/// Tile slots a sheet holds: slots `4s` to `4s + 3` are sheet `s`'s.
-pub const SHEET_SLOTS: u32 = SHEET_SIDE * SHEET_SIDE;
+/// The most a slot's side halves: to 64 texels a colour slot.
+pub const MAX_SHRINK: u8 = 4;
 
-/// Slots a side of the grid the sheets lie in on this device, whose
-/// sides stop at WebGPU's default, 8192: the drape space a page's slots
-/// draw in, each sheet a square of it.
+/// Places a side of the drape grid on this device, whose sides stop at
+/// WebGPU's default, 8192: the drape space slots draw in, a place each,
+/// [`DRAPE_SLOT_PX`] texels a side.
 fn grid_side(gpu: &dyn Gpu) -> u32 {
-    let side = gpu.caps().limits.max_texture_dimension_2d.min(8192) / DRAPE_SLOT_PX;
-    (side / SHEET_SIDE * SHEET_SIDE).max(SHEET_SIDE)
+    (gpu.caps().limits.max_texture_dimension_2d.min(8192) / DRAPE_SLOT_PX).max(1)
 }
 
-/// Where tile slot `slot` lies in a grid `side` slots a side: its column
-/// and row. Sheets fill the grid's rows of sheets in turn, and each its
-/// four places by rows.
+/// Where tile slot `slot` lies in a grid `side` places a side: its column
+/// and row.
 fn slot_place(slot: u32, side: u32) -> [u32; 2] {
-    let sheets = side / SHEET_SIDE;
-    let origin = sheet_origin(slot / SHEET_SLOTS, sheets);
-    let [x, y] = sheet_place(slot);
-    [origin[0] + x, origin[1] + y]
-}
-
-/// Sheet `sheet`'s top-left slot in a grid of `sheets` sheets a side.
-fn sheet_origin(sheet: u32, sheets: u32) -> [u32; 2] {
-    [sheet % sheets, sheet / sheets].map(|n| n * SHEET_SIDE)
-}
-
-/// Where tile slot `slot` lies in its sheet: its column and row.
-fn sheet_place(slot: u32) -> [u32; 2] {
-    let at = slot % SHEET_SLOTS;
-    [at % SHEET_SIDE, at / SHEET_SIDE]
+    [slot % side, slot / side]
 }
 
 /// The terrain tiles the drape can hold with `stacks` colour and slope
-/// stacks: the slots of a grid of WebGPU's default texture side (64
-/// colour slots) on every device that has it, so that a view's terrain
-/// doesn't depend on which, or none where a sheet of the stacks takes
-/// more layers or bytes than the device allocates a texture
-/// ([`Gpu::texture_fits`], GL's [`Limits::max_texture_bytes`]).
+/// stacks: the places of a grid of WebGPU's default texture side (64) on
+/// every device that has it, so that a view's terrain doesn't depend on
+/// which, or none where a tile's whole slots take more layers or bytes
+/// than the device allocates a texture ([`Gpu::texture_fits`], GL's
+/// [`Limits::max_texture_bytes`]).
 pub(crate) fn room(gpu: &dyn Gpu, stacks: [u32; 2]) -> u32 {
     let alloc = allocated(stacks);
+    let shared = slots_per_texture(gpu, stacks);
     let fits = (0..2).filter(|&p| alloc[p] > 0).all(|page| {
-        let desc = sheet_desc(gpu, alloc[page], PAGE_PX[page]);
+        let desc = slots_desc(alloc[page] * shared, PAGE_PX[page], gpu.caps().compute);
         desc.array_layers <= gpu.caps().limits.max_texture_array_layers && gpu.texture_fits(&desc)
     });
     if fits { grid_side(gpu).pow(2) } else { 0 }
@@ -111,7 +94,7 @@ pub(crate) fn room(gpu: &dyn Gpu, stacks: [u32; 2]) -> u32 {
 pub enum DrapeFull {
     /// The style's drape stacks leave no room for them ([`room`]).
     Room,
-    /// The device refused a sheet of this many bytes
+    /// The device refused a texture of this many bytes
     /// ([`Gpu::try_create_texture`]).
     Refused(u64),
 }
@@ -178,13 +161,9 @@ pub struct TerrainTile {
     pub scale: f32,
     /// Its DEM: page layer, and tile uv → DEM uv as `uv · scale + offset`.
     pub dem: Option<TerrainDem>,
-    /// Its block of drape slots (see [`DrapeLayout`]).
+    /// Its tile slot: its place in the drape grid (see [`DrapeLayout`]),
+    /// whose texels it shows.
     pub slot: u32,
-    /// How many times its slots halve their page's side: each takes the
-    /// top-left square of that side of its place in the grid, which keeps
-    /// to it at every mip level, so that a tile that shows small draws
-    /// few texels.
-    pub shrink: u8,
     /// Where it lies in the slots it shows, as `uv · scale + offset`: its
     /// own, or while blank its part of an ancestor's.
     pub within: ([f32; 2], f32),
@@ -201,18 +180,14 @@ pub struct TerrainTile {
 /// map beneath it from the canvas the pass before drew.
 pub(crate) const MAX_SHADES: usize = 2;
 
-/// What one draw of the terrain lays over the map: a stack's slots, the
-/// stacks below and above where the zoom splits it, or a stack below the
-/// hillshades it shades and those above each of them.
+/// What one draw of the terrain lays over the map: a stack's slots, or a
+/// stack below the hillshades it shades and those above each of them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TerrainLayer {
     pub(crate) below: Option<u8>,
     /// The hillshades it shades, in order from the first: each over what
     /// is beneath it, its colour stack above it on top.
     pub(crate) shades: [Option<Shade>; MAX_SHADES],
-    /// Without a hillshade, the stack above `below` where the zoom splits
-    /// the layer.
-    pub(crate) above: Option<u8>,
     /// A layer's own, which blends with the map beneath it in this mode
     /// (normal: over it).
     pub(crate) blend: crate::Blend,
@@ -266,7 +241,7 @@ const FOG_FADES: u32 = 2;
 /// Words of a terrain layer's uniform (`terrain.wgsl`'s `Layer`).
 const LAYER_WORDS: usize = 8 + 4 * MAX_SHADES;
 /// The word of a terrain layer's uniform that holds its opacity.
-const LAYER_OPACITY: u64 = 4;
+const LAYER_OPACITY: u64 = 3;
 
 /// A terrain tile on a globe: its patches in
 /// space around `origin`, the anchor less the camera target in metres, and
@@ -286,24 +261,21 @@ pub struct TerrainDem {
     pub scale: f32,
 }
 
-/// Where drape slots are. Stacks `0..stacks[0]` are colour stacks, on
-/// page 0 at [`DRAPE_SLOT_PX`] texels a side; the rest hold slopes, on
-/// page 1 at [`SLOPE_SLOT_PX`]. A page has a layer a stack, the stack of
-/// rank `r` among the page's in layer `r`, in each of its sheets (or
-/// layers `2r` and `2r + 1`, a row of slots each, [`sheet_desc`]). Tile
-/// slot `t` lies in sheet `t / 4` ([`SHEET_SLOTS`]), and the sheets lie
-/// in a grid `side` slots a side, the same for both pages: each a square
-/// of 2 × 2 slots, filling the grid's rows of sheets in turn. Where a
-/// slot lies is a function of its index alone, whatever the pages hold.
-/// Each layer's drape space is the grid's texels with y up: texel
-/// `(x, y)` is drape world `(x, −y)`.
+/// Where drape slots are drawn. Stacks `0..stacks[0]` are colour stacks,
+/// on page 0 at up to [`DRAPE_SLOT_PX`] texels a side; the rest hold
+/// slopes, on page 1 at up to [`SLOPE_SLOT_PX`]. A tile slot is a place
+/// in a grid `side` places a side, a function of its index alone, whose
+/// top-left square of its side each of its slots draws in: each layer's
+/// drape space is the grid's texels with y up, texel `(x, y)` drape world
+/// `(x, −y)`, and a slot draws alike in whichever texture its texels lie,
+/// which a pass's viewport maps its place onto.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DrapeLayout {
     /// Colour stacks, then slope stacks.
     pub stacks: [u32; 2],
-    /// Slots a side of the grid the sheets lie in.
+    /// Places a side of the grid.
     pub side: u32,
-    /// Tile slots the pages hold: their sheets' slots.
+    /// Tile slots the grid holds: its places.
     pub tile_slots: u32,
     /// Changes when every slot is blank (other stacks): every slot must
     /// be redrawn.
@@ -316,8 +288,7 @@ impl DrapeLayout {
         self.stacks[0] + self.stacks[1]
     }
 
-    /// The page of stack `stack`, and its rank among the page's stacks:
-    /// the layer of the page it lies in.
+    /// The page of stack `stack`, and its rank among the page's stacks.
     pub fn page(&self, stack: u32) -> (usize, u32) {
         match stack.checked_sub(self.stacks[0]) {
             Some(rank) => (1, rank),
@@ -325,7 +296,7 @@ impl DrapeLayout {
         }
     }
 
-    /// Texels a side of stack `stack`'s slots.
+    /// Texels a side of stack `stack`'s slots at most.
     pub fn slot_px(&self, stack: u32) -> u32 {
         PAGE_PX[self.page(stack).0]
     }
@@ -343,171 +314,115 @@ impl DrapeLayout {
     }
 }
 
-/// The scissor around a stack's redrawn `slots` (place in the layer,
-/// side) of a layer of `px`-texel slots: their places' bounding rectangle,
-/// or a slot alone's side.
-fn scissor(slots: &[([u32; 2], u32)], px: u32) -> [u32; 4] {
-    if let [([x, y], side)] = *slots {
-        return [x * px, y * px, side, side];
-    }
-    let (mut lo, mut hi) = ([u32::MAX; 2], [0; 2]);
-    for &(at, _) in slots {
-        lo = [0, 1].map(|i| lo[i].min(at[i]));
-        hi = [0, 1].map(|i| hi[i].max(at[i] + 1));
-    }
-    [
-        lo[0] * px,
-        lo[1] * px,
-        (hi[0] - lo[0]) * px,
-        (hi[1] - lo[1]) * px,
-    ]
-}
-
-/// A drape sheet's texture for `stacks` stacks of `slot_px`-texel slots,
-/// mipmapped down from those: a layer a stack of 2 × 2 slots, or where
-/// the device would make that with a layer more than it holds (wgpu's GL
-/// back end, for one layer, or a square of 6n), a layer each of a
-/// stack's two rows of slots, which it makes as they are
-/// ([`Gpu::allocated_layers`]).
-fn sheet_desc(gpu: &dyn Gpu, stacks: u32, slot_px: u32) -> TextureDesc<'static> {
-    // Mip levels are written as storage, or drawn apart and copied in.
-    let levels = match gpu.caps().compute {
+/// A texture of `layers` slot layers `side` texels a side, mipmapped down
+/// to a texel, its mip levels written as storage where the device
+/// `computes`, or drawn apart and copied in.
+fn slots_desc(layers: u32, side: u32, computes: bool) -> TextureDesc<'static> {
+    let levels = match computes {
         true => TextureUsages::STORAGE_BINDING,
         false => TextureUsages::COPY_DST,
     };
-    let square = shaped_desc(stacks, slot_px, SHEET_SIDE, levels);
-    if gpu.allocated_layers(&square) == square.array_layers {
-        square
-    } else {
-        shaped_desc(stacks, slot_px, 1, levels)
-    }
-}
-
-/// A drape sheet's texture for `stacks` stacks of `slot_px`-texel slots,
-/// `rows` rows of 2 slots a layer, its mip levels written as `levels`
-/// takes.
-fn shaped_desc(
-    stacks: u32,
-    slot_px: u32,
-    rows: u32,
-    levels: TextureUsages,
-) -> TextureDesc<'static> {
     TextureDesc {
-        label: "drape sheet",
-        width: SHEET_SIDE * slot_px,
-        height: rows * slot_px,
-        array_layers: stacks * (SHEET_SIDE / rows),
+        label: "drape slots",
+        width: side,
+        height: side,
+        array_layers: layers,
         dimension: TextureViewDimension::D2Array,
         format: DRAPE_FORMAT,
         usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING | levels,
         sample_count: 1,
-        mip_levels: slot_px.ilog2() + 1,
+        mip_levels: side.ilog2() + 1,
     }
 }
 
-/// A sheet of a drape page: 2 × 2 slots a stack, in a layer, or in two
-/// of a row each ([`sheet_desc`]).
+/// The tile slots a texture of each page holds: one, or two where the
+/// device would make one's layers with a layer more than they take (wgpu's
+/// GL back end, for one layer: [`Gpu::allocated_layers`]).
+fn slots_per_texture(gpu: &dyn Gpu, stacks: [u32; 2]) -> u32 {
+    let exact = |shared: u32| {
+        (0..2).filter(|&p| stacks[p] > 0).all(|page| {
+            let desc = slots_desc(stacks[page] * shared, PAGE_PX[page], gpu.caps().compute);
+            gpu.allocated_layers(&desc) == desc.array_layers
+        })
+    };
+    if exact(1) || !exact(2) { 1 } else { 2 }
+}
+
+/// A page's texture of tile slots of one side: a layer a slot's stack,
+/// mipmapped, whose texels draw and sample alike whichever texture and
+/// layer they lie in.
 #[derive(Debug)]
-struct Sheet {
-    /// A layer or two a stack of the page, mipmapped.
+struct SlotTexture {
     texture: TextureId,
     layers: u32,
-    /// Texels per slot side.
-    slot_px: u32,
-    /// Rows of slots a layer holds: 2, or 1.
-    rows: u32,
-    /// Per mip level, a view, which the mip levels are written through.
-    levels: Vec<TextureId>,
+    side: u32,
     /// What draws into each layer's level 0.
     draw: Vec<TextureId>,
-    /// A layer's size, for the clear.
-    size_uniform: BufferId,
-    clear: BindGroupId,
-    /// The downsampler's chain of its levels, over the redrawn slots as
-    /// its regions, which the clear reads too.
+    /// Per mip level, a view, which the mip levels are written through.
+    levels: Vec<TextureId>,
+    /// The downsampler's chain of its levels, over the redrawn layers as
+    /// its regions.
     mips: crate::downsample::Chain,
 }
 
-impl Sheet {
-    /// A sheet of `stacks` stacks of `slot_px`-texel slots, or the bytes
-    /// of one the device refused.
+impl SlotTexture {
+    /// A texture of `layers` layers `side` texels a side, or the bytes of
+    /// one the device refused.
     fn new(
         gpu: &mut dyn Gpu,
-        (stacks, slot_px): (u32, u32),
-        clear_layout: BindGroupLayoutId,
+        (layers, side): (u32, u32),
         downsampler: &mut crate::downsample::Downsampler,
     ) -> Result<Self, u64> {
-        let desc = sheet_desc(gpu, stacks, slot_px);
-        let (layers, rows) = (desc.array_layers, desc.height / slot_px);
-        debug_assert_eq!(gpu.allocated_layers(&desc), layers, "made as it is");
-        let levels = desc.mip_levels;
+        let desc = slots_desc(layers, side, gpu.caps().compute);
         let texture = gpu
             .try_create_texture(&desc)
             .ok_or_else(|| level_bytes(&desc, layers) * 4 / 3)?;
-        let views: Vec<TextureId> = (0..levels)
+        let levels: Vec<TextureId> = (0..desc.mip_levels)
             .map(|l| gpu.create_texture_view(texture, l..l + 1))
             .collect();
         let draw = (0..layers)
             .map(|layer| gpu.create_layer_view(texture, layer, 0))
             .collect();
         downsampler.make(gpu);
-        let slots = ("drape slots", SHEET_SLOTS * stacks);
-        let mips = downsampler.chain(gpu, (texture, [desc.width, desc.height], &views), slots);
-        let size_uniform = gpu.create_buffer(&BufferDesc {
-            label: "drape sheet size",
-            size: 16,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
-        let words = [desc.width as f32, desc.height as f32, 0.0, 0.0];
-        gpu.write_buffer(size_uniform, 0, bytemuck::cast_slice(&words));
-        let clear = gpu.create_bind_group(&BindGroupDesc {
-            label: "drape clear",
-            layout: clear_layout,
-            entries: &[
-                BindGroupEntry::buffer(0, size_uniform),
-                mips.regions.entry(1),
-            ],
-        });
+        let mips = downsampler.chain(gpu, (texture, [side; 2], &levels), ("drape slots", layers));
         Ok(Self {
             texture,
             layers,
-            slot_px,
-            rows,
-            levels: views,
+            side,
             draw,
-            size_uniform,
-            clear,
+            levels,
             mips,
         })
     }
 
     /// Its bytes, mips included.
     fn bytes(&self) -> u64 {
-        let px = u64::from(self.slot_px);
-        let texels = u64::from(SHEET_SIDE) * px * u64::from(self.rows) * px;
-        texels * u64::from(self.layers) * 4 * 4 / 3
-    }
-
-    /// Where tile slot `slot` of the stack of rank `rank` lies: its layer,
-    /// and its column and row of slots in the layer.
-    fn place(&self, rank: u32, slot: u32) -> (u32, [u32; 2]) {
-        let [x, y] = sheet_place(slot);
-        let layer = rank * (SHEET_SIDE / self.rows) + y / self.rows;
-        (layer, [x, y % self.rows])
+        u64::from(self.side).pow(2) * u64::from(self.layers) * 4 * 4 / 3
     }
 }
 
-impl crate::release::Release for Sheet {
+impl crate::release::Release for SlotTexture {
     fn release(self, gpu: &mut dyn Gpu) {
-        (
-            self.clear,
-            self.mips,
-            self.levels,
-            self.draw,
-            self.texture,
-            self.size_uniform,
-        )
-            .release(gpu);
+        (self.mips, self.levels, self.draw, self.texture).release(gpu);
+    }
+}
+
+/// Textures of tile slots of one side: each page's, and the group the
+/// terrain's draws of their tiles bind, with the tile slot each of its
+/// slots holds.
+#[derive(Debug)]
+struct Texels {
+    /// The slots' side, in halvings of their page's.
+    level: u8,
+    pages: [Option<SlotTexture>; 2],
+    group: Option<BindGroupId>,
+    holds: Vec<Option<u32>>,
+}
+
+impl Texels {
+    /// Its bytes, mips included.
+    fn bytes(&self) -> u64 {
+        self.pages.iter().flatten().map(SlotTexture::bytes).sum()
     }
 }
 
@@ -528,7 +443,6 @@ pub(crate) struct Terrain {
     backdrops: Vec<Option<(TextureId, BindGroupId)>>,
     /// A blank texture, and a backdrop group binding it.
     blank: Option<(TextureId, BindGroupId)>,
-    clear_layout: BindGroupLayoutId,
     /// Terrain layers over the map, lighting hillshades between their
     /// stacks or not, and those that read the map beneath ([`Kind`]).
     pipelines: [Option<RenderPipelineId>; 3],
@@ -538,8 +452,6 @@ pub(crate) struct Terrain {
     /// and the 3D layers' attachments, once asked for.
     depth_pipelines: [Option<(Attachments, RenderPipelineId)>; 2],
     three_d: Option<Attachments>,
-    /// Clearing the pages' slots.
-    clear: RenderPipelineId,
     grid: DataTable,
     grid_indices: BufferId,
     /// The index range of each grid step's mesh, and the step drawn.
@@ -558,20 +470,27 @@ pub(crate) struct Terrain {
     /// Trilinear and anisotropic, as GL JS samples its render-to-texture
     /// tiles: the raster pages' sampler, which the renderer owns.
     linear: SamplerId,
-    /// The colour page's sheets, and the slope page's while a hillshade is
-    /// shaded, as many.
-    sheets: [Vec<Sheet>; 2],
+    /// The slots' textures, by index: the colour page's, and the slope
+    /// page's while a hillshade is shaded, a texture of each a tile slot
+    /// (or two, [`slots_per_texture`]) of its side; those no slot holds
+    /// stay for the next slots of their side until the map settles
+    /// ([`trim`](Self::trim)).
+    texels: Vec<Option<Texels>>,
+    /// Each tile slot's texture, and its slot of it.
+    held: std::collections::BTreeMap<u32, (u32, u32)>,
+    /// Tile slots a texture holds.
+    shared: u32,
+    /// Whether the pages were made for the layout's stacks.
+    reserved: bool,
     layout_state: DrapeLayout,
     /// The DEM page texture and revision the groups bind.
     dem: Option<(TextureId, u32)>,
-    /// A group a sheet, binding its colour and slope sheets, and the frame
-    /// and property buffers they bind.
-    groups: Vec<BindGroupId>,
+    /// The frame and property buffers the textures' groups bind.
     bound: Option<(BufferId, BindGroupEntry)>,
-    /// The terrain tiles of each sheet's slots: the table holds them
-    /// sheet by sheet, and each sheet's draw takes its range.
-    sheet_tiles: Vec<std::ops::Range<u32>>,
-    /// What this frame's draws of the terrain draw: each sheet's group and
+    /// Each run of this frame's tiles whose slots one texture holds, which
+    /// the table holds in order: the texture, and the run's range.
+    runs: Vec<(u32, std::ops::Range<u32>)>,
+    /// What this frame's draws of the terrain draw: each run's group and
     /// tiles, and the grid's indices; none while the terrain can't draw.
     drawn: Option<Drawn>,
     /// The terrain's depth as a colour, and the depth it's drawn with: what
@@ -595,16 +514,16 @@ pub(crate) struct Terrain {
     resized: crate::scene::Resized,
 }
 
-/// A slot to redraw. They sort by page, then sheet, then stack: each
-/// page's sheets in turn, and in a sheet each stack's, so each layer's.
+/// A slot to redraw: a stack of a tile slot, and its texture and layer.
+/// They sort by page, then texture: each texture's stacks, whose mip
+/// levels are made at once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Redraw {
     page: usize,
-    sheet: u32,
+    texture: u32,
+    layer: u32,
     stack: u32,
     tile_slot: u32,
-    /// The slot's side in texels, smaller for a shrunk tile.
-    side: u32,
 }
 
 /// The terrain's depth in the map's passes.
@@ -633,11 +552,11 @@ impl TerrainLayer {
     }
 }
 
-/// What a frame's draws of the terrain draw: each sheet's group and the
+/// What a frame's draws of the terrain draw: each run's group and the
 /// range of its tiles, and the grid's indices at the frame's step.
 #[derive(Debug)]
 struct Drawn {
-    sheets: Vec<(BindGroupId, std::ops::Range<u32>)>,
+    runs: Vec<(BindGroupId, std::ops::Range<u32>)>,
     indices: std::ops::Range<u32>,
 }
 
@@ -698,30 +617,6 @@ impl Terrain {
                 E::texture(2, fs, true, TextureViewDimension::D2),
             ],
         });
-        // The atlas's mip regions, as the downsampler keeps them.
-        let regions = if cfg!(cpu_driven) && !gpu.caps().compute {
-            table(1, vs)
-        } else {
-            E::storage(1, vs)
-        };
-        let clear_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: "drape clear",
-            entries: &[E::uniform(0, vs), regions],
-        });
-        let clear = Draw {
-            topology: PrimitiveTopology::TriangleStrip,
-            ..Draw::new(
-                &DRAPE_SHADER,
-                &[clear_layout],
-                TargetFormat {
-                    color: DRAPE_FORMAT,
-                    sample_count: 1,
-                },
-                None,
-            )
-        }
-        .make(gpu);
-
         let (grid, indices, grid_ranges) = grid();
         let grid_buffer = DataTable::new(gpu, "terrain grid", grid.len() as u64);
         grid_buffer.write(gpu, 0, &grid);
@@ -745,11 +640,9 @@ impl Terrain {
             backdrop_layout,
             backdrops: Vec::new(),
             blank: None,
-            clear_layout,
             pipelines: [None; 3],
             depth_pipelines: [None; 2],
             three_d: None,
-            clear,
             grid: grid_buffer,
             grid_indices,
             grid_ranges,
@@ -763,7 +656,10 @@ impl Terrain {
             stack_groups: Vec::new(),
             stack_uniforms: None,
             linear,
-            sheets: [Vec::new(), Vec::new()],
+            texels: Vec::new(),
+            held: Default::default(),
+            shared: 1,
+            reserved: false,
             layout_state: DrapeLayout {
                 stacks: [1, 0],
                 side: grid_side(gpu),
@@ -771,9 +667,8 @@ impl Terrain {
                 generation: 0,
             },
             dem: None,
-            groups: Vec::new(),
             bound: None,
-            sheet_tiles: Vec::new(),
+            runs: Vec::new(),
             drawn: None,
             occlusion: None,
             occlusion_pipeline: None,
@@ -794,7 +689,7 @@ impl Terrain {
 
     /// The drape pages' bytes, mips included.
     pub(crate) fn atlas_bytes(&self) -> u64 {
-        self.sheets.iter().flatten().map(Sheet::bytes).sum()
+        self.texels.iter().flatten().map(Texels::bytes).sum()
     }
 
     pub(crate) fn layout(&self) -> DrapeLayout {
@@ -854,11 +749,11 @@ impl Terrain {
             let opacity = opacities.get(i).copied().unwrap_or(1.0);
             let mut words = vec![
                 stack(layer.below),
-                stack(layer.above),
                 fog,
                 u32::from(layer.backdrop),
                 opacity.to_bits(),
                 layer.blend.mode() as u32,
+                0,
                 0,
                 0,
             ];
@@ -899,106 +794,199 @@ impl Terrain {
         self.opacities = opacities.to_vec();
     }
 
-    /// Makes the pages hold `tile_slots` tile slots of `stacks` colour and
-    /// slope stacks, in the fewest sheets that do: sheets are added blank
-    /// and the last ones let go, the rest staying as they are, slots and
-    /// all. Pages of other stacks are new, blank, of a new
-    /// [`DrapeLayout::generation`]: whether it made them.
-    /// Fails past the device's [`room`], or when the device refuses a
-    /// sheet, which leaves none.
+    /// Makes the pages for `stacks` colour and slope stacks: unless they
+    /// were made for them, new and blank, of a new
+    /// [`DrapeLayout::generation`], their textures made as slots need them
+    /// ([`redraw`](Self::redraw)): whether it made them. Fails where the
+    /// stacks leave the device no [`room`].
     pub(crate) fn reserve(
         &mut self,
         gpu: &mut dyn Gpu,
-        (tile_slots, stacks): (u32, [u32; 2]),
-        downsampler: &mut crate::downsample::Downsampler,
+        stacks: [u32; 2],
     ) -> Result<bool, DrapeFull> {
-        if tile_slots > room(gpu, stacks) {
+        let room = room(gpu, stacks);
+        if room == 0 {
             return Err(DrapeFull::Room);
         }
         let state = self.layout_state;
-        let made = state.stacks != stacks || self.sheets[0].is_empty();
-        let sheets = tile_slots.max(1).div_ceil(SHEET_SLOTS);
-        let before = gpu.counters();
-        let mut changed = made;
+        let made = state.stacks != stacks || !self.reserved;
         if made {
-            self.release_sheets(gpu);
-            self.pending.clear();
-        }
-        let alloc = allocated(stacks);
-        let clear_layout = self.clear_layout;
-        for (page, held) in self.sheets.iter_mut().enumerate() {
-            let want = if alloc[page] > 0 { sheets as usize } else { 0 };
-            changed |= held.len() != want;
-            while held.len() > want {
-                held.pop().release(gpu);
-            }
-            while held.len() < want {
-                let size = (alloc[page], PAGE_PX[page]);
-                match Sheet::new(gpu, size, clear_layout, downsampler) {
-                    Ok(sheet) => held.push(sheet),
-                    Err(bytes) => {
-                        self.release_sheets(gpu);
-                        return Err(DrapeFull::Refused(bytes));
-                    }
-                }
-            }
-        }
-        let tile_slots = sheets * SHEET_SLOTS;
-        if made {
-            let rows = [params::SLOT_ROWS, params::SLOPE_ROWS].map(|w| w as u64 * 4);
-            gpu.write_buffer(self.params, rows[0], bytemuck::bytes_of(&self.rows(0)));
-            gpu.write_buffer(self.params, rows[1], bytemuck::bytes_of(&self.rows(1)));
-        }
-        // Slots of the sheets let go draw nothing more.
-        self.pending.retain(|p| p.tile_slot < tile_slots);
-        if changed {
-            self.forget_group(gpu);
+            let before = gpu.counters();
+            self.release_texels(gpu);
             self.resized.count(gpu, &before);
+            self.pending.clear();
+            self.shared = slots_per_texture(gpu, allocated(stacks));
+            let counts = allocated(stacks);
+            let at = params::COLOUR_STACKS as u64 * 4;
+            gpu.write_buffer(self.params, at, bytemuck::cast_slice(&counts));
         }
+        self.reserved = true;
         self.layout_state = DrapeLayout {
             stacks,
             side: grid_side(gpu),
-            tile_slots,
+            tile_slots: room,
             generation: state.generation + u64::from(made),
         };
         Ok(made)
     }
 
-    /// Rows of slots a layer of page `page`'s sheets holds (2 without
-    /// sheets).
-    fn rows(&self, page: usize) -> u32 {
-        self.sheets[page].first().map_or(SHEET_SIDE, |s| s.rows)
-    }
-
-    /// Releases every sheet.
-    fn release_sheets(&mut self, gpu: &mut dyn Gpu) {
-        std::mem::take(&mut self.sheets).release(gpu);
+    /// Releases every slot's texture: every slot is blank.
+    fn release_texels(&mut self, gpu: &mut dyn Gpu) {
         self.forget_group(gpu);
+        for texels in std::mem::take(&mut self.texels).into_iter().flatten() {
+            texels.pages.release(gpu);
+        }
+        self.held.clear();
     }
 
+    /// Lets go of the textures no slot holds, in a frame that settles the
+    /// map: a view whose slots change sides keeps them for the next slots
+    /// of their sides until then, rather than making and freeing textures
+    /// frame after frame. A map at rest then holds its slots' texels and
+    /// no more, as a fresh one there does.
+    pub(crate) fn trim(&mut self, gpu: &mut dyn Gpu) {
+        let before = gpu.counters();
+        let mut changed = false;
+        for at in &mut self.texels {
+            if at
+                .as_ref()
+                .is_some_and(|t| t.holds.iter().all(Option::is_none))
+            {
+                let texels = at.take().expect("checked");
+                (texels.pages, texels.group).release(gpu);
+                changed = true;
+            }
+        }
+        while self.texels.last().is_some_and(Option::is_none) {
+            self.texels.pop();
+        }
+        if changed {
+            self.resized.count(gpu, &before);
+        }
+    }
+
+    /// Forgets the textures' groups, for the next frame to make again.
     fn forget_group(&mut self, gpu: &mut dyn Gpu) {
-        std::mem::take(&mut self.groups).release(gpu);
+        for texels in self.texels.iter_mut().flatten() {
+            texels.group.take().release(gpu);
+        }
         self.bound = None;
     }
 
     /// Redraws tile slots' stacks this frame at style zoom `zoom`: per
-    /// tile slot, its [`shrink`](TerrainTile::shrink) and the stacks to
-    /// redraw.
-    pub(crate) fn redraw(&mut self, zoom: f64, tile_slots: &[(u32, u8, &[u8])]) {
+    /// tile slot, how many times its side halves its page's and the
+    /// stacks to redraw. A slot of another side than its texels' takes a
+    /// texture's slot of its side, all its stacks redrawn, and leaves the
+    /// old one for the next slot of that side; one no texture has free
+    /// takes a new texture. Fails where the device refuses one, which
+    /// leaves the slots blank.
+    pub(crate) fn redraw(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        zoom: f64,
+        tile_slots: &[(u32, u8, &[u8])],
+        downsampler: &mut crate::downsample::Downsampler,
+    ) -> Result<(), DrapeFull> {
         self.zoom = zoom;
         self.pending.clear();
         let layout = self.layout_state;
+        let counts = allocated(layout.stacks);
         for &(slot, shrink, redrawn) in tile_slots {
+            let level = shrink.min(MAX_SHRINK);
+            let (texture, at) = match self.held.get(&slot) {
+                Some(&(texture, at)) if self.level(texture) == level => (texture, at),
+                held => {
+                    if let Some(&(texture, at)) = held {
+                        self.texture_mut(texture).holds[at as usize] = None;
+                    }
+                    let (texture, at) = self.take(gpu, level, downsampler)?;
+                    self.texture_mut(texture).holds[at as usize] = Some(slot);
+                    self.held.insert(slot, (texture, at));
+                    (texture, at)
+                }
+            };
             let stacks =
                 (redrawn.iter().map(|&s| u32::from(s))).filter(|&s| s < layout.stack_count());
-            self.pending.extend(stacks.map(|stack| Redraw {
-                page: layout.page(stack).0,
-                sheet: slot / SHEET_SLOTS,
-                stack,
-                tile_slot: slot,
-                side: layout.slot_px(stack) >> shrink,
+            self.pending.extend(stacks.map(|stack| {
+                let (page, rank) = layout.page(stack);
+                Redraw {
+                    page,
+                    texture,
+                    layer: at * counts[page] + rank,
+                    stack,
+                    tile_slot: slot,
+                }
             }));
         }
+        Ok(())
+    }
+
+    /// The slots' side of texture `texture`, in halvings of their page's.
+    fn level(&self, texture: u32) -> u8 {
+        self.texels[texture as usize]
+            .as_ref()
+            .expect("a texture")
+            .level
+    }
+
+    fn texture_mut(&mut self, texture: u32) -> &mut Texels {
+        self.texels[texture as usize].as_mut().expect("a texture")
+    }
+
+    /// A texture's free slot of `level`, in a new texture where none has
+    /// one.
+    fn take(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        level: u8,
+        downsampler: &mut crate::downsample::Downsampler,
+    ) -> Result<(u32, u32), DrapeFull> {
+        let free = (self.texels.iter().enumerate()).find_map(|(texture, texels)| {
+            let texels = texels.as_ref().filter(|t| t.level == level)?;
+            let at = texels.holds.iter().position(Option::is_none)?;
+            Some((texture as u32, at as u32))
+        });
+        if let Some(free) = free {
+            return Ok(free);
+        }
+        let before = gpu.counters();
+        let counts = allocated(self.layout_state.stacks);
+        let mut pages = [None, None];
+        for page in 0..2 {
+            if counts[page] == 0 {
+                continue;
+            }
+            let size = (counts[page] * self.shared, PAGE_PX[page] >> level);
+            match SlotTexture::new(gpu, size, downsampler) {
+                Ok(texture) => pages[page] = Some(texture),
+                Err(bytes) => {
+                    pages.release(gpu);
+                    self.release_texels(gpu);
+                    return Err(DrapeFull::Refused(bytes));
+                }
+            }
+        }
+        let texels = Texels {
+            level,
+            pages,
+            group: None,
+            holds: vec![None; self.shared as usize],
+        };
+        let index = match self.texels.iter().position(Option::is_none) {
+            Some(index) => index,
+            None => {
+                self.texels.push(None);
+                self.texels.len() - 1
+            }
+        };
+        self.texels[index] = Some(texels);
+        self.resized.count(gpu, &before);
+        Ok((index as u32, 0))
+    }
+
+    /// The tile slots whose texels the textures hold.
+    pub(crate) fn held_slots(&self) -> u32 {
+        self.held.len() as u32
     }
 
     /// The stacks this frame redraws slots of, in order.
@@ -1009,6 +997,10 @@ impl Terrain {
         stacks
     }
 
+    /// This frame's terrain tiles, each drawn from its slot's texels: the
+    /// slots no tile shows give theirs back. They draw in the order
+    /// given, which decides what shows where two meet, a run of those
+    /// whose slots one texture holds at a time.
     pub(crate) fn set_tiles(&mut self, gpu: &mut dyn Gpu, tiles: &[TerrainTile]) {
         if tiles.len() as u32 > self.tile_capacity {
             self.tiles.destroy(gpu);
@@ -1020,21 +1012,29 @@ impl Terrain {
             );
             self.forget_group(gpu);
         }
-        // Sheet by sheet, each sheet's tiles in the order given: a sheet's
-        // draw binds it.
-        let mut order: Vec<&TerrainTile> = tiles.iter().collect();
-        order.sort_by_key(|t| t.slot / SHEET_SLOTS);
-        self.sheet_tiles.clear();
-        for (at, tile) in (0u32..).zip(&order) {
-            let sheet = (tile.slot / SHEET_SLOTS) as usize;
-            if self.sheet_tiles.len() <= sheet {
-                self.sheet_tiles.resize(sheet + 1, at..at);
-            }
-            self.sheet_tiles[sheet].end = at + 1;
+        let shown: std::collections::BTreeSet<u32> = tiles.iter().map(|t| t.slot).collect();
+        let gone: Vec<u32> = (self.held.keys())
+            .filter(|s| !shown.contains(s))
+            .copied()
+            .collect();
+        for slot in gone {
+            let (texture, at) = self.held.remove(&slot).expect("held");
+            self.texture_mut(texture).holds[at as usize] = None;
         }
-        let words: Vec<u32> = order
-            .into_iter()
-            .flat_map(|t| {
+        // A tile shows a slot it drew, or its ancestor did.
+        let order: Vec<(&TerrainTile, (u32, u32))> = (tiles.iter())
+            .filter_map(|t| Some((t, *self.held.get(&t.slot)?)))
+            .collect();
+        debug_assert_eq!(order.len(), tiles.len(), "every tile shows a slot drawn");
+        self.runs.clear();
+        for (i, (_, (texture, _))) in (0u32..).zip(&order) {
+            match self.runs.last_mut() {
+                Some((run, range)) if run == texture => range.end = i + 1,
+                _ => self.runs.push((*texture, i..i + 1)),
+            }
+        }
+        let words: Vec<u32> = (order.iter())
+            .flat_map(|&(t, (_, at))| {
                 use terrain_tile as n;
                 let mut b = orb_shaders::Block::new(n::WORDS);
                 let (layer, offset, scale) = match t.dem {
@@ -1046,8 +1046,7 @@ impl Terrain {
                     .u(n::DEM_LAYER, &[layer]);
                 b.f(n::DEM_OFFSET, &offset)
                     .f(n::DEM_SCALE, &[scale])
-                    .u(n::SLOT, &[t.slot])
-                    .u(n::SHRINK, &[u32::from(t.shrink)]);
+                    .u(n::SLOT, &[at]);
                 b.f(n::SLOT_OFFSET, &t.within.0)
                     .f(n::SLOT_SCALE, &[t.within.1]);
                 if let Some(g) = t.globe {
@@ -1063,7 +1062,7 @@ impl Terrain {
         if !words.is_empty() {
             self.tiles.write(gpu, 0, &words);
         }
-        self.tile_count = tiles.len() as u32;
+        self.tile_count = order.len() as u32;
         let at = params::TILES as u64 * 4;
         gpu.write_buffer(self.params, at, bytemuck::bytes_of(&self.tile_count));
     }
@@ -1084,11 +1083,10 @@ impl Terrain {
             .f(params::EXAGGERATION, &[paint.exaggeration]);
         b.f(params::DEM_DIM, &[dim as f32])
             .f(params::SKIRT, &[paint.skirt]);
-        b.f(params::SLOT_PX, &[DRAPE_SLOT_PX as f32])
-            .f(params::SLOPE_PX, &[SLOPE_SLOT_PX as f32])
-            .u(params::TILES, &[self.tile_count]);
-        b.u(params::SLOT_ROWS, &[self.rows(0)])
-            .u(params::SLOPE_ROWS, &[self.rows(1)]);
+        let counts = allocated(self.layout_state.stacks);
+        b.u(params::TILES, &[self.tile_count])
+            .u(params::COLOUR_STACKS, &[counts[0]])
+            .u(params::SLOPE_STACKS, &[counts[1]]);
         gpu.write_buffer(self.params, 0, bytemuck::cast_slice(&b.0));
         self.paint = Some(paint);
     }
@@ -1191,11 +1189,8 @@ impl Terrain {
     /// draws nothing.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu) -> bool {
         let kinds = (self.layers.iter()).map(|l| self.pipelines[l.kind() as usize]);
-        let wanted = [
-            Some(self.clear),
-            self.occlusion.and(self.occlusion_pipeline),
-        ];
-        let mut all = kinds.chain(wanted.into_iter().filter(Option::is_some));
+        let wanted = self.occlusion.and(self.occlusion_pipeline);
+        let mut all = kinds.chain(wanted.into_iter().map(Some));
         all.all(|p| p.is_some_and(|p| gpu.pipeline_ready(p.into()))) && self.depth_ready(gpu, MAP)
     }
 
@@ -1221,11 +1216,11 @@ impl Terrain {
     }
 
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
-        let mut out: Vec<PipelineId> = vec![self.clear.into()];
         let depth = self.depth_pipelines.iter().flatten().map(|&(_, p)| p);
         let made = (self.pipelines.iter().flatten().copied()).chain(depth);
-        out.extend(made.chain(self.occlusion_pipeline).map(PipelineId::from));
-        out
+        made.chain(self.occlusion_pipeline)
+            .map(PipelineId::from)
+            .collect()
     }
 
     /// Makes every drape slot blank, as a new atlas does: the map draws
@@ -1329,7 +1324,7 @@ impl Terrain {
         }
         // The last frame, which drew into them, was submitted.
         std::mem::take(&mut self.mip_targets).release(gpu);
-        let Some(dem) = self.dem.filter(|_| !self.sheets[0].is_empty()) else {
+        let Some(dem) = self.dem.filter(|_| self.reserved) else {
             return drawn;
         };
         if !self.pending.is_empty() {
@@ -1339,85 +1334,51 @@ impl Terrain {
             pending.sort_unstable();
             pending.dedup();
             drawn.slots = pending.len() as u32;
-            let sheets = layout.side / SHEET_SIDE;
             let grid = layout.side as f32;
-            for run in pending.chunk_by(|a, b| (a.page, a.sheet) == (b.page, b.sheet)) {
-                let (page, at) = (run[0].page, run[0].sheet);
-                let Some(sheet) = self.sheets[page].get(at as usize) else {
+            for run in pending.chunk_by(|a, b| (a.page, a.texture) == (b.page, b.texture)) {
+                let (page, texture) = (run[0].page, run[0].texture);
+                let Some(slots) = (self.texels.get(texture as usize).and_then(Option::as_ref))
+                    .and_then(|t| t.pages[page].as_ref())
+                else {
                     continue;
                 };
-                let px = sheet.slot_px;
-                let place = |p: &Redraw| sheet.place(layout.rank(p.stack), p.tile_slot);
-                // Whole places, cleared and downsampled, a smaller slot's
-                // too: what filters read past its edge is then blank, not
-                // what the place held before.
-                let regions: Vec<[u32; 4]> = (run.iter())
-                    .map(|p| {
-                        let (layer, [x, y]) = place(p);
-                        [layer, x * px, y * px, px]
-                    })
-                    .collect();
-                sheet.mips.regions.write(gpu, &regions);
-                let origin = sheet_origin(at, sheets);
-                // A pass a layer: its slots' regions cleared, then each
-                // stack's bundle replayed once, scissored to the rectangle
-                // around its redrawn slots (a slot alone to its side). The
+                let px = PAGE_PX[page] as f32;
+                // A pass a slot's stack: its layer cleared, then the
+                // stack's bundle replayed into it, the grid's drape space,
+                // which the drape frame maps onto a viewport of its size,
+                // moved so that the slot's place lands on the layer. The
                 // bundle draws every redrawn slot's content, each bounded
-                // by its slot, and what other sheets' slots draw falls
-                // outside the viewport's square. The scissor also keeps
-                // what a coarse tile standing in draws (spanning far more
-                // than its slot) from being rasterized over the whole
-                // layer only to be discarded. A replay costs the CPU every
-                // draw of the stack, so the map redraws few sheets a frame
-                // (the runtime's `Terrain::plan`).
-                let mut first = 0;
-                for layer_run in run.chunk_by(|a, b| place(a).0 == place(b).0) {
-                    let end = first + layer_run.len() as u32;
-                    // The grid's drape space, which the drape frame maps
-                    // onto a viewport of its size, moved so that the
-                    // layer's slots of it land on the layer.
-                    let (layer, [_, y]) = place(&layer_run[0]);
-                    let row = sheet_place(layer_run[0].tile_slot)[1] - y;
-                    let corner = [origin[0], origin[1] + row].map(|n| -((n * px) as f32));
-                    let viewport = [corner[0], corner[1], grid * px as f32, grid * px as f32];
-                    let mut commands = vec![
-                        RenderCommand::SetPipeline(self.clear),
-                        RenderCommand::SetBindGroup {
-                            index: 0,
-                            group: sheet.clear,
-                        },
-                        RenderCommand::Draw {
-                            vertices: 0..4,
-                            instances: first..end,
-                        },
-                        RenderCommand::SetViewport(viewport),
-                    ];
-                    first = end;
-                    for stack_run in layer_run.chunk_by(|a, b| a.stack == b.stack) {
-                        let stack = stack_run[0].stack;
-                        let Some(&(_, bundle)) = drape.iter().find(|d| d.0 == stack) else {
-                            continue;
-                        };
-                        let slots: Vec<([u32; 2], u32)> =
-                            stack_run.iter().map(|p| (place(p).1, p.side)).collect();
-                        commands.push(RenderCommand::SetScissor(scissor(&slots, px)));
-                        commands.push(RenderCommand::ExecuteBundles(vec![bundle]));
-                    }
+                // by its place, which falls outside the layer but for the
+                // slot's own. A replay costs the CPU every draw of the
+                // stack, so the map redraws few slots a frame (the
+                // runtime's `Terrain::plan`).
+                for p in run {
+                    let Some(&(_, bundle)) = drape.iter().find(|d| d.0 == p.stack) else {
+                        continue;
+                    };
+                    let corner = layout.corner(p.tile_slot, p.stack).map(|n| -(n as f32));
+                    let viewport = [corner[0], corner[1], grid * px, grid * px];
                     passes.push(Pass::Render(RenderPass {
                         label: "drape",
                         colors: vec![ColorAttachment {
-                            target: sheet.draw[layer as usize],
+                            target: slots.draw[p.layer as usize],
                             resolve: None,
                             store: StoreOp::Store,
-                            load: LoadOp::Load,
+                            load: LoadOp::Clear([0.0; 4]),
                         }],
                         depth: None,
-                        commands,
+                        commands: vec![
+                            RenderCommand::SetViewport(viewport),
+                            RenderCommand::ExecuteBundles(vec![bundle]),
+                        ],
                     }));
                     drawn.draws += 1;
                 }
-                // Each level from the one above, over the sheet's slots.
-                let chain = ("drape mips", &sheet.mips);
+                // Each level from the one above, over the redrawn layers.
+                let regions: Vec<[u32; 4]> =
+                    (run.iter()).map(|p| [p.layer, 0, 0, slots.side]).collect();
+                slots.mips.regions.write(gpu, &regions);
+                let chain = ("drape mips", &slots.mips);
                 let targets = &mut self.mip_targets;
                 let (mips, _) =
                     (downsampler.mip_passes(gpu, chain, &regions, targets)).expect("ready above");
@@ -1429,39 +1390,42 @@ impl Terrain {
             // The scene's buffers grew.
             self.forget_group(gpu);
         }
-        if self.groups.is_empty() {
-            self.groups = (self.sheets[0].iter().enumerate())
-                .map(|(at, colour)| {
-                    let slopes = self.sheets[1].get(at).unwrap_or(colour);
-                    gpu.create_bind_group(&BindGroupDesc {
-                        label: "terrain",
-                        layout: self.layout,
-                        entries: &[
-                            BindGroupEntry::buffer(0, frame),
-                            self.tiles.entry(1),
-                            self.grid.entry(2),
-                            BindGroupEntry::texture(3, dem.0, D2Array),
-                            BindGroupEntry::texture(4, colour.texture, D2Array),
-                            BindGroupEntry::sampler(5, self.linear),
-                            BindGroupEntry::buffer(6, self.params),
-                            BindGroupEntry::buffer(7, self.atmosphere),
-                            props,
-                            BindGroupEntry::texture(9, slopes.texture, D2Array),
-                        ],
-                    })
-                })
-                .collect();
-            self.bound = Some((frame, props));
+        for texels in self.texels.iter_mut().flatten() {
+            if texels.group.is_some() {
+                continue;
+            }
+            let Some(colour) = &texels.pages[0] else {
+                continue;
+            };
+            let slopes = texels.pages[1].as_ref().unwrap_or(colour);
+            texels.group = Some(gpu.create_bind_group(&BindGroupDesc {
+                label: "terrain",
+                layout: self.layout,
+                entries: &[
+                    BindGroupEntry::buffer(0, frame),
+                    self.tiles.entry(1),
+                    self.grid.entry(2),
+                    BindGroupEntry::texture(3, dem.0, D2Array),
+                    BindGroupEntry::texture(4, colour.texture, D2Array),
+                    BindGroupEntry::sampler(5, self.linear),
+                    BindGroupEntry::buffer(6, self.params),
+                    BindGroupEntry::buffer(7, self.atmosphere),
+                    props,
+                    BindGroupEntry::texture(9, slopes.texture, D2Array),
+                ],
+            }));
         }
+        self.bound = Some((frame, props));
         let step = GRID_STEPS.iter().position(|&s| s == self.grid_step);
         let indices = self.grid_ranges[step.expect("a grid step")].clone();
-        // Each sheet's tiles with it bound.
-        let sheets = (self.groups.iter())
-            .zip(&self.sheet_tiles)
-            .filter(|(_, tiles)| !tiles.is_empty())
-            .map(|(&group, tiles)| (group, tiles.clone()))
+        // Each run of tiles with its texture bound.
+        let runs = (self.runs.iter())
+            .filter_map(|(texture, tiles)| {
+                let group = self.texels.get(*texture as usize)?.as_ref()?.group?;
+                Some((group, tiles.clone()))
+            })
             .collect();
-        self.drawn = Some(Drawn { sheets, indices });
+        self.drawn = Some(Drawn { runs, indices });
         // The terrain's depth, for what it hides.
         if let (Some([color, depth]), Some(pipeline)) = (self.occlusion, self.occlusion_pipeline) {
             let mut commands = vec![RenderCommand::SetPipeline(pipeline)];
@@ -1486,7 +1450,7 @@ impl Terrain {
         drawn
     }
 
-    /// The frame's tiles drawn, each sheet's with it bound, over the
+    /// The frame's tiles drawn, each run with its texture bound, over the
     /// pipeline set before: nothing while the terrain can't draw.
     fn draw(&self, commands: &mut Vec<RenderCommand>) {
         let Some(drawn) = &self.drawn else {
@@ -1496,7 +1460,7 @@ impl Terrain {
             buffer: self.grid_indices,
             offset: 0,
         });
-        for (group, tiles) in &drawn.sheets {
+        for (group, tiles) in &drawn.runs {
             commands.extend([
                 RenderCommand::SetBindGroup {
                     index: 0,
@@ -1668,8 +1632,8 @@ impl Terrain {
         frame: &crate::scene::FrameBlock,
         page: usize,
     ) -> crate::scene::FrameBlock {
-        // The grid the sheets lie in, which each sheet's passes move their
-        // viewport over.
+        // The grid of the slots' places, which each slot's passes move
+        // their viewport over.
         let [w, h] = [(self.layout_state.side * PAGE_PX[page]) as f32; 2];
         // Drape world (x, −y) for texel (x, y) → clip.
         let view_proj = [
@@ -1706,12 +1670,12 @@ impl Terrain {
 
     pub(crate) fn disable(&mut self, gpu: &mut dyn Gpu) {
         self.paint = None;
-        self.release_sheets(gpu);
-        self.forget_group(gpu);
+        self.release_texels(gpu);
         self.release_occlusion(gpu);
         self.drawn = None;
         self.dem = None;
         self.pending.clear();
+        self.reserved = false;
         self.layout_state.tile_slots = 0;
     }
 
@@ -1721,7 +1685,7 @@ impl Terrain {
     }
 
     pub(crate) fn active(&self) -> bool {
-        self.paint.is_some() && !self.sheets[0].is_empty()
+        self.paint.is_some() && self.reserved
     }
 
     /// Whether this frame's draws of the terrain draw it
@@ -1819,16 +1783,15 @@ fn grid() -> (Vec<u32>, Vec<u32>, [std::ops::Range<u32>; GRID_STEPS.len()]) {
 
 impl crate::release::Release for Terrain {
     fn release(mut self, gpu: &mut dyn Gpu) {
-        self.release_sheets(gpu);
+        self.release_texels(gpu);
         self.release_occlusion(gpu);
-        self.forget_group(gpu);
-        let layouts = (self.layout, self.stack_layout, self.clear_layout);
+        let layouts = (self.layout, self.stack_layout);
         let backdrops: Vec<BindGroupId> = (self.backdrops.iter().flatten()).map(|b| b.1).collect();
         (self.backdrop_layout, backdrops, self.blank).release(gpu);
         let shades: Vec<BindGroupId> = (self.shade_groups.iter().flatten()).map(|s| s.1).collect();
         (self.shade_layout, shades).release(gpu);
         let depth = self.depth_pipelines.map(|d| d.map(|(_, p)| p));
-        let pipelines = (self.pipelines, depth, self.clear);
+        let pipelines = (self.pipelines, depth);
         let pipelines = (pipelines, self.occlusion_pipeline);
         self.grid.destroy(gpu);
         self.tiles.destroy(gpu);
@@ -1841,15 +1804,6 @@ impl crate::release::Release for Terrain {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_stack_replays_once_over_its_redrawn_slots() {
-        // Slots at columns 1 and 0 of rows 0 and 1.
-        let places = [([1, 0], 1024), ([0, 1], 512)];
-        assert_eq!(scissor(&places, 1024), [0, 0, 2048, 2048]);
-        // A slot alone takes its side.
-        assert_eq!(scissor(&[([1, 1], 256)], 1024), [1024, 1024, 256, 256]);
-    }
 
     #[test]
     fn the_grid_has_cells_and_skirts() {

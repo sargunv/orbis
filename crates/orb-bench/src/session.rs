@@ -665,7 +665,8 @@ fn run_session(
     // before, for attributing slow frames and seeing loads come again;
     // the MiB the device made, and the drape atlas's and tile pages' MiB
     // after it, for seeing pages made anew; the vertex, index and
-    // compacted index pools' MiB used and held; over terrain on the plane,
+    // compacted index pools' MiB used and held, and all the map holds;
+    // over terrain on the plane,
     // what it changed of the frame before ([`crate::steadiness`]): the
     // share of the ground re-zoomed, tile drops and the near ground's
     // wobble in pixels.
@@ -673,7 +674,7 @@ fn run_session(
         let mut out = String::from(
             "t\tzoom\ttiles\tcandidates\tcpu\tgpu\tdraws\tdrape_slots\tmoving\tarrived\tmade\t\
              drape_atlas\ttile_pages\tvertices\tvertices_held\tindices\tindices_held\t\
-             compacted\tcompacted_held\trezoomed\tdrops\twobble\n",
+             compacted\tcompacted_held\tallocated\trezoomed\tdrops\twobble\n",
         );
         for (i, f) in frames.iter().enumerate() {
             let moving = windows.iter().any(|w| (w[0]..=w[1]).contains(&f.t));
@@ -688,7 +689,7 @@ fn run_session(
             };
             writeln!(
                 out,
-                "{:.1}\t{:.3}\t{}\t{}\t{:.3}\t{:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
+                "{:.1}\t{:.3}\t{}\t{}\t{:.3}\t{:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
                  {steadiness}",
                 f.t,
                 f.zoom,
@@ -709,6 +710,7 @@ fn run_session(
                 mib(scene.indices.allocated),
                 mib(scene.compacted.used),
                 mib(scene.compacted.allocated),
+                mib(f.report.memory.allocated()),
             )
             .map_err(|e| e.to_string())?;
         }
@@ -984,9 +986,10 @@ impl SessionReport {
             out,
             "| session | allocated at the end | peak | vertices used / allocated | \
              indices | props | compacted | tables | tile pages | glyph pages | image atlas | drape \
-             atlas | cached | peak vertices used / allocated | peak indices | peak compacted |"
+             atlas | cached | peak vertices used / allocated | peak indices | peak compacted | \
+             peak tile pages | peak drape atlas |"
         )?;
-        writeln!(out, "|{}", "---|".repeat(16))?;
+        writeln!(out, "|{}", "---|".repeat(18))?;
         for r in &self.results {
             let Some(end) = r.frames.last().map(|f| f.report.memory) else {
                 continue;
@@ -1003,10 +1006,16 @@ impl SessionReport {
                     .fold((0, 0), |(u, a), p| (p.used.max(u), p.allocated.max(a)));
                 format!("{} / {}", mib(used), mib(allocated))
             };
+            let most = |of: fn(&orb_api::Memory) -> u64| {
+                mib((r.frames.iter())
+                    .map(|f| of(&f.report.memory))
+                    .max()
+                    .unwrap_or(0))
+            };
             let s = &end.scene;
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} ({} of {} tiles) | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} ({} of {} tiles) | {} | {} | {} | {} | {} |",
                 r.name,
                 mib(end.allocated()),
                 mib(peak),
@@ -1025,6 +1034,8 @@ impl SessionReport {
                 peak_pool(|m| m.scene.vertices),
                 peak_pool(|m| m.scene.indices),
                 peak_pool(|m| m.scene.compacted),
+                most(|m| m.tile_textures),
+                most(|m| m.drape_atlas),
             )?;
         }
         writeln!(out)?;

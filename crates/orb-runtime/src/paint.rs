@@ -550,31 +550,6 @@ fn write_paint(
     missing
 }
 
-/// Whether what a draped layer draws into a drape slot changes with the
-/// zoom, whatever its features: line sizes are in pixels, which the slot's
-/// texels per pixel scale, and so are fill translations and patterns; paint
-/// that follows the zoom changes with it. A layer that doesn't keeps its
-/// slots while the camera zooms
-/// ([`Renderer::set_drapes_by_zoom`](orb_render::Renderer::set_drapes_by_zoom)).
-pub(crate) fn drapes_by_zoom(l: &orb_style::Layer) -> bool {
-    let follows = l.slots().any(|(_, slot)| {
-        matches!(slot.kind(), Kind::Camera | Kind::Composite)
-            || slot
-                .as_expression()
-                .is_some_and(|e| e.camera_scale().is_some())
-    });
-    follows
-        || match l.ty {
-            LayerType::Line => true,
-            LayerType::Fill => {
-                l.get(orb_style::FILL_PATTERN).is_set()
-                    || l.get(orb_style::FILL_TRANSLATE).constant() != Some([0.0; 2])
-            }
-            LayerType::Background => l.get(orb_style::BACKGROUND_PATTERN).is_set(),
-            _ => false,
-        }
-}
-
 /// Whether a layer drawn at `zoom` turns with the map's bearing: a
 /// viewport-anchored hillshade's light (one the terrain doesn't shade), or
 /// a viewport-anchored translate.
