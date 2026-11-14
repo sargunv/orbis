@@ -1586,10 +1586,6 @@ impl Scene {
             quantum: 0.0,
             resized: Resized::default(),
         };
-        // Relayouts move at most about half the slots at once.
-        if scene.moves_through_scratch() {
-            scene.scratch(gpu, u64::from(c.compacted_words) * 2);
-        }
         scene.add_block(gpu, [c.vertex_words, c.index_words], false);
         scene.resized = Resized::default();
         scene
@@ -3357,8 +3353,8 @@ impl Scene {
 
     /// Moves the compacted indices into a buffer of `new` words, nothing
     /// copied: the next cull writes every slot of laid-out candidates.
-    /// What moves slots goes too, to be made again to the new size's
-    /// moves.
+    /// What moves slots goes too, to be made again as the new one's
+    /// moves need it.
     fn resize_compacted(&mut self, gpu: &mut dyn Gpu, new: u32) {
         let desc = BufferDesc {
             label: "compacted indices",
@@ -3373,10 +3369,6 @@ impl Scene {
         self.moves.clear();
         if let Some((scratch, _)) = self.scratch.take() {
             gpu.destroy_buffer(scratch);
-        }
-        // Relayouts move at most about half the slots at once.
-        if self.moves_through_scratch() {
-            self.scratch(gpu, u64::from(new) * 2);
         }
         self.capacity.compacted_words = new;
         self.laid.clear();
