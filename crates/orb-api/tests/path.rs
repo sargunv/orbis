@@ -1034,17 +1034,18 @@ fn a_resized_terrain_map_draws_its_next_frame() {
     }
 }
 
-/// Tokyo over the test hills, with and without their terrain, and the
-/// terrain: its background magenta under a fill of the background's own
-/// colour that covers the ground, so that a frame shows no tile where it
-/// shows the magenta, or nothing ([`bare`]). Its scratch DEM lives as
-/// long as the guard.
+/// Tokyo over the test hills, its buildings standing, with and without
+/// their terrain, and the terrain: the 3D layers' depth has a stencil
+/// with the terrain and none without. Its background is magenta under a
+/// fill of the background's own colour that covers the ground, so that a
+/// frame shows no tile where it shows the magenta, or nothing ([`bare`]).
+/// Its scratch DEM lives as long as the guard.
 fn terrain_turns() -> (String, String, &'static str, common::Scratch) {
     let (hills, dem) = hills();
     let ground = r#""ground": {"type": "geojson", "data": {"type": "Polygon",
         "coordinates": [[[139.2, 35.2], [140.3, 35.2], [140.3, 36.2], [139.2, 36.2], [139.2, 35.2]]]}},"#;
     let style = |terrain: &str| {
-        let style = tokyo(terrain, &format!("{hills}{ground}"));
+        let style = extruded(tokyo(terrain, &format!("{hills}{ground}")));
         let background = r##""background-color": "#f8f4f0"
       }
     },"##;
