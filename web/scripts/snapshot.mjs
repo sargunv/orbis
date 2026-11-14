@@ -70,6 +70,13 @@ for (const [key, value] of new URLSearchParams(extra ?? ""))
 const query = `?${params}`;
 const url = `${server.url}${query}${hash}`;
 
+// What another engine logs about itself, which no change here can fix:
+// printed, not counted.
+const KNOWN_WARNINGS = [
+  // GL JS's globe, every frame it draws fog (warned once).
+  /calculateFogMatrix is not supported on globe projection/,
+];
+
 const browser = await launchChromium();
 try {
   const page = await browser.newPage({
@@ -79,7 +86,12 @@ try {
   let warnings = 0;
   page.on("console", (m) => {
     if (offline && m.text().includes("ERR_INTERNET_DISCONNECTED")) return;
-    if (["error", "warning"].includes(m.type())) {
+    if (
+      m.type() === "warning" &&
+      KNOWN_WARNINGS.some((known) => known.test(m.text()))
+    )
+      console.log(`page (known): ${m.text()}`);
+    else if (["error", "warning"].includes(m.type())) {
       warnings++;
       console.error(`page: ${m.text()}`);
     } else if (m.type() === "info") console.log(`page: ${m.text()}`);
