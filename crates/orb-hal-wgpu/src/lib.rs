@@ -17,6 +17,7 @@ mod compile;
 mod convert;
 #[cfg(windows)]
 mod dx12;
+mod ledger;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod metal;
 mod offscreen;
@@ -205,6 +206,8 @@ pub struct WgpuGpu {
     /// What the device did ([`Gpu::counters`]), counted from `&self` too:
     /// where held writes are issued.
     counters: std::cell::Cell<GpuCounters>,
+    /// The resources it holds by label, when `ORB_GPU_LEDGER` asks.
+    ledger: Option<Box<ledger::Ledger>>,
     /// Makes shader modules unique to it ([`WgpuGpu::set_shader_nonce`]).
     shader_nonce: Option<u32>,
     /// Small buffer writes, copied in at the next submission.
@@ -551,6 +554,7 @@ impl WgpuGpu {
             #[cfg(target_arch = "wasm32")]
             released_bytes: Vec::new(),
             counters: Default::default(),
+            ledger: ledger::Ledger::from_env(),
             shader_nonce: None,
             writes: writes::Writes::default(),
             texture_writes: Default::default(),
@@ -1491,6 +1495,9 @@ impl Gpu for WgpuGpu {
             c.bytes_allocated += desc.size;
         });
         let id = self.buffers.insert(buffer);
+        if let Some(l) = &mut self.ledger {
+            l.made(false, id, desc.label, desc.size);
+        }
         if desc.usage.contains(BufferUsages::IDLE_WRITES) {
             self.idle_writes.insert(id);
         }
@@ -1500,6 +1507,9 @@ impl Gpu for WgpuGpu {
     fn destroy_buffer(&mut self, id: BufferId) {
         self.writes.forget(id);
         self.idle_writes.remove(&id.0);
+        if let Some(l) = &mut self.ledger {
+            l.freed(false, id.0);
+        }
         self.buffers.remove(id.0).destroy();
     }
 
@@ -1717,11 +1727,15 @@ impl Gpu for WgpuGpu {
             c.bytes_allocated += texture_bytes(desc, layers);
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        TextureId(self.textures.insert(Texture {
+        let id = self.textures.insert(Texture {
             texture: Some(texture),
             view: Some(view),
             levels: None,
-        }))
+        });
+        if let Some(l) = &mut self.ledger {
+            l.made(true, id, desc.label, texture_bytes(desc, layers));
+        }
+        TextureId(id)
     }
 
     fn create_texture_view(
@@ -1768,6 +1782,9 @@ impl Gpu for WgpuGpu {
         self.writes.forget_texture(id);
         let entry = self.textures.remove(id.0);
         if let (Some(texture), None) = (entry.texture, entry.levels) {
+            if let Some(l) = &mut self.ledger {
+                l.freed(true, id.0);
+            }
             texture.destroy();
         }
     }
@@ -2122,6 +2139,9 @@ impl Gpu for WgpuGpu {
     }
 
     fn submit(&mut self, passes: &[Pass]) {
+        if let Some(l) = &mut self.ledger {
+            l.submitted();
+        }
         let started = timing::now();
         // The frame's surface texture, once a pass draws into it.
         #[cfg(target_arch = "wasm32")]

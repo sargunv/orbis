@@ -225,6 +225,28 @@ fn render(
         .map_err(|e| e.to_string())?;
     warn(&mut map);
     write_png(output, image)?;
+    // `--tour file`: then each camera of the file's lines (`lon,lat,zoom
+    // [,bearing,pitch]`) in turn on the same map, as a session reaches
+    // them, for what a map holds over many views.
+    if let Some(tour) = args.get(&["--tour"]) {
+        let text = std::fs::read_to_string(tour).map_err(|e| format!("{tour}: {e}"))?;
+        let mercator = *TileMatrixSet::web_mercator().projection();
+        for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let n: Vec<f64> = (line.split(','))
+                .map(|v| v.trim().parse::<f64>().map_err(|e| format!("{line}: {e}")))
+                .collect::<Result<_, _>>()?;
+            let &[lon, lat, zoom, ref rest @ ..] = n.as_slice() else {
+                return Err(format!("{line}: want lon,lat,zoom[,bearing,pitch]"));
+            };
+            map.jump_to_state(CameraState {
+                bearing: rest.first().copied().unwrap_or(0.0),
+                pitch: rest.get(1).copied().unwrap_or(0.0),
+                ..CameraState::new(Geodetic::new(lon, lat), zoom, &mercator)
+            });
+            map.snapshot(width as u32, height as u32, scale)
+                .map_err(|e| e.to_string())?;
+        }
+    }
     if args.has("--capture") {
         runtime.capture_gpu_frames(0, 1);
         map.snapshot(width as u32, height as u32, scale)
