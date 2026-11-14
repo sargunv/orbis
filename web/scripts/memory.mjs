@@ -5,12 +5,16 @@
 // tilt, a camera a display frame, until idle).
 //
 //   pnpm memory [--cache=<cache-style.db> | --style=<url>] [--engines=orbis,gljs,native]
-//     [--views=a,b] [--runs=1] [--backend=webgl2]
+//     [--views=a,b] [--runs=1] [--backend=webgl2] [--scene=terrain|globe]
+//     [--size=WxH] [--ratio=r]
 //
 // By default it loads MapLibre Native's five real-world render tests at
 // 512×512, served offline from the render-test cache in the mln-rs
 // checkout `cargo xtask h2h` builds (load.mjs's `--cache`); `--style` loads
-// mln-rs's Liberty views of that style at 1024×768 instead.
+// mln-rs's Liberty views of that style at 1024×768 instead. `--scene`
+// loads `pnpm load`'s: the Alps terrain style, or Liberty (`--style`, by
+// default the live one) on the globe, in Orbis and GL JS by default.
+// `--size` and `--ratio` set the viewport, say a phone's 412x915 at 2.625.
 //
 // Each sample is a fresh browser, so its GPU process holds one engine's
 // map. After a garbage collection in every context, it reads:
@@ -31,7 +35,7 @@
 // on WebGL 2 (`--backend=webgl2`, `createMap`'s `backend`), what its CPU
 // driver keeps in wasm memory.
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -47,20 +51,36 @@ const args = process.argv.slice(2);
 const option = (name, fallback) =>
   args.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ??
   fallback;
-const style = option("style");
-const cache = style ? undefined : (option("cache") ?? realWorldCache());
-if (!style && !cache)
+const scene = option("scene");
+if (scene && !["terrain", "globe"].includes(scene))
+  throw new Error("--scene takes terrain or globe");
+let style = option(
+  "style",
+  scene === "globe"
+    ? "https://tiles.openfreemap.org/styles/liberty"
+    : undefined,
+);
+const cache =
+  style || scene ? undefined : (option("cache") ?? realWorldCache());
+if (!style && !cache && !scene)
   throw new Error(
     "no render-test cache: build `cargo xtask h2h size` once, or give --cache=<cache-style.db> or --style=<url>",
   );
-const engines = option("engines", "orbis,gljs,native").split(",");
-const VIEWS = CAMERAS[cache ? "realWorld" : "liberty"];
+const engines = option(
+  "engines",
+  scene ? "orbis,gljs" : "orbis,gljs,native",
+).split(",");
+if (scene === "globe" && engines.includes("native"))
+  throw new Error("--scene=globe: MapLibre Native has no globe projection");
+const VIEWS = CAMERAS[cache ? "realWorld" : (scene ?? "liberty")];
 const views = option("views", Object.keys(VIEWS).join(",")).split(",");
 const runs = Number(option("runs", "1"));
 const backend = option("backend");
-const viewport = cache
-  ? { width: 512, height: 512 }
-  : { width: 1024, height: 768 };
+const [width, height] = option("size", cache ? "512x512" : "1024x768")
+  .split("x")
+  .map(Number);
+const viewport = { width, height };
+const ratio = Number(option("ratio", "1"));
 const MB = 2 ** 20;
 
 /** A process's physical footprint and its graphics memory, in bytes, from macOS `footprint`. */
@@ -169,7 +189,7 @@ async function sample(server, engine, view) {
     const launched = await processes(browser);
     const context = await browser.newContext({
       viewport,
-      deviceScaleFactor: 1,
+      deviceScaleFactor: ratio,
     });
     const page = await context.newPage();
     const errors = [];
@@ -179,7 +199,7 @@ async function sample(server, engine, view) {
       ? `${server.url}real-world/styles/${view}.json`
       : style;
     await page.goto(
-      `${server.url}load.html?${new URLSearchParams({ engine, style: styleUrl, at: VIEWS[view], ...(backend && engine === "orbis" && { backend }) })}`,
+      `${server.url}load.html?${new URLSearchParams({ engine, style: styleUrl, at: VIEWS[view], ...(scene === "globe" && { globe: "" }), ...(backend && engine === "orbis" && { backend }) })}`,
     );
     await page.waitForFunction(
       () => /^(done|error)/.test(document.title),
@@ -264,6 +284,11 @@ const server = await serveDemo({
   mounts: extracted ? { "real-world/": extracted } : {},
 });
 if (extracted) extractCache(cache, extracted, `${server.url}real-world/`);
+// The Alps terrain style, by its name in the build.
+if (scene === "terrain") {
+  const dist = fileURLToPath(new URL("../dist/assets/", import.meta.url));
+  style = `${server.url}assets/${readdirSync(dist).find((f) => /^alps-.*\.json$/.test(f))}`;
+}
 const rows = [];
 try {
   for (let run = 0; run < runs; run++) {
@@ -303,7 +328,7 @@ const KEYS = [
   ["cpu", "Orbis's CPU copies"],
 ];
 const lines = [
-  `### Browser memory, MB (Chromium, ${viewport.width}×${viewport.height} @1×${backend === "webgl2" ? ", Orbis on WebGL 2" : ""}; ${runs > 1 ? `medians of ${runs} runs` : "1 run"})`,
+  `### Browser memory, MB (Chromium, ${viewport.width}×${viewport.height} @${ratio}×${backend === "webgl2" ? ", Orbis on WebGL 2" : ""}; ${runs > 1 ? `medians of ${runs} runs` : "1 run"})`,
   "",
   `| engine | phase | view | ${KEYS.map(([, name]) => name).join(" | ")} |`,
   `|---|---|---|${KEYS.map(() => "---|").join("")}`,
@@ -344,6 +369,6 @@ lines.push(
   "",
   `JS heap, buffers and wasm memory: summed over the page and its workers, after a garbage collection; renderer: the renderer processes' footprint; ` +
     `GPU: the GPU process's graphics memory and footprint less its own at launch, an estimate of the engine's GPU memory. ` +
-    `Style: ${cache ? `the real-world render tests, from ${cache}` : style}.`,
+    `Style: ${cache ? `the real-world render tests, from ${cache}` : `${style}${scene === "globe" ? " on the globe" : ""}`}.`,
 );
 console.log(lines.join("\n"));
