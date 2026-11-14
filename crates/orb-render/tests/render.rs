@@ -274,7 +274,7 @@ fn a_full_block_adds_another_copying_nothing() {
     assert_eq!(pixel(&pixels, 4, 32), RED, "the first block's mesh");
     assert_eq!(pixel(&pixels, 36, 32), RED, "the second block's mesh");
     let copied = h.renderer.take_resized().bytes_copied;
-    assert_copied_no_pool(&h, copied);
+    assert_eq!(copied, 0, "bytes copied");
     assert!(h.renderer.memory().vertices.allocated > first);
     // The second block empties and goes.
     h.renderer.remove_mesh(tile, second);
@@ -392,20 +392,7 @@ fn candidate_lists_grow_as_layouts_need() {
     assert_eq!(h.renderer.stats().candidates_dropped, 0);
     let grew = h.renderer.take_resized();
     assert!(grew.moves > 0, "the lists grew");
-    assert_copied_no_pool(&h, grew.bytes_copied);
-}
-
-/// Asserts that growth copied nothing. On the CPU driver's data textures
-/// four small tables share one texture (WebGL 2 has too few texture units
-/// to give each its own), and when one grows the others' rows move with
-/// it: a few rows of texels, whatever the pools hold.
-fn assert_copied_no_pool(h: &Harness, copied: u64) {
-    // Rows of at most 4096 words.
-    let (rows, row) = (8, 4096 * 4);
-    match h.gpu_driven() {
-        true => assert_eq!(copied, 0),
-        false => assert!(copied <= rows * row, "{copied} bytes copied"),
-    }
+    assert_eq!(grew.bytes_copied, 0, "bytes copied");
 }
 
 /// A full tile page grows for a tile past its last layer by a chunk of

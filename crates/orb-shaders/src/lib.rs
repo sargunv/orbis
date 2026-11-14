@@ -497,10 +497,12 @@ mod tests {
     fn gl_variants_fit_webgl2() {
         use naga::back::glsl;
         // WebGL 2's minimums (`MAX_VARYING_VECTORS`,
-        // `MAX_TEXTURE_IMAGE_UNITS`, `MAX_*_UNIFORM_BLOCKS`,
-        // `MAX_UNIFORM_BLOCK_SIZE`).
+        // `MAX_TEXTURE_IMAGE_UNITS` and `MAX_VERTEX_TEXTURE_IMAGE_UNITS` a
+        // stage, `MAX_COMBINED_TEXTURE_IMAGE_UNITS` a program,
+        // `MAX_*_UNIFORM_BLOCKS`, `MAX_UNIFORM_BLOCK_SIZE`).
         const VARYINGS: usize = 15;
-        const TEXTURES: usize = 16;
+        const STAGE_TEXTURES: usize = 16;
+        const TEXTURES: usize = 32;
         const UNIFORM_BLOCKS: usize = 12;
         const UNIFORM_BLOCK_BYTES: u32 = 16 << 10;
         let mut failures = Vec::new();
@@ -626,6 +628,12 @@ mod tests {
                 // A texture sampled with two samplers would take one of
                 // them on wgpu's GL back end.
                 let mut samplers = std::collections::BTreeMap::new();
+                if reflection.texture_mapping.len() > STAGE_TEXTURES {
+                    fail(format!(
+                        "{} textures, past WebGL 2's {STAGE_TEXTURES} units a stage",
+                        reflection.texture_mapping.len()
+                    ));
+                }
                 for mapping in reflection.texture_mapping.values() {
                     let texture = one.global_variables[mapping.texture].name.clone();
                     if samplers
@@ -675,7 +683,7 @@ mod tests {
             }
             if textures.len() > TEXTURES {
                 failures.push(format!(
-                    "{label}: {} textures, past WebGL 2's {TEXTURES} units",
+                    "{label}: {} textures, past WebGL 2's {TEXTURES} units a program",
                     textures.len()
                 ));
             }
