@@ -97,7 +97,9 @@
 // - `regions`: a style of templated tiles, no archive, downloaded as a
 //   region from the Offline areas dialog, then reopened: it draws its
 //   tiles from the region's extract, with no error, though its style never
-//   declares the archive module the extract is read with.
+//   declares the archive module the extract is read with (in WebKit, in a
+//   profile on disk, the one place Playwright's WebKit has the origin
+//   private file system).
 // - `webgl2`: in a Chromium without WebGPU (#140), the scenario; the Tokyo
 //   extract at two views, pitched
 //   terrain, and the extract on the globe over terrain pitched 79° at
@@ -273,7 +275,10 @@ async function mapIdle(page, what, timeout = 60_000) {
     });
 }
 
-/** A page that collects its errors and warnings. */
+/**
+ * A page of `browser` (or of a context, whose own viewport it keeps) that
+ * collects its errors and warnings.
+ */
 async function open(browser, viewport) {
   const page = await browser.newPage({ viewport });
   const errors = [];
@@ -2596,8 +2601,20 @@ async function regions(browser, server) {
       ],
     }),
   );
-  const { page, errors } = await open(browser, { width: 800, height: 600 });
-  const idle = async () => {
+  // A context the visits share. Playwright's WebKit has no origin private
+  // file system in a context kept in memory (`getDirectory` throws
+  // UnknownError, in any page), only in one with a profile on disk.
+  const viewport = { width: 800, height: 600 };
+  const profile =
+    browser.browserType().name() === "webkit" &&
+    (await mkdtemp(join(tmpdir(), "orbis-e2e-webkit-")));
+  const context = profile
+    ? await browser
+        .browserType()
+        .launchPersistentContext(profile, { headless: true, viewport })
+    : await browser.newContext({ viewport });
+  const { page, errors } = await open(context, viewport);
+  const idle = async (page) => {
     await page.waitForFunction(
       () =>
         ["idle", "error"].includes(document.getElementById("app")?.dataset.map),
@@ -2606,10 +2623,9 @@ async function regions(browser, server) {
     );
     return page.evaluate(() => document.getElementById("app").dataset.map);
   };
-  await page.goto(
-    `${server.url}?style=${encodeURIComponent(`${tiles}style.json`)}#1/0/0`,
-  );
-  assert.equal(await idle(), "idle", errors.join("\n"));
+  const url = `${server.url}?style=${encodeURIComponent(`${tiles}style.json`)}#1/0/0`;
+  await page.goto(url);
+  assert.equal(await idle(page), "idle", errors.join("\n"));
   await page.click("#menu-button");
   await page.click("#offline-button");
   await page.click("#offline .primary");
@@ -2626,18 +2642,25 @@ async function regions(browser, server) {
     .catch(() => {});
   const status = await page.textContent(".offline-status");
   assert.ok(status.startsWith("Downloaded"), `${status}\n${errors.join("\n")}`);
-  // Reopened, every context reads the region, and the tiles come from
-  // its extract.
+  assert.deepEqual(errors, []);
+  // Reopened in a page of the same context, which keeps the origin's
+  // files, every context reads the region, and the tiles come from its
+  // extract. A page of its own, as a later visit is: what the first logs
+  // as it goes (in WebKit, loads of the blob URLs it made failing access
+  // control) stays the first's.
   const fetched = [];
-  await page.context().route(`${tiles}*/*/*`, (route) => {
+  await context.route(`${tiles}*/*/*`, (route) => {
     fetched.push(route.request().url());
     return route.abort("internetdisconnected");
   });
-  await page.reload();
-  assert.equal(await idle(), "idle", errors.join("\n"));
-  assert.deepEqual(fetched, [], "tiles the region holds went to the network");
-  assert.deepEqual(errors, []);
   await page.close();
+  const again = await open(context, viewport);
+  await again.page.goto(url);
+  assert.equal(await idle(again.page), "idle", again.errors.join("\n"));
+  assert.deepEqual(fetched, [], "tiles the region holds went to the network");
+  assert.deepEqual(again.errors, []);
+  await context.close();
+  if (profile) await rm(profile, { recursive: true, force: true });
   console.log("regions: a plain style drew from its downloaded region");
 }
 

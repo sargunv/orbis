@@ -118,7 +118,10 @@ async fn write(key: &str, bytes: &[u8], append: bool) -> Result<(), JsValue> {
         let file: web_sys::Blob = JsFuture::from(handle.get_file()).await?.dyn_into()?;
         JsFuture::from(stream.seek_with_f64(file.size())?).await?;
     }
-    JsFuture::from(stream.write_with_u8_array(bytes)?).await?;
+    // From an array of its own: WebKit writes a view's whole buffer, here
+    // all of the wasm memory, rather than the view's bytes.
+    let bytes = Uint8Array::from(bytes);
+    JsFuture::from(stream.write_with_js_u8_array(&bytes)?).await?;
     // Closing publishes the writes: until then readers see the old file.
     JsFuture::from(stream.close()).await?;
     Ok(())
