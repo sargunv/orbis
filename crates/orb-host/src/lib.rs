@@ -56,12 +56,20 @@ pub trait Fetch: Send + Sync {
     );
 }
 
-/// Tile fetches a map keeps in flight at once, where `ORB_FETCHES` sets
-/// it: a stand-in for a host with fewer connections, or more, for
-/// measuring how loads take turns. `None` leaves each host its default.
-pub fn fetch_limit() -> Option<usize> {
-    let limit = std::env::var("ORB_FETCHES").ok()?.parse().ok()?;
-    (limit > 0).then_some(limit)
+/// Tile fetches a map keeps in flight at once, by default: they take
+/// turns in the map's fetch order, so that loads given up wait where
+/// they can be dropped and loads wait in the view's order rather than
+/// the network's. MapLibre Native keeps 20.
+pub const TILE_FETCHES: usize = 16;
+
+/// [`TILE_FETCHES`], or what `ORB_FETCHES` sets: a stand-in for a host
+/// with fewer connections, or more, for measuring how loads take turns.
+pub fn tile_fetches() -> usize {
+    std::env::var("ORB_FETCHES")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(TILE_FETCHES)
 }
 
 /// A request a [`NetworkHook`] can serve where the network would: one the

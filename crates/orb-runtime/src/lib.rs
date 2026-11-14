@@ -66,7 +66,7 @@ pub use features::{FeatureRequest, FeaturesDone, TileFeature};
 pub use geojson::{ClusterQuery, ClusterRequest};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
 pub use host_heights::HostElevations;
-pub use job_host::{FETCHES, Fetched, JobHost, Loaded};
+pub use job_host::{Fetched, JobHost, Loaded};
 pub use jobs::{
     ImagePixels, JobReply, JobRequest, Jobs, PoolJobs, TileDone, TileImage, TileOutcome,
     TileResult, pack, packed_header, unpack, unpremultiply,

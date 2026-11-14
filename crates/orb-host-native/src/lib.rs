@@ -56,14 +56,18 @@ impl std::fmt::Debug for NativeFetch {
 /// Largest response body accepted.
 const MAX_BODY: u64 = 64 << 20;
 
-/// Requests in flight at once, each on a thread and connection of its own.
-/// Cold loads take as long with 16 (and longer with 4).
-const FETCH_THREADS: usize = 8;
+/// Requests other than tile fetches in flight beside them: glyph
+/// ranges, sprites, documents.
+const OTHER_FETCHES: usize = 4;
 
-/// [`FETCH_THREADS`], or as many as tile fetches take turns
-/// ([`orb_host::fetch_limit`]) where that is more.
+/// Requests in flight at once, each on a thread and connection of its
+/// own: every tile fetch a map's turns start ([`orb_host::tile_fetches`])
+/// and others beside them. Fewer would queue tile fetches here again, in
+/// the order they started rather than the map's, and glyph ranges behind
+/// them: over a link answering 150 ms late, 8 threads behind 16 turns
+/// took the view after a globe spin three times as long to come in.
 fn fetch_threads() -> usize {
-    orb_host::fetch_limit().map_or(FETCH_THREADS, |n| n.max(FETCH_THREADS))
+    orb_host::tile_fetches() + OTHER_FETCHES
 }
 
 /// A request's cache key, when it has one, and the stale copy the

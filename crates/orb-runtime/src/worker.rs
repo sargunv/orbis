@@ -1721,7 +1721,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// Tile fetches take turns: those past [`crate::job_host::FETCHES`]
+    /// Tile fetches take turns: those past [`orb_host::TILE_FETCHES`]
     /// wait. One given up while it waits never starts, and one given up
     /// while it fetches is aborted; either answers cancelled at once. Each
     /// that ends starts the next.
@@ -1730,7 +1730,7 @@ pub(crate) mod tests {
         let fetch = Arc::new(HeldTiles::default());
         let host = crate::JobHost::new(fetch.clone(), Arc::new(orb_host::jobs::Inline));
         host.set_style(1, Arc::new(TileWorker::new(SYMBOLS).unwrap()));
-        let n = crate::job_host::FETCHES as u32;
+        let n = orb_host::TILE_FETCHES as u32;
         let (tx, rx) = std::sync::mpsc::channel();
         for col in 0..n + 2 {
             let tx = tx.clone();

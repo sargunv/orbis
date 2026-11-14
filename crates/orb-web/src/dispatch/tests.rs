@@ -294,13 +294,13 @@ fn a_geojson_source_s_tiles_share_one_worker() {
     assert!(workers(geojson).len() > 1);
 }
 
-/// Loads take turns across the workers, [`FETCHES`] at once: the next
+/// Loads take turns across the workers, [`orb_host::TILE_FETCHES`] at once: the next
 /// goes once a worker says a fetch ended, lowest rank first by the map's
 /// latest ranks, and one given up while it waits is answered here.
 #[test]
 fn loads_take_turns_across_workers_in_the_map_s_order() {
     let (jobs, posted) = jobs(3);
-    let n = FETCHES as u32;
+    let n = orb_host::TILE_FETCHES as u32;
     let mut outcomes = Vec::new();
     for col in 0..n + 3 {
         let location = TileLocation::Url("test://tile.mvt".into());

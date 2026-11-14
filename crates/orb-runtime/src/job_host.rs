@@ -7,7 +7,7 @@
 //! ([`reorder`](JobHost::reorder)): a load its map gives up
 //! ([`cancel`](JobHost::cancel)) before its turn never starts, and one
 //! fetching is aborted. Natively [`PoolJobs`](crate::PoolJobs) runs one
-//! in the map's process, [`FETCHES`] at once; on the web every job worker
+//! in the map's process, [`orb_host::tile_fetches`] at once; on the web every job worker
 //! runs one behind the page's messages, fetching whatever the page sends,
 //! since the page's turns order fetches across the workers. Image tiles
 //! come out as their encoded bytes: each platform decodes them its own
@@ -44,13 +44,6 @@ pub enum Loaded {
     /// Its map gave the load up before it arrived ([`JobHost::cancel`]).
     Cancelled,
 }
-
-/// Tile fetches a map keeps in flight at once, unless `ORB_FETCHES` says
-/// otherwise ([`orb_host::fetch_limit`]). Natively they feed the fetch
-/// threads; in a browser they keep the network queue short, so that loads
-/// given up wait where they can be dropped, and loads wait in the view's
-/// order rather than the network's.
-pub const FETCHES: usize = 16;
 
 /// Called once a load's fetch has ended, or at once for a load that
 /// fetches nothing: a browser's job worker tells the page, whose turns
@@ -362,11 +355,10 @@ fn missing(error: FetchError) -> Result<Loaded, String> {
 }
 
 impl JobHost {
-    /// A map's job host, its tile fetches taking turns [`FETCHES`] at
-    /// once (or `ORB_FETCHES`).
+    /// A map's job host, its tile fetches taking turns
+    /// [`orb_host::tile_fetches`] at once.
     pub fn new(fetch: Arc<dyn Fetch>, executor: Arc<dyn Executor>) -> Arc<Self> {
-        let limit = orb_host::fetch_limit().unwrap_or(FETCHES);
-        Self::with_turns(fetch, executor, Turns::new(limit))
+        Self::with_turns(fetch, executor, Turns::new(orb_host::tile_fetches()))
     }
 
     /// A job host fetching every load as it comes: a browser's job

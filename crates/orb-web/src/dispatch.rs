@@ -16,7 +16,7 @@
 //! ancestor stands in, rather than take down a worker each time it is
 //! loaded.
 //!
-//! Tile loads take turns across the workers ([`Turns`], [`FETCHES`] at
+//! Tile loads take turns across the workers ([`Turns`], [`orb_host::tile_fetches`] at
 //! once): a load goes to its worker in its turn, which passes on once
 //! the worker says its fetch ended ([`JobReply::Fetched`]), so the
 //! map's order, which it sets again each frame, holds across them all and
@@ -30,8 +30,8 @@ use orb_crs::TileIndex;
 use orb_host::Fetch;
 use orb_runtime::wire;
 use orb_runtime::{
-    FETCHES, FetchCounts, GlyphRaster, JobReply, JobRequest, Jobs, RasterDone, SpriteIcons,
-    StyleUpdate, TileDone, TileOutcome, TileRequest, TileResult, TileWorker, Turn, Turns,
+    FetchCounts, GlyphRaster, JobReply, JobRequest, Jobs, RasterDone, SpriteIcons, StyleUpdate,
+    TileDone, TileOutcome, TileRequest, TileResult, TileWorker, Turn, Turns,
 };
 
 /// Posts a message, a [`JobRequest`] in [`wire`]'s bytes, to each of the
@@ -122,7 +122,7 @@ impl WorkerJobs {
                 lost: vec![false; workers as usize],
                 ..State::default()
             }),
-            turns: Turns::new(orb_host::fetch_limit().unwrap_or(FETCHES)),
+            turns: Turns::new(orb_host::tile_fetches()),
             me: me.clone(),
         })
     }
