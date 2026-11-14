@@ -129,7 +129,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { chromium, firefox } from "playwright";
@@ -2445,11 +2445,15 @@ function reportGpuErrors() {
  * CoreAnimation's own command buffers too) within 5 s of the process's
  * low-memory handler, which runs when other sessions fill a shared
  * machine's memory. WebKit then starts a new GPU process, says the device
- * was `destroyed`, and gives the page no adapter. Null where macOS logged
- * no such pair, or on another system.
+ * was `destroyed`, and gives the page no adapter. Only `browser`'s own
+ * WebKit (Playwright's build, not Safari's) is asked about, and only an
+ * abort before the loss counts. Null where macOS logged no such pair, for
+ * another browser, or on another system.
  */
-function webkitDroppedDevice(at) {
-  if (process.platform !== "darwin") return null;
+function webkitDroppedDevice(browser, at) {
+  const type = browser.browserType();
+  if (process.platform !== "darwin" || type.name() !== "webkit") return null;
+  const build = dirname(type.executablePath());
   const stamp = (t) => new Date(t).toLocaleString("sv-SE");
   let out;
   try {
@@ -2475,7 +2479,9 @@ function webkitDroppedDevice(at) {
     .split("\n")
     .filter((line) => line.startsWith("{"))
     .map((line) => JSON.parse(line))
-    .filter((e) => e.eventMessage)
+    .filter(
+      (e) => e.eventMessage && e.processImagePath?.startsWith(`${build}/`),
+    )
     .map((e) => ({
       // "2026-11-14 01:47:39.726000-0800"
       at: Date.parse(
@@ -2484,7 +2490,7 @@ function webkitDroppedDevice(at) {
       pid: e.processID,
       low: e.eventMessage.includes("lowMemoryHandler"),
     }));
-  for (const abort of entries.filter((e) => !e.low)) {
+  for (const abort of entries.filter((e) => !e.low && e.at <= at)) {
     const low = entries.findLast(
       (e) =>
         e.low &&
@@ -2525,7 +2531,7 @@ async function resize(browser, server) {
   const idle = async () => {
     await mapIdle(page, "the Alps");
     for (; survived < losses.length; survived++) {
-      const why = webkitDroppedDevice(losses[survived]);
+      const why = webkitDroppedDevice(browser, losses[survived]);
       assert.ok(
         why,
         `the map lost its GPU device: ${errors.filter((e) => !/network error/.test(e)).join(" | ")}`,
