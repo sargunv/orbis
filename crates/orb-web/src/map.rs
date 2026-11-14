@@ -295,7 +295,7 @@ pub struct FrameTimes {
     /// The main pass's bundles recorded again.
     #[wasm_bindgen(readonly)]
     pub bundles: f64,
-    /// Redrawn drape slots' bundles and passes.
+    /// Redrawn drape slots' draws and passes.
     #[wasm_bindgen(readonly, js_name = drapePasses)]
     pub drape_passes: f64,
     /// The other passes listed.

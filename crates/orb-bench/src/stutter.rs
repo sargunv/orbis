@@ -576,7 +576,7 @@ impl StutterReport {
              chosen and their placements written; place: the view's tiles put in the scene; \
              placement: building the placement lane's frame, applying its commits; cull: the \
              cull's candidates laid out and placement rows written; bundles: the main bundles \
-             recorded again; drape passes: redrawn drape slots' bundles and passes; encode: the \
+             recorded again; drape passes: redrawn drape slots' draws and passes; encode: the \
              other passes listed; submit: the passes and the buffer writes staged for them \
              recorded into wgpu and submitted; runtime other: paint, the camera, picking; host: \
              `orb-api` around the runtime's frame."

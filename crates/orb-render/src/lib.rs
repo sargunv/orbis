@@ -456,9 +456,9 @@ pub struct Renderer {
     made_seen: u32,
     /// Nodes the main bundle left out, waiting for a pipeline.
     waiting: u32,
-    /// Whether a drape bundle has left out a draped node waiting for a
-    /// pipeline, or drawn a split node's untested placements in its tested
-    /// pipeline, since every slot was last redrawn. A slot keeps lacking
+    /// Whether the drape's recorded draws left out a draped node waiting
+    /// for a pipeline, or drew a split node's untested placements in its
+    /// tested pipeline, since every slot was last redrawn. A slot keeps lacking
     /// the node, or what it drew, whatever later recordings leave out (one
     /// whose slots the node has no candidates in leaves out nothing), so
     /// the pipeline's arrival redraws every slot.
@@ -505,8 +505,8 @@ pub struct Renderer {
     /// held then, which the drape's room keeps to, and the bytes of the
     /// texture refused ([`reserve_drape`](Self::reserve_drape)).
     drape_ceiling: Option<(u32, u64)>,
-    /// The drape pass's paint, frames and bundles, made for the first
-    /// draped paint.
+    /// The drape pass's paint, frames and recorded draws, made for the
+    /// first draped paint.
     drape: Option<Drape>,
     /// What each draw of the terrain draws, in style order.
     terrain_layers: Vec<terrain::TerrainLayer>,
@@ -1681,7 +1681,7 @@ impl Renderer {
             return false;
         }
         if before.is_some() != words.is_some() {
-            level.forget_bundle(gpu);
+            level.forget_recorded(gpu);
         }
         if let Some(words) = &words {
             let at = std::iter::once((node, words));
@@ -1756,7 +1756,7 @@ impl Renderer {
             node.left_out.set([false; 2]);
         }
         if let Some(drape) = &mut self.drape {
-            drape.forget_bundle(gpu);
+            drape.forget_recorded(gpu);
         }
     }
 
@@ -2905,8 +2905,8 @@ impl Renderer {
                 self.invalidate_bundle(gpu);
             }
             if drape_waiting && let Some(terrain) = self.terrain.as_mut() {
-                // Slots drawn without them lack those layers: all draw
-                // again, the drape's bundles recorded anew.
+                // Slots drawn without them lack those layers: all redraw
+                // (stale), the drape's draws recorded anew.
                 terrain.redraw_all();
             }
         }
@@ -4250,14 +4250,14 @@ impl release::Release for Drape {
 }
 
 impl Drape {
-    fn forget_bundle(&mut self, gpu: &mut dyn Gpu) {
+    fn forget_recorded(&mut self, gpu: &mut dyn Gpu) {
         for recorded in &mut self.recorded {
             recorded.take().release(gpu);
         }
     }
 
     fn release(mut self, gpu: &mut dyn Gpu) {
-        self.forget_bundle(gpu);
+        self.forget_recorded(gpu);
         let [a, b] = self.scene;
         let [f, g] = self.frames;
         ((a, b), (f, g), self.uniforms).release(gpu);
