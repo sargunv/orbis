@@ -433,14 +433,16 @@ impl Canvas {
             .map_err(|e| format!(concat!("no ", api!(), " device: {}"), e))?;
         let flag = lost.clone();
         device.set_device_lost_callback(move |reason, message| {
-            // Why, where the map didn't lose it on purpose (`lose`): the
-            // map draws on through another device, which says nothing of
-            // this one.
-            if reason != wgpu::DeviceLostReason::Destroyed {
-                let why = format!("orbis: the GPU device was lost: {message}");
+            // Why, where the map didn't lose it on purpose (`lose`, which
+            // marks the loss before it destroys the device): the map draws
+            // on through another device, which says nothing of this one.
+            // Not by the reason: WebKit says `destroyed`, with no message,
+            // when its GPU process aborts a command buffer (macOS logs it
+            // as `kIOGPUCommandBufferCallbackErrorInvalidResource`).
+            if !flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                let why = format!("orbis: the GPU device was lost ({reason:?}): {message}");
                 web_sys::console::warn_1(&why.into());
             }
-            flag.store(true, std::sync::atomic::Ordering::Relaxed);
             // The next frame sees the loss and the host recovers.
             crate::map::wake(map);
         });

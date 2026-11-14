@@ -2422,7 +2422,7 @@ function reportGpuErrors() {
         device.pushErrorScope("validation");
         submit.apply(queue, buffers);
         // A lost device rejects it (WebKit's OperationError): the map
-        // says why it lost the device itself.
+        // warns of the loss itself.
         device.popErrorScope().then(
           (e) => e && report(`WebGPU: ${e.message}`),
           () => {},
