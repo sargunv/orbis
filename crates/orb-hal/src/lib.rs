@@ -345,8 +345,8 @@ pub struct Caps {
     /// compiles ([`Gpu::presents_wait`]).
     pub compiles_hold_presents: bool,
     /// A flat varying (`@interpolate(flat, either)`) takes its triangle's
-    /// last vertex's value, as GL's convention has it, where the device
-    /// keeps it; elsewhere its first vertex's.
+    /// last vertex's value, as GL ES does unless its host set the first
+    /// (`WEBGL_provoking_vertex` on the web); elsewhere its first vertex's.
     pub flat_from_last: bool,
 }
 

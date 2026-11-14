@@ -452,7 +452,7 @@ impl Canvas {
             lost.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         #[cfg(feature = "gl")]
-        crate::gl_context::first_vertex(&canvas);
+        let first_vertex = crate::gl_context::first_vertex(&canvas);
         let caps = surface.get_capabilities(&adapter);
         let surface_format = caps
             .formats
@@ -493,6 +493,10 @@ impl Canvas {
         let mut gpu = WgpuGpu::new(device, queue);
         #[cfg(feature = "gl")]
         gpu.read_formats(&adapter);
+        #[cfg(feature = "gl")]
+        if first_vertex {
+            gpu.flat_from_first();
+        }
         // A map waiting only for pipelines draws when one arrives.
         gpu.set_compile_wake(std::rc::Rc::new(move || crate::map::wake(map)));
         Ok(Self {

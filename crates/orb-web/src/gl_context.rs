@@ -50,25 +50,26 @@ pub(crate) fn is_lost(canvas: &JsValue) -> bool {
 }
 
 /// Takes flat varyings from a primitive's first vertex, as WebGPU does
-/// (`WEBGL_provoking_vertex`), where the browser can. Orbis's flat
-/// varyings are the same at every vertex of a primitive, so this changes
-/// no pixel; but under GL's default, the last vertex, ANGLE's Metal back
-/// end (Chrome and Safari on Apple devices) rewrites the indices of every
-/// draw of a program with flat varyings in a compute pass first (#140).
-pub(crate) fn first_vertex(canvas: &JsValue) {
+/// (`WEBGL_provoking_vertex`), where the browser can, and says whether it
+/// did: the terrain's mesh then orders its triangles for it
+/// (`Caps::flat_from_last`). Under GL's default, the last vertex, ANGLE's
+/// Metal back end (Chrome and Safari on Apple devices) rewrites the
+/// indices of every draw of a program with flat varyings in a compute
+/// pass first (#140).
+pub(crate) fn first_vertex(canvas: &JsValue) -> bool {
     const FIRST_VERTEX_CONVENTION_WEBGL: u32 = 0x8E4D;
     let Ok(extension) = of(canvas)
         .and_then(|context| call(&context, "getExtension", &["WEBGL_provoking_vertex".into()]))
     else {
-        return;
+        return false;
     };
-    if extension.is_object() {
-        let _ = call(
+    extension.is_object()
+        && call(
             &extension,
             "provokingVertexWEBGL",
             &[FIRST_VERTEX_CONVENTION_WEBGL.into()],
-        );
-    }
+        )
+        .is_ok()
 }
 
 /// How long a lost context is waited for. Chrome restored one 1005 and

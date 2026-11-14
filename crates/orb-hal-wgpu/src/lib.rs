@@ -464,133 +464,6 @@ fn gl_clips_zero_to_one(device: &wgpu::Device) -> bool {
     false
 }
 
-/// Whether `device`, a GL one, gives a flat varying its triangle's last
-/// vertex's value, as GL's convention has it, found by drawing a triangle
-/// into a pixel of its own and reading it back: not every GL keeps the
-/// convention (Chrome's WebGL 2 on a Mac, ANGLE on Metal, gives the first
-/// vertex's; the ANGLE a native map loads, the last's). It runs before the
-/// device draws anything, in the vertex array wgpu binds once, whose
-/// attribute it enables and disables again, and leaves bound what wgpu
-/// binds again for each submission.
-#[allow(unsafe_code)]
-#[cfg_attr(
-    not(any(feature = "gl", target_os = "android")),
-    allow(unused_variables)
-)]
-fn gl_flat_from_last(device: &wgpu::Device) -> bool {
-    #[cfg(any(feature = "gl", target_os = "android"))]
-    {
-        use glow::HasContext;
-        let es = gl_takes_glsl_es(device);
-        // SAFETY: wgpu's GL device, whose context this locks, before it
-        // records anything.
-        let Some(device) = (unsafe { device.as_hal::<wgpu::hal::api::Gles>() }) else {
-            return true;
-        };
-        let gl = device.context().lock();
-        let version = if es {
-            "#version 300 es\nprecision highp float;"
-        } else {
-            "#version 330 core"
-        };
-        let vertex = format!(
-            "{version}\nlayout(location = 0) in vec2 p;\nflat out uint v;\nvoid main() {{\n    \
-             v = uint(gl_VertexID);\n    gl_Position = vec4(p, 0.0, 1.0);\n}}\n"
-        );
-        let fragment = format!(
-            "{version}\nflat in uint v;\nout vec4 colour;\nvoid main() {{\n    \
-             colour = vec4(float(v) / 2.0, 0.0, 0.0, 1.0);\n}}\n"
-        );
-        let mut last = true;
-        unsafe {
-            if let (Ok(program), Ok(renderbuffer), Ok(framebuffer), Ok(buffer)) = (
-                gl.create_program(),
-                gl.create_renderbuffer(),
-                gl.create_framebuffer(),
-                gl.create_buffer(),
-            ) {
-                let shaders: Vec<_> = [
-                    (glow::VERTEX_SHADER, vertex),
-                    (glow::FRAGMENT_SHADER, fragment),
-                ]
-                .iter()
-                .filter_map(|(kind, source)| {
-                    let shader = gl.create_shader(*kind).ok()?;
-                    gl.shader_source(shader, source);
-                    gl.compile_shader(shader);
-                    gl.attach_shader(program, shader);
-                    Some(shader)
-                })
-                .collect();
-                gl.link_program(program);
-                gl.bind_renderbuffer(glow::RENDERBUFFER, Some(renderbuffer));
-                gl.renderbuffer_storage(glow::RENDERBUFFER, glow::RGBA8, 1, 1);
-                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
-                gl.framebuffer_renderbuffer(
-                    glow::FRAMEBUFFER,
-                    glow::COLOR_ATTACHMENT0,
-                    glow::RENDERBUFFER,
-                    Some(renderbuffer),
-                );
-                if shaders.len() == 2 && gl.get_program_link_status(program) {
-                    for state in [
-                        glow::SCISSOR_TEST,
-                        glow::BLEND,
-                        glow::DEPTH_TEST,
-                        glow::STENCIL_TEST,
-                        glow::CULL_FACE,
-                        glow::RASTERIZER_DISCARD,
-                    ] {
-                        gl.disable(state);
-                    }
-                    gl.color_mask(true, true, true, true);
-                    gl.viewport(0, 0, 1, 1);
-                    gl.clear_color(0.0, 0.0, 1.0, 1.0);
-                    gl.clear(glow::COLOR_BUFFER_BIT);
-                    gl.use_program(Some(program));
-                    // From an array, not none: Firefox warns of emulating
-                    // attribute 0 otherwise.
-                    let corners: [f32; 6] = [-1.0, -1.0, 3.0, -1.0, -1.0, 3.0];
-                    let bytes: Vec<u8> = corners.iter().flat_map(|c| c.to_ne_bytes()).collect();
-                    gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
-                    gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &bytes, glow::STATIC_DRAW);
-                    gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 0, 0);
-                    gl.enable_vertex_attrib_array(0);
-                    gl.draw_arrays(glow::TRIANGLES, 0, 3);
-                    gl.disable_vertex_attrib_array(0);
-                    gl.bind_buffer(glow::ARRAY_BUFFER, None);
-                    let mut pixel = [0u8; 4];
-                    gl.read_pixels(
-                        0,
-                        0,
-                        1,
-                        1,
-                        glow::RGBA,
-                        glow::UNSIGNED_BYTE,
-                        glow::PixelPackData::Slice(Some(&mut pixel)),
-                    );
-                    // 0 from the first vertex, 255 from the last; blue
-                    // where it drew nothing, and GL's convention stands.
-                    last = pixel[2] > 127 || pixel[0] > 191;
-                }
-                gl.use_program(None);
-                gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-                gl.bind_renderbuffer(glow::RENDERBUFFER, None);
-                for shader in shaders {
-                    gl.delete_shader(shader);
-                }
-                gl.delete_program(program);
-                gl.delete_framebuffer(framebuffer);
-                gl.delete_renderbuffer(renderbuffer);
-                gl.delete_buffer(buffer);
-            }
-        }
-        last
-    }
-    #[cfg(not(any(feature = "gl", target_os = "android")))]
-    true
-}
-
 impl WgpuGpu {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         // GLES runs the CPU frame driver, as WebGL 2 does, even where it
@@ -633,7 +506,9 @@ impl WgpuGpu {
             compiles_hold_presents: std::env::var_os("ORB_COMPILES_HOLD_PRESENTS").is_some(),
             #[cfg(webgl)]
             compiles_hold_presents: false,
-            flat_from_last: gl && gl_flat_from_last(&device),
+            // GL ES's only convention, unless the host asked for the first
+            // (`flat_from_first`).
+            flat_from_last: gl,
         };
         let glsl_es = gl && gl_takes_glsl_es(&device);
         #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
@@ -1091,6 +966,13 @@ impl WgpuGpu {
         };
         self.caps.float_targets = renders(wgpu::TextureFormat::Rgba16Float, true)
             && renders(wgpu::TextureFormat::R32Float, false);
+    }
+
+    /// Records that the host set its GL context's flat varyings to take
+    /// a primitive's first vertex, as WebGPU's do (`WEBGL_provoking_vertex`
+    /// on the web): [`Caps::flat_from_last`].
+    pub fn flat_from_first(&mut self) {
+        self.caps.flat_from_last = false;
     }
 
     /// Calls `wake` whenever a pipeline's `create*PipelineAsync` promise
