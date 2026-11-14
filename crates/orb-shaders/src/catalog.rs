@@ -1,7 +1,67 @@
 // The shader catalog: composition of WGSL modules into pipeline sources.
 // Shared with the build script, which reflects the shaders' uniforms.
+
+/// Where a shader composes a module only terrain's and the DEM layers'
+/// shaders compose: a line naming it, which [`Shader::source`] replaces
+/// with the module from [`DEM_WGSL`].
+macro_rules! dem {
+    ($name:literal) => {
+        concat!("//dem ", $name, "\n")
+    };
+}
+
+/// What starts a [`dem!`] line, before the module's name.
+#[allow(dead_code, reason = "WebGL 2's web build reads no WGSL")]
+pub(crate) const DEM_MARKER: &str = "//dem ";
+
+/// The modules only terrain's and the DEM layers' shaders compose, each
+/// after its [`dem!`] line: what `raster-dem` sources draw with. Native
+/// builds read them from here. A WebGPU web build leaves them out of its
+/// memory: orb-web carries them in core-dem.wasm and hands them over
+/// (`set_dem_wgsl`) as that module comes in, before code that draws a
+/// DEM can run.
+pub const DEM_WGSL: &str = concat!(
+    dem!("fetch_terrain"),
+    wgsl!("fetch_terrain"),
+    dem!("terrain"),
+    wgsl!("terrain"),
+    dem!("terrain_shade"),
+    wgsl!("terrain_shade"),
+    dem!("hillshade"),
+    wgsl!("hillshade"),
+    dem!("hillshade_layer"),
+    wgsl!("hillshade_layer"),
+    dem!("hillshade_table"),
+    wgsl!("hillshade_table"),
+    dem!("color_relief"),
+    wgsl!("color_relief"),
+    dem!("prepare"),
+    wgsl!("prepare"),
+    dem!("prepare_pad"),
+    wgsl!("prepare_pad"),
+    dem!("prepare_slope"),
+    wgsl!("prepare_slope"),
+);
 pub(crate) const TYPES: &str = wgsl!("types");
-const PROJECT: &str = wgsl!("project");
+
+/// Module `part` where `whole` composes it: a slice of `whole`, so the
+/// binaries carry its text once, however many shaders compose it.
+const fn within(whole: &'static str, part: &str) -> &'static str {
+    let (w, p) = (whole.as_bytes(), part.as_bytes());
+    let mut at = 0;
+    while at + p.len() <= w.len() {
+        let mut i = 0;
+        while i < p.len() && w[at + i] == p[i] {
+            i += 1;
+        }
+        if i == p.len() {
+            return whole.split_at(at).1.split_at(p.len()).0;
+        }
+        at += 1;
+    }
+    panic!("the whole composes the module");
+}
+
 /// Draw pipelines' helpers, `builtins` and `fetch`: their reads of the
 /// scene's tables.
 const DRAW: &str = concat!(
@@ -12,6 +72,7 @@ const DRAW: &str = concat!(
     wgsl!("project"),
     wgsl!("fetch")
 );
+const PROJECT: &str = within(DRAW, wgsl!("project"));
 const PATTERN: &str = wgsl!("pattern");
 const EXTRUSION: &str = wgsl!("extrusion");
 const EXTRUSION_FRAGMENT: &str = wgsl!("extrusion_fragment");
@@ -34,28 +95,28 @@ const SYMBOL_PLACE_COMPUTE: &str = wgsl!("symbol_place_compute");
 const SYMBOL_POINT: &str = wgsl!("symbol_point");
 const SYMBOL_LINE: &str = wgsl!("symbol_line");
 const HEATMAP: &str = wgsl!("heatmap");
-const BLEND: &str = wgsl!("blend");
 const COMPOSITE: &str = concat!(wgsl!("blend"), wgsl!("composite"));
+const BLEND: &str = within(COMPOSITE, wgsl!("blend"));
 pub(crate) const CULL: &str = wgsl!("cull");
 const IMAGE: &str = wgsl!("image");
-const DEM: &str = wgsl!("dem");
+const DEM: &str = within(DRAW, wgsl!("dem"));
 /// The atmosphere's sky and fog.
 const ATMOSPHERE: &str = wgsl!("atmosphere");
 /// v8's `light` on extrusions.
 const LIGHTING: &str = wgsl!("lighting");
 const RASTER: &str = wgsl!("raster");
-const HILLSHADE: &str = wgsl!("hillshade");
+const HILLSHADE: &str = dem!("hillshade");
 /// The terrain, and `fetch_terrain`: its reads of its tables.
-const TERRAIN: &str = concat!(wgsl!("fetch_terrain"), wgsl!("terrain"));
-const COLOR_RELIEF: &str = wgsl!("color_relief");
-const PREPARE: &str = wgsl!("prepare");
-const PREPARE_PAD: &str = wgsl!("prepare_pad");
+const TERRAIN: &str = concat!(dem!("fetch_terrain"), dem!("terrain"));
+const COLOR_RELIEF: &str = dem!("color_relief");
+const PREPARE: &str = dem!("prepare");
+const PREPARE_PAD: &str = dem!("prepare_pad");
 /// First of a vertex-only shader's parts where clip distances are (wgpu's
 /// `CLIP_DISTANCES`, WebGPU's `clip-distances`): it enables them, and the
 /// parts' lines marked `//planes ` become code. A fragment stage can't take
 /// clip distances, so such a shader leaves its fragment stages out.
 pub(crate) const CLIP_PLANES: &str = "enable clip_distances;\n";
-const PREPARE_SLOPE: &str = wgsl!("prepare_slope");
+const PREPARE_SLOPE: &str = dem!("prepare_slope");
 /// The downsampler's texels (`mip_texel`, `extend_texel`), and its reads
 /// of its regions.
 const DOWNSAMPLE: &str = wgsl!("downsample");
@@ -106,7 +167,7 @@ pub const TERRAIN_SHADE_SHADER: Shader = Shader {
         TERRAIN,
         HILLSHADE,
         BLEND,
-        wgsl!("terrain_shade"),
+        dem!("terrain_shade"),
     ],
     vertex: "vs_terrain",
     fragment: "fs_terrain_shaded",
@@ -327,7 +388,7 @@ pub const RASTER_SHADER: Shader = Shader {
 
 pub const HILLSHADE_SHADER: Shader = Shader {
     label: "hillshade",
-    parts: &[TYPES, DRAW, IMAGE, HILLSHADE, wgsl!("hillshade_layer")],
+    parts: &[TYPES, DRAW, IMAGE, HILLSHADE, dem!("hillshade_layer")],
     vertex: "vs_hillshade",
     fragment: "fs_hillshade",
     compute: "",
@@ -337,7 +398,7 @@ pub const HILLSHADE_SHADER: Shader = Shader {
 /// drape stack.
 pub const HILLSHADE_SLOPES_SHADER: Shader = Shader {
     label: "hillshade slopes",
-    parts: &[TYPES, DRAW, IMAGE, HILLSHADE, wgsl!("hillshade_layer")],
+    parts: &[TYPES, DRAW, IMAGE, HILLSHADE, dem!("hillshade_layer")],
     vertex: "vs_hillshade",
     fragment: "fs_hillshade_slopes",
     compute: "",
@@ -346,7 +407,7 @@ pub const HILLSHADE_SLOPES_SHADER: Shader = Shader {
 /// A hillshade node's table: its colour for every slope.
 pub const HILLSHADE_TABLE_SHADER: Shader = Shader {
     label: "hillshade table",
-    parts: &[HILLSHADE, wgsl!("hillshade_table")],
+    parts: &[HILLSHADE, dem!("hillshade_table")],
     vertex: "vs_hillshade_table",
     fragment: "fs_hillshade_table",
     compute: "",

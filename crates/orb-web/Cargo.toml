@@ -32,6 +32,8 @@ orb-host.workspace = true
 orb-wire.workspace = true
 # `mbtiles://` sources, in their own module (`cargo xtask web`).
 orb-runtime = { workspace = true, features = ["sqlite"] }
+# Its DEM shader modules, carried in core-dem.wasm (`setModuleData`).
+orb-shaders.workspace = true
 orb-symbol.workspace = true
 orb-text.workspace = true
 orb-tile.workspace = true

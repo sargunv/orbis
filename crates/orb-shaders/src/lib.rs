@@ -33,6 +33,33 @@ macro_rules! generated {
 
 mod catalog;
 pub use catalog::*;
+
+/// [`DEM_WGSL`], which a WebGPU web build was handed ([`set_dem_wgsl`]).
+#[cfg(all(target_arch = "wasm32", not(glsl_only)))]
+static DEM_WGSL_HANDED: std::sync::OnceLock<Box<str>> = std::sync::OnceLock::new();
+
+/// Gives a WebGPU web build [`DEM_WGSL`], which it leaves out of its
+/// memory: orb-web's `setModuleData`, as core-dem.wasm comes in, before
+/// any code that draws a DEM can run. Only the first call counts.
+#[cfg(all(target_arch = "wasm32", not(glsl_only)))]
+pub fn set_dem_wgsl(data: &[u8]) {
+    DEM_WGSL_HANDED.get_or_init(|| {
+        let text = std::str::from_utf8(data).expect("this build's DEM modules");
+        assert_eq!(text.len(), DEM_WGSL.len(), "this build's DEM modules");
+        text.into()
+    });
+}
+
+/// The DEM modules the shaders compose ([`DEM_WGSL`]).
+#[cfg(not(glsl_only))]
+fn dem_wgsl() -> &'static str {
+    #[cfg(not(target_arch = "wasm32"))]
+    return DEM_WGSL;
+    #[cfg(target_arch = "wasm32")]
+    DEM_WGSL_HANDED
+        .get()
+        .expect("core-dem.wasm's data comes in before code that draws a DEM runs")
+}
 #[cfg(not(glsl_only))]
 mod sources;
 #[cfg(not(glsl_only))]

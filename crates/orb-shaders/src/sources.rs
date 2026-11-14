@@ -2,7 +2,7 @@
 // the build script; WebGL 2's web build (`glsl_only`) leaves it out, since
 // its pipelines compile the build's GLSL.
 
-use crate::catalog::{ATTRIBUTE_ZERO, CLIP_PLANES, SYMBOL_PLACED, Shader};
+use crate::catalog::{ATTRIBUTE_ZERO, CLIP_PLANES, DEM_MARKER, SYMBOL_PLACED, Shader};
 
 /// The modules a WebGL 2 build swaps (#140), modern first, then each's
 /// GL counterpart: built-ins written out, and tables read from data
@@ -33,7 +33,10 @@ const GL_SWAPS: &[(&str, &str)] = &[
 
 impl Shader {
     pub fn source(&self) -> String {
-        let mut source: String = self.parts.concat();
+        let mut source = String::new();
+        for part in self.parts {
+            push_part(&mut source, part);
+        }
         if self.parts.contains(&CLIP_PLANES) {
             source = source.replace("//planes ", "");
         }
@@ -110,4 +113,31 @@ fn with_attribute_zero(source: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// Pushes `part` onto `out`, each [`dem!`](crate::catalog) line in it
+/// replaced with the module it names from the DEM modules
+/// (`crate::dem_wgsl`).
+fn push_part(out: &mut String, part: &str) {
+    let mut rest = part;
+    while let Some(at) = rest.find(DEM_MARKER) {
+        out.push_str(&rest[..at]);
+        let line = &rest[at + DEM_MARKER.len()..];
+        let end = line.find('\n').expect("a DEM module's line");
+        out.push_str(dem_module(&line[..end]));
+        rest = &line[end + 1..];
+    }
+    out.push_str(rest);
+}
+
+/// DEM module `name`: what follows its line in the DEM modules, up to the
+/// next one's.
+fn dem_module(name: &str) -> &'static str {
+    let modules = crate::dem_wgsl();
+    let line = format!("{DEM_MARKER}{name}\n");
+    let at = (modules.find(&line)).unwrap_or_else(|| panic!("no DEM module {name}")) + line.len();
+    let end = modules[at..]
+        .find(DEM_MARKER)
+        .map_or(modules.len(), |end| at + end);
+    &modules[at..end]
 }

@@ -68,6 +68,22 @@ fn start() {
 )]
 static BIDI_DATA: [u8; orb_text::unicode::BIDI_DATA.len()] = orb_text::unicode::BIDI_DATA;
 
+/// The shader modules only DEMs draw with
+/// ([`orb_shaders::DEM_WGSL`]), as the bidi tables are carried: in
+/// core-dem.wasm, which a map loads once its style has a `raster-dem`
+/// source, before it can make a pipeline that draws one. WebGL 2's build
+/// compiles the build's GLSL, so it carries no WGSL.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[unsafe(link_section = "orbis.data.dem")]
+#[allow(
+    dead_code,
+    reason = "rustc writes the section whether or not code reads the static, which none does"
+)]
+static DEM_WGSL: [u8; orb_shaders::DEM_WGSL.len()] = *orb_shaders::DEM_WGSL
+    .as_bytes()
+    .as_array()
+    .expect("its length");
+
 /// Gives this module's memory feature module `name`'s data: its custom
 /// section `orbis.data.<name>`, which `web/src/builds.ts` hands over
 /// before the module's code can run, from the module or, in a build left
@@ -75,7 +91,10 @@ static BIDI_DATA: [u8; orb_text::unicode::BIDI_DATA.len()] = orb_text::unicode::
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen(js_name = setModuleData)]
 pub fn set_module_data(name: &str, data: &[u8]) {
-    if name == "bidi" {
-        orb_text::unicode::set_bidi_data(data);
+    match name {
+        "bidi" => orb_text::unicode::set_bidi_data(data),
+        #[cfg(feature = "webgpu")]
+        "dem" => orb_shaders::set_dem_wgsl(data),
+        _ => {}
     }
 }

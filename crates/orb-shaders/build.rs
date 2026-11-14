@@ -602,6 +602,11 @@ macro_rules! generated {
 #[path = "src/catalog.rs"]
 mod catalog;
 
+/// The DEM modules, as the source tree has them.
+fn dem_wgsl() -> &'static str {
+    catalog::DEM_WGSL
+}
+
 #[allow(dead_code, unreachable_pub)]
 #[path = "src/sources.rs"]
 mod sources;
