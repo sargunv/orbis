@@ -241,6 +241,32 @@ function onPageError(page, handle) {
   });
 }
 
+/** Waits for the map app on `page` to idle; one that doesn't in `timeout`
+ * ms fails saying what its map was doing, which a timeout alone doesn't
+ * (Firefox's `switching` and `light` and WebKit's `resize` timed out
+ * under load, once each, with nothing to tell why). */
+async function mapIdle(page, what, timeout = 60_000) {
+  await page
+    .waitForFunction(
+      () => document.getElementById("app")?.dataset.map === "idle",
+      null,
+      { timeout },
+    )
+    .catch(async (e) => {
+      const state = await page
+        .evaluate(() => ({
+          scene: globalThis.app?.scene,
+          map: document.getElementById("app")?.dataset.map,
+          toast: document.getElementById("toast")?.textContent,
+          stats: globalThis.app?.map?.stats,
+        }))
+        .catch((why) => String(why));
+      throw new Error(`${what} never idled: ${JSON.stringify(state)}`, {
+        cause: e,
+      });
+    });
+}
+
 /** A page that collects its errors and warnings. */
 async function open(browser, viewport) {
   const page = await browser.newPage({ viewport });
@@ -1298,12 +1324,7 @@ async function switching(browser, server) {
   const [first, second] = ["plain", "red"].map(
     (name) => `${server.url}e2e/styles/${name}.json`,
   );
-  const idle = () =>
-    page.waitForFunction(
-      () => document.getElementById("app").dataset.map === "idle",
-      null,
-      { timeout: 60_000 },
-    );
+  const idle = () => mapIdle(page, "the extract");
   // The extract's range requests, from the page and its workers.
   let archive = 0;
   page.on("request", (r) => {
@@ -1431,11 +1452,7 @@ async function switching(browser, server) {
   );
   stopped.catch(() => {});
   await picking.goto(`${server.url}#15/35.687/139.74/20/30`);
-  await picking.waitForFunction(
-    () => document.getElementById("app").dataset.map === "idle",
-    null,
-    { timeout: 60_000 },
-  );
+  await mapIdle(picking, "the first entry");
   const camera = () =>
     picking.evaluate(() => {
       const { center, zoom, bearing, pitch } = app.map.camera.current;
@@ -1450,11 +1467,13 @@ async function switching(browser, server) {
     await picking.click("#scene-button");
     await picking.click(`[data-scene="${key}"]`);
     await Promise.race([
-      picking.waitForFunction(
-        () => document.getElementById("app").dataset.map !== "loading",
-        null,
-        { timeout: 20_000 },
-      ),
+      picking
+        .waitForFunction(
+          () => document.getElementById("app").dataset.map !== "loading",
+          null,
+          { timeout: 20_000 },
+        )
+        .catch(() => mapIdle(picking, `${key}, still loading,`, 1)),
       stopped,
     ]);
     // Past the style's load, where a style's camera or a flight would move it.
@@ -1533,9 +1552,13 @@ async function light(browser, server) {
     (route) => route.abort("internetdisconnected"),
   );
   await page.goto(`${server.url}?style=alps&light=viewport`);
-  await page.waitForFunction(() => app.options.values, null, {
-    timeout: 60_000,
-  });
+  await page
+    .waitForFunction(() => app.options.values, null, { timeout: 60_000 })
+    .catch(async (e) => {
+      // Says what the map was doing, if it wasn't idle.
+      await mapIdle(page, "the Alps, its options never shown,", 1);
+      throw e;
+    });
   // Every illumination anchor in the map's style.
   const anchors = () =>
     page.evaluate(async () => {
@@ -2401,12 +2424,7 @@ async function resize(browser, server) {
     (u) => !u.href.startsWith(server.url),
     (route) => route.abort("internetdisconnected"),
   );
-  const idle = () =>
-    page.waitForFunction(
-      () => document.getElementById("app").dataset.map === "idle",
-      null,
-      { timeout: 60_000 },
-    );
+  const idle = () => mapIdle(page, "the Alps");
   await page.goto(`${server.url}?style=alps`);
   await page.waitForFunction(() => app.map, null, { timeout: 60_000 });
   await idle();
