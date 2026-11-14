@@ -262,7 +262,9 @@ const HOOK = `(() => {
 /** Each instrumented instance's profile, base64, written into its own memory. */
 const DUMP = `(globalThis.__wasmInstances ?? []).filter((i) => i.exports.__write_profile).map(({ exports: e }) => {
   const size = ${8 + 4 * funcs.length};
-  const at = e.__wbindgen_malloc(size, 8);
+  // Pages of its own at the memory's end: the glue's allocator goes by a
+  // short name.
+  const at = e.memory.grow(Math.ceil(size / 65536)) * 65536;
   const bytes = new Uint8Array(e.memory.buffer, at, e.__write_profile(at, size));
   let text = "";
   for (let i = 0; i < bytes.length; i += 8192) text += String.fromCharCode(...bytes.subarray(i, i + 8192));
