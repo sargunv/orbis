@@ -696,6 +696,10 @@ pub unsafe extern "C" fn mln_acquired_frame_release(
             let sync = sized(consumer_completion, "consumer_completion")?;
             match sync.kind {
                 MLN_GPU_SYNC_CPU_COMPLETE => {}
+                // Vulkan may export a semaphore that has already signaled
+                // as the sync file -1, which names no file: the work is
+                // done. The low 32 bits hold the descriptor, a C `int`.
+                MLN_GPU_SYNC_SYNC_FD if sync.handle as i32 == -1 => {}
                 kind if kind <= MLN_GPU_SYNC_D3D12_FENCE => {
                     return Err(Failure::unsupported(format!(
                         "the session waits for no gpu sync kind but MLN_GPU_SYNC_CPU_COMPLETE, \

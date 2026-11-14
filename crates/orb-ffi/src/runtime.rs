@@ -237,7 +237,7 @@ impl EventHandler {
             };
             // SAFETY: the caller's registration; the batch lives until it
             // returns.
-            unsafe { callback(registration.user_data(), &batch) };
+            crate::base::to_host(|| unsafe { callback(registration.user_data(), &batch) });
         });
     }
 }
@@ -413,6 +413,7 @@ pub unsafe extern "C" fn mln_runtime_create(
     // SAFETY: the caller's pointers.
     unsafe {
         boundary(out_diagnostic, || {
+            crate::base::watch_exit();
             crate::base::fresh_out(out_runtime, "out_runtime")?;
             let mut state_dir = None;
             if !options.is_null() {

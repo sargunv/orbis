@@ -237,7 +237,7 @@ impl EndHandler {
                 };
                 // SAFETY: the caller's registration; `end` lives until it
                 // returns.
-                unsafe { (self.callback)(self.user_data.get(), &end) };
+                crate::base::to_host(|| unsafe { (self.callback)(self.user_data.get(), &end) });
             }),
         );
         delivery::release_later(self.queue, self.release_user_data, self.user_data);

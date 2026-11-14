@@ -240,6 +240,37 @@ impl UserData {
     }
 }
 
+/// Set by the exit handler [`watch_exit`] registers, once the process has
+/// begun to exit (`exit`, or a return from `main`).
+static EXITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Registers, once, the handler that marks the process as exiting: when a
+/// runtime is made or a log callback set, so that it runs before the exit
+/// handlers and static destructors the host registered earlier.
+pub(crate) fn watch_exit() {
+    unsafe extern "C" {
+        fn atexit(handler: extern "C" fn()) -> std::ffi::c_int;
+    }
+    extern "C" fn exiting() {
+        EXITING.store(true, std::sync::atomic::Ordering::Release);
+    }
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    // SAFETY: `exiting` is a plain function that lives as long as the
+    // process.
+    ONCE.call_once(|| unsafe {
+        atexit(exiting);
+    });
+}
+
+/// Runs `call`, a call into one of the host's functions (a callback, wake,
+/// completion, release or abandon hook), unless the process is exiting:
+/// then what the host's function reads may already be gone, as MapLibre
+/// Native's exit rule has it, and a library thread still running calls
+/// nothing.
+pub(crate) fn to_host<R>(call: impl FnOnce() -> R) -> Option<R> {
+    (!EXITING.load(std::sync::atomic::Ordering::Acquire)).then(call)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mln_c_version() -> u32 {
     MLN_C_VERSION

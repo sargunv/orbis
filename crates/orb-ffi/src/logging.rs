@@ -115,7 +115,7 @@ fn release(old: Option<Handler>) {
             queue,
             Box::new(move || {
                 // SAFETY: the registration's release, called once.
-                in_callback(|| unsafe { release(user_data.get()) });
+                crate::base::to_host(|| in_callback(|| unsafe { release(user_data.get()) }));
             }),
         );
     }
@@ -161,14 +161,16 @@ fn write(severity: mln_log_severity, mut message: String) {
             // SAFETY: the caller's registration; the message lives until it
             // returns. Native's records carry no code, which it reports as
             // -1.
-            in_callback(|| unsafe {
-                callback(
-                    user_data.get(),
-                    severity,
-                    MLN_LOG_EVENT_GENERAL,
-                    -1,
-                    crate::base::lend(&mut message),
-                )
+            crate::base::to_host(|| {
+                in_callback(|| unsafe {
+                    callback(
+                        user_data.get(),
+                        severity,
+                        MLN_LOG_EVENT_GENERAL,
+                        -1,
+                        crate::base::lend(&mut message),
+                    )
+                })
             });
         }),
     );
@@ -182,6 +184,7 @@ pub unsafe extern "C" fn mln_log_set_callback(
     // SAFETY: the caller's pointers.
     unsafe {
         boundary(out_diagnostic, || {
+            crate::base::watch_exit();
             not_reentered()?;
             let h = sized(handler, "handler")?;
             let callback = h
@@ -226,5 +229,73 @@ pub unsafe extern "C" fn mln_log_set_async_severity_mask(
             ASYNC.store(mask, Ordering::Relaxed);
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The child's role in [`no_callback_runs_once_the_process_exits`].
+    const EXIT_CHILD: &str = "ORB_TEST_EXIT_CHILD";
+
+    unsafe extern "C" fn callback(
+        _: *mut std::ffi::c_void,
+        _: mln_log_severity,
+        _: mln_log_event,
+        _: i64,
+        message: mln_buffer_view,
+    ) {
+        // SAFETY: the library's message, alive through the call.
+        let message =
+            unsafe { std::slice::from_raw_parts(message.data.cast::<u8>(), message.size) };
+        eprintln!("callback: {}", String::from_utf8_lossy(message));
+    }
+
+    /// Once the process has begun to exit, the library calls none of the
+    /// host's functions, whose state may already be gone: a record logged
+    /// from an exit handler that runs after the library's never reaches
+    /// the log callback. In a child process, which exits.
+    #[test]
+    fn no_callback_runs_once_the_process_exits() {
+        if std::env::var_os(EXIT_CHILD).is_none() {
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "logging::tests::no_callback_runs_once_the_process_exits",
+                    "--nocapture",
+                ])
+                .env(EXIT_CHILD, "1")
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&child.stderr);
+            assert!(child.status.success(), "{stderr}");
+            assert!(stderr.contains("callback: before exit"), "{stderr}");
+            assert!(!stderr.contains("after exit"), "{stderr}");
+            return;
+        }
+        unsafe extern "C" {
+            fn atexit(handler: extern "C" fn()) -> std::ffi::c_int;
+        }
+        extern "C" fn after_the_library() {
+            log(MLN_LOG_SEVERITY_ERROR, "after exit");
+        }
+        // Exit handlers run last registered first, so this one, registered
+        // before the log callback is set, runs after the library's.
+        // SAFETY: a plain function that lives as long as the process.
+        unsafe { atexit(after_the_library) };
+        let handler = mln_log_handler {
+            size: std::mem::size_of::<mln_log_handler>() as u32,
+            callback: Some(callback),
+            user_data: std::ptr::null_mut(),
+            release_user_data: None,
+            queue: mln_delivery_queue(0),
+            platform_severities: 0,
+        };
+        // SAFETY: a valid handler, and no diagnostic.
+        let status = unsafe { mln_log_set_callback(&handler, std::ptr::null_mut()) };
+        assert_eq!(status, MLN_STATUS_OK);
+        log(MLN_LOG_SEVERITY_ERROR, "before exit");
+        std::process::exit(0);
     }
 }

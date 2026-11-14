@@ -2229,7 +2229,9 @@ impl CustomSource {
             };
             // SAFETY: the source's registration; the id lives until it
             // returns.
-            unsafe { callback(registration.user_data(), mln_map(map), view, tile) };
+            crate::base::to_host(|| unsafe {
+                callback(registration.user_data(), mln_map(map), view, tile)
+            });
         });
     }
 }

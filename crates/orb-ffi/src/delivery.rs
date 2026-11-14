@@ -153,7 +153,7 @@ pub(crate) fn release_later(queue: u64, release: mln_user_data_release, user_dat
             Pending {
                 run: Box::new(move || {
                     // SAFETY: the registration's release, called once.
-                    unsafe { release(user_data.get()) }
+                    crate::base::to_host(|| unsafe { release(user_data.get()) });
                 }),
                 abandons: Some(user_data),
             },
@@ -207,7 +207,7 @@ impl Wake {
             self.queue,
             Box::new(move || {
                 // SAFETY: the caller registered this callback and user_data.
-                unsafe { (wake.callback)(wake.user_data.get()) }
+                crate::base::to_host(|| unsafe { (wake.callback)(wake.user_data.get()) });
             }),
         );
     }
@@ -215,7 +215,7 @@ impl Wake {
     /// Calls the wake now, on this thread, whatever its queue.
     fn signal_here(&self) {
         // SAFETY: the caller registered this callback and user_data.
-        unsafe { (self.callback)(self.user_data.get()) }
+        crate::base::to_host(|| unsafe { (self.callback)(self.user_data.get()) });
     }
 
     pub(crate) fn release(self) {
@@ -390,10 +390,10 @@ impl Completion {
                     // SAFETY: the caller registered this callback and
                     // user_data; `result` and what it points at live until
                     // it returns.
-                    unsafe { callback(user_data.get(), &result) };
+                    crate::base::to_host(|| unsafe { callback(user_data.get(), &result) });
                     if let Some(release) = release_user_data {
                         // SAFETY: the registration's release, called once.
-                        unsafe { release(user_data.get()) };
+                        crate::base::to_host(|| unsafe { release(user_data.get()) });
                     }
                 }),
                 abandons: release_user_data.map(|_| user_data),
@@ -431,7 +431,7 @@ impl DeliveryQueue {
             if let (Some(abandon), Some(user_data)) = (self.abandon, call.abandons) {
                 // SAFETY: the queue's registration, for user data its call
                 // would have released.
-                unsafe { abandon(user_data.get()) };
+                crate::base::to_host(|| unsafe { abandon(user_data.get()) });
             }
         }
     }
@@ -446,6 +446,7 @@ pub unsafe extern "C" fn mln_delivery_queue_create(
     // SAFETY: the caller's pointers.
     unsafe {
         boundary(out_diagnostic, || {
+            crate::base::watch_exit();
             let (wake, abandon) = if options.is_null() {
                 (None, None)
             } else {

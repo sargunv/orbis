@@ -258,9 +258,9 @@ impl Provider {
                 }
                 // SAFETY: the provider's registration; `info` lives until it
                 // returns.
-                unsafe {
+                crate::base::to_host(|| unsafe {
                     (provider.callback)(provider.user_data.get(), &info, mln_resource_request(id))
-                };
+                });
             }),
         );
     }
@@ -437,7 +437,9 @@ impl ResourceRequest {
                 Box::new(move || {
                     // SAFETY: the caller's registration, with the handle it
                     // borrows.
-                    unsafe { callback(user_data.get(), mln_resource_request(id)) };
+                    crate::base::to_host(|| unsafe {
+                        callback(user_data.get(), mln_resource_request(id))
+                    });
                 }),
             );
             handler.release();
@@ -757,14 +759,14 @@ impl Transform {
                         let view = crate::base::lend(&mut url);
                         // SAFETY: the transform's registration; `url` lives
                         // until it returns.
-                        unsafe {
+                        crate::base::to_host(|| unsafe {
                             callback(
                                 user_data.get(),
                                 kind_of(kind),
                                 view,
                                 mln_resource_transform_request(id),
                             );
-                        };
+                        });
                     }),
                 );
             }
@@ -976,10 +978,11 @@ impl Headers {
                 ACTIVE.with(|a| a.borrow_mut().push(context as usize));
                 // SAFETY: the transform's registration; the response and URL
                 // live until it returns.
-                let status =
-                    unsafe { callback(user_data.get(), kind_of(kind), view, &mut response) };
+                let status = crate::base::to_host(|| unsafe {
+                    callback(user_data.get(), kind_of(kind), view, &mut response)
+                });
                 ACTIVE.with(|a| a.borrow_mut().pop());
-                if status == MLN_STATUS_OK {
+                if status == Some(MLN_STATUS_OK) {
                     Ok(set)
                 } else {
                     Err(FetchError::Network(
