@@ -41,6 +41,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::glue::leb128;
+
 use wasmparser::{ElementItems, ExternalKind, Operator, Parser, Payload, TypeRef};
 
 /// A feature's module.
@@ -717,18 +719,6 @@ fn append_section(path: &Path, name: &str, payload: &[u8]) -> Result<(), String>
     leb128(&mut wasm, body.len());
     wasm.extend_from_slice(&body);
     std::fs::write(path, wasm).map_err(|e| format!("{}: {e}", path.display()))
-}
-
-fn leb128(out: &mut Vec<u8>, mut value: usize) {
-    loop {
-        let byte = (value & 0x7f) as u8;
-        value >>= 7;
-        if value == 0 {
-            out.push(byte);
-            return;
-        }
-        out.push(byte | 0x80);
-    }
 }
 
 struct Functions {

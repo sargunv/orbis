@@ -10,6 +10,7 @@ mod dxc;
 mod expression_fixtures;
 mod fixtures;
 mod fuzz;
+mod glue;
 mod h2h;
 mod labels;
 mod mln_ffi;

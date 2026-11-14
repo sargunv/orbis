@@ -16,7 +16,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
-use crate::{run, split};
+use crate::{glue, run, split};
 
 const OUT_DIR: &str = "web/pkg";
 /// Where `cargo xtask web --names` writes `core.wasm` whole, with its
@@ -238,6 +238,7 @@ fn module(
         .args(["--target", "web", "--out-name", name, "--out-dir"])
         .arg(&out))?;
     expose_instantiation(&out, name)?;
+    glue::shorten_imports(&out, name)?;
     let wasm = out.join(format!("{name}_bg.wasm"));
     let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
     // A module built to say why it panics stays whole, its feature
