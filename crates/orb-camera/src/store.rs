@@ -464,7 +464,7 @@ impl Camera {
 
     /// Where a jump to `target` would put the camera, without moving it.
     pub fn state_for(&self, target: &CameraTarget) -> CameraState {
-        self.resolve(target).0
+        self.resolve(target, true).0
     }
 
     /// The camera's eye and orientation now.
@@ -482,12 +482,14 @@ impl Camera {
     /// Moves to `target` at once (GL JS `jumpTo`). Animations go on
     /// moving the properties it doesn't set, as in MapLibre Native.
     pub fn jump_to(&mut self, target: &CameraTarget) {
-        let (to, around) = self.resolve(target);
+        let (to, around) = self.resolve(target, true);
         self.yield_fields(Self::claims(target, around.is_some(), self.aims(target)).0);
         self.modified = true;
         self.user = false;
         self.write(to);
-        self.asked_for(to);
+        // What was asked for, past limits that may not be the map's for
+        // long: Mercator's before a globe style arrives.
+        self.asked_for(self.resolve(target, false).0);
     }
 
     /// Moves to `state` at once, as [`jump_to`](Self::jump_to) does, for
@@ -530,7 +532,7 @@ impl Camera {
         start: Option<f64>,
         user: bool,
     ) -> AnimationId {
-        let (to, around) = self.resolve(target);
+        let (to, around) = self.resolve(target, true);
         let aims = self.aims(target);
         let (fields, coupled) = match user {
             // Input takes the whole camera.
@@ -586,7 +588,7 @@ impl Camera {
         options: &FlyOptions,
         start: Option<f64>,
     ) -> AnimationId {
-        let (to, _) = self.resolve(target);
+        let (to, _) = self.resolve(target, true);
         let aims = self.aims(target);
         // A flight's center and zoom move along one curve, and the
         // height it lands at with them.
@@ -983,9 +985,13 @@ impl Camera {
         self.clamped || target.elevation.is_none()
     }
 
-    /// The end state of a move to `target`, and the pixel and ground point
-    /// a zoom or rotation keeps in place.
-    fn resolve(&self, target: &CameraTarget) -> (CameraState, Option<(Geodetic, DVec2)>) {
+    /// The end state of a move to `target`, kept to the limits or not, and
+    /// the pixel and ground point a zoom or rotation keeps in place.
+    fn resolve(
+        &self,
+        target: &CameraTarget,
+        limited: bool,
+    ) -> (CameraState, Option<(Geodetic, DVec2)>) {
         let (surface, viewport) = (&self.surface, self.viewport);
         let projection = &surface.projection;
         let mut to = self.state;
@@ -1003,8 +1009,10 @@ impl Camera {
                 ..self.state
             };
             at.set_zoom(projection, z);
-            let least = at.least_zoom(&self.constraints, surface);
-            at.limit_zoom(least, self.constraints.max_zoom, projection);
+            if limited {
+                let least = at.least_zoom(&self.constraints, surface);
+                at.limit_zoom(least, self.constraints.max_zoom, projection);
+            }
             at.zoom(projection)
         });
         let mut around = None;
@@ -1054,9 +1062,11 @@ impl Camera {
             to.pan(surface, viewport, center, center + target.offset);
         }
         to.bearing = wrap_bearing(to.bearing);
-        to.constrain(&self.constraints, surface, viewport);
-        if let Some(terrain) = self.terrain.as_deref().filter(|_| self.clamped) {
-            to.settle_on(terrain, projection);
+        if limited {
+            to.constrain(&self.constraints, surface, viewport);
+            if let Some(terrain) = self.terrain.as_deref().filter(|_| self.clamped) {
+                to.settle_on(terrain, projection);
+            }
         }
         (to, around)
     }
@@ -1176,6 +1186,16 @@ mod tests {
         assert_eq!(*camera.state(), moved);
         camera.set_surface(Surface::from(mercator()));
         assert!(camera.state().target.lat.abs() < 1e-6);
+        // A jump asks as a new camera does (a z0 URL hash on the Globe).
+        camera.jump_to(&CameraTarget {
+            center: Some(Geodetic::new(-90.0, 30.0)),
+            zoom: Some(0.0),
+            ..CameraTarget::default()
+        });
+        assert!(camera.state().target.lat.abs() < 1e-6);
+        camera.set_surface(globe);
+        assert!((camera.state().target.lat - 30.0).abs() < 1e-9);
+        assert!(camera.state().zoom(&mercator()).abs() < 1e-9);
     }
 
     /// On the globe the least zoom bounds its size at any latitude, for
