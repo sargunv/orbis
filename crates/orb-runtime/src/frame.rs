@@ -360,14 +360,17 @@ impl Map {
         }
         report.tiles_loading += pyramid.loading_for_view() as u32;
         // Loads nothing wants now give way to those the view waits for,
-        // but for tiles beside the view, which the cache keeps: a view
-        // turned back and forth finds them loaded. The world wraps every
-        // `columns` tiles, wherever the plane wraps.
+        // but for vector tiles beside the view, which the cache keeps: a
+        // view turned back and forth finds them loaded. Image tiles take
+        // the least recently used one's layer in their page rather than
+        // grow it for tiles out of view ([`crate::arrival`]), so loading
+        // them on would fetch as many. The world wraps every `columns`
+        // tiles, wherever the plane wraps.
         let columns = |z: u8| {
             let period = tms.projection().wrap_period()?;
             Some((period / tms.tile_span(z)).round() as u32)
         };
-        let unwanted = pyramid.unwanted_loads(Some(&columns));
+        let unwanted = pyramid.unwanted_loads(vector.then_some(&columns));
         style.draws[index] = Some(update.draw);
         let id = style.id;
         for tile in unwanted {

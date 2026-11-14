@@ -61,6 +61,8 @@ struct State {
     queued: VecDeque<(String, FetchDone, Abort)>,
     /// The tile requests made.
     requests: Vec<String>,
+    /// The requests answered: made and not given up before their answer.
+    answered: Vec<String>,
 }
 
 /// The modeled network: see the module.
@@ -119,7 +121,9 @@ impl Network {
         };
         let due: Vec<InFlight> = due;
         for f in due {
-            (f.done)(self.body(&f.url));
+            let body = self.body(&f.url);
+            self.state.lock().unwrap().answered.push(f.url);
+            (f.done)(body);
         }
         let mut state = self.state.lock().unwrap();
         let frame = state.frame;
@@ -312,45 +316,52 @@ fn a_globe_turned_to_its_far_side_shows_coarse_tiles_at_once() {
 const SWITZERLAND: (f64, f64) = (8.23, 46.82);
 const JAPAN: (f64, f64) = (138.25, 36.2);
 
-/// A pitched view turned back and forth fetches each tile once, vector
-/// and image: a tile beside the view loads on when the view leaves it, and
-/// the cache keeps what came, so a swing back finds it loaded rather than
-/// asking again.
+/// A pitched view turned back and forth, slowly or fast, receives each
+/// vector tile once: a tile beside the view loads on when the view leaves
+/// it, and the cache keeps what came, so a swing back finds it loaded
+/// rather than asking again. (A load beside the view gives its turn to one
+/// of the view's, and comes again when wanted; image tiles out of view
+/// keep only the layers the view's own tiles grew their page to, so
+/// they're given up.)
 #[test]
-fn a_view_turned_back_and_forth_fetches_its_tiles_once() {
+fn a_view_turned_back_and_forth_receives_each_vector_tile_once() {
     let Ok(_) = pollster::block_on(common::WgpuGpu::offscreen()) else {
         eprintln!("no GPU adapter; skipped");
         return;
     };
-    let network = Network::new();
     let start = CameraState {
         pitch: 60.0,
         ..at(2.35, 48.85, 12.0)
     };
-    let mut map = offscreen(&network, &style(false), start);
-    frames_to_load(&network, &mut map, 600);
-    let before = network.requests();
-    for swing in 0..8 {
-        for i in 0..=30 {
-            let f = f64::from(i) / 30.0;
-            let turned = if swing % 2 == 0 { f } else { 1.0 - f };
-            map.map.jump_to_state(CameraState {
-                bearing: 40.0 * turned,
-                ..start
-            });
-            frame(&network, &mut map);
+    for frames in [3, 5, 10, 20, 40, 80] {
+        let network = Network::new();
+        let mut map = offscreen(&network, &style(false), start);
+        frames_to_load(&network, &mut map, 600);
+        let before = network.state.lock().unwrap().answered.len();
+        for swing in 0..8 {
+            for i in 0..=frames {
+                let f = f64::from(i) / f64::from(frames);
+                let turned = if swing % 2 == 0 { f } else { 1.0 - f };
+                map.map.jump_to_state(CameraState {
+                    bearing: 40.0 * turned,
+                    ..start
+                });
+                frame(&network, &mut map);
+            }
         }
-    }
-    frames_to_load(&network, &mut map, 600);
-    let state = network.state.lock().unwrap();
-    for kind in ["v", "r"] {
-        let fetched: Vec<&String> = (state.requests[before..].iter())
-            .filter(|u| u.starts_with(&format!("model://{kind}/")))
+        frames_to_load(&network, &mut map, 600);
+        let state = network.state.lock().unwrap();
+        let answered: Vec<&String> = (state.answered[before..].iter())
+            .filter(|u| u.starts_with("model://v/"))
             .collect();
-        let mut tiles = fetched.clone();
+        let mut tiles = answered.clone();
         tiles.sort();
         tiles.dedup();
         assert!(!tiles.is_empty());
-        assert_eq!(fetched.len(), tiles.len(), "{kind} tiles fetched again");
+        assert_eq!(
+            answered.len(),
+            tiles.len(),
+            "vector tiles received again at {frames} frames a swing"
+        );
     }
 }

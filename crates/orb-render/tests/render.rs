@@ -442,7 +442,7 @@ fn full_tile_pages_grow_and_shrink_by_chunks_keeping_their_layers() {
                 unpack: (kind == PageKind::Dem).then_some([0.0; 4]),
                 area: None,
             };
-            h.renderer.upload_image(&mut h.gpu, &build)
+            h.renderer.upload_image(&mut h.gpu, &build, true)
         };
         let green = [0, 255, 0, 255];
         let blue = [0, 0, 255, 255];
@@ -575,7 +575,7 @@ fn raster_pages_move_layers_down_at_rest() {
             unpack: None,
             area: None,
         };
-        h.renderer.upload_image(&mut h.gpu, &build).unwrap()
+        h.renderer.upload_image(&mut h.gpu, &build, true).unwrap()
     };
     let (green, blue) = ([0, 255, 0, 255], [0, 0, 255, 255]);
     let row = |from: i16, to: i16| TileRow {
@@ -643,7 +643,7 @@ fn a_chunk_grown_in_place_shrinks_at_rest() {
             unpack: Some([0.0; 4]),
             area: None,
         };
-        h.renderer.upload_image(&mut h.gpu, &build).unwrap()
+        h.renderer.upload_image(&mut h.gpu, &build, true).unwrap()
     };
     // Eight, eight, sixteen and thirty-two layers, and the last chunk
     // grows by half for the 65th tile.
@@ -695,7 +695,7 @@ fn tile_pages_grow_eightfold_without_copying_across_settles() {
             unpack: None,
             area: None,
         };
-        h.renderer.upload_image(&mut h.gpu, &build).unwrap()
+        h.renderer.upload_image(&mut h.gpu, &build, true).unwrap()
     };
     // Pages start at eight layers before a map sizes them: a ninth tile
     // takes a second chunk.
@@ -1598,7 +1598,7 @@ fn overlapping_image_tiles_draw_in_tile_order_whatever_order_they_arrived_in() {
                 unpack: None,
                 area: None,
             };
-            let tile = h.renderer.upload_image(&mut h.gpu, &build).unwrap();
+            let tile = h.renderer.upload_image(&mut h.gpu, &build, true).unwrap();
             h.renderer.place(tile, 8192, &[row]).unwrap();
             tiles[i] = Some(tile);
         }
@@ -2011,7 +2011,7 @@ fn raster_texels_past_a_tiles_area_take_its_edge() {
         unpack: None,
         area: Some([0, 0, inside, side]),
     };
-    let tile = h.renderer.upload_image(&mut h.gpu, &build).unwrap();
+    let tile = h.renderer.upload_image(&mut h.gpu, &build, true).unwrap();
     h.renderer.set_paint(
         &mut h.gpu,
         0,
@@ -2071,7 +2071,7 @@ fn fading_raster(ancestor: bool) -> Harness {
             unpack: None,
             area: None,
         };
-        h.renderer.upload_image(&mut h.gpu, &build).unwrap()
+        h.renderer.upload_image(&mut h.gpu, &build, true).unwrap()
     };
     if ancestor {
         upload(orb_crs::TileIndex::new(0, 0, 0), [0, 0, 255, 255], None);
@@ -2326,7 +2326,7 @@ fn blended_raster(mode: Blend) -> Vec<u8> {
         unpack: None,
         area: None,
     };
-    let image = h.renderer.upload_image(&mut h.gpu, &build).unwrap();
+    let image = h.renderer.upload_image(&mut h.gpu, &build, true).unwrap();
     h.renderer.set_paint(
         &mut h.gpu,
         1,

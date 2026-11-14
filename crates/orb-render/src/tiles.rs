@@ -380,12 +380,13 @@ impl Tiles {
 impl Renderer {
     /// Uploads an image tile: its pixels into a layer of its source's page,
     /// and a quad (or its mesh) into each of the source's image nodes. The
-    /// scene and the page grow within the device's limits to hold it
-    /// ([`alloc_layer`](Self::alloc_layer)).
+    /// scene grows within the device's limits to hold it, and with `grow`
+    /// the page ([`alloc_layer`](Self::alloc_layer)).
     pub fn upload_image(
         &mut self,
         gpu: &mut dyn Gpu,
         build: &ImageBuild<'_>,
+        grow: bool,
     ) -> Result<GpuTile, UploadError> {
         let ImageBuild {
             key, kind, size, ..
@@ -426,7 +427,7 @@ impl Renderer {
             .filter(|&i| self.nodes[i as usize].source == Some(key.source))
             .collect();
         let layer = self
-            .alloc_layer(gpu, page, true)
+            .alloc_layer(gpu, page, grow)
             .map_err(|OutOfSpace| UploadError::NoRoom)?;
         self.images.write_layer(gpu, page, layer, build.pixels);
         if let (PageKind::Raster, Some(area)) = (kind, build.area) {

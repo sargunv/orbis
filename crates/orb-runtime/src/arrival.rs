@@ -923,12 +923,19 @@ impl Map {
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
         let uploading = self.services.clock.now();
+        // An image tile's page grows only once its source's tiles kept out
+        // of view leave it no layer: those give a layer back, where other
+        // sources' tiles hold none of the page. So image tiles out of view
+        // are kept only in layers the view's own tiles grew the page to:
+        // each costs a whole layer, its mips too (1.3 MiB for a 512-texel
+        // tile), where a vector tile out of view costs what it draws.
+        let mut grow = false;
         let uploaded = loop {
             atlas.release_ramps(gpu, self.retired.ramps.drain(..));
             use orb_render::UploadError::{Invalid, NoRoom};
             let attempt = match &image_build {
                 Some(image_build) => renderer
-                    .upload_image(gpu, image_build)
+                    .upload_image(gpu, image_build, grow)
                     .map(|handle| Upload::Resident(ResidentTile::new(handle, tile_zoom))),
                 // Its words written, the tile is made of them.
                 None if let Some(written) = reserved.take() => {
@@ -973,10 +980,18 @@ impl Map {
             let victim = match attempt {
                 Ok(uploaded) => break Ok(uploaded),
                 Err(Invalid(e)) => break Err(Some(e)),
+                Err(NoRoom) if image_build.is_some() && !grow => match &mut style.sources[source] {
+                    SourceState::Ready { pyramid, .. } => pyramid.evict_lru(),
+                    _ => None,
+                },
                 Err(NoRoom) => evict_unused(&mut style.sources, source),
             };
             let victim = match victim {
                 Some(victim) => Some(victim),
+                None if image_build.is_some() && !grow => {
+                    grow = true;
+                    continue;
+                }
                 None if others_loading => None,
                 None => match &mut style.sources[source] {
                     SourceState::Ready { pyramid, .. } if pyramid.covers(tile) => pyramid
