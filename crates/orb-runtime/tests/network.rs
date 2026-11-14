@@ -5,7 +5,7 @@
 //! loaded within the frames its own requests need: what a fresh map at
 //! that camera takes, whatever it asked for on the way. A globe turned to
 //! its far side shows coarse tiles there at once, and a view turned back
-//! and forth fetches each vector tile once. (mln-rs's fast camera test
+//! and forth fetches each tile once. (mln-rs's fast camera test
 //! models its network alike.)
 
 mod common;
@@ -312,12 +312,12 @@ fn a_globe_turned_to_its_far_side_shows_coarse_tiles_at_once() {
 const SWITZERLAND: (f64, f64) = (8.23, 46.82);
 const JAPAN: (f64, f64) = (138.25, 36.2);
 
-/// A pitched view turned back and forth fetches each vector tile once:
-/// a tile beside the view loads on when the view leaves it, so a swing
-/// back finds it loaded rather than asking again. (Image tiles take the
-/// least recently used one's room as they come, so they're given up.)
+/// A pitched view turned back and forth fetches each tile once, vector
+/// and image: a tile beside the view loads on when the view leaves it, and
+/// the cache keeps what came, so a swing back finds it loaded rather than
+/// asking again.
 #[test]
-fn a_view_turned_back_and_forth_fetches_its_vector_tiles_once() {
+fn a_view_turned_back_and_forth_fetches_its_tiles_once() {
     let Ok(_) = pollster::block_on(common::WgpuGpu::offscreen()) else {
         eprintln!("no GPU adapter; skipped");
         return;
@@ -331,8 +331,8 @@ fn a_view_turned_back_and_forth_fetches_its_vector_tiles_once() {
     frames_to_load(&network, &mut map, 600);
     let before = network.requests();
     for swing in 0..8 {
-        for i in 0..=20 {
-            let f = f64::from(i) / 20.0;
+        for i in 0..=30 {
+            let f = f64::from(i) / 30.0;
             let turned = if swing % 2 == 0 { f } else { 1.0 - f };
             map.map.jump_to_state(CameraState {
                 bearing: 40.0 * turned,
@@ -343,12 +343,14 @@ fn a_view_turned_back_and_forth_fetches_its_vector_tiles_once() {
     }
     frames_to_load(&network, &mut map, 600);
     let state = network.state.lock().unwrap();
-    let vector: Vec<&String> = (state.requests[before..].iter())
-        .filter(|u| u.starts_with("model://v/"))
-        .collect();
-    let mut tiles = vector.clone();
-    tiles.sort();
-    tiles.dedup();
-    assert!(!tiles.is_empty());
-    assert_eq!(vector.len(), tiles.len(), "vector tiles fetched again");
+    for kind in ["v", "r"] {
+        let fetched: Vec<&String> = (state.requests[before..].iter())
+            .filter(|u| u.starts_with(&format!("model://{kind}/")))
+            .collect();
+        let mut tiles = fetched.clone();
+        tiles.sort();
+        tiles.dedup();
+        assert!(!tiles.is_empty());
+        assert_eq!(fetched.len(), tiles.len(), "{kind} tiles fetched again");
+    }
 }

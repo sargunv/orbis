@@ -4,9 +4,12 @@
 //! sets again every frame for the loads still waiting
 //! ([`Turns::reorder`]), so that the view the camera is at loads first
 //! whichever frame or source asked. A load given up before its turn never
-//! starts; one given up in its turn is aborted. Natively each map's job
-//! host holds its turns; in a browser the page holds them for every job
-//! worker, so that one order holds across them all.
+//! starts; one given up in its turn is aborted. A load beside the view
+//! ([`YIELDING`]) runs in a turn no load ranked before it waits for: one
+//! that waits takes its turn, and the load beside the view is aborted, so
+//! loading on beside the view never holds up the view. Natively each
+//! map's job host holds its turns; in a browser the page holds them for
+//! every job worker, so that one order holds across them all.
 
 use std::sync::{Arc, Mutex};
 
@@ -15,6 +18,11 @@ use orb_host::Abort;
 
 /// A load its map can give up: its style, source and tile.
 pub type LoadKey = (u64, u32, TileIndex);
+
+/// Ranks from here on are loads beside the view, which load on after the
+/// view leaves them: each yields its turn to a waiting load ranked before
+/// it.
+pub const YIELDING: u64 = crate::frame::Tier::Beside.first_rank();
 
 /// Tile fetches started, aborted once started, and completed, since a
 /// map's jobs began: [`FrameReport::fetches`](crate::FrameReport::fetches)
@@ -62,13 +70,20 @@ impl std::fmt::Debug for Turns {
 struct State {
     limit: usize,
     counts: FetchCounts,
-    running: Vec<(Option<LoadKey>, Abort)>,
+    running: Vec<Running>,
     waiting: Vec<Waiting>,
     /// Counts the fetches queued, for their order within a rank.
     queued: u64,
     /// A call starts waiting fetches: one whose fetch completes as it
     /// starts hands its turn on without starting more itself.
     starting: bool,
+}
+
+/// A fetch in its turn: its load, its abort and its latest rank.
+struct Running {
+    key: Option<LoadKey>,
+    abort: Abort,
+    rank: u64,
 }
 
 /// A fetch waiting for its turn.
@@ -112,7 +127,7 @@ impl Drop for Turn {
     fn drop(&mut self) {
         let mut state = self.turns.lock().expect("turns poisoned");
         let running = &mut state.running;
-        if let Some(i) = running.iter().position(|(_, a)| a.same(&self.abort)) {
+        if let Some(i) = running.iter().position(|r| r.abort.same(&self.abort)) {
             running.swap_remove(i);
         }
         if !self.abort.is_aborted() {
@@ -123,21 +138,39 @@ impl Drop for Turn {
     }
 }
 
-/// Starts the lowest ranked waiting fetches while turns are free, unless
-/// another call already does.
+/// Starts the lowest ranked waiting fetches while turns are free, or held
+/// by loads beside the view ranked after them, unless another call
+/// already does.
 fn start_waiting(turns: &Arc<Mutex<State>>) {
     let mut state = turns.lock().expect("turns poisoned");
     if state.starting {
         return;
     }
     state.starting = true;
-    while state.running.len() < state.limit {
+    loop {
         let next = (state.waiting.iter().enumerate())
             .min_by_key(|(_, w)| (w.rank, w.order))
-            .map(|(i, _)| i);
-        let Some(next) = next else {
+            .map(|(i, w)| (i, w.rank));
+        let Some((next, rank)) = next else {
             break;
         };
+        if state.running.len() >= state.limit {
+            let yielding = (state.running.iter().enumerate())
+                .filter(|(_, r)| r.rank >= YIELDING && r.rank > rank)
+                .max_by_key(|(_, r)| r.rank)
+                .map(|(i, _)| i);
+            let Some(yielding) = yielding else {
+                break;
+            };
+            // Its turn ends here; its fetch answers aborted, which may
+            // end it at once.
+            let running = state.running.swap_remove(yielding);
+            state.counts.aborted += 1;
+            drop(state);
+            running.abort.abort();
+            state = turns.lock().expect("turns poisoned");
+            continue;
+        }
         let Waiting {
             rank,
             key,
@@ -145,7 +178,11 @@ fn start_waiting(turns: &Arc<Mutex<State>>) {
             start,
             ..
         } = state.waiting.swap_remove(next);
-        state.running.push((key, abort.clone()));
+        state.running.push(Running {
+            key,
+            abort: abort.clone(),
+            rank,
+        });
         state.counts.started += 1;
         drop(state);
         start(Some(Turn {
@@ -190,15 +227,23 @@ impl Turns {
         start_waiting(&self.0);
     }
 
-    /// Ranks the waiting loads again: each that `rank` ranks takes that
-    /// rank; others keep theirs.
+    /// Ranks the loads again, waiting and running: each that `rank` ranks
+    /// takes that rank; others keep theirs. A running load ranked beside
+    /// the view now yields its turn to a load waiting before it.
     pub fn reorder(&self, rank: &dyn Fn(LoadKey) -> Option<u64>) {
         let mut state = self.0.lock().expect("turns poisoned");
-        for waiting in &mut state.waiting {
-            if let Some(new) = waiting.key.and_then(rank) {
-                waiting.rank = new;
+        let State {
+            waiting, running, ..
+        } = &mut *state;
+        let keyed = (waiting.iter_mut().map(|w| (w.key, &mut w.rank)))
+            .chain(running.iter_mut().map(|r| (r.key, &mut r.rank)));
+        for (key, old) in keyed {
+            if let Some(new) = key.and_then(rank) {
+                *old = new;
             }
         }
+        drop(state);
+        start_waiting(&self.0);
     }
 
     /// Gives up `key`'s load: waiting, it never starts and its start hears
@@ -211,8 +256,8 @@ impl Turns {
                 .partition(|w| w.key == Some(key));
             state.waiting = kept;
             let running: Vec<Abort> = (state.running.iter())
-                .filter(|(k, _)| *k == Some(key))
-                .map(|(_, abort)| abort.clone())
+                .filter(|r| r.key == Some(key))
+                .map(|r| r.abort.clone())
                 .collect();
             state.counts.aborted += running.len() as u64;
             (given_up, running)
@@ -283,6 +328,37 @@ mod tests {
         assert_eq!(cols(&started), [0, 2, 1, 3]);
         let given = started.lock().unwrap();
         assert!(given[1].1.is_none());
+    }
+
+    /// A load the view left, loading on beside it, gives its turn to a
+    /// load of the view that waits, and its fetch is aborted; one of the
+    /// view keeps its turn.
+    #[test]
+    fn loads_beside_the_view_yield_their_turns_to_the_view() {
+        let turns = Turns::new(2);
+        let started = Arc::default();
+        queue(&turns, &started, 0, 1);
+        queue(&turns, &started, 1, 2);
+        let abort = |i: usize| {
+            started.lock().unwrap()[i]
+                .1
+                .as_ref()
+                .unwrap()
+                .abort()
+                .clone()
+        };
+        let (first, second) = (abort(0), abort(1));
+        // The view left 1: it loads on beside it, and nothing waits.
+        turns.reorder(&|(_, _, t)| (t.col == 1).then_some(YIELDING + 2));
+        assert!(!second.is_aborted());
+        // A load of the view comes: 1 yields; 0 runs on.
+        queue(&turns, &started, 2, 3);
+        assert!(second.is_aborted() && !first.is_aborted());
+        assert_eq!(cols(&started), [0, 1, 2]);
+        // Another waits behind the view's two.
+        queue(&turns, &started, 3, 4);
+        assert_eq!(cols(&started), [0, 1, 2]);
+        assert_eq!(turns.counts().aborted, 1);
     }
 
     /// A load given up in its turn is aborted, its turn goes to the next,

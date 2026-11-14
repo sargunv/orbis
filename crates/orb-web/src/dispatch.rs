@@ -429,6 +429,7 @@ impl WorkerJobs {
     ) {
         request.rank = turn.as_ref().map_or(request.rank, Turn::rank);
         let (source, tile) = (request.source, request.data_tile());
+        let (key, abort) = (load_key(&request), turn.as_ref().map(|t| t.abort().clone()));
         self.send(
             |state| state.home(source, tile),
             Some(request.clone()),
@@ -443,6 +444,39 @@ impl WorkerJobs {
             },
             |id| JobRequest::Load { id, request },
         );
+        // A turn taken back (a load beside the view yielding to one of
+        // the view's, or given up) stops the worker's fetch.
+        if let Some(abort) = abort {
+            let me = self.me.clone();
+            abort.on_abort(move || {
+                if let Some(jobs) = me.upgrade() {
+                    jobs.stop_sent(key);
+                }
+            });
+        }
+    }
+
+    /// Tells the worker a sent whole load of `key` went to that it's given
+    /// up.
+    fn stop_sent(&self, key: LoadKey) {
+        let worker = {
+            let state = self.state.lock().expect("jobs poisoned");
+            state.sent_to.values().find_map(|(worker, request)| {
+                let request = request.as_ref()?;
+                (load_key(request) == key && request.nodes.is_none()).then_some(*worker)
+            })
+        };
+        if let Some(worker) = worker {
+            let (style, source, tile) = key;
+            self.post(
+                worker,
+                &JobRequest::Cancel {
+                    style,
+                    source,
+                    tile,
+                },
+            );
+        }
     }
 }
 
@@ -571,25 +605,11 @@ impl Jobs for WorkerJobs {
 
     fn cancel(&self, style: u64, source: u32, tile: TileIndex) {
         let key = (style, source, tile);
-        // One waiting for its turn is answered here; one sent hears from
-        // its worker.
-        self.turns.cancel(key);
-        let worker = {
-            let state = self.state.lock().expect("jobs poisoned");
-            state.sent_to.values().find_map(|(worker, request)| {
-                let request = request.as_ref()?;
-                (load_key(request) == key && request.nodes.is_none()).then_some(*worker)
-            })
-        };
-        if let Some(worker) = worker {
-            self.post(
-                worker,
-                &JobRequest::Cancel {
-                    style,
-                    source,
-                    tile,
-                },
-            );
+        // One waiting for its turn is answered here; one in its turn hears
+        // from its worker, which its turn's abort tells; one sent without
+        // a turn too.
+        if !self.turns.cancel(key) {
+            self.stop_sent(key);
         }
     }
 

@@ -341,3 +341,37 @@ fn loads_take_turns_across_workers_in_the_map_s_order() {
     let counts = jobs.fetch_counts();
     assert_eq!((counts.started, counts.completed), (u64::from(n) + 2, 2));
 }
+
+/// A load beside the view gives its turn to a load of the view that waits,
+/// and its worker hears to stop its fetch.
+#[test]
+fn loads_beside_the_view_give_their_turns_to_the_view() {
+    let (jobs, posted) = jobs(2);
+    let n = orb_host::TILE_FETCHES as u32;
+    let load = |col: u32| {
+        let location = TileLocation::Url("test://tile.mvt".into());
+        let mut request = TileRequest::whole(1, 1, tile(col), location, orb_style::Encoding::Mvt);
+        request.rank = u64::from(col);
+        jobs.load(request, Box::new(|_| {}));
+    };
+    (0..n).for_each(load);
+    let sent = posted.loads();
+    assert_eq!(sent.len(), n as usize);
+    // The view left the first: it loads on beside it.
+    jobs.reorder(&|(_, _, t)| (t.col == 0).then_some(orb_runtime::YIELDING));
+    assert!(posted.take().is_empty());
+    load(n);
+    let posts = posted.take();
+    let cancelled = posts.iter().find_map(|(worker, r)| match r {
+        JobRequest::Cancel { tile, .. } => Some((*worker, tile.col)),
+        _ => None,
+    });
+    assert_eq!(cancelled, Some((sent[0].0, 0)));
+    let loads: Vec<u32> = (posts.iter())
+        .filter_map(|(_, r)| match r {
+            JobRequest::Load { request, .. } => Some(request.tile.col),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(loads, [n]);
+}

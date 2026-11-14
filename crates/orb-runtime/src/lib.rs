@@ -101,5 +101,5 @@ pub use style_image::StyleImage;
 pub use symbol::SpriteIcons;
 pub use terrain::{TerrainElevation, apply_pyramid_delta, pyramid_delta};
 pub use tile::TileBuild;
-pub use turns::{FetchCounts, LoadKey, Start, Turn, Turns};
+pub use turns::{FetchCounts, LoadKey, Start, Turn, Turns, YIELDING};
 pub use worker::{Built, DemUnpack, StyleUpdate, TileRequest, TileWorker};

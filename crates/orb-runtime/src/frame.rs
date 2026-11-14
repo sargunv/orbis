@@ -360,15 +360,14 @@ impl Map {
         }
         report.tiles_loading += pyramid.loading_for_view() as u32;
         // Loads nothing wants now give way to those the view waits for,
-        // but for vector tiles beside the view, which the cache keeps:
-        // image tiles take the least recently used one's room in their
-        // pages ([`crate::arrival`]), so loading them on fetches as many.
-        // The world wraps every `columns` tiles, wherever the plane wraps.
+        // but for tiles beside the view, which the cache keeps: a view
+        // turned back and forth finds them loaded. The world wraps every
+        // `columns` tiles, wherever the plane wraps.
         let columns = |z: u8| {
             let period = tms.projection().wrap_period()?;
             Some((period / tms.tile_span(z)).round() as u32)
         };
-        let unwanted = pyramid.unwanted_loads(vector.then_some(&columns));
+        let unwanted = pyramid.unwanted_loads(Some(&columns));
         style.draws[index] = Some(update.draw);
         let id = style.id;
         for tile in unwanted {
@@ -1190,6 +1189,11 @@ pub(crate) enum Tier {
 }
 
 impl Tier {
+    /// The first rank in this tier ([`fetch_order`]).
+    pub(crate) const fn first_rank(self) -> u64 {
+        (self as u64) << 40
+    }
+
     /// `tile`'s tier, for a source keeping `coarse`'s tiles, `used` by
     /// the last plan or not.
     pub(crate) fn of(tile: TileIndex, coarse: Option<u8>, used: bool) -> Self {
@@ -1222,7 +1226,7 @@ pub(crate) fn fetch_order(tms: &TileMatrixSet, focus: Geodetic) -> impl Fn(TileI
         let off = off / width;
         // Never negative: its bits order as it does, in 31 of them.
         let distance = (off.length_squared() as f32).to_bits();
-        (tier as u64) << 40 | u64::from(distance) << 8 | u64::from(u8::MAX - tile.z)
+        tier.first_rank() | u64::from(distance) << 8 | u64::from(u8::MAX - tile.z)
     }
 }
 
