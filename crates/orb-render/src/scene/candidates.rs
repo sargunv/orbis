@@ -297,6 +297,8 @@ struct RunPlan<'a> {
     /// Its tile's place in the tile order.
     rank: u64,
     placement: u32,
+    /// Its placement's drape slot, if it is a drape placement.
+    drape_slot: Option<u32>,
     /// Which of the mesh's chunks it holds in the placement.
     route: Route,
     /// The mesh's chunk slots (the first names the run in its run row) and
@@ -394,6 +396,7 @@ impl Scene {
                     key: (self.mesh_serials[mesh.0 as usize], placement.slot, route),
                     rank: super::place(&self.tiles, entry.tile),
                     placement: placement.slot,
+                    drape_slot: placement.row.drape_slot,
                     route,
                     slots: &entry.chunk_slots,
                     chunks: &entry.chunks,
@@ -769,6 +772,55 @@ impl Scene {
             .collect();
         let segments = segments_in_order(&in_order);
         (held.len() > 1 || segments.len() > 1).then_some(segments)
+    }
+
+    /// Row `node`'s draws by drape slot: each slot's runs' compacted words
+    /// in its tiles' order, in stretches of one block's, as
+    /// [segments](Segment) of the slots of that one alone. A drape slot's
+    /// pass draws only its own runs, where drawing the row whole would
+    /// draw every redrawn slot's content in each slot's pass, outside its
+    /// viewport but for its own. `None` where the row's runs don't keep
+    /// their slots (a sorted node), or it isn't a visible indexed stream.
+    pub(crate) fn slot_segments(&self, node: u32) -> Option<FxHashMap<u32, Vec<Segment>>> {
+        let n = node as usize;
+        let entry = self.nodes.get(n)?;
+        let stream = matches!(
+            entry.stream,
+            Stream::All | Stream::Untested(_) | Stream::Tested(_)
+        );
+        if entry.cull.draw != NodeDraw::Indexed || !entry.cull.visible || !stream {
+            return None;
+        }
+        // Each run's slot and place in the order (its tile's, then its
+        // mesh's), its block and its compacted words.
+        let mut laid_runs = Vec::new();
+        let mut runs = Vec::new();
+        for block in self.blocks() {
+            let row = self.row(node, block) as usize;
+            let Some(laid) = self.laid.get(row).filter(|laid| laid.live > 0) else {
+                continue;
+            };
+            let kept = laid.runs.as_ref()?;
+            self.node_runs(row, &mut runs);
+            for run in &runs {
+                let (Some(slot), Some(laid_run)) = (run.drape_slot, kept.get(&run.key)) else {
+                    continue;
+                };
+                let words = laid_run.words.clone();
+                let base = laid.word_base;
+                let order = (slot, run.rank, run.key.0);
+                laid_runs.push((order, (block, base + words.start..base + words.end)));
+            }
+        }
+        // Stable: a mesh's runs in their order in its block.
+        laid_runs.sort_by_key(|r| r.0);
+        let mut slots = FxHashMap::default();
+        for in_slot in laid_runs.chunk_by(|a, b| a.0.0 == b.0.0) {
+            let in_order: Vec<(u32, Range<u32>)> =
+                in_slot.iter().map(|(_, run)| run.clone()).collect();
+            slots.insert(in_slot[0].0.0, segments_in_order(&in_order));
+        }
+        Some(slots)
     }
 
     /// The node rows, with the cull's workgroups laid out in them: a
@@ -1458,6 +1510,7 @@ mod tests {
             key: (serial, 0, Route::ALL),
             rank: serial,
             placement: 0,
+            drape_slot: None,
             route: Route::ALL,
             slots: Vec::leak((0..chunks).map(|c| serial as u32 * 100 + c).collect()),
             chunks: Vec::leak(vec![chunk; chunks as usize]),

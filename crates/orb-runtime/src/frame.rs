@@ -1596,6 +1596,7 @@ pub(crate) fn placements<'a>(
             dem: DemRef::NONE,
             terrain_range: [0.0; 2],
             target: PlacementTarget::Map,
+            drape_slot: None,
             warp: TileWarp::NONE,
             globe: globe.map(|(warp, origin)| orb_render::RowGlobe {
                 warp,

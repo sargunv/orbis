@@ -40,8 +40,9 @@ pub struct Budget {
     /// left stale redraw over the frames after, the longest stale first
     /// ([`Terrain::plan`](crate::terrain::Terrain::plan)).
     pub drape_texels: u64,
-    /// Drape slots redrawn beyond the blank ones: each replays the drape's
-    /// draws on the CPU, every draped layer's.
+    /// Drape slots redrawn beyond the blank ones: each is a pass a stack
+    /// on the CPU, every draped layer's state set again, its own content
+    /// drawn.
     pub drape_slots: usize,
 }
 

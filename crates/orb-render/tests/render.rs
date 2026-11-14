@@ -200,6 +200,7 @@ fn full_view_tile(offset_x: f32) -> TileRow {
         dem: DemRef::NONE,
         terrain_range: [0.0; 2],
         target: PlacementTarget::Map,
+        drape_slot: None,
         warp: orb_render::TileWarp::NONE,
         globe: None,
         neighbours: 0,

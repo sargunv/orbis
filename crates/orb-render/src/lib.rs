@@ -79,6 +79,7 @@ use orb_shaders::{
     CIRCLE_SHADER, FILL_OUTLINE_SHADER, FILL_SHADER, LINE_PLANES_SHADER, LINE_SHADER,
     LINE_STYLED_PLANES_SHADER, LINE_STYLED_SHADER,
 };
+use rustc_hash::FxHashMap;
 #[cfg(cpu_driven)]
 use scene::Backing;
 use scene::{DataTable, Scene, Table, Tables};
@@ -208,7 +209,7 @@ pub struct RenderTimes {
     pub cull: u32,
     /// The main pass's bundles recorded again.
     pub bundles: u32,
-    /// The drape passes of slots redrawn: their bundles and passes.
+    /// The drape passes of slots redrawn: their draws and passes.
     pub drape: u32,
     /// The frame's other passes listed (wgpu records them in `submit`).
     pub encode: u32,
@@ -1672,7 +1673,7 @@ impl Renderer {
             }),
             written: Vec::new(),
             scene: Default::default(),
-            bundle: Vec::new(),
+            recorded: Vec::new(),
         });
         level.written.resize(self.nodes.len(), None);
         let before = &level.written[node as usize];
@@ -2764,13 +2765,16 @@ impl Renderer {
         }
         let draping = clock();
         times.bundles = micros(recording, draping);
-        let stacks = match self.terrain.as_ref().filter(|_| terrain_on) {
-            Some(terrain) => terrain.pending_stacks(),
+        let slots = match self.terrain.as_ref().filter(|_| terrain_on) {
+            Some(terrain) => terrain.pending_slots(),
             None => Vec::new(),
         };
-        let drape: Vec<(u32, RenderBundleId)> = (stacks.into_iter())
-            .filter_map(|stack| Some((stack, self.drape_bundle(gpu, frame, stack)?)))
-            .collect();
+        let mut stacks: Vec<u32> = slots.iter().map(|&(stack, _)| stack).collect();
+        stacks.dedup();
+        for stack in stacks {
+            self.record_drape(gpu, frame, stack);
+        }
+        let drape = self.slot_commands(&slots);
         let encoding = clock();
         let mut drape_passes = 0;
 
@@ -3092,7 +3096,7 @@ impl Renderer {
                 let node = &self.nodes[i];
                 let groups = (&self.draw_groups[..], (node.group, node.second_group), true);
                 let before = group.len();
-                if !self.node_commands(gpu, ready, i, groups, &mut group) {
+                if !self.node_commands(gpu, ready, i, groups, &mut group, None) {
                     self.waiting += 1;
                 }
                 self.recorded += u32::from(group.len() > before);
@@ -3162,7 +3166,7 @@ impl Renderer {
             }
             let groups = (&self.draw_groups[..], (node.group, node.second_group), true);
             let before = commands.len();
-            if !member && !self.node_commands(gpu, ready, i, groups, &mut commands) {
+            if !member && !self.node_commands(gpu, ready, i, groups, &mut commands, None) {
                 self.waiting += 1;
             }
             self.recorded += u32::from(commands.len() > before);
@@ -3239,7 +3243,7 @@ impl Renderer {
     fn terrain_passes(
         &mut self,
         gpu: &mut dyn Gpu,
-        drape: &[(u32, RenderBundleId)],
+        drape: &FxHashMap<(u32, u32), Vec<RenderCommand>>,
         passes: &mut Vec<Pass>,
     ) -> terrain::TerrainDrawn {
         let terrain = self.terrain.as_mut().expect("terrain is on");
@@ -3569,23 +3573,22 @@ impl Renderer {
         }
     }
 
-    /// The drape pass into stack `stack` for this frame: its page's frame
-    /// written, and its bundle of the draped nodes drawn into it, recorded
-    /// if it isn't. `None` when no node's drape paint was set.
-    fn drape_bundle(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        frame: &FrameBlock,
-        stack: u32,
-    ) -> Option<RenderBundleId> {
-        let terrain = self.terrain.as_ref()?;
+    /// Readies the drape passes into stack `stack` for this frame: its
+    /// page's frame written, and its draws of the draped nodes recorded if
+    /// they aren't ([`Recorded`]), once any node's drape paint was set.
+    fn record_drape(&mut self, gpu: &mut dyn Gpu, frame: &FrameBlock, stack: u32) {
+        let Some(terrain) = self.terrain.as_ref() else {
+            return;
+        };
         let colour = self.drape_stacks[0];
         let page = usize::from(stack >= colour);
         let drape_frame = terrain.drape_frame(frame, page);
-        let level = self.drape.as_mut()?;
+        let Some(level) = self.drape.as_mut() else {
+            return;
+        };
         let at = stack as usize;
-        if level.bundle.len() <= at {
-            level.bundle.resize_with(at + 1, || None);
+        if level.recorded.len() <= at {
+            level.recorded.resize_with(at + 1, || None);
         }
         if level.scene[page].is_empty() {
             // A frame and a group for each block, the frame telling the
@@ -3617,10 +3620,10 @@ impl Renderer {
                 ),
                 Some(&level.frames[page]),
             );
-            // The bundles of the page's stacks bound the group it replaces.
-            for (s, bundle) in level.bundle.iter_mut().enumerate() {
+            // The draws of the page's stacks bound the group it replaces.
+            for (s, recorded) in level.recorded.iter_mut().enumerate() {
                 if usize::from(s as u32 >= colour) == page {
-                    bundle.take().release(gpu);
+                    recorded.take().release(gpu);
                 }
             }
         }
@@ -3632,13 +3635,14 @@ impl Renderer {
                 gpu.write_buffer(*buffer, 0, bytemuck::cast_slice(&words));
             }
         }
-        if let Some((bundle, _)) = &level.bundle[at] {
-            return Some(*bundle);
+        if level.recorded[at].is_some() {
+            return;
         }
         let ready = self.ready(gpu, true);
         let level = self.drape.as_ref().expect("found above");
         let (scenes, uniforms) = (level.scene[page].clone(), level.uniforms);
         let mut commands = Vec::new();
+        let mut splices = Vec::new();
         let mut groups = Vec::new();
         for i in 0..self.nodes.len() {
             let node = &self.nodes[i];
@@ -3681,7 +3685,14 @@ impl Renderer {
             groups.extend(second);
             let node_groups = (&scenes[..], (group, second), false);
             let fell_back = self.fell_back.replace(false);
-            let recorded = self.node_commands(gpu, ready, i, node_groups, &mut commands);
+            let recorded = self.node_commands(
+                gpu,
+                ready,
+                i,
+                node_groups,
+                &mut commands,
+                Some(&mut splices),
+            );
             // A slot keeps what it drew: one drawn in the tested pipeline
             // for want of the untested one (which lines draw otherwise, by
             // rounding) is redrawn once it arrives, as for a pipeline a
@@ -3691,18 +3702,83 @@ impl Renderer {
             }
             self.fell_back.set(fell_back || self.fell_back.get());
         }
-        let bundle = gpu.create_render_bundle(
-            &RenderBundleDesc {
-                label: "drape",
-                color_formats: &[DRAPE_FORMAT],
-                depth_format: None,
-                sample_count: 1,
-            },
-            &bound_once(commands),
-        );
         let level = self.drape.as_mut().expect("found above");
-        level.bundle[at] = Some((bundle, groups));
-        Some(bundle)
+        level.recorded[at] = Some(Recorded {
+            commands,
+            splices,
+            groups,
+        });
+    }
+
+    /// The drape passes' commands this frame, by stack and tile slot: each
+    /// stack's [recorded](Recorded) draws, the draws of a node's runs
+    /// those of the slot's runs alone. `slots` are the frame's redrawn
+    /// `(stack, tile slot)`s.
+    fn slot_commands(&self, slots: &[(u32, u32)]) -> FxHashMap<(u32, u32), Vec<RenderCommand>> {
+        let Some(level) = &self.drape else {
+            return FxHashMap::default();
+        };
+        let colour = self.drape_stacks[0];
+        let mut by_slot = FxHashMap::default();
+        for in_stack in slots.chunk_by(|a, b| a.0 == b.0) {
+            let stack = in_stack[0].0;
+            let Some(Some(recorded)) = level.recorded.get(stack as usize) else {
+                continue;
+            };
+            let scenes = &level.scene[usize::from(stack >= colour)];
+            // Each spliced stream's runs by slot, worked out once a frame.
+            let streams: Vec<_> = (recorded.splices.iter())
+                .map(|&(_, id)| self.scene.slot_segments(id))
+                .collect();
+            for &(_, slot) in in_stack {
+                let mut commands = Vec::with_capacity(recorded.commands.len());
+                let mut from = 0;
+                for (&(at, id), runs) in recorded.splices.iter().zip(&streams) {
+                    commands.extend_from_slice(&recorded.commands[from..at]);
+                    from = at;
+                    match runs {
+                        Some(runs) => {
+                            let segments = runs.get(&slot).map_or(&[][..], Vec::as_slice);
+                            self.segment_draws(scenes, id, segments, &mut commands);
+                        }
+                        // A sorted stream's slots don't say whose runs
+                        // they hold: it draws whole.
+                        None => self.whole_draws(scenes, id, &mut commands),
+                    }
+                }
+                commands.extend_from_slice(&recorded.commands[from..]);
+                by_slot.insert((stack, slot), bound_once(commands));
+            }
+        }
+        by_slot
+    }
+
+    /// Indexed stream `id`'s draws of everything it holds: in segments, or
+    /// a row's arguments a block.
+    fn whole_draws(
+        &self,
+        scenes: &[Option<BindGroupId>],
+        id: u32,
+        commands: &mut Vec<RenderCommand>,
+    ) {
+        if let Some(segments) = self.scene.segments(id) {
+            return self.segment_draws(scenes, id, segments, commands);
+        }
+        let buffers = self.scene.buffers();
+        for (block, scene) in scenes.iter().enumerate() {
+            let row = self.scene.row(id, block as u32);
+            if let Some(scene) = scene
+                && !self.driver.draws_nothing(row)
+            {
+                commands.extend([
+                    RenderCommand::SetBindGroup {
+                        index: 0,
+                        group: *scene,
+                    },
+                    self.driver.draw(buffers, row, NodeDraw::Indexed),
+                ]);
+            }
+        }
     }
 
     /// Node `i`'s commands as a bundle records them, over the scene groups
@@ -3727,6 +3803,7 @@ impl Renderer {
             bool,
         ),
         commands: &mut Vec<RenderCommand>,
+        mut splices: Option<&mut Vec<(usize, u32)>>,
     ) -> bool {
         if !ready.cull {
             return false;
@@ -3877,43 +3954,60 @@ impl Renderer {
                     buffer: self.driver.buffers(buffers).compacted,
                     offset: 0,
                 });
+                // A drape slot's pass draws its own runs alone, spliced in
+                // here ([`Renderer::slot_commands`]).
+                if let Some(splices) = splices.as_deref_mut() {
+                    splices.push((commands.len(), id));
+                    continue;
+                }
             }
-            let Some(segments) = self.scene.segments(id) else {
-                for (scene, row) in rows {
-                    commands.extend([
-                        RenderCommand::SetBindGroup {
-                            index: 0,
-                            group: scene,
-                        },
-                        self.driver.draw(buffers, row, node.cull.draw),
-                    ]);
+            match self.scene.segments(id) {
+                Some(segments) => self.segment_draws(scenes, id, segments, commands),
+                None => {
+                    for (scene, row) in rows {
+                        commands.extend([
+                            RenderCommand::SetBindGroup {
+                                index: 0,
+                                group: scene,
+                            },
+                            self.driver.draw(buffers, row, node.cull.draw),
+                        ]);
+                    }
                 }
-                continue;
-            };
-            // Each stretch whole: the cull wrote every slot of its runs,
-            // hidden indices for what is out of view, and holes between
-            // runs hold hidden ones.
-            for segment in segments {
-                let Some(Some(scene)) = scenes.get(segment.block as usize) else {
-                    continue;
-                };
-                if self.driver.draws_nothing(self.scene.row(id, segment.block)) {
-                    continue;
-                }
-                commands.extend([
-                    RenderCommand::SetBindGroup {
-                        index: 0,
-                        group: *scene,
-                    },
-                    RenderCommand::DrawIndexed {
-                        indices: segment.indices.clone(),
-                        base_vertex: 0,
-                        instances: 0..1,
-                    },
-                ]);
             }
         }
         wanted
+    }
+
+    /// Indexed stream `id`'s draws of `segments`, each stretch whole: the
+    /// cull wrote every slot of its runs, hidden indices for what is out
+    /// of view, and holes between runs hold hidden ones.
+    fn segment_draws(
+        &self,
+        scenes: &[Option<BindGroupId>],
+        id: u32,
+        segments: &[scene::Segment],
+        commands: &mut Vec<RenderCommand>,
+    ) {
+        for segment in segments {
+            let Some(Some(scene)) = scenes.get(segment.block as usize) else {
+                continue;
+            };
+            if self.driver.draws_nothing(self.scene.row(id, segment.block)) {
+                continue;
+            }
+            commands.extend([
+                RenderCommand::SetBindGroup {
+                    index: 0,
+                    group: *scene,
+                },
+                RenderCommand::DrawIndexed {
+                    indices: segment.indices.clone(),
+                    base_vertex: 0,
+                    instances: 0..1,
+                },
+            ]);
+        }
     }
 }
 
@@ -4117,9 +4211,29 @@ struct Drape {
     /// Per page, the scene groups over its `frames`, by block slot; empty
     /// until made.
     scene: [Vec<Option<BindGroupId>>; 2],
-    /// Per stack, the bundle of the nodes drawing into it, with the node
-    /// groups it binds: a redraw replays each over its own slots.
-    bundle: Vec<Option<(RenderBundleId, Vec<BindGroupId>)>>,
+    /// Per stack, the draws of the nodes drawing into it.
+    recorded: Vec<Option<Recorded>>,
+}
+
+/// A drape stack's draws, recorded once for every slot's pass into it: its
+/// draped nodes' commands, but for their runs, whose draws differ by slot.
+/// Each pass draws its slot's runs alone, where replaying a bundle of
+/// every redrawn slot's runs in each slot's pass cost the GPU every one of
+/// them a pass (passes times slots), as it clipped all but the slot's own.
+#[derive(Debug)]
+struct Recorded {
+    commands: Vec<RenderCommand>,
+    /// Where an indexed stream's draws of a slot's runs go among the
+    /// commands, with its row ([`Scene::slot_segments`]).
+    splices: Vec<(usize, u32)>,
+    /// The node groups the commands bind.
+    groups: Vec<BindGroupId>,
+}
+
+impl release::Release for Recorded {
+    fn release(self, gpu: &mut dyn Gpu) {
+        self.groups.release(gpu);
+    }
 }
 
 impl release::Release for Node {
@@ -4137,8 +4251,8 @@ impl release::Release for Drape {
 
 impl Drape {
     fn forget_bundle(&mut self, gpu: &mut dyn Gpu) {
-        for bundle in &mut self.bundle {
-            bundle.take().release(gpu);
+        for recorded in &mut self.recorded {
+            recorded.take().release(gpu);
         }
     }
 

@@ -867,9 +867,9 @@ impl Terrain {
                 deferred = true;
                 continue;
             }
-            // Each slot a frame redraws replays the drape's draws, so a
-            // continuous map's frame redraws few: what else is due waits
-            // for a frame to come.
+            // Each slot a frame redraws is a pass a stack, every draped
+            // layer's state set again, so a continuous map's frame redraws
+            // few: what else is due waits for a frame to come.
             if !forced && slots >= budget.map_or(usize::MAX, |b| b.1) {
                 deferred = true;
                 continue;
@@ -1235,6 +1235,7 @@ pub(crate) fn drape_rows(
                 px_scale: (slot_px / slot_span_px) as f32,
                 sphere,
                 target: PlacementTarget::Drape(stack),
+                drape_slot: Some(slot),
                 // Slots are flat: the terrain carries them onto a globe.
                 globe: None,
                 ..row

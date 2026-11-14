@@ -315,6 +315,9 @@ pub struct TileRow {
     pub terrain_range: [f32; 2],
     /// Which render nodes draw it.
     pub target: PlacementTarget,
+    /// A drape placement's tile slot: only the passes into that slot's
+    /// layers draw it ([`Scene::slot_segments`]). `None` for others.
+    pub drape_slot: Option<u32>,
     /// Its planar patches (`project.wgsl`), or [`TileWarp::NONE`].
     pub warp: TileWarp,
     /// On a globe view, where it is on the sphere.

@@ -15,10 +15,10 @@
 //! settles. A frame redraws only the slots the runtime marks: their drape
 //! placements, the draped nodes' only candidates, map each into its place
 //! in a grid of drape space, a function of its tile slot alone, and a pass
-//! a slot's stack replays the stack's bundle of its draped nodes with the
-//! viewport moving its place onto its texture's layer, which draws it
-//! alike in any texture; then a compute pass a texture downsamples its
-//! mip levels.
+//! a slot's stack draws the stack's draped nodes' runs of that slot alone
+//! (the renderer's `Recorded`) with the viewport moving its place onto its
+//! texture's layer, which draws it alike in any texture; then a compute
+//! pass a texture downsamples its mip levels.
 //!
 //! The terrain draws in the map's own pass, its tiles in the order the
 //! runtime gives them, each with its slots' textures bound, over a depth
@@ -42,6 +42,7 @@ use crate::scene::{Backing, DataTable};
 use TextureViewDimension::D2Array;
 use orb_hal::*;
 use orb_shaders::{Shader, TERRAIN_SHADE_SHADER, TERRAIN_SHADER};
+use rustc_hash::FxHashMap;
 
 /// Drape texels per terrain tile side at most: twice the 512 logical
 /// pixels a terrain tile covers at its zoom, GL JS's quality factor.
@@ -1018,12 +1019,14 @@ impl Terrain {
         self.held.len() as u32
     }
 
-    /// The stacks this frame redraws slots of, in order.
-    pub(crate) fn pending_stacks(&self) -> Vec<u32> {
-        let mut stacks: Vec<u32> = self.pending.iter().map(|p| p.stack).collect();
-        stacks.sort_unstable();
-        stacks.dedup();
-        stacks
+    /// The slots this frame redraws, `(stack, tile slot)`, in order.
+    pub(crate) fn pending_slots(&self) -> Vec<(u32, u32)> {
+        let mut slots: Vec<(u32, u32)> = (self.pending.iter())
+            .map(|p| (p.stack, p.tile_slot))
+            .collect();
+        slots.sort_unstable();
+        slots.dedup();
+        slots
     }
 
     /// This frame's terrain tiles, each drawn from the texels its slot
@@ -1321,7 +1324,7 @@ impl Terrain {
         &mut self,
         gpu: &mut dyn Gpu,
         (frame, props): (BufferId, BindGroupEntry),
-        drape: &[(u32, RenderBundleId)],
+        drape: &FxHashMap<(u32, u32), Vec<RenderCommand>>,
         downsampler: &crate::downsample::Downsampler,
         passes: &mut Vec<Pass>,
     ) -> TerrainDrawn {
@@ -1357,16 +1360,12 @@ impl Terrain {
                 };
                 let px = PAGE_PX[page] as f32;
                 // A pass a slot's stack: its layer cleared, then the
-                // stack's bundle replayed into it, the grid's drape space,
-                // which the drape frame maps onto a viewport of its size,
-                // moved so that the slot's place lands on the layer. The
-                // bundle draws every redrawn slot's content, each bounded
-                // by its place, which falls outside the layer but for the
-                // slot's own. A replay costs the CPU every draw of the
-                // stack, so the map redraws few slots a frame (the
-                // runtime's `Terrain::plan`).
+                // stack's draws of the slot's content into it, the grid's
+                // drape space, which the drape frame maps onto a viewport
+                // of its size, moved so that the slot's place lands on the
+                // layer.
                 for p in run {
-                    let Some(&(_, bundle)) = drape.iter().find(|d| d.0 == p.stack) else {
+                    let Some(commands) = drape.get(&(p.stack, p.tile_slot)) else {
                         continue;
                     };
                     let corner = layout.corner(p.tile_slot, p.stack).map(|n| -(n as f32));
@@ -1380,10 +1379,9 @@ impl Terrain {
                             load: LoadOp::Clear([0.0; 4]),
                         }],
                         depth: None,
-                        commands: vec![
-                            RenderCommand::SetViewport(viewport),
-                            RenderCommand::ExecuteBundles(vec![bundle]),
-                        ],
+                        commands: std::iter::once(RenderCommand::SetViewport(viewport))
+                            .chain(commands.iter().cloned())
+                            .collect(),
                     }));
                     drawn.draws += 1;
                 }
