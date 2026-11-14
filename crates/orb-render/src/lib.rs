@@ -2245,9 +2245,9 @@ impl Renderer {
     }
 
     /// Asks for the set's pipelines that aren't made: the first view's,
-    /// then the rest in the background. On a style whose terrain isn't on
-    /// yet, they are the drape's and the terrain's: its draped nodes wait
-    /// for it.
+    /// its labels' first ([`labels_first`]), then the rest in the
+    /// background. On a style whose terrain isn't on yet, they are the
+    /// drape's and the terrain's: its draped nodes wait for it.
     fn request_set(&mut self, gpu: &mut dyn Gpu) {
         let asked = gpu.counters().pipelines_requested;
         // Extrusions take the paint pipelines' variant.
@@ -2271,7 +2271,11 @@ impl Renderer {
             self.restore_shapes(kept);
         }
         let mut order: Vec<&PipelineGroup> = set.groups.iter().collect();
-        order.sort_by_key(|g| g.rank);
+        // The first view's labels first ([`labels_first`]).
+        let labels = |g: &PipelineGroup| {
+            (g.nodes.iter()).any(|&(i, _)| self.nodes.get(i as usize).is_some_and(labels_first))
+        };
+        order.sort_by_key(|g| (g.rank, !labels(g)));
         for group in order {
             let first = group.rank == 0;
             gpu.set_background_compiles(!first);
@@ -2544,15 +2548,18 @@ impl Renderer {
     }
 
     /// Moves the pipelines of nodes with meshes in the scene ahead of the
-    /// others still compiling: what the current view needs first. Nodes
-    /// earlier in draw order go first (the bottom layers cover most of
-    /// the view), the cull before everything.
+    /// others still compiling: what the current view needs first. The
+    /// cull goes before everything, then labels ([`labels_first`]), then
+    /// the other nodes in draw order (the bottom layers cover most of the
+    /// view).
     fn prioritize(&self, gpu: &mut dyn Gpu) {
         let mut wanted = Vec::new();
         wanted.extend(self.driver.pipelines());
-        for i in 0..self.nodes.len() {
-            if self.scene.node_has_meshes(i as u32) {
-                self.node_pipelines(i, &mut wanted);
+        for labels in [true, false] {
+            for (i, node) in self.nodes.iter().enumerate() {
+                if labels_first(node) == labels && self.scene.node_has_meshes(i as u32) {
+                    self.node_pipelines(i, &mut wanted);
+                }
             }
         }
         wanted.extend(self.atmosphere.pipelines());
@@ -4164,6 +4171,20 @@ fn bound_once(mut commands: Vec<RenderCommand>) -> Vec<RenderCommand> {
         _ => true,
     });
     commands
+}
+
+/// Whether `node`'s pipelines compile ahead of the other nodes' of a
+/// view: a label's. A label shows only once its pipelines and the
+/// placement pipeline that places every symbol layer have compiled, and
+/// then a placement has run and committed, frames later; and that one
+/// placement pipeline is a view's costliest compile (650 ms cold on an M6
+/// where its fills' and lines' take 150 to 430). So the labels' chain is
+/// the longest of a view: started first, it runs beside the other
+/// layers' compiles, rather than after them, which on a loaded machine
+/// kept a spun globe's labels (GL JS's `loaded()`) a second behind its
+/// tiles.
+fn labels_first(node: &Node) -> bool {
+    node.family.is_symbol()
 }
 
 /// The style layer a node composites once with, when it does: below layer
