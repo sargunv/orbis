@@ -724,10 +724,13 @@ fn a_line_is_as_wide_at_every_latitude_below_its_tiles_zoom() {
                 (north - south).abs() < 0.1,
                 "{case}: {north:.2} px wide around 70°N, {south:.2} px around 15°N"
             );
-            // The globe's perspective narrows both a little, and a
-            // drape's texels, magnified, round it either way: Mercator
-            // holds the camera at z−0.415, where the viewport's height
-            // fills the world, between two of the drape's zoom steps.
+            // The globe's perspective narrows both a little. A drape's
+            // texels, filtered down by a scale that isn't a power of two,
+            // round a line's ink by where its edges fall among them: on
+            // Mercator, which holds this camera at z−0.415 where the
+            // viewport's height fills the world, the draped line measures
+            // 2.09 px, and 2.06 px at z0.5, on a drape step, but 2.00 px
+            // at whole zooms.
             let tolerance = match (projection, terrain) {
                 ("globe", _) => 0.2,
                 (_, true) => 0.1,
