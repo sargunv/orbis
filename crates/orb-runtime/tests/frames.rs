@@ -299,12 +299,12 @@ mod tests {
             "the view grew the pools: {memory:#?}"
         );
         // Blocks copy nothing as the view fills them: what moves as it
-        // grows (the property rows, the glyph page, the
-        // block of what draws as points) copies no more than the rows,
-        // tables and glyphs hold, on either driver and either backing of
-        // the tables, whose tables move alone.
+        // grows (the property rows, the block of what draws as points)
+        // copies no more than the rows and tables hold, on either driver
+        // and either backing of the tables, whose tables move alone; the
+        // glyph pages and chunk rows copy nothing.
         assert!(
-            copied <= memory.props.allocated + memory.tables + whole.glyph_textures,
+            copied <= memory.props.allocated + memory.tables,
             "{copied} bytes copied growing the scene: {memory:#?}"
         );
         crate::common::take_warnings(&mut held.map);
@@ -804,6 +804,38 @@ mod tests {
                 .iter()
                 .any(|w| w.contains("fill-extrusion"))
         );
+    }
+
+    /// Labels draw alike from each of the glyph pages' chunks: a map whose
+    /// first 8 or 32 pages are taken (by bitmaps a page in size) before
+    /// its labels' glyphs arrive, which then go to the second chunk or
+    /// the fourth, draws what a fresh map does.
+    #[test]
+    fn labels_draw_alike_from_every_glyph_chunk() {
+        let at = tokyo(15.0);
+        let capacity = orb_runtime::SceneCapacity::default();
+        let mut fresh = crate::common::Offscreen::inline(&at, capacity).unwrap();
+        settle(&mut fresh);
+        assert!(!fresh.map.shown_labels().is_empty(), "labels show");
+        for taken in [8, 32] {
+            let mut filled = crate::common::Offscreen::inline(&at, capacity).unwrap();
+            let (map, gpu) = (&filled.map, &mut filled.gpu);
+            let mut renderer = map.create_renderer(gpu, filled.format);
+            let bitmap = vec![255u8; 500 * 500];
+            for _ in 0..taken {
+                let row = renderer.glyphs().reserve().unwrap();
+                (renderer.glyphs())
+                    .upload(gpu, row, [500, 500], &bitmap)
+                    .unwrap();
+            }
+            filled.renderer = Some(renderer);
+            settle(&mut filled);
+            assert_eq!(
+                crate::common::differing_pixels(&filled.pixels(), &fresh.pixels()),
+                0,
+                "labels after {taken} pages taken"
+            );
+        }
     }
 
     /// Antialiasing reaches the terrain, which draws in the map's own

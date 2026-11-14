@@ -8,7 +8,12 @@
 // The image pages again, for the nearest sampler: each texture binding
 // takes one sampler, as a texture unit does on WebGL 2.
 @group(0) @binding(16) var image_pages_nearest: texture_2d_array<f32>;
-@group(0) @binding(12) var glyph_pages: texture_2d_array<f32>;
+// The glyph pages' chunks (orb-render's `TilePage`): a glyph's layer word
+// names its chunk in its bits from 11 up, and its layer there below.
+@group(2) @binding(2) var glyph_pages_0: texture_2d_array<f32>;
+@group(2) @binding(3) var glyph_pages_1: texture_2d_array<f32>;
+@group(2) @binding(4) var glyph_pages_2: texture_2d_array<f32>;
+@group(2) @binding(5) var glyph_pages_3: texture_2d_array<f32>;
 
 // What the pass draws of the icons (x) and of the text (y): halo and fill
 // together, the halo, the fill (GL JS draws them apart when glyphs
@@ -176,6 +181,17 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
 
 const SDF_PX: f32 = 8.0;
 
+// The glyph distance at `uv` of the page layer word `word` names.
+fn glyph_distance(uv: vec2<f32>, word: u32) -> f32 {
+    let layer = word & 2047u;
+    switch word >> 11u {
+        case 0u: { return textureSampleLevel(glyph_pages_0, atlas_sampler, uv, layer, 0.0).r; }
+        case 1u: { return textureSampleLevel(glyph_pages_1, atlas_sampler, uv, layer, 0.0).r; }
+        case 2u: { return textureSampleLevel(glyph_pages_2, atlas_sampler, uv, layer, 0.0).r; }
+        default: { return textureSampleLevel(glyph_pages_3, atlas_sampler, uv, layer, 0.0).r; }
+    }
+}
+
 // Where a fragment samples its page. The quad's texels round to 1/1024
 // texel, so adding the rectangle's whole-texel origin is exact in f32 and
 // the sampler's filter weights don't depend on where the atlas packed the
@@ -203,7 +219,7 @@ fn fs_symbol(in: SymbolOut) -> @location(0) vec4<f32> {
     if image {
         dist = textureSampleLevel(image_pages, atlas_sampler, uv, in.layer, 0.0).a;
     } else {
-        dist = textureSampleLevel(glyph_pages, atlas_sampler, uv, in.layer, 0.0).r;
+        dist = glyph_distance(uv, in.layer);
     }
     let mode = select(symbol_pass.x, symbol_pass.y, is_text);
     let size = in.data.y;

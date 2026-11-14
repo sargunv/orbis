@@ -1781,12 +1781,16 @@ fn heatmap_composites_in_layer_order_and_hides_without_recording() {
     h.render_stats();
 }
 
-/// Growing the glyph pages replaces the texture the scene group binds;
-/// the heatmap's own recorded draw binds that group too, so it must be
-/// recorded again rather than replayed over the destroyed texture.
+/// The glyph pages grow by a chunk at a time, copying nothing, and the
+/// map's other draws (a heatmap's, which records its own bundle) draw on
+/// as they grow.
 #[test]
-fn glyph_atlas_growth_rerecords_node_bundles() {
-    let mut h = Harness::new();
+fn glyph_pages_grow_by_chunks() {
+    let capacity = SceneCapacity {
+        glyph_rows: 128,
+        ..Harness::SMALL
+    };
+    let mut h = Harness::with(4, 2, 8, capacity, None);
     h.renderer.set_nodes(&mut h.gpu, &[Family::Heatmap]);
     h.renderer.set_paint(
         &mut h.gpu,
@@ -1817,19 +1821,27 @@ fn glyph_atlas_growth_rerecords_node_bundles() {
         )
         .unwrap();
     assert_eq!(pixel(&h.render(), 48, 32), [0, 255, 0, 255]);
-    // A page-sized bitmap per row: the ninth outgrows the first 8 layers.
+    // A page-sized bitmap per row: the ninth outgrows the first 8 layers,
+    // and the pages grow by chunks of 8, 16 and 32 more, copying nothing.
+    h.renderer.take_resized();
     let revision = h.renderer.glyphs().revision();
-    let size = [500, 500];
-    let bitmap = vec![255u8; 500 * 500];
-    for _ in 0..9 {
+    let upload = |h: &mut Harness| {
+        let bitmap = vec![255u8; 500 * 500];
         let row = h.renderer.glyphs().reserve().unwrap();
-        h.renderer
-            .glyphs()
-            .upload(&mut h.gpu, row, size, &bitmap)
+        (h.renderer.glyphs())
+            .upload(&mut h.gpu, row, [500, 500], &bitmap)
             .unwrap();
+    };
+    for _ in 0..64 {
+        upload(&mut h);
     }
     assert_ne!(h.renderer.glyphs().revision(), revision, "the pages grew");
     assert_eq!(pixel(&h.render(), 48, 32), [0, 255, 0, 255]);
+    assert_eq!(h.renderer.take_resized().bytes_copied, 0, "nothing copied");
+    // Past the four chunks, the last grows by copying its layers.
+    upload(&mut h);
+    assert_eq!(pixel(&h.render(), 48, 32), [0, 255, 0, 255]);
+    assert!(h.renderer.take_resized().bytes_copied > 0, "past the four");
 }
 
 #[test]

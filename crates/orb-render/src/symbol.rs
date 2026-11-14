@@ -21,7 +21,7 @@ use orb_shaders::{SYMBOL_PLACE_SHADERS, SYMBOL_SHADER};
 
 use crate::pipeline::{Attachments, Draw, Variants};
 use crate::release::Release;
-use crate::scene::{Backing, PLACED_WIDTH, Tables};
+use crate::scene::{Backing, PAGE_CHUNKS, PLACED_WIDTH, Tables};
 
 /// What a symbol pass draws of a layer's icons or of its text
 /// (`symbol_draw.wgsl`'s `PASS_*`): halo and fill, the halo, the fill, or
@@ -124,13 +124,15 @@ struct Dispatch {
 #[derive(Debug)]
 pub(crate) struct Symbols {
     placing: Placing,
-    /// The draw's group 2: a pass's uniform, and the placement target
-    /// where a dispatch writes it.
+    /// The draw's group 2: a pass's uniform, the placement target where a
+    /// dispatch writes it, and the glyph pages' chunks.
     pass_layout: BindGroupLayoutId,
     pass_buffer: BufferId,
     pass_stride: u64,
     /// One group per [`SYMBOL_PASSES`] entry.
     passes: [BindGroupId; SYMBOL_PASSES.len()],
+    /// The glyph pages' chunks the groups bind.
+    glyphs: [TextureId; PAGE_CHUNKS],
     /// [`QUAD_INDICES`], the index buffer the draws take.
     quad_indices: BufferId,
     /// The draws' pipelines for the map's other kind of pass
@@ -139,16 +141,25 @@ pub(crate) struct Symbols {
 }
 
 impl Symbols {
-    /// The symbols of a renderer whose tables are on `backing`.
-    pub(crate) fn new(gpu: &mut dyn Gpu, backing: Backing) -> Self {
+    /// The symbols of a renderer whose tables are on `backing`, drawing
+    /// glyphs from the chunks of `glyphs`.
+    pub(crate) fn new(
+        gpu: &mut dyn Gpu,
+        backing: Backing,
+        glyphs: [TextureId; PAGE_CHUNKS],
+    ) -> Self {
         use BindGroupLayoutEntry as E;
         let placing = Placing::new(gpu, backing);
         let vf = ShaderStages::VERTEX | ShaderStages::FRAGMENT;
+        let d2_array = TextureViewDimension::D2Array;
         let mut entries = vec![E::uniform(0, vf)];
         if placing.target().is_some() {
-            let d2_array = TextureViewDimension::D2Array;
             entries.push(E::uint_texture(1, ShaderStages::VERTEX, d2_array));
         }
+        entries.extend(
+            (0..PAGE_CHUNKS as u32)
+                .map(|k| E::texture(GLYPH_BINDING + k, ShaderStages::FRAGMENT, true, d2_array)),
+        );
         let pass_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "symbol pass",
             entries: &entries,
@@ -171,16 +182,34 @@ impl Symbols {
         });
         gpu.write_buffer(quad_indices, 0, bytemuck::cast_slice(&QUAD_INDICES));
         let pass = (pass_layout, pass_buffer, pass_stride);
-        let passes = pass_groups(gpu, pass, placing.target());
+        let passes = pass_groups(gpu, pass, placing.target(), glyphs);
         Self {
             placing,
             pass_layout,
             pass_buffer,
             pass_stride,
             passes,
+            glyphs,
             quad_indices,
             kept: Default::default(),
         }
+    }
+
+    /// Draws glyphs from the chunks of `glyphs` from now on: whether the
+    /// draws' bindings changed, which the bundles record.
+    pub(crate) fn set_glyphs(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        glyphs: [TextureId; PAGE_CHUNKS],
+    ) -> bool {
+        if glyphs == self.glyphs {
+            return false;
+        }
+        self.glyphs = glyphs;
+        let pass = (self.pass_layout, self.pass_buffer, self.pass_stride);
+        let passes = pass_groups(gpu, pass, self.placing.target(), glyphs);
+        std::mem::replace(&mut self.passes, passes).release(gpu);
+        true
     }
 
     /// Gives the placement target `rows` rows (the scene's
@@ -205,7 +234,7 @@ impl Symbols {
             .map(|(group, _)| group)
             .collect();
         let pass = (self.pass_layout, self.pass_buffer, self.pass_stride);
-        let passes = pass_groups(gpu, pass, Some(target));
+        let passes = pass_groups(gpu, pass, Some(target), self.glyphs);
         (old, groups, std::mem::replace(&mut self.passes, passes)).release(gpu);
         true
     }
@@ -527,17 +556,27 @@ fn compute_layout(gpu: &mut dyn Gpu, backing: Backing) -> BindGroupLayoutId {
     })
 }
 
+/// The glyph pages' first chunk's binding in the draw's group 2, the
+/// others' after it (`symbol_draw.wgsl`).
+const GLYPH_BINDING: u32 = 2;
+
 /// The draw's group for each of [`SYMBOL_PASSES`]: its uniform, at
-/// `stride` apart in `buffer`, and the placement target if there is one.
+/// `stride` apart in `buffer`, the placement target if there is one, and
+/// the glyph pages' chunks.
 fn pass_groups(
     gpu: &mut dyn Gpu,
     (layout, buffer, stride): (BindGroupLayoutId, BufferId, u64),
     target: Option<TextureId>,
+    glyphs: [TextureId; PAGE_CHUNKS],
 ) -> [BindGroupId; SYMBOL_PASSES.len()] {
+    let d2_array = TextureViewDimension::D2Array;
     std::array::from_fn(|i| {
         let mut entries = vec![BindGroupEntry::slice(0, buffer, i as u64 * stride, 16)];
-        entries
-            .extend(target.map(|t| BindGroupEntry::texture(1, t, TextureViewDimension::D2Array)));
+        entries.extend(target.map(|t| BindGroupEntry::texture(1, t, d2_array)));
+        entries.extend(
+            (glyphs.iter().zip(GLYPH_BINDING..))
+                .map(|(&texture, binding)| BindGroupEntry::texture(binding, texture, d2_array)),
+        );
         gpu.create_bind_group(&BindGroupDesc {
             label: "symbol pass",
             layout,

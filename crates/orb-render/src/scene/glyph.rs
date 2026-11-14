@@ -5,12 +5,16 @@
 //! glyphs by row at upload; a reserved row is transparent until its bitmap
 //! arrives, and nothing that refers to it changes then. The atlas knows
 //! rows only: which glyph a row holds is the runtime's business.
+//!
+//! The pages are a [`TilePage`] of [`PAGE_CHUNKS`] chunks, which the symbol
+//! draws bind each of: the atlas grows by its next chunk, copying nothing,
+//! and a row's layer word names the chunk its bitmap is in.
 
 use orb_hal::{Gpu, TextureFormat, TextureId};
 
 use crate::scene::shelf::Shelves;
 use crate::scene::texels::AtlasTexels;
-use crate::scene::{OutOfSpace, PageTexture, TableWriter, TilePage};
+use crate::scene::{OutOfSpace, PAGE_CHUNKS, PageTexture, TableWriter, TilePage};
 
 /// Texels on a side of a glyph page.
 pub const GLYPH_PAGE: u32 = 512;
@@ -21,7 +25,8 @@ pub const GLYPH_PADDING: u32 = 1;
 /// it, which must not be whichever glyph was packed next to it.
 const GLYPH_MARGIN: u32 = 1;
 /// Glyph pages the atlas starts with: 2 MiB, which Latin labels of a
-/// style's few fonts take a fraction of. It grows as bitmaps need.
+/// style's few fonts take a fraction of. It grows as bitmaps need, by a
+/// chunk as large as those before it (8, 8, 16 and 32 pages).
 const FIRST_PAGES: u32 = 8;
 /// Words per glyph row: padded origin (`x | y << 16`), padded size
 /// (`w | h << 16`), page layer, and a zero.
@@ -39,15 +44,17 @@ struct Row {
 #[derive(Debug)]
 pub struct GlyphAtlas {
     page: TilePage,
-    /// Per layer of `page`, its shelves.
-    shelves: Vec<Shelves>,
+    /// Per layer word of `page` (in order: by chunk, then layer), its
+    /// shelves.
+    shelves: std::collections::BTreeMap<u32, Shelves>,
     /// The row table: the first words of the scene's property table.
     table: TableWriter,
     capacity: u32,
     rows: Vec<Option<Row>>,
     free: Vec<u32>,
-    /// The pages' texels, uploaded once a frame ([`flush`](Self::flush)).
-    texels: AtlasTexels,
+    /// Per chunk of `page`, its texels, uploaded once a frame
+    /// ([`flush`](Self::flush)).
+    texels: Vec<AtlasTexels>,
 }
 
 impl GlyphAtlas {
@@ -80,31 +87,34 @@ impl GlyphAtlas {
                 usage: orb_hal::TextureUsages::TEXTURE_BINDING,
                 mip_levels: 1,
             }],
-            // One chunk, which the scene group binds.
-            (FIRST_PAGES, 1),
+            (FIRST_PAGES, PAGE_CHUNKS),
         );
         table.write_words(gpu, 0, &[0; GLYPH_ROW_WORDS]);
         Self {
             page,
-            shelves: Vec::new(),
+            shelves: Default::default(),
             table,
             capacity,
             rows: vec![Some(Row { placed: None })],
             free: Vec::new(),
-            texels: AtlasTexels::new(GLYPH_PAGE, GLYPH_PAGE, 1),
+            texels: Vec::new(),
         }
     }
 
     /// Uploads the bitmaps written since the last flush: one write a page
     /// layer, before the frame that draws them.
     pub(crate) fn flush(&mut self, gpu: &mut dyn Gpu) {
-        self.texels.flush(gpu, self.page.texture(0));
+        for (k, texture, _) in self.page.chunks(0) {
+            if let Some(texels) = self.texels.get_mut(k) {
+                texels.flush(gpu, texture);
+            }
+        }
     }
 
-    /// The R8 page array, replaced when the atlas grows (see
-    /// [`revision`](Self::revision)).
-    pub fn texture(&self) -> TextureId {
-        self.page.texture(0)
+    /// The R8 page arrays by chunk, `placeholder` where there's none yet:
+    /// a chunk comes as the atlas grows (see [`revision`](Self::revision)).
+    pub fn textures(&self, placeholder: TextureId) -> [TextureId; PAGE_CHUNKS] {
+        self.page.textures(0, placeholder)
     }
 
     /// The row table moved, at the same offset, into a larger table.
@@ -116,8 +126,8 @@ impl GlyphAtlas {
         row * GLYPH_ROW_WORDS as u32
     }
 
-    /// Changes whenever [`texture`](Self::texture) is replaced, so bind
-    /// groups over it are rebuilt.
+    /// Changes whenever [`textures`](Self::textures) do, so bind groups
+    /// over them are rebuilt.
     pub fn revision(&self) -> u32 {
         self.page.revision()
     }
@@ -162,19 +172,15 @@ impl GlyphAtlas {
         }
         let padded = size.map(|s| s + 2 * GLYPH_PADDING);
         let allocated = padded.map(|s| s + 2 * GLYPH_MARGIN);
-        let found = self.shelves.iter_mut().enumerate().find_map(|(layer, s)| {
+        let found = self.shelves.iter_mut().find_map(|(&layer, s)| {
             s.allocate(GLYPH_PAGE, allocated[0], allocated[1])
-                .map(|at| (layer as u32, at))
+                .map(|at| (layer, at))
         });
         let (layer, origin) = match found {
             Some(found) => found,
             None => {
                 let layer = self.page.alloc(gpu, true)?;
-                if self.shelves.len() <= layer as usize {
-                    self.shelves
-                        .resize_with(layer as usize + 1, Shelves::default);
-                }
-                let origin = self.shelves[layer as usize]
+                let origin = (self.shelves.entry(layer).or_default())
                     .allocate(GLYPH_PAGE, allocated[0], allocated[1])
                     .ok_or(OutOfSpace)?;
                 (layer, origin)
@@ -186,7 +192,12 @@ impl GlyphAtlas {
         for (y, line) in bitmap.chunks(size[0] as usize).enumerate() {
             texels[(y + pad) * w + pad..][..line.len()].copy_from_slice(line);
         }
-        self.texels.write(layer, origin, allocated, &texels);
+        let (k, at) = TilePage::split(layer);
+        if self.texels.len() <= k {
+            self.texels
+                .resize_with(k + 1, || AtlasTexels::new(GLYPH_PAGE, GLYPH_PAGE, 1));
+        }
+        self.texels[k].write(at, origin, allocated, &texels);
         let inner = origin.map(|o| o + GLYPH_MARGIN);
         let words = [
             inner[0] | inner[1] << 16,
@@ -205,12 +216,13 @@ impl GlyphAtlas {
         assert_ne!(row, 0, "the empty row is never released");
         let entry = self.rows[row as usize].take().expect("a reserved row");
         if let Some((layer, origin, size)) = entry.placed {
-            let shelves = &mut self.shelves[layer as usize];
+            let shelves = self.shelves.get_mut(&layer).expect("a placed row's layer");
             shelves.live -= 1;
             shelves.free.push((origin, size));
             if shelves.live == 0 {
                 *shelves = Shelves::default();
-                self.texels.forget(layer);
+                let (k, at) = TilePage::split(layer);
+                self.texels[k].forget(at);
             }
             self.table
                 .write_words(gpu, self.row_offset(row), &[0; GLYPH_ROW_WORDS]);

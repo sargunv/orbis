@@ -674,7 +674,6 @@ impl Renderer {
             E::texture(9, fs, true, D2Array),
             E::sampler(10, fs, true),
             E::texture(11, fs, true, D2),
-            E::texture(12, fs, true, D2Array),
             E::sampler(13, fs, true),
             // Extrusions' walls read the ground per fragment.
             E::texture(14, vf, false, D2Array),
@@ -721,11 +720,11 @@ impl Renderer {
             draw_layout,
             &scene,
             &image_bindings,
-            (glyphs.texture(), nearest, no_dem, no_terrain_depth),
+            (nearest, no_dem, no_terrain_depth),
             None,
         );
 
-        let symbols = symbol::Symbols::new(gpu, backing);
+        let symbols = symbol::Symbols::new(gpu, backing, glyphs.textures(no_dem));
         let downsampler = downsample::Downsampler::new(gpu);
         let heatmaps = heatmap::Heatmaps::new(draw_layout, node_layout);
         let composites = offscreen::Composites::new(gpu, target);
@@ -2640,10 +2639,17 @@ impl Renderer {
         stats
     }
 
-    /// Binds what the scene groups bind anew when it changed: the glyph
-    /// pages grew into new textures, the terrain changed, or a scene pool
-    /// moved into a larger buffer.
+    /// Binds what the scene groups bind anew when it changed: the terrain
+    /// changed, or a scene pool moved into a larger buffer; and the glyph
+    /// pages' chunks anew in the symbol draws' groups when the pages grew.
     fn bind_scene(&mut self, gpu: &mut dyn Gpu) {
+        if self.glyphs.revision() != self.glyphs_bound {
+            self.glyphs_bound = self.glyphs.revision();
+            let glyphs = self.glyphs.textures(self.images.placeholder());
+            if self.symbols.set_glyphs(gpu, glyphs) {
+                self.invalidate_bundle(gpu);
+            }
+        }
         let dem = self
             .terrain
             .as_ref()
@@ -2656,8 +2662,7 @@ impl Renderer {
             .and_then(terrain::Terrain::occlusion_texture)
             .unwrap_or(self.no_terrain_depth);
         let buffers = self.scene.buffers_revision();
-        if self.glyphs.revision() != self.glyphs_bound
-            || dem != self.dem_bound
+        if dem != self.dem_bound
             || terrain_depth != self.terrain_depth_bound
             || buffers != self.buffers_bound
             || self.image_bindings.texture != self.images_bound
@@ -2673,15 +2678,9 @@ impl Renderer {
                 self.draw_layout,
                 &self.scene,
                 &self.image_bindings,
-                (
-                    self.glyphs.texture(),
-                    self.images.nearest(),
-                    dem,
-                    terrain_depth,
-                ),
+                (self.images.nearest(), dem, terrain_depth),
                 None,
             );
-            self.glyphs_bound = self.glyphs.revision();
             self.dem_bound = dem;
             self.terrain_depth_bound = terrain_depth;
             for scene in self.drape.iter_mut().flat_map(|d| &mut d.scene) {
@@ -3658,12 +3657,7 @@ impl Renderer {
                 &self.scene,
                 &self.image_bindings,
                 // Draped content isn't hidden by the terrain it's on.
-                (
-                    self.glyphs.texture(),
-                    self.images.nearest(),
-                    self.dem_bound,
-                    self.no_terrain_depth,
-                ),
+                (self.images.nearest(), self.dem_bound, self.no_terrain_depth),
                 Some(&level.frames[page]),
             );
             // The draws of the page's stacks bound the group it replaces.
@@ -4547,13 +4541,13 @@ impl PaintPipelines {
 
 /// The scene's groups, by block slot (`None` for a free one): each
 /// block's frame (`frames`' if given, else the block's own) and pools,
-/// the tables every block shares, the image pages and the glyph pages.
+/// the tables every block shares, the image pages and the terrain.
 fn scene_groups(
     gpu: &mut dyn Gpu,
     layout: BindGroupLayoutId,
     scene: &Scene,
     images: &ImageBindings,
-    (glyphs, nearest, dem, terrain_depth): (TextureId, SamplerId, TextureId, TextureId),
+    (nearest, dem, terrain_depth): (SamplerId, TextureId, TextureId),
     frames: Option<&[Option<BufferId>]>,
 ) -> Vec<Option<BindGroupId>> {
     use TextureViewDimension::{D2, D2Array};
@@ -4574,7 +4568,6 @@ fn scene_groups(
                 BindGroupEntry::texture(9, images.texture, D2Array),
                 BindGroupEntry::sampler(10, images.sampler),
                 BindGroupEntry::texture(11, images.dashes, D2),
-                BindGroupEntry::texture(12, glyphs, D2Array),
                 BindGroupEntry::sampler(13, nearest),
                 BindGroupEntry::texture(14, dem, D2Array),
                 BindGroupEntry::texture(15, terrain_depth, D2),

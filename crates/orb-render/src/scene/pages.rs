@@ -20,7 +20,7 @@
 //! its layers, and an image page's moves back into a smaller one at rest
 //! once its layers lie low: a page of one chunk (the terrain's, which
 //! every draw that stands on the terrain binds, within WebGL 2's 16
-//! textures a pipeline, and the glyphs') grows only so.
+//! textures a pipeline) grows only so.
 
 use crate::scene::arena::Slots;
 use orb_hal::{
@@ -306,11 +306,6 @@ impl TilePage {
         })
     }
 
-    /// The first chunk's `index`th texture array: a page of one chunk's.
-    pub(crate) fn texture(&self, index: usize) -> TextureId {
-        self.chunks[0].as_ref().expect("a first chunk").textures[index]
-    }
-
     /// The chunks the page has: each one's index, `index`th texture array
     /// and layers.
     pub(crate) fn chunks(&self, index: usize) -> impl Iterator<Item = (usize, TextureId, u32)> {
@@ -329,6 +324,11 @@ impl TilePage {
     /// The chunk layer word `word` lies in.
     pub(crate) fn chunk_of(word: u32) -> usize {
         split(word).0
+    }
+
+    /// The chunk layer word `word` lies in, and its layer there.
+    pub(crate) fn split(word: u32) -> (usize, u32) {
+        split(word)
     }
 
     /// The size of the `index`th array's layers.
