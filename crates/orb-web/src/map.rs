@@ -216,6 +216,10 @@ pub struct FrameGpu {
     /// Submissions made only to order texture writes.
     #[wasm_bindgen(readonly, js_name = textureWriteSubmissions)]
     pub texture_write_submissions: u32,
+    /// Render commands encoded into passes and bundles, each a WebGPU or
+    /// WebGL call.
+    #[wasm_bindgen(readonly, js_name = renderCommands)]
+    pub render_commands: u32,
     /// The map's pools, tables, tile pages and drape atlas moving into
     /// memory of another size, and what those moves made and copied (part
     /// of the counts above): none while the camera moves.
@@ -254,6 +258,7 @@ impl From<&orb_hal::GpuCounters> for FrameGpu {
             upload_bytes: c.uploaded_bytes() as f64,
             upload_calls: c.upload_calls,
             texture_write_submissions: c.texture_write_submissions,
+            render_commands: c.render_commands,
             ..Self::default()
         }
     }

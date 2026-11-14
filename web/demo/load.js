@@ -177,7 +177,8 @@ const counters = (s) => ({
   gpuBytes: s.memory.allocated,
   rebuilt: s.candidatesRebuilt,
   // What the device did since the last frame: pipelines asked for, memory
-  // made, uploads and their calls, texture-write submissions.
+  // made, uploads and their calls, texture-write submissions, render
+  // commands.
   device: s.gpu,
   drapeSlots: s.drapeSlots,
   input: s.input,

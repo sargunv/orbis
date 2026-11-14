@@ -209,6 +209,10 @@ pub struct GpuCounters {
     /// Submissions made only to order texture writes into one level and
     /// layer (their waves), each an extra command buffer.
     pub texture_write_submissions: u32,
+    /// Render commands encoded into passes and bundles: each a call into
+    /// the graphics API, on the web into the browser, which a pass
+    /// replaying a bundle makes once.
+    pub render_commands: u32,
 }
 
 impl GpuCounters {
@@ -255,6 +259,7 @@ impl GpuCounters {
                 a.texture_write_submissions,
                 b.texture_write_submissions,
             ),
+            render_commands: count(a.render_commands, b.render_commands),
         }
     }
 }

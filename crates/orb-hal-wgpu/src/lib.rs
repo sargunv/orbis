@@ -2251,6 +2251,7 @@ impl Gpu for WgpuGpu {
         for command in commands {
             self.encode_render(&mut encoder, command);
         }
+        self.count(|c| c.render_commands += commands.len() as u32);
         // wgpu panics when `finish` fails, whatever the error handler, and
         // on a lost device it fails ("Parent device is lost"): the frame
         // goes on without the bundle, and the next one makes a new device.
@@ -2562,6 +2563,7 @@ impl Gpu for WgpuGpu {
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
+                    self.count(|c| c.render_commands += render.commands.len() as u32);
                     for command in &render.commands {
                         match command {
                             RenderCommand::ExecuteBundles(ids) => pass.execute_bundles(

@@ -384,7 +384,7 @@ function fetchTotals(frames, lastInput) {
 /** What Orbis's device did over `frames` (each frame's counts since the
  * one before): pipelines asked for, buffers and textures made and their
  * bytes, bytes copied on the GPU, uploads and their calls, texture-write
- * submissions, drape slots redrawn. */
+ * submissions, render commands encoded, drape slots redrawn. */
 function deviceTotals(frames) {
   const sum = (f) => frames.reduce((s, x) => s + (f(x) ?? 0), 0);
   return {
@@ -404,6 +404,7 @@ function deviceTotals(frames) {
     uploadMiB: mib(sum((f) => f.device.uploadBytes)),
     uploadCalls: sum((f) => f.device.uploadCalls),
     textureWriteSubmissions: sum((f) => f.device.textureWriteSubmissions),
+    renderCommands: sum((f) => f.device.renderCommands),
     drapeSlots: sum((f) => f.drapeSlots),
   };
 }
@@ -484,6 +485,7 @@ function attribute(frames, i, gap, raf, longTasks) {
       allocatedMiB: mib(f.device.bytesAllocated),
       uploadCalls: f.device.uploadCalls,
       textureWriteSubmissions: f.device.textureWriteSubmissions,
+      renderCommands: f.device.renderCommands,
       drapeSlots: f.drapeSlots,
     }),
     candidatesRebuilt: f.rebuilt,

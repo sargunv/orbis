@@ -897,11 +897,12 @@ impl SessionReport {
             out,
             "| session | frames | pipelines asked | late | made | buffers + textures made | MiB made | MiB \
              copied on the GPU | pool moves | MiB they made | MiB they copied | MiB uploaded | \
-             upload calls | texture-write submissions | drape slots | peak frame MiB uploaded | \
+             upload calls | texture-write submissions | render commands | peak frame commands | drape \
+             slots | peak frame MiB uploaded | \
              peak frame MiB of tiles | layout ms on arrival frames p50 / max | most \
              chunks left out | MiB of slots moved |"
         )?;
-        writeln!(out, "|{}", "---|".repeat(20))?;
+        writeln!(out, "|{}", "---|".repeat(22))?;
         for r in &self.results {
             for what in ["all", "input", "moving"] {
                 let keep = |f: &&Frame| match what {
@@ -917,6 +918,10 @@ impl SessionReport {
                 }
                 let peak = (r.frames.iter().filter(keep))
                     .map(|f| f.report.gpu.uploaded_bytes())
+                    .max()
+                    .unwrap_or(0);
+                let commands = (r.frames.iter().filter(keep))
+                    .map(|f| f.report.gpu.render_commands)
                     .max()
                     .unwrap_or(0);
                 // The candidate layout's stage (with the placement rows),
@@ -945,7 +950,7 @@ impl SessionReport {
                 writeln!(
                     out,
                     "| {} {what} | {n} | {} | {late} | {} | {} | {} | {} | {} | {} | {} | {} | {} | \
-                     {} | {slots} | {} | {} | {layout} | {left_out} | {} |",
+                     {} | {} | {commands} | {slots} | {} | {} | {layout} | {left_out} | {} |",
                     r.name,
                     c.pipelines_requested,
                     c.pipelines_compiled,
@@ -958,6 +963,7 @@ impl SessionReport {
                     mib(c.uploaded_bytes()),
                     c.upload_calls,
                     c.texture_write_submissions,
+                    c.render_commands,
                     mib(peak),
                     mib(tiles),
                     mib(slot_moves),
@@ -973,7 +979,10 @@ impl SessionReport {
              that moved the camera, or with input (memory made then is made while it moves); \
              pool moves: blocks made, and tables, tile pages and the drape atlas moving into \
              memory of another size, and what they made and copied (part of the device's \
-             counts); peak frame: the most one frame \
+             counts); render commands: encoded into passes and bundles, each a call into \
+             the graphics API (on the web, into the browser), and the most one frame encoded \
+             (peak frame commands); \
+             peak frame: the most one frame \
              uploaded, with what was prepared before it; of tiles: the most of tiles' and edits' \
              results one frame uploaded, which its budget's bytes bound; layout: the render's \
              cull stage (the candidates laid out again, and tile placement rows written) in \
@@ -1079,17 +1088,17 @@ impl SessionReport {
             writeln!(
                 out,
                 "| at ms | interval | CPU | GPU | passes | stages | between frames | \
-                 pipelines made | MiB made | KiB uploaded | upload calls | tiles arrived | \
-                 drape slots |"
+                 pipelines made | MiB made | KiB uploaded | upload calls | render commands | \
+                 tiles arrived | drape slots |"
             )?;
-            writeln!(out, "|{}", "---|".repeat(13))?;
+            writeln!(out, "|{}", "---|".repeat(14))?;
             let mut worst = r.intervals();
             worst.sort_by(|a, b| b.1.total_cmp(&a.1));
             for &(i, gap) in worst.iter().take(WORST) {
                 let f = &r.frames[i];
                 writeln!(
                     out,
-                    "| {:.0} | {gap:.1} | {} | {} | {} | {} | {} | {} | {} | {:.0} | {} | {} | {} |",
+                    "| {:.0} | {gap:.1} | {} | {} | {} | {} | {} | {} | {} | {:.0} | {} | {} | {} | {} |",
                     f.t,
                     ms(f.cpu),
                     f.gpu.map_or("—".into(), ms),
@@ -1103,6 +1112,7 @@ impl SessionReport {
                     mib(f.report.gpu.bytes_allocated),
                     f.report.gpu.uploaded_bytes() as f64 / 1024.0,
                     f.report.gpu.upload_calls,
+                    f.report.gpu.render_commands,
                     f.report.tiles_arrived,
                     f.report.frame.drape_slots,
                 )?;
