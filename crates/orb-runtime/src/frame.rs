@@ -1210,14 +1210,18 @@ impl Tier {
 /// gives a cover, which the map asks again of the loads still waiting
 /// each frame it plans ([`Map::reorder_fetches`]): the view the camera
 /// is at loads first, wherever it was when each load was asked for.
+/// Distances are in widths of the set's first matrix, so that sources
+/// cut by sets in other units (degrees, metres) interleave by distance.
 pub(crate) fn fetch_order(tms: &TileMatrixSet, focus: Geodetic) -> impl Fn(TileIndex, Tier) -> u64 {
     let at = tms.projection().forward(focus);
     let period = tms.projection().wrap_period().unwrap_or(0.0);
+    let width = tms.tile_span(tms.min_zoom()) * f64::from(tms.matrix_size(tms.min_zoom()).0);
     move |tile, tier| {
         let mut off = tms.tile_bounds(tile).center() - at;
         if period > 0.0 {
             off.x -= period * (off.x / period).round();
         }
+        let off = off / width;
         // Never negative: its bits order as it does, in 31 of them.
         let distance = (off.length_squared() as f32).to_bits();
         (tier as u64) << 40 | u64::from(distance) << 8 | u64::from(u8::MAX - tile.z)
@@ -1723,6 +1727,20 @@ mod tests {
             tile((2, 0, 1), 1),
         ];
         assert_eq!(cover, order);
+    }
+
+    /// Sources cut by sets in other units fetch by distance alike: a
+    /// tile across the world in degrees waits behind one beside the focus
+    /// in metres.
+    #[test]
+    fn fetches_interleave_by_distance_across_tile_matrix_sets() {
+        let focus = Geodetic::new(0.0, 0.0);
+        let mercator = fetch_order(TileMatrixSet::web_mercator(), focus);
+        let crs84 = TileMatrixSet::by_id("WorldCRS84Quad").unwrap();
+        let degrees = fetch_order(&crs84, focus);
+        let near = mercator(TileIndex::new(4, 8, 8), Tier::View);
+        let far = degrees(TileIndex::new(4, 31, 8), Tier::View);
+        assert!(near < far, "the far tile in degrees fetches first");
     }
 
     #[test]
