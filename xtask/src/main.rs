@@ -83,12 +83,15 @@ cargo xtask <task>
   sweep [--dry-run] [--target-dir <path>] [--keep-hours <n>]  prune stale build
                artifacts: keep every build compiled in the last <n> hours
                (default 6) and the 2 newest builds of each crate
-  mln-ffi [--filter <substring>] [--verbose] [--lib <path>]  build orb-ffi's
-               maplibre-native-c, compile maplibre-native-ffi's pinned C ABI
-               suite against it and score it case by case (results in
-               target/mln-ffi/results.json); `--lib` scores another build of
-               the library instead, such as mln-rs's crates/mln_c, under
-               target/mln-ffi/lib-*; `mln-ffi declarations [--check]`
+  mln-ffi [--filter <substring>] [--verbose] [--lib <path> | --asan]  build
+               orb-ffi's maplibre-native-c, compile maplibre-native-ffi's
+               pinned C ABI suite against it and score it case by case
+               (results in target/mln-ffi/results.json); `--lib` scores
+               another build of the library instead, such as mln-rs's
+               crates/mln_c, under target/mln-ffi/lib-*; `--asan` builds
+               orb-ffi and runs its tests under AddressSanitizer, scores
+               the suite under target/mln-ffi/asan and fails on any report
+               (target/mln-ffi/asan/reports); `mln-ffi declarations [--check]`
                regenerates orb-ffi's declarations and stubs from the pin
   fixtures [gl-js|native|mln-ffi|expressions]  fetch and verify the pinned
                GL JS, MapLibre Native and maplibre-native-ffi mirrors

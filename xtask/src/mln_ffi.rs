@@ -13,6 +13,14 @@
 //! module compiles it the way `cmake/mln_ffi_tests.cmake` does: the same
 //! sources, file tags, registry and flags, linked against the shared
 //! library from `cargo build -p orb-ffi`.
+//!
+//! `--asan` builds that library, and runs orb-ffi's own tests, under
+//! AddressSanitizer (`-Zsanitizer=address`, which the pinned stable
+//! toolchain takes with `RUSTC_BOOTSTRAP=1`; the suite's C stays
+//! uninstrumented, but its allocations go through the sanitizer's
+//! allocator, so the library's reads and writes past the host's buffers are
+//! caught too). Each report lands in `target/mln-ffi/asan/reports`, and the
+//! case it stopped is scored as a crash.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -546,17 +554,50 @@ fn abi_files(mirror: &Path) -> Result<Vec<(String, String)>, String> {
 }
 
 /// Where a run builds and scores: `target/mln-ffi` for orb-ffi, a
-/// directory of its own below it for another library (`--lib`), so the
-/// two can run side by side and keep their own last results.
-fn work_dir(lib: Option<&Path>) -> PathBuf {
+/// directory of its own below it for orb-ffi under AddressSanitizer
+/// (`--asan`) or another library (`--lib`), so they can run side by side
+/// and keep their own last results.
+fn work_dir(lib: Option<&Path>, asan: bool) -> PathBuf {
     let base = root().join("target/mln-ffi");
     match lib {
+        None if asan => base.join("asan"),
         None => base,
         Some(lib) => base.join(format!(
             "lib-{}",
             &hex(&Sha256::digest(lib.as_os_str().as_encoded_bytes()))[..12]
         )),
     }
+}
+
+/// Where `--asan` builds, apart from the plain build's artifacts.
+const ASAN_TARGET_DIR: &str = "target/asan";
+
+/// Cargo `args` (a build or test of orb-ffi) under AddressSanitizer: for
+/// the host's target named, so build scripts and proc macros stay plain.
+fn asan_cargo(args: &[&str]) -> Result<(), String> {
+    let host = host_triple()?;
+    crate::run(
+        Command::new(env!("CARGO"))
+            .args(args)
+            .args(["--release", "-p", "orb-ffi", "--target", &host])
+            .args(["--target-dir", ASAN_TARGET_DIR])
+            .current_dir(root())
+            .env("RUSTC_BOOTSTRAP", "1")
+            .env("RUSTFLAGS", "-Zsanitizer=address"),
+    )
+}
+
+/// The target `rustc` builds for by default.
+fn host_triple() -> Result<String, String> {
+    let output = Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .map_err(|e| format!("rustc -vV: {e}"))?;
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|l| l.strip_prefix("host: "))
+        .map(str::to_owned)
+        .ok_or_else(|| "rustc -vV names no host".to_string())
 }
 
 /// A C or C++ compiler command. On macOS it takes the SDK `rustc` links
@@ -596,13 +637,23 @@ fn run_tool(command: &mut Command) -> Result<(), String> {
     }
 }
 
-/// Builds `maplibre-native-c` (or takes the one at `library`) and installs it
-/// as mln-ffi's install prefix lays it out: `lib/`, `include/`.
-fn install_library(mirror: &Path, library: Option<&Path>) -> Result<PathBuf, String> {
-    if library.is_none() {
+/// Builds `maplibre-native-c`, under AddressSanitizer with `asan` (or takes
+/// the one at `library`), and installs it as mln-ffi's install prefix lays
+/// it out: `lib/`, `include/`.
+fn install_library(mirror: &Path, library: Option<&Path>, asan: bool) -> Result<PathBuf, String> {
+    let built_dir = if library.is_some() {
+        PathBuf::new()
+    } else if asan {
+        asan_cargo(&["build"])?;
+        root()
+            .join(ASAN_TARGET_DIR)
+            .join(host_triple()?)
+            .join("release")
+    } else {
         crate::cargo(&["build", "--release", "-p", "orb-ffi"])?;
-    }
-    let prefix = work_dir(library).join("install");
+        root().join("target/release")
+    };
+    let prefix = work_dir(library, asan).join("install");
     let lib = prefix.join("lib");
     fs::create_dir_all(&lib).map_err(|e| e.to_string())?;
     let (built, installed) = if cfg!(target_vendor = "apple") {
@@ -612,11 +663,28 @@ fn install_library(mirror: &Path, library: Option<&Path>) -> Result<PathBuf, Str
     } else {
         ("libmaplibre_native_c.so", "libmaplibre-native-c.so")
     };
-    let from = library.map_or_else(
-        || root().join("target/release").join(built),
-        Path::to_path_buf,
-    );
+    let from = library.map_or_else(|| built_dir.join(built), Path::to_path_buf);
     fs::copy(&from, lib.join(installed)).map_err(|e| format!("{}: {e}", from.display()))?;
+    if asan {
+        // The sanitizer's runtime, which the library loads by its rpath:
+        // beside it, from the toolchain.
+        let output = Command::new("rustc")
+            .args(["--print", "sysroot"])
+            .output()
+            .map_err(|e| format!("rustc --print sysroot: {e}"))?;
+        let sysroot = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+        let runtime = if cfg!(target_vendor = "apple") {
+            "librustc-stable_rt.asan.dylib"
+        } else {
+            "librustc-stable_rt.asan.so"
+        };
+        let from = sysroot
+            .join("lib/rustlib")
+            .join(host_triple()?)
+            .join("lib")
+            .join(runtime);
+        fs::copy(&from, lib.join(runtime)).map_err(|e| format!("{}: {e}", from.display()))?;
+    }
     let include = prefix.join("include");
     if include.exists() {
         fs::remove_dir_all(&include).map_err(|e| e.to_string())?;
@@ -877,7 +945,13 @@ fn parse_results(stdout: &str, file: &str) -> BTreeMap<String, Outcome> {
 
 /// Runs one file's cases, again past any that crash, and returns each
 /// case's outcome.
-fn run_file(exe: &Path, mirror: &Path, file: &str, cases: &[String]) -> BTreeMap<String, Outcome> {
+fn run_file(
+    exe: &Path,
+    mirror: &Path,
+    file: &str,
+    cases: &[String],
+    asan_reports: Option<&Path>,
+) -> BTreeMap<String, Outcome> {
     let mut outcomes = BTreeMap::new();
     let mut remaining: Vec<String> = cases.to_vec();
     let mut first = true;
@@ -889,7 +963,8 @@ fn run_file(exe: &Path, mirror: &Path, file: &str, cases: &[String]) -> BTreeMap
             remaining.join(",")
         };
         first = false;
-        let output = Command::new("perl")
+        let mut command = Command::new("perl");
+        command
             .args(["-e", "alarm shift; exec @ARGV"])
             .arg(RUN_TIMEOUT_SECS.to_string())
             .arg(exe)
@@ -898,8 +973,15 @@ fn run_file(exe: &Path, mirror: &Path, file: &str, cases: &[String]) -> BTreeMap
                 "MLN_FFI_TEST_FIXTURE_DIR",
                 mirror.join("tests/native/fixtures"),
             )
-            .stdin(Stdio::null())
-            .output();
+            .stdin(Stdio::null());
+        if let Some(reports) = asan_reports {
+            // One file a process, named by its pid.
+            command.env(
+                "ASAN_OPTIONS",
+                format!("log_path={}", reports.join("asan").display()),
+            );
+        }
+        let output = command.output();
         let output = match output {
             Ok(output) => output,
             Err(e) => {
@@ -944,7 +1026,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         Some("declarations") => return declarations(args.iter().any(|a| a == "--check")),
         Some("help") => {
             eprintln!(
-                "cargo xtask mln-ffi [--filter <substring>] [--verbose] [--lib <path>]\n\
+                "cargo xtask mln-ffi [--filter <substring>] [--verbose] [--lib <path> | --asan]\n\
                  cargo xtask mln-ffi declarations [--check]"
             );
             return Ok(());
@@ -953,12 +1035,14 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     }
     let mut filter = None;
     let mut verbose = false;
+    let mut asan = false;
     let mut lib = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--filter" => filter = Some(iter.next().ok_or("--filter takes a substring")?.clone()),
             "--verbose" => verbose = true,
+            "--asan" => asan = true,
             "--lib" => {
                 let path = PathBuf::from(iter.next().ok_or("--lib takes a library's path")?);
                 lib =
@@ -967,14 +1051,26 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
             other => return Err(format!("mln-ffi: unknown argument `{other}`")),
         }
     }
+    if asan && lib.is_some() {
+        return Err("mln-ffi: --asan builds orb-ffi, so it takes no --lib".into());
+    }
     ensure()?;
     if lib.is_none() {
         declarations(true)?;
     }
     let mirror = mirror_dir();
     let lib = lib.as_deref();
-    let work = work_dir(lib);
-    let prefix = install_library(&mirror, lib)?;
+    let work = work_dir(lib, asan);
+    let reports = work.join("reports");
+    if asan {
+        asan_cargo(&["test"])?;
+        if reports.exists() {
+            fs::remove_dir_all(&reports).map_err(|e| e.to_string())?;
+        }
+        fs::create_dir_all(&reports).map_err(|e| e.to_string())?;
+    }
+    let asan_reports = asan.then_some(reports.as_path());
+    let prefix = install_library(&mirror, lib, asan)?;
     eprintln!("building the ABI suite against {}", prefix.display());
     let exe = build_suite(&mirror, &prefix, &work)?;
     let cases = list_cases(&exe)?;
@@ -994,7 +1090,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         for _ in 0..PARALLEL_RUNS {
             scope.spawn(|| {
                 while let Some((file, cases)) = queue.lock().expect("queue").pop() {
-                    let outcomes = run_file(&exe, &mirror, file, cases);
+                    let outcomes = run_file(&exe, &mirror, file, cases, asan_reports);
                     let passed = outcomes.values().filter(|o| **o == Outcome::Pass).count();
                     eprintln!("{file}: {passed}/{}", cases.len());
                     results
@@ -1006,7 +1102,36 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         }
     });
     let results = results.into_inner().expect("results");
-    report(&results, &cases, verbose, filter.is_none(), &work)
+    report(&results, &cases, verbose, filter.is_none(), &work)?;
+    match asan_reports {
+        Some(reports) => asan_summary(reports),
+        None => Ok(()),
+    }
+}
+
+/// Each AddressSanitizer report's summary line, and a failure when there
+/// was one.
+fn asan_summary(reports: &Path) -> Result<(), String> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(reports).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        let summary = text
+            .lines()
+            .find(|l| l.starts_with("SUMMARY: AddressSanitizer"))
+            .unwrap_or("(no summary line)");
+        found.push(format!("{}: {summary}", path.display()));
+    }
+    if found.is_empty() {
+        eprintln!("AddressSanitizer: no reports");
+        return Ok(());
+    }
+    found.sort();
+    Err(format!(
+        "AddressSanitizer: {} reports\n{}",
+        found.len(),
+        found.join("\n")
+    ))
 }
 
 /// Prints the score by domain and file, compares it with the last full
