@@ -67,6 +67,7 @@ type Calls = Omit<
   { [K in keyof Engine]: Engine[K] },
   | "state"
   | "input"
+  | "fallback"
   | "wake"
   | "backend"
   | "modules"
@@ -496,6 +497,15 @@ export class OrbisMap {
    * events (#140). */
   get backend(): "webgpu" | "webgl2" {
     return this.#engine.backend;
+  }
+
+  /** Why the map draws with WebGL 2 where it was left to pick and WebGPU
+   * was expected to work: WebGPU failed or didn't answer for an adapter,
+   * made no device, or was lost for good. An app may remember it for the
+   * browser, whose WebGPU then needn't be tried (and perhaps crash its GPU
+   * process) again. */
+  get fallback(): string | undefined {
+    return this.#engine.fallback;
   }
 
   /**

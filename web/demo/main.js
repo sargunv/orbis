@@ -523,6 +523,46 @@ addEventListener("popstate", () => {
   go(next, { camera: hashCamera(), history: "none" });
 });
 
+/** Where this browser's WebGPU failed a map (`OrbisMap.fallback`), the
+ * browser it failed in: maps there start on WebGL 2 without trying it
+ * again, as long as the browser stays the same build. A WebGPU that
+ * crashes the GPU process to make a device (an Android emulator's does)
+ * crashes it again each load, and after three Chrome gives no WebGL
+ * either. */
+const FAILED_WEBGPU = "orbis-demo:webgpu-failed";
+
+/** The renderer the URL asks for, else WebGL 2 where WebGPU failed this
+ * browser before, else Auto. */
+function backendFor(query) {
+  const wanted = wantedBackend(query);
+  if (wanted !== "auto") return wanted;
+  let failed;
+  try {
+    failed = JSON.parse(localStorage.getItem(FAILED_WEBGPU) ?? "null");
+  } catch {
+    return wanted;
+  }
+  if (failed?.browser !== navigator.userAgent) return wanted;
+  console.info(
+    `orbis demo: WebGL 2, as WebGPU failed here before: ${failed.why}`,
+  );
+  return "webgl2";
+}
+
+/** Remembers a map's fall back to WebGL 2, or forgets one once WebGPU draws. */
+function rememberBackend(map) {
+  try {
+    if (map.fallback)
+      localStorage.setItem(
+        FAILED_WEBGPU,
+        JSON.stringify({ browser: navigator.userAgent, why: map.fallback }),
+      );
+    else if (map.backend === "webgpu") localStorage.removeItem(FAILED_WEBGPU);
+  } catch {
+    // Storage refused (a private window): the next load tries WebGPU.
+  }
+}
+
 async function load(next, { camera }) {
   current = next;
   tone();
@@ -540,7 +580,7 @@ async function load(next, { camera }) {
       constraints: next.scene.constraints,
       // The demo shows what Orbis can do beyond the spec too.
       previews: "all",
-      backend: wantedBackend(params()),
+      backend: backendFor(params()),
     });
   } catch (e) {
     options.drawing(null);
@@ -552,6 +592,7 @@ async function load(next, { camera }) {
     return;
   }
   map = created;
+  rememberBackend(map);
   quake = attachQuake(map, {
     active: () => !!current.scene.quake,
     epicentre: () => current.scene.quake.epicentre,
@@ -625,6 +666,7 @@ async function load(next, { camera }) {
     // WebGPU gave no new device: the map started again on WebGL 2.
     if (backend !== drawingWith) {
       drawingWith = backend;
+      rememberBackend(map);
       options.drawing(backend);
       say("WebGPU stopped working: the map draws with WebGL 2 now");
       setTimeout(() => {

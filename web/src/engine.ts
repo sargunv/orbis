@@ -359,6 +359,11 @@ export class Engine {
     return this.#host.backend;
   }
 
+  /** Why the map draws with WebGL 2 where WebGPU was expected to work. */
+  get fallback(): string | undefined {
+    return this.#host.unexpected;
+  }
+
   /** The feature modules the map has. */
   modules(): ReadonlySet<ModuleName> {
     return this.#host.modules();

@@ -105,7 +105,13 @@
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--browsers=chromium,firefox,webkit] [--only=scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,compare,gestures,readback,boot,split,offline]
+// - `android`: the map app in Chrome on this worktree's Android emulator
+//   (`scripts/android-serial`, booted on demand; `--android=physical` the
+//   phone assigned to it): the Tokyo extract, the Alps terrain style and
+//   the Globe, offline, on WebGPU and WebGL 2, each reaching idle, or
+//   failing with what the map was doing.
+//
+//   pnpm e2e [--browsers=chromium,firefox,webkit] [--only=scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,compare,gestures,readback,boot,split,android,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -121,6 +127,7 @@ import {
   launchChromium,
   launchFirefox,
   launchWebkit,
+  openAndroid,
   serveDemo,
 } from "./serve.mjs";
 
@@ -131,7 +138,7 @@ const arg = (name, fallback) =>
     ?.slice(name.length + 3) ?? fallback;
 const only = arg(
   "only",
-  "scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,compare,gestures,readback,boot,split",
+  "scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,compare,gestures,readback,boot,split,android",
 ).split(",");
 const browsers = arg("browsers", "chromium,firefox,webkit").split(",");
 const writes = Number(arg("writes", 500));
@@ -3696,8 +3703,103 @@ async function firefoxAttributeZero(server) {
   }
 }
 
+/**
+ * The map app on Android, in Chrome on this worktree's emulator (or with
+ * `--android=physical` the phone assigned to it, `devices-cli assign`):
+ * the Tokyo extract, the Alps terrain style and the Globe (offline, as
+ * `options` stands it in), on the backend the map picks and on WebGL 2,
+ * each reaching idle. The demo once sat on "Loading Globe…" on phones
+ * while every desktop browser drew it; a map that stops or doesn't idle
+ * says what it was doing.
+ */
+async function android(_browser, server) {
+  for (const backend of ["auto", "webgl2"]) {
+    for (const [entry, at] of [
+      ["tokyo", "#13/35.6830/139.7520"],
+      ["alps", "#11/46.0/7.65/30/60"],
+      ["globe", "#3/35.68/139.75"],
+    ]) {
+      // Each in a Chrome of its own, as a user's visit: the emulator's
+      // Chrome starts afresh (`openAndroid`), so one entry's GPU process
+      // crashes (its Vulkan driver crashes making a WebGPU device) don't
+      // count towards the three after which Chrome gives the next no GL.
+      const { page, close } = await openAndroid(server, {
+        physical: arg("android") === "physical",
+      });
+      const errors = [];
+      onPageError(page, (m) => errors.push(m));
+      page.on("console", (m) => {
+        if (m.type() === "error") errors.push(m.text());
+      });
+      try {
+        await offlineGlobe(page, server);
+        const query = new URLSearchParams({
+          style: entry,
+          ...(backend === "webgl2" && { backend }),
+        });
+        const started = Date.now();
+        await page.goto(`${server.url}?${query}${at}`);
+        const state = await page
+          .waitForFunction(
+            () =>
+              ["idle", "error"].includes(
+                document.getElementById("app")?.dataset.map,
+              ) && document.getElementById("app").dataset.map,
+            null,
+            { timeout: 180_000 },
+          )
+          .then(
+            (h) => h.jsonValue(),
+            (e) => e,
+          );
+        if (state !== "idle") {
+          const doing = await page
+            .evaluate(() => {
+              const s = app.map?.stats;
+              return {
+                map: document.getElementById("app")?.dataset.map,
+                toast: document.getElementById("toast")?.textContent,
+                panel: document.querySelector(".failure-message")?.textContent,
+                backend: app.map?.backend,
+                stats: s && {
+                  tilesLoading: s.tilesLoading,
+                  layersWaiting: s.layersWaiting,
+                  pipelinesPending: s.pipelinesPending,
+                  transitioning: s.transitioning,
+                  loaded: s.loaded,
+                  memory: Math.round(s.memory.allocated / 2 ** 20),
+                },
+              };
+            })
+            .catch((why) => ({ unreadable: String(why) }));
+          throw new Error(
+            `${entry} on ${backend} never idled: ${JSON.stringify(doing)}; errors: ${errors.join(" | ")}`,
+            { cause: state instanceof Error ? state : undefined },
+          );
+        }
+        const drawn = await page.evaluate(() => ({
+          backend: app.map.backend,
+          memory: Math.round(app.map.stats.memory.allocated / 2 ** 20),
+        }));
+        if (backend !== "auto") assert.equal(drawn.backend, backend, entry);
+        assert.deepEqual(
+          errors.filter((e) => /unreachable|RuntimeError|stopped|lost/.test(e)),
+          [],
+          `${entry} on ${backend}`,
+        );
+        console.log(
+          `android: ${entry} on ${drawn.backend}${backend === "auto" ? " (picked)" : ""} idle in ${((Date.now() - started) / 1000).toFixed(1)} s, ${drawn.memory} MiB of GPU memory`,
+        );
+      } finally {
+        await close();
+      }
+    }
+  }
+}
+
 const CHECKS = {
   scenario,
+  android,
   webgl2,
   edits,
   playground,
@@ -3898,6 +4000,7 @@ const CHROMIUM_ONLY = {
   webgl2: "compares Chromium with and without WebGPU, and reads its GPU log",
   boot: "launches the browsers it compares itself",
   compare: "MapLibre Native's web build is measured in Chromium alone",
+  android: "drives Chrome on the Android device itself",
 };
 // Checks a browser fails for a reason left to fix, and why.
 const KNOWN = {
