@@ -65,7 +65,7 @@ pub(crate) fn ready() -> bool {
 /// In an app without the verifier's Kotlin half
 /// (`org.rustls:rustls-platform-verifier`), which would fail every
 /// certificate, HTTPS keeps trusting the system store's files, and this
-/// says so in a warning.
+/// returns a warning saying so for the caller to show.
 ///
 /// # Safety
 /// `env` is the calling thread's live `JNIEnv`, and `context` a live
@@ -74,7 +74,7 @@ pub(crate) fn ready() -> bool {
 pub unsafe fn init(
     env: *mut std::ffi::c_void,
     context: *mut std::ffi::c_void,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     if env.is_null() || context.is_null() {
         return Err("android init needs a JNIEnv and a Context".into());
     }
@@ -114,15 +114,12 @@ pub unsafe fn init(
     match initialized {
         jni::Outcome::Ok(true) => {
             let _ = VERIFIER.set(());
-            Ok(())
+            Ok(None)
         }
-        jni::Outcome::Ok(false) => {
-            log::warn!(
-                "the app has no {VERIFIER_CLASS} (org.rustls:rustls-platform-verifier), so \
-                 HTTPS trusts the system store's certificates alone"
-            );
-            Ok(())
-        }
+        jni::Outcome::Ok(false) => Ok(Some(format!(
+            "the app has no {VERIFIER_CLASS} (org.rustls:rustls-platform-verifier), so HTTPS \
+             trusts the system store's certificates alone"
+        ))),
         jni::Outcome::Err(e) => Err(format!("android init: {e}")),
         jni::Outcome::Panic(_) => Err("android init panicked".into()),
     }

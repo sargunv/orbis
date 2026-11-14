@@ -106,7 +106,13 @@ pub unsafe extern "C" fn mln_android_init(
                 return Err(Failure::argument("jni_env and context must not be null"));
             }
             #[cfg(target_os = "android")]
-            return orb_api::init_android(jni_env, context).map_err(Failure::native);
+            return orb_api::init_android(jni_env, context)
+                .map(|warning| {
+                    if let Some(warning) = warning {
+                        crate::logging::log(MLN_LOG_SEVERITY_WARNING, &warning);
+                    }
+                })
+                .map_err(Failure::native);
             #[cfg(not(target_os = "android"))]
             Err(Failure::unsupported(
                 "Android initialization is not supported",

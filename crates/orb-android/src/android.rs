@@ -65,7 +65,8 @@ fn android_main(app: AndroidApp) {
         Ok(init)
     });
     match init {
-        Ok(Ok(())) => {}
+        Ok(Ok(None)) => {}
+        Ok(Ok(Some(warning))) => log(&format!("android init: {warning}")),
         Ok(Err(e)) => log(&format!("android init: {e}")),
         Err(e) => log(&format!("android init: {e}")),
     }

@@ -52,8 +52,11 @@ pub use target::Target;
 use orb_hal_wgpu::WgpuGpu;
 use orb_host::jobs::ThreadPool;
 pub use orb_host_native::CacheStats;
-/// Gives HTTPS the app's JVM and `Context`: from then on it verifies
-/// servers with Android's trust store (`orb_host_native::android::init`).
+/// Gives fetching the app's JVM and `Context`: HTTPS verifies servers with
+/// Android's verifier, plain HTTP follows the network security config and
+/// `file:///android_asset/` reads the app's assets
+/// (`orb_host_native::android::init`, which returns a warning to show when
+/// the app lacks the verifier's Kotlin half).
 #[cfg(target_os = "android")]
 pub use orb_host_native::android::init as init_android;
 use orb_host_native::{HttpCache, NativeFetch, NativeImageDecode};

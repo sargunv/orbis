@@ -2895,7 +2895,6 @@ dependencies = [
  "fontdb",
  "image",
  "jni",
- "log",
  "ndk",
  "ndk-sys",
  "orb-host",
