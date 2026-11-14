@@ -1085,6 +1085,37 @@ fn set_terrain(map: &mut Map, terrain: &str) {
         .unwrap();
 }
 
+/// Draws `map`'s frames from time `t` (milliseconds), 1/60 s apart
+/// however long each takes to draw, until it is idle, and returns them,
+/// with last the one at rest as a fresh map is (two idle frames in a
+/// row). A frame whose tiles are still arriving is drawn again at its
+/// time once they have, so that what the frames show doesn't depend on
+/// how fast this machine loads them: as terrain rises the view reaches
+/// ground the start never loaded.
+fn frames_until_idle(map: &mut Map, target: &mut Target, mut t: f64, name: &str) -> Vec<Vec<u8>> {
+    let mut frames = Vec::new();
+    let started = std::time::Instant::now();
+    loop {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "{name}: never idle"
+        );
+        let report = map.render(target, t).unwrap();
+        let Some(report) = report.filter(|r| r.tiles_loading == 0) else {
+            std::thread::sleep(Duration::from_millis(4));
+            continue;
+        };
+        t += 1000.0 / 60.0;
+        frames.push(target.read_pixels().unwrap());
+        if report.idle {
+            break;
+        }
+    }
+    common::settle(map, target);
+    frames.push(target.read_pixels().unwrap());
+    frames
+}
+
 /// Turning terrain on raises it from flat over the style's transition,
 /// and turning it off eases it flat and then drops it, with the map's
 /// tiles drawn on every frame between (once, removing terrain left the
@@ -1101,26 +1132,7 @@ fn turning_terrain_on_and_off_eases_with_every_tile_drawn() {
         let (mut map, clock) = idle_at(&runtime, &mut target, start);
         let mut frames = vec![target.read_pixels().unwrap()];
         set_terrain(&mut map, terrain);
-        // Each frame the map draws 1/60 s after the last until it rests,
-        // however long its pipelines take on this machine: the turn eases
-        // over the style's 300 ms transition once they're made.
-        let mut t = clock();
-        let started = std::time::Instant::now();
-        loop {
-            assert!(
-                started.elapsed() < Duration::from_secs(60),
-                "{name}: never idle"
-            );
-            let Some(report) = map.render(&mut target, t).unwrap() else {
-                std::thread::sleep(Duration::from_millis(4));
-                continue;
-            };
-            t += 1000.0 / 60.0;
-            frames.push(target.read_pixels().unwrap());
-            if report.idle {
-                break;
-            }
-        }
+        frames.extend(frames_until_idle(&mut map, &mut target, clock(), name));
         for (i, frame) in frames.iter().enumerate() {
             assert_eq!(bare(frame), 0, "{name}: frame {i} shows no tile");
         }
@@ -1150,23 +1162,31 @@ const SLOW_CHILD: &str = "ORB_TEST_SLOW_TERRAIN_CHILD";
 /// without it: a map takes its terrain, or drops it once it has fallen
 /// flat, only once the pipelines it then draws with are made, so that no
 /// frame between draws without the ground however long they take.
-/// Turning terrain on waits for the terrain's own pipeline, and rises
-/// once it draws, not while it waits; turning it off waits for the flat
-/// fills'. Each turn starts from a fresh map, which has made none of the
-/// other kind's. In a child process, whose device compiles those slowly
-/// (set from the environment).
+/// Turning terrain on waits for the terrain's own pipelines, its drape's
+/// mips' and its DEM's preparation's (once, the terrain took the map's
+/// layers into its drape and then drew nothing while the mips' compiled:
+/// frames of labels alone), and rises once it draws, not while it waits;
+/// turning it off waits for the flat fills'. Each turn starts from a
+/// fresh map, which has made none of the other kind's. In a child
+/// process, whose device compiles those slowly (set from the
+/// environment).
 #[test]
 fn turning_terrain_on_or_off_waits_for_the_pipelines_it_draws_with() {
     let test = "turning_terrain_on_or_off_waits_for_the_pipelines_it_draws_with";
     if std::env::var_os(SLOW_CHILD).is_none() {
-        let child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", test, "--nocapture"])
-            .env(SLOW_CHILD, "1")
-            .env("ORB_FAULT_INJECTION", "slow:terrain,fill:300")
-            .output()
-            .unwrap();
-        let stderr = String::from_utf8_lossy(&child.stderr);
-        assert!(child.status.success(), "{stderr}");
+        // The terrain's and the fills', then the drape's mips' and the
+        // DEM's preparation's alone, which the terrain's own then don't
+        // hide.
+        for slow in ["terrain,fill", "downsample,prepare pad"] {
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", test, "--nocapture"])
+                .env(SLOW_CHILD, "1")
+                .env("ORB_FAULT_INJECTION", format!("slow:{slow}:300"))
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&child.stderr);
+            assert!(child.status.success(), "slow {slow}: {stderr}");
+        }
         return;
     }
     let (with, without, terrain, _dem) = terrain_turns();
@@ -1176,27 +1196,11 @@ fn turning_terrain_on_or_off_waits_for_the_pipelines_it_draws_with() {
         let (mut map, clock) = idle_at(&runtime, &mut target, start);
         let first = target.read_pixels().unwrap();
         set_terrain(&mut map, terrain);
-        // At 60 frames a second, however long each takes to draw: the
-        // terrain rises or falls over as many frames as on a fast device.
-        let mut t = clock();
-        let started = std::time::Instant::now();
-        for frame in 1.. {
-            assert!(
-                started.elapsed() < Duration::from_secs(60),
-                "{name}: never idle"
-            );
-            let Some(report) = map.render(&mut target, t).unwrap() else {
-                std::thread::sleep(Duration::from_millis(4));
-                continue;
-            };
-            t += 1000.0 / 60.0;
-            let pixels = target.read_pixels().unwrap();
-            assert_eq!(bare(&pixels), 0, "{name}: frame {frame} shows no tile");
-            if report.idle {
-                assert_ne!(first, pixels, "{name} changed nothing");
-                return;
-            }
+        let frames = frames_until_idle(&mut map, &mut target, clock(), name);
+        for (i, frame) in frames.iter().enumerate() {
+            assert_eq!(bare(frame), 0, "{name}: frame {} shows no tile", i + 1);
         }
+        assert_ne!(&first, frames.last().unwrap(), "{name} changed nothing");
     };
     turn((&without, terrain), "terrain-on");
     turn((&with, "null"), "terrain-off");

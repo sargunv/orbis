@@ -2505,6 +2505,10 @@ impl Renderer {
             && let Some(terrain) = &self.terrain
         {
             out.extend(terrain.pipelines());
+            // The terrain draws nothing until its drape's mips and its DEM
+            // tiles' preparation can run.
+            out.extend(self.downsampler.pipelines());
+            out.extend(self.images.prepare_pipelines());
         }
         if node.shades_on_terrain() {
             out.extend(self.images.slopes_pipeline().map(PipelineId::from));
