@@ -283,8 +283,9 @@ fn module(
     // module's whose body is a closure of core.wasm's too would leave
     // core.wasm calling into the module. Whole, nothing is folded; the
     // split folds within each module (split.rs).
-    // Nor does it inline a function the split's paths name: so what
-    // reads a module's data is what read it before (data.rs).
+    // Nor does it inline a function the split's paths name into code
+    // outside its module: so what reads a module's data is what read it
+    // before (data.rs).
     let bytes = read(&wasm)?;
     let seeds = data::mark(&wasm, &split::not_to_inline(&bytes, &data::names(&bytes)?)?)?;
     let whole_opt = |output: &Path| {

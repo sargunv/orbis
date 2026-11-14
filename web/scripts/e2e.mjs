@@ -96,7 +96,9 @@
 //   API's once; then the extract takes GeoJSON the app answers for a
 //   tile it feeds, a label that reads right to left (the job workers
 //   load the bidirectional algorithm then, not before) and a style on
-//   Equal Earth, loading their modules.
+//   Equal Earth, loading their modules. The extract in MLT draws exactly as
+//   in MVT, and a one-tile MBTiles archive draws its tile: what their
+//   modules carry of core.wasm's read-only data (xtask's `data.rs`) is in.
 // - `regions`: a style of templated tiles, no archive, downloaded as a
 //   region from the Offline areas dialog, then reopened: it draws its
 //   tiles from the region's extract, with no error, though its style never
@@ -130,6 +132,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
 import { chromium, firefox } from "playwright";
@@ -2796,10 +2799,99 @@ async function regions(browser, server) {
   console.log("regions: a plain style drew from its downloaded region");
 }
 
+/** The map on `page` draws exactly as the demo's entry `other` at the same
+ * camera, the app's controls hidden. */
+async function drawsAs(page, other) {
+  const shot = async (page) => {
+    await page
+      .locator(".corner, .attribution, .toast")
+      .evaluateAll((elements) => {
+        for (const element of elements) element.style.visibility = "hidden";
+      });
+    return decodePng(await page.locator("#map").screenshot());
+  };
+  const twin = await page.context().browser().newPage({
+    viewport: page.viewportSize(),
+  });
+  try {
+    await twin.goto(new URL(`?style=${other}`, page.url()).href);
+    await mapIdle(twin, other);
+    const [a, b] = [await shot(page), await shot(twin)];
+    let differ = 0;
+    for (let i = 0; i < a.pixels.length; i++)
+      if (a.pixels[i] !== b.pixels[i]) differ++;
+    assert.equal(differ, 0, `draws as ${other}: ${differ} channels differ`);
+  } finally {
+    await twin.close();
+  }
+}
+
+/** An MBTiles archive of one raster tile, its quarters four colours, and a
+ * style of it, served from the check's styles: the style's URL and the
+ * camera that shows the tile whole (`#1/0/0`). */
+async function quadArchive(server) {
+  const side = 256;
+  const pixels = new Uint8Array(side * side * 4);
+  for (let y = 0; y < side; y++)
+    for (let x = 0; x < side; x++)
+      pixels.set(
+        [...QUARTERS[(x >= side / 2) + 2 * (y >= side / 2)], 255],
+        (y * side + x) * 4,
+      );
+  const path = join(server.styles, "quad.mbtiles");
+  await rm(path, { force: true });
+  const db = new DatabaseSync(path);
+  db.exec(
+    "CREATE TABLE metadata (name text, value text); CREATE TABLE tiles (zoom_level integer, tile_column integer, tile_row integer, tile_data blob); INSERT INTO metadata VALUES ('format', 'png'), ('minzoom', '0'), ('maxzoom', '0');",
+  );
+  db.prepare("INSERT INTO tiles VALUES (0, 0, 0, ?)").run(
+    encodePng(side, side, pixels),
+  );
+  db.close();
+  const url = `${server.url}e2e/styles/`;
+  const style = {
+    version: 8,
+    sources: {
+      quad: { type: "raster", url: `mbtiles://${url}quad.mbtiles` },
+    },
+    layers: [{ id: "quad", type: "raster", source: "quad" }],
+  };
+  await writeFile(join(server.styles, "quad.json"), JSON.stringify(style));
+  return `${url}quad.json#1/0/0`;
+}
+/** The colours of the archive's tile's quarters, left to right, top to bottom. */
+const QUARTERS = [
+  [200, 30, 255],
+  [40, 200, 60],
+  [30, 60, 220],
+  [240, 200, 20],
+];
+
+/** The map on `page` (800×600, at zoom 1 over the equator) draws the
+ * archive's tile: each quarter's colour at its middle. */
+async function quadDrawn(page) {
+  const image = decodePng(await page.locator("#map").screenshot());
+  const at = (x, y) =>
+    [0, 1, 2].map(
+      (c) => image.pixels[(y * image.width + x) * image.channels + c],
+    );
+  // At zoom 1 the world is 512 px wide, its quarters 256 px.
+  const middles = [
+    [272, 172],
+    [528, 172],
+    [272, 428],
+    [528, 428],
+  ];
+  for (const [i, [x, y]] of middles.entries())
+    assert.deepEqual(at(x, y), QUARTERS[i], `the tile's quarter ${i}`);
+}
+
 async function split(browser, server) {
   // The feature modules each entry's style may declare: the extract is a
   // PMTiles archive, and the Globe's style adds terrain and hillshade, the
-  // globe and GeoJSON to the extract.
+  // globe and GeoJSON to the extract. MLT tiles and an MBTiles archive
+  // draw too, as their modules hand core.wasm the read-only data the
+  // build moved into them (xtask's `data.rs`).
   const entries = [
     ["tokyo", () => {}, ["archive"]],
     [
@@ -2807,10 +2899,19 @@ async function split(browser, server) {
       (page) => offlineGlobe(page, server),
       ["archive", "dem", "geojson", "globe"],
     ],
+    [
+      "tokyo-mlt",
+      () => {},
+      ["archive", "mlt"],
+      (page) => drawsAs(page, "tokyo-mvt"),
+    ],
+    [await quadArchive(server), () => {}, ["sqlite", "archive"], quadDrawn],
   ];
   const MODULE =
     /\/core(?:-gl)?-(mlt|archive|sqlite|dem|globe|geojson|api|bidi)[-.][^/]*$/;
-  for (const [entry, offline, declared] of entries) {
+  for (const [style, offline, declared, drawn] of entries) {
+    const [url, at] = style.split("#");
+    const entry = url.startsWith("http") ? "an MBTiles archive" : url;
     // Offline, the Globe's tiles fail and say so: `failing` checks that.
     const page = await browser.newPage({
       viewport: { width: 800, height: 600 },
@@ -2828,7 +2929,9 @@ async function split(browser, server) {
     page.on("pageerror", (e) => note(e.message));
     page.on("console", (m) => note(m.text()));
     await offline(page);
-    await page.goto(`${server.url}?style=${entry}`);
+    await page.goto(
+      `${server.url}?style=${encodeURIComponent(url)}${at ? `#${at}` : ""}`,
+    );
     await page.waitForFunction(
       () => document.getElementById("app")?.dataset.map === "idle",
       null,
@@ -2852,6 +2955,7 @@ async function split(browser, server) {
       `${entry}: fetched ${before} before idle; its style declares ${declared}`,
     );
     assert.equal(new Set(before).size, before.length, `${entry}: each once`);
+    await drawn?.(page);
     const deadline = Date.now() + 10_000;
     while (!fetched.some((f) => f.name === "api") && Date.now() < deadline)
       await page.waitForTimeout(100);

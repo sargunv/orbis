@@ -9,13 +9,17 @@
 //! but its relocation still names `T`), and for every pointer in data the
 //! symbol it points to (`reloc.DATA`). That is what the code reads before
 //! wasm-opt; what it reads after differs only where wasm-opt inlined one
-//! function into another. So the functions a module's paths name (the
-//! split's seeds) are kept from being inlined ([`NO_INLINE`]), and every
-//! other function's code may sit in any function that calls it, directly
-//! or through others: its hosts ([`hosts`]). A byte of `.rodata` moves to
-//! module M when every symbol that covers it is read by code whose hosts
-//! are M's functions alone, and anything the analysis can't account for
-//! keeps the byte in core.wasm, or fails the build.
+//! function into another (otherwise binaryen 133's `-Oz` moves a constant
+//! only into a callee, as an argument every call passes, and the callee
+//! then runs only from those calls; it folds no callee's constant result
+//! into its callers). So the functions a module's paths name (the
+//! split's seeds) that code outside the module calls are kept from being
+//! inlined ([`NO_INLINE`]), and every other function's code may sit in
+//! any function that calls it, directly or through others: its hosts. A
+//! byte of `.rodata` moves to module M when every symbol that covers it is
+//! read by code whose hosts are M's functions alone, and anything the
+//! analysis can't account for keeps the byte in core.wasm, or fails the
+//! build.
 //!
 //! The bytes leave core.wasm's data as zeros (its memory starts zeroed),
 //! and the module carries them in a custom section, [`MEMORY`], which
@@ -32,8 +36,8 @@ use wasmparser::{
 
 use crate::glue::{leb128, read_leb128};
 
-/// What the build prefixes the name of each function the split's paths
-/// name with, before wasm-opt, which inlines none of them
+/// What the build prefixes the name of each seed code outside its module
+/// calls with, before wasm-opt, which inlines none of them
 /// (`--no-inline=seed$*`).
 pub(crate) const NO_INLINE: &str = "seed$";
 
