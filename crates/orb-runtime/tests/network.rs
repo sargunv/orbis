@@ -5,7 +5,7 @@
 //! loaded within the frames its own requests need: what a fresh map at
 //! that camera takes, whatever it asked for on the way. A globe turned to
 //! its far side shows coarse tiles there at once, and a view turned back
-//! and forth fetches each tile once. (mln-rs's fast camera test
+//! and forth receives each vector tile once. (mln-rs's fast camera test
 //! models its network alike.)
 
 mod common;
@@ -316,40 +316,64 @@ fn a_globe_turned_to_its_far_side_shows_coarse_tiles_at_once() {
 const SWITZERLAND: (f64, f64) = (8.23, 46.82);
 const JAPAN: (f64, f64) = (138.25, 36.2);
 
+/// A view tilted over Paris, which [`swing`] turns.
+fn pitched() -> CameraState {
+    CameraState {
+        pitch: 60.0,
+        ..at(2.35, 48.85, 12.0)
+    }
+}
+
+/// Speeds of a swing, in frames each way: a flick to a slow turn.
+const SWINGS: [u32; 6] = [3, 5, 10, 20, 40, 80];
+
+/// Turns `map` 40 degrees and back four times from `start`, `frames`
+/// frames each way, and lets it load where it started.
+fn swing(network: &Network, map: &mut Offscreen, start: CameraState, frames: u32) {
+    for swing in 0..8 {
+        for i in 0..=frames {
+            let f = f64::from(i) / f64::from(frames);
+            let turned = if swing % 2 == 0 { f } else { 1.0 - f };
+            map.map.jump_to_state(CameraState {
+                bearing: 40.0 * turned,
+                ..start
+            });
+            frame(network, map);
+        }
+    }
+    frames_to_load(network, map, 600);
+}
+
+/// The first idle frame's report: the map at rest.
+fn at_rest(network: &Network, map: &mut Offscreen) -> FrameReport {
+    for _ in 0..600 {
+        let report = frame(network, map);
+        if report.idle {
+            return report;
+        }
+    }
+    panic!("not idle after 600 frames");
+}
+
 /// A pitched view turned back and forth, slowly or fast, receives each
 /// vector tile once: a tile beside the view loads on when the view leaves
 /// it, and the cache keeps what came, so a swing back finds it loaded
 /// rather than asking again. (A load beside the view gives its turn to one
 /// of the view's, and comes again when wanted; image tiles out of view
 /// keep only the layers the view's own tiles grew their page to, so
-/// they're given up.)
+/// they're given up: [`a_view_turned_back_and_forth_rests_on_a_fresh_maps_tile_pages`].)
 #[test]
 fn a_view_turned_back_and_forth_receives_each_vector_tile_once() {
     let Ok(_) = pollster::block_on(common::WgpuGpu::offscreen()) else {
         eprintln!("no GPU adapter; skipped");
         return;
     };
-    let start = CameraState {
-        pitch: 60.0,
-        ..at(2.35, 48.85, 12.0)
-    };
-    for frames in [3, 5, 10, 20, 40, 80] {
+    for frames in SWINGS {
         let network = Network::new();
-        let mut map = offscreen(&network, &style(false), start);
+        let mut map = offscreen(&network, &style(false), pitched());
         frames_to_load(&network, &mut map, 600);
         let before = network.state.lock().unwrap().answered.len();
-        for swing in 0..8 {
-            for i in 0..=frames {
-                let f = f64::from(i) / f64::from(frames);
-                let turned = if swing % 2 == 0 { f } else { 1.0 - f };
-                map.map.jump_to_state(CameraState {
-                    bearing: 40.0 * turned,
-                    ..start
-                });
-                frame(&network, &mut map);
-            }
-        }
-        frames_to_load(&network, &mut map, 600);
+        swing(&network, &mut map, pitched(), frames);
         let state = network.state.lock().unwrap();
         let answered: Vec<&String> = (state.answered[before..].iter())
             .filter(|u| u.starts_with("model://v/"))
@@ -362,6 +386,36 @@ fn a_view_turned_back_and_forth_receives_each_vector_tile_once() {
             answered.len(),
             tiles.len(),
             "vector tiles received again at {frames} frames a swing"
+        );
+    }
+}
+
+/// A pitched view turned back and forth, slowly or fast, rests on the
+/// tile pages a fresh map at its camera holds: what's kept of image
+/// tiles out of view, a whole page layer each, lives in layers the view's
+/// own tiles need, so the swing leaves no page grown for them.
+#[test]
+fn a_view_turned_back_and_forth_rests_on_a_fresh_maps_tile_pages() {
+    let Ok(_) = pollster::block_on(common::WgpuGpu::offscreen()) else {
+        eprintln!("no GPU adapter; skipped");
+        return;
+    };
+    let fresh = {
+        let network = Network::new();
+        let mut map = offscreen(&network, &style(false), pitched());
+        frames_to_load(&network, &mut map, 600);
+        at_rest(&network, &mut map).memory.tile_textures
+    };
+    assert!(fresh > 0);
+    for frames in SWINGS {
+        let network = Network::new();
+        let mut map = offscreen(&network, &style(false), pitched());
+        frames_to_load(&network, &mut map, 600);
+        swing(&network, &mut map, pitched(), frames);
+        let swung = at_rest(&network, &mut map).memory.tile_textures;
+        assert_eq!(
+            swung, fresh,
+            "tile pages at rest after swings of {frames} frames, against a fresh map's"
         );
     }
 }
