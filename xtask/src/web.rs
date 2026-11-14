@@ -239,6 +239,7 @@ fn module(
         .arg(&out))?;
     expose_instantiation(&out, name)?;
     glue::shorten_imports(&out, name)?;
+    glue::shorten_exports(&out, name)?;
     let wasm = out.join(format!("{name}_bg.wasm"));
     let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
     // A module built to say why it panics stays whole, its feature
