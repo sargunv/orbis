@@ -1740,11 +1740,8 @@ fn a_steep_view_over_terrain_shows_ground_below_the_horizon() {
         still.jump_to(&camera(at));
         let logical = size.map(|v| (f64::from(v) / scale) as u32);
         let image = still.snapshot(logical[0], logical[1], scale).unwrap();
-        // Within rounding: the CPU driver's blends differ by a unit here
-        // and there between the two.
-        let near = |(a, b): (&[u8], &[u8])| a.iter().zip(b).all(|(x, y)| x.abs_diff(*y) <= 2);
         let differ = (pixels.chunks(4).zip(image.pixels.chunks(4)))
-            .filter(|&p| !near(p))
+            .filter(|(a, b)| a != b)
             .count();
         assert!(
             differ == 0,

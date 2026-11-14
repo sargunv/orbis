@@ -116,6 +116,10 @@ pub const TERRAIN_GRID: u32 = 128;
 /// The grid steps the mesh has index ranges for: cells of 1, 2 and 4
 /// vertices a side.
 const GRID_STEPS: [u32; 3] = [1, 2, 4];
+/// The vertex stage's constants where the terrain draws its depth alone:
+/// its fragments sample no drape, so its vertices work out no footprint
+/// (`terrain.wgsl`'s `terrain_footprint`).
+const DEPTH_ALONE: &[(&str, f64)] = &[("terrain_footprint", 0.0)];
 
 /// The grid step a terrain over DEM tiles of `tile_px` logical pixels
 /// draws with: GL JS's mesh density, whose terrain tiles are twice the DEM
@@ -1305,6 +1309,7 @@ impl Terrain {
         let pipeline = Draw {
             label: "terrain depth alone",
             fragment: (&TERRAIN_SHADER, "fs_terrain_hidden"),
+            constants: [DEPTH_ALONE, &[]],
             depth: depth_test(target.depth.expect("the passes have a depth")),
             ..Draw::new(
                 &TERRAIN_SHADER,
@@ -1733,6 +1738,7 @@ impl Terrain {
         let pipeline = Draw {
             label: "terrain depth",
             fragment: (&TERRAIN_SHADER, "fs_terrain_depth"),
+            constants: [DEPTH_ALONE, &[]],
             depth: depth_test(TextureFormat::Depth32Float),
             ..Draw::new(&TERRAIN_SHADER, &[self.layout], target, None)
         }
