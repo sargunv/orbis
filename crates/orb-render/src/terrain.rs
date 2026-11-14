@@ -1356,7 +1356,7 @@ impl Terrain {
         &mut self,
         gpu: &mut dyn Gpu,
         (frame, props): (BufferId, BindGroupEntry),
-        drape: &FxHashMap<(u32, u32), Option<RenderBundleId>>,
+        drape: &FxHashMap<(u32, u32), Vec<RenderCommand>>,
         downsampler: &crate::downsample::Downsampler,
         passes: &mut Vec<Pass>,
     ) -> TerrainDrawn {
@@ -1396,12 +1396,12 @@ impl Terrain {
                 };
                 let px = PAGE_PX[page] as f32;
                 // A pass a slot's stack: its layer cleared, then the
-                // bundle of the stack's draws of the slot's content into
-                // it, the grid's drape space, which the drape frame maps
+                // stack's draws of the slot's content (or their bundle)
+                // into it, the grid's drape space, which the drape frame maps
                 // onto a viewport of its size, moved so that the slot's
                 // place lands on the layer.
                 for p in run {
-                    let Some(&bundle) = drape.get(&(p.stack, p.tile_slot)) else {
+                    let Some(draws) = drape.get(&(p.stack, p.tile_slot)) else {
                         continue;
                     };
                     let corner = layout.corner(p.tile_slot, p.stack).map(|n| -(n as f32));
@@ -1415,12 +1415,11 @@ impl Terrain {
                             load: LoadOp::Clear([0.0; 4]),
                         }],
                         depth: None,
-                        commands: match bundle {
-                            Some(bundle) => vec![
-                                RenderCommand::SetViewport(viewport),
-                                RenderCommand::ExecuteBundles(vec![bundle]),
-                            ],
-                            None => Vec::new(),
+                        commands: match draws.is_empty() {
+                            true => Vec::new(),
+                            false => std::iter::once(RenderCommand::SetViewport(viewport))
+                                .chain(draws.iter().cloned())
+                                .collect(),
                         },
                     }));
                     drawn.draws += 1;

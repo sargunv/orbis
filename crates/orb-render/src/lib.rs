@@ -2808,7 +2808,7 @@ impl Renderer {
             self.record_drape(gpu, frame, stack);
         }
         let drape = self.slot_commands(&slots);
-        let drape = self.slot_bundles(gpu, drape);
+        let drape = self.slot_draws(gpu, drape);
         let encoding = clock();
         let mut drape_passes = 0;
 
@@ -3282,7 +3282,7 @@ impl Renderer {
     fn terrain_passes(
         &mut self,
         gpu: &mut dyn Gpu,
-        drape: &FxHashMap<(u32, u32), Option<RenderBundleId>>,
+        drape: &FxHashMap<(u32, u32), Vec<RenderCommand>>,
         passes: &mut Vec<Pass>,
     ) -> terrain::TerrainDrawn {
         let terrain = self.terrain.as_mut().expect("terrain is on");
@@ -3793,19 +3793,21 @@ impl Renderer {
         by_slot
     }
 
-    /// Each redrawn slot's bundle of its commands (`by_slot`, from
-    /// [`slot_commands`](Self::slot_commands)), `None` where they draw
-    /// nothing: the one its stack's [recorded](Recorded) draws keep for
-    /// the slot while it draws the same commands, else one recorded anew.
-    /// A slot redraws whole as its tile's footprint or the drape's zoom
-    /// step changes, its content unchanged: a pass replaying a bundle
-    /// costs the CPU two calls, where issuing its draws cost one a
-    /// command, every draped node's state set again a slot.
-    fn slot_bundles(
+    /// Each redrawn slot's pass's draws (`by_slot`, from
+    /// [`slot_commands`](Self::slot_commands)): the commands themselves
+    /// the first time the slot draws them, then a bundle of them its
+    /// stack's [recorded](Recorded) draws keep for the slot while it draws
+    /// the same. A slot redraws whole as its tile's footprint or the
+    /// drape's zoom step changes, its content unchanged: a pass replaying
+    /// a bundle costs the CPU two calls, where issuing its draws cost one
+    /// a command. New content draws direct, as recording a bundle costs
+    /// what issuing the commands does and more (on a moto g, a frame's 40
+    /// slots took 54 ms recorded against 22 ms for 55 issued).
+    fn slot_draws(
         &mut self,
         gpu: &mut dyn Gpu,
         by_slot: FxHashMap<(u32, u32), Vec<RenderCommand>>,
-    ) -> FxHashMap<(u32, u32), Option<RenderBundleId>> {
+    ) -> FxHashMap<(u32, u32), Vec<RenderCommand>> {
         let Some(level) = &mut self.drape else {
             return FxHashMap::default();
         };
@@ -3815,29 +3817,29 @@ impl Renderer {
             depth_format: None,
             sample_count: 1,
         };
-        let mut bundles = FxHashMap::default();
+        let mut draws = FxHashMap::default();
         for ((stack, slot), commands) in by_slot {
             let Some(Some(recorded)) = level.recorded.get_mut(stack as usize) else {
                 continue;
             };
-            let kept = recorded.slots.get(&slot).filter(|k| k.0 == commands);
-            let bundle = match kept {
-                Some(&(_, bundle)) => Some(bundle),
+            let kept = (recorded.slots.get_mut(&slot)).filter(|k| k.0 == commands);
+            let drawn = match kept {
                 // Set once, state no draw follows is gone.
-                None if commands.is_empty() => {
-                    recorded.slots.remove(&slot).map(|(_, b)| b).release(gpu);
-                    None
+                _ if commands.is_empty() => Vec::new(),
+                Some((commands, bundle)) => {
+                    let bundle =
+                        *bundle.get_or_insert_with(|| gpu.create_render_bundle(&desc, commands));
+                    vec![RenderCommand::ExecuteBundles(vec![bundle])]
                 }
                 None => {
-                    let bundle = gpu.create_render_bundle(&desc, &commands);
-                    let old = recorded.slots.insert(slot, (commands, bundle));
-                    old.map(|(_, b)| b).release(gpu);
-                    Some(bundle)
+                    let old = recorded.slots.insert(slot, (commands.clone(), None));
+                    old.and_then(|(_, b)| b).release(gpu);
+                    commands
                 }
             };
-            bundles.insert((stack, slot), bundle);
+            draws.insert((stack, slot), drawn);
         }
-        bundles
+        draws
     }
 
     /// Indexed stream `id`'s draws of everything it holds: in segments, or
@@ -4365,14 +4367,15 @@ struct Recorded {
     /// The node groups the commands bind.
     groups: Vec<BindGroupId>,
     /// By tile slot, the commands its pass last drew and their bundle
-    /// ([`Renderer::slot_bundles`]): what they bind lives as long as
-    /// these draws.
-    slots: FxHashMap<u32, (Vec<RenderCommand>, RenderBundleId)>,
+    /// once it drew them again ([`Renderer::slot_draws`]): what they bind
+    /// lives as long as these draws.
+    slots: FxHashMap<u32, (Vec<RenderCommand>, Option<RenderBundleId>)>,
 }
 
 impl release::Release for Recorded {
     fn release(self, gpu: &mut dyn Gpu) {
-        let bundles: Vec<RenderBundleId> = self.slots.into_values().map(|(_, b)| b).collect();
+        let bundles: Vec<RenderBundleId> =
+            self.slots.into_values().filter_map(|(_, b)| b).collect();
         (self.groups, bundles).release(gpu);
     }
 }
