@@ -79,9 +79,17 @@ pub(crate) fn browser_graphemes() -> Option<Box<orb_text::HostGraphemes>> {
         .is_some()
         .then(|| -> Box<orb_text::HostGraphemes> {
             Box::new(|text: &str| {
-                let mut ends = GRAPHEMES.with(|segmenter| segment_starts(segmenter.as_ref(), text));
-                ends.retain(|&end| end > 0);
-                ends
+                GRAPHEMES.with(|segmenter| match segmenter {
+                    Some(segmenter) => {
+                        let mut ends = segment_starts(Some(segmenter), text);
+                        ends.retain(|&end| end > 0);
+                        ends
+                    }
+                    // A segmenter that wouldn't construct leaves each code
+                    // point a cluster, as no `Intl.Segmenter` does, not the
+                    // whole text one.
+                    None => text.char_indices().map(|(i, c)| i + c.len_utf8()).collect(),
+                })
             })
         })
 }
