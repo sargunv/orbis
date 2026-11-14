@@ -666,7 +666,7 @@ impl Map {
         // drape, or that finds no terrain to plan it for.
         self.drape_refused = false;
         let terrain = self.style.as_ref().is_some_and(|s| s.terrain.is_some());
-        if !terrain || !renderer.terrain_on() {
+        if !terrain || !renderer.terrain_on() || !renderer.terrain_drawable(gpu) {
             return None;
         }
         let (plan, indices, mut tiles) = self.plan_drape_on_terrain(gpu, renderer, footprint)?;

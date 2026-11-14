@@ -1530,6 +1530,23 @@ impl Renderer {
         self.terrain.as_ref().is_some_and(|t| t.paint.is_some())
     }
 
+    /// Whether the terrain can draw this frame: its pipelines and the
+    /// drape mips' compiled, those asked for here if they weren't (the
+    /// drape's first texture would, after the plan). Until then it draws
+    /// nothing, so the map plans no drape: one planned would lay out and
+    /// place the whole cover each frame for passes that drop it. A frame
+    /// that found it couldn't draws no terrain, whatever compiles before
+    /// its passes.
+    pub fn terrain_drawable(&mut self, gpu: &mut dyn Gpu) -> bool {
+        let Some(terrain) = self.terrain.as_mut() else {
+            return false;
+        };
+        self.downsampler.make(gpu);
+        let drawable = terrain.ready(gpu) && self.downsampler.ready(gpu);
+        terrain.set_drawable(drawable);
+        drawable
+    }
+
     /// Sets whether the map's views may need the full projection: it
     /// draws on a low-zoom surface (the style's globe, or a projection's
     /// low-zoom plane) at some zoom, or a source's tiles warp onto its
@@ -2810,11 +2827,13 @@ impl Renderer {
             ..FrameStats::default()
         };
         let cull_ready = self.cull_passes(gpu, &mut passes, &mut stats);
+        let mut terrain_waited = false;
         if terrain_on {
             let passing = clock();
             let drawn = self.terrain_passes(gpu, &drape, &mut passes);
             stats.draws += drawn.draws;
             stats.drape_slots = drawn.slots;
+            terrain_waited = drawn.waited;
             drape_passes = micros(passing, clock());
         }
         // Over the terrain's depth, where it draws this frame.
@@ -2858,8 +2877,11 @@ impl Renderer {
         // during the frame.
         let end = gpu.poll_pipelines();
         stats.pipelines_pending = end.pending;
-        stats.waited =
-            compiling.pending > 0 || end.pending > 0 || end.made != made || self.waiting > 0;
+        stats.waited = compiling.pending > 0
+            || end.pending > 0
+            || end.made != made
+            || self.waiting > 0
+            || terrain_waited;
         stats
     }
 

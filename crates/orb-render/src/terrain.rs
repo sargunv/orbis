@@ -519,6 +519,13 @@ pub(crate) struct Terrain {
     occlusion_size: [u32; 2],
     /// Slots to redraw this frame.
     pending: Vec<Redraw>,
+    /// Whether this frame's terrain could draw when the map planned its
+    /// drape ([`Renderer::terrain_drawable`]): where it couldn't, it draws
+    /// nothing this frame, whatever compiled since, as the plan laid no
+    /// drape out for it.
+    ///
+    /// [`Renderer::terrain_drawable`]: crate::Renderer::terrain_drawable
+    drawable: Option<bool>,
     /// The style zoom `pending` slots draw at: the drape pass's frame's.
     zoom: f64,
     /// What the last frame's drawn mip levels rendered into, released
@@ -584,6 +591,8 @@ struct Drawn {
 pub(crate) struct TerrainDrawn {
     pub(crate) draws: u32,
     pub(crate) slots: u32,
+    /// Whether the terrain drew nothing for want of what compiles.
+    pub(crate) waited: bool,
 }
 
 impl Terrain {
@@ -693,6 +702,7 @@ impl Terrain {
             occlusion_pipeline: None,
             occlusion_size: [0; 2],
             pending: Vec::new(),
+            drawable: None,
             zoom: 0.0,
             mip_targets: Default::default(),
             paint: None,
@@ -1024,6 +1034,11 @@ impl Terrain {
         Ok((index as u32, at))
     }
 
+    /// Whether this frame's terrain could draw when its drape was planned.
+    pub(crate) fn set_drawable(&mut self, drawable: bool) {
+        self.drawable = Some(drawable);
+    }
+
     /// The tile slots whose texels the textures hold.
     pub(crate) fn held_slots(&self) -> u32 {
         self.held.len() as u32
@@ -1347,7 +1362,9 @@ impl Terrain {
     ) -> TerrainDrawn {
         self.drawn = None;
         let mut drawn = TerrainDrawn::default();
-        if !self.ready(gpu) || !downsampler.ready(gpu) {
+        let planned = self.drawable.take().unwrap_or(true);
+        if !planned || !self.ready(gpu) || !downsampler.ready(gpu) {
+            drawn.waited = true;
             // The map placed this frame's drape for these slots only, which
             // hold nothing now: every slot is blank, drawn again once
             // terrain can.
