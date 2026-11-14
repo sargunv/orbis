@@ -11,8 +11,8 @@
 //! [`Tables`], so where they live is one decision, the device's: storage
 //! buffers where the vertex stage reads them, which the GPU driver's cull
 //! and the draw stages bind (`fetch.wgsl`), or data textures where it
-//! can't (WebGL 2, #140; `fetch_texture.wgsl`): the row tables packed into
-//! one, at bases a small uniform gives, and each arena in its own. The
+//! can't (WebGL 2, #140; `fetch_texture.wgsl`), each table in its own at
+//! the same binding, so a table that grows moves only its own words. The
 //! CPU driver also keeps copies of what its cull reads.
 //!
 //! Writes into the data textures wait for [`Tables::flush`], which issues
@@ -80,11 +80,6 @@ impl BlockPool {
         }
     }
 }
-
-/// The row tables, which the texture backing packs into one texture, in
-/// its order.
-#[cfg(cpu_driven)]
-const ROWS: [Table; 4] = [Table::Tiles, Table::Chunks, Table::Visible, Table::NodeCull];
 
 impl Table {
     const ALL: [Self; TABLES] = [
@@ -172,24 +167,21 @@ impl Backing {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Place {
     Buffer(BufferId),
-    /// Words of a data texture from `base`.
+    /// A data texture.
     #[cfg(cpu_driven)]
-    Texture {
-        texture: TextureId,
-        base: u32,
-    },
+    Texture(TextureId),
     /// Only the CPU reads it: the texture backing's candidates.
     #[cfg(cpu_driven)]
     Cpu,
 }
 
 impl Place {
-    /// Its entry at `binding`: its buffer, or the texture it's in.
+    /// Its entry at `binding`: its buffer or texture.
     fn entry(self, binding: u32) -> BindGroupEntry {
         match self {
             Self::Buffer(buffer) => BindGroupEntry::buffer(binding, buffer),
             #[cfg(cpu_driven)]
-            Self::Texture { texture, .. } => {
+            Self::Texture(texture) => {
                 BindGroupEntry::texture(binding, texture, TextureViewDimension::D2)
             }
             #[cfg(cpu_driven)]
@@ -197,13 +189,12 @@ impl Place {
         }
     }
 
-    /// Frees a place of its own: a buffer, or a texture no other table
-    /// shares.
+    /// Frees its buffer or texture.
     fn destroy(self, gpu: &mut dyn Gpu) {
         match self {
             Self::Buffer(buffer) => gpu.destroy_buffer(buffer),
             #[cfg(cpu_driven)]
-            Self::Texture { texture, .. } => gpu.destroy_texture(texture),
+            Self::Texture(texture) => gpu.destroy_texture(texture),
             #[cfg(cpu_driven)]
             Self::Cpu => {}
         }
@@ -221,7 +212,7 @@ impl Place {
         match self {
             Self::Buffer(buffer) => words.write_buffer(gpu, buffer, at),
             #[cfg(cpu_driven)]
-            Self::Texture { texture, base } => {
+            Self::Texture(texture) => {
                 let host;
                 let words = match words {
                     Words::Core(words) => words,
@@ -233,8 +224,8 @@ impl Place {
                     }
                 };
                 match staged {
-                    Some(staged) => staged.push(texture, base + at, words),
-                    None => write_texels(gpu, texture, base + at, words),
+                    Some(staged) => staged.push(texture, at, words),
+                    None => write_texels(gpu, texture, at, words),
                 }
             }
             #[cfg(cpu_driven)]
@@ -498,111 +489,6 @@ impl TableWriter {
     }
 }
 
-#[cfg(cpu_driven)]
-/// The texture backing's row tables: one texture, each table's rows from
-/// its base, and a uniform of the bases in words (`fetch_texture.wgsl`'s
-/// `RowBases`).
-#[derive(Debug)]
-#[cfg(cpu_driven)]
-struct RowTexture {
-    texture: TextureId,
-    /// Its rows' words ([`data_width`]).
-    width: u32,
-    /// Per table of [`ROWS`], its first row and its rows.
-    regions: [(u32, u32); 4],
-    bases: BufferId,
-}
-
-#[cfg(cpu_driven)]
-impl RowTexture {
-    fn new(gpu: &mut dyn Gpu, words: [u64; 4]) -> Self {
-        let bases = gpu.create_buffer(&BufferDesc {
-            label: "row bases",
-            size: 16,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
-        let width = data_width(&gpu.caps().limits);
-        let regions = layout(words, width);
-        let texture = data_texture(gpu, "rows", total(&regions));
-        let rows = Self {
-            texture,
-            width,
-            regions,
-            bases,
-        };
-        rows.write_bases(gpu);
-        rows
-    }
-
-    fn write_bases(&self, gpu: &mut dyn Gpu) {
-        let bases = self.regions.map(|(first, _)| first * self.width);
-        gpu.write_buffer(self.bases, 0, bytemuck::cast_slice(&bases));
-    }
-
-    fn place(&self, region: usize) -> Place {
-        Place::Texture {
-            texture: self.texture,
-            base: self.regions[region].0 * self.width,
-        }
-    }
-
-    /// Moves table `region` into `words` words, its first `keep` copied
-    /// over with every other table's rows.
-    fn resize(&mut self, gpu: &mut dyn Gpu, region: usize, words: u64, keep: u64) {
-        let mut sizes = self
-            .regions
-            .map(|(_, rows)| u64::from(rows) * u64::from(self.width));
-        sizes[region] = words;
-        let regions = layout(sizes, self.width);
-        let texture = data_texture(gpu, "rows", total(&regions));
-        let copies: Vec<TextureCopy> = (0..ROWS.len())
-            .filter_map(|r| {
-                let kept = if r == region {
-                    if keep == 0 { 0 } else { rows(keep, self.width) }
-                } else {
-                    self.regions[r].1
-                }
-                .min(regions[r].1);
-                (kept > 0).then(|| TextureCopy {
-                    from: [0, self.regions[r].0, 0],
-                    to: [0, regions[r].0, 0],
-                    size: [self.width, kept, 1],
-                })
-            })
-            .collect();
-        gpu.submit(&[Pass::CopyTexture {
-            source: self.texture,
-            destination: texture,
-            copies,
-        }]);
-        gpu.destroy_texture(std::mem::replace(&mut self.texture, texture));
-        self.regions = regions;
-        self.write_bases(gpu);
-    }
-
-    fn destroy(self, gpu: &mut dyn Gpu) {
-        gpu.destroy_texture(self.texture);
-        gpu.destroy_buffer(self.bases);
-    }
-}
-
-#[cfg(cpu_driven)]
-/// The row tables' regions, one after another, for tables of `words`
-/// in rows `width` words wide.
-fn layout(words: [u64; 4], width: u32) -> [(u32, u32); 4] {
-    let mut first = 0;
-    words.map(|w| {
-        let region = (first, rows(w, width));
-        first += region.1;
-        region
-    })
-}
-
-#[cfg(cpu_driven)]
-fn total(regions: &[(u32, u32); 4]) -> u32 {
-    regions.iter().map(|r| r.1).sum()
-}
-
 /// The scene's tables.
 #[derive(Debug)]
 pub(crate) struct Tables {
@@ -611,8 +497,6 @@ pub(crate) struct Tables {
     /// Each block's vertex and index pools, in [`BlockPool`]'s order, by
     /// block slot; `None` where a block was freed.
     blocks: Vec<Option<[Place; 2]>>,
-    #[cfg(cpu_driven)]
-    rows: Option<RowTexture>,
     #[cfg(cpu_driven)]
     mirrors: Mirrors,
     /// Writes into the data textures since the last flush.
@@ -693,8 +577,6 @@ impl Tables {
         words: [u64; TABLES],
         (mirrored, block_indices): (&[Table], bool),
     ) -> Self {
-        #[cfg(cpu_driven)]
-        let mut rows = None;
         let places = Table::ALL.map(|table| match backing {
             Backing::Storage => Place::Buffer(gpu.create_buffer(&BufferDesc {
                 label: table.label(),
@@ -702,19 +584,12 @@ impl Tables {
                 usage: table.usage(),
             })),
             #[cfg(cpu_driven)]
-            Backing::Texture => match ROWS.iter().position(|&t| t == table) {
-                Some(region) => rows
-                    .get_or_insert_with(|| RowTexture::new(gpu, ROWS.map(|t| words[t.index()])))
-                    .place(region),
-                None if table == Table::Candidates => Place::Cpu,
-                None => {
-                    let rows = self::rows(words[table.index()], data_width(&gpu.caps().limits));
-                    Place::Texture {
-                        texture: data_texture(gpu, table.label(), rows),
-                        base: 0,
-                    }
-                }
-            },
+            Backing::Texture if table == Table::Candidates => Place::Cpu,
+            #[cfg(cpu_driven)]
+            Backing::Texture => {
+                let rows = rows(words[table.index()], data_width(&gpu.caps().limits));
+                Place::Texture(data_texture(gpu, table.label(), rows))
+            }
         });
         #[cfg(cpu_driven)]
         let mut mirrors = Mirrors::default();
@@ -730,8 +605,6 @@ impl Tables {
             backing,
             places,
             blocks: Vec::new(),
-            #[cfg(cpu_driven)]
-            rows,
             #[cfg(cpu_driven)]
             mirrors,
             #[cfg(cpu_driven)]
@@ -779,10 +652,7 @@ impl Tables {
                 #[cfg(cpu_driven)]
                 Backing::Texture => {
                     let rows = rows(words[i], data_width(&gpu.caps().limits));
-                    Place::Texture {
-                        texture: data_texture(gpu, pool.label(), rows),
-                        base: 0,
-                    }
+                    Place::Texture(data_texture(gpu, pool.label(), rows))
                 }
             }
         });
@@ -832,7 +702,7 @@ impl Tables {
                 *place = Place::Buffer(buffer);
             }
             #[cfg(cpu_driven)]
-            Place::Texture { texture, .. } => {
+            Place::Texture(texture) => {
                 let width = data_width(&gpu.caps().limits);
                 let moved = data_texture(gpu, pool.label(), rows(words, width));
                 let kept = match keep {
@@ -851,10 +721,7 @@ impl Tables {
                     }]);
                 }
                 gpu.destroy_texture(texture);
-                *place = Place::Texture {
-                    texture: moved,
-                    base: 0,
-                };
+                *place = Place::Texture(moved);
             }
             #[cfg(cpu_driven)]
             Place::Cpu => {}
@@ -889,7 +756,7 @@ impl Tables {
                 }));
             }
             #[cfg(cpu_driven)]
-            (Place::Texture { texture: from, .. }, Place::Texture { texture: to, .. }) => {
+            (Place::Texture(from), Place::Texture(to)) => {
                 let width = data_width(&gpu.caps().limits);
                 passes.push(Pass::CopyTexture {
                     source: from,
@@ -1039,15 +906,7 @@ impl Tables {
                 *place = Place::Buffer(buffer);
             }
             #[cfg(cpu_driven)]
-            Place::Texture { .. } if let Some(region) = ROWS.iter().position(|&t| t == table) => {
-                let rows = self.rows.as_mut().expect("the row texture");
-                rows.resize(gpu, region, words, keep);
-                for (r, &t) in ROWS.iter().enumerate() {
-                    self.places[t.index()] = rows.place(r);
-                }
-            }
-            #[cfg(cpu_driven)]
-            Place::Texture { texture, .. } => {
+            Place::Texture(texture) => {
                 let width = data_width(&gpu.caps().limits);
                 let moved = data_texture(gpu, table.label(), rows(words, width));
                 let kept = if keep == 0 {
@@ -1067,10 +926,7 @@ impl Tables {
                     }]);
                 }
                 gpu.destroy_texture(texture);
-                *place = Place::Texture {
-                    texture: moved,
-                    base: 0,
-                };
+                *place = Place::Texture(moved);
             }
             #[cfg(cpu_driven)]
             Place::Cpu => {}
@@ -1083,27 +939,16 @@ impl Tables {
         let (vs, fs) = (ShaderStages::VERTEX, ShaderStages::FRAGMENT);
         let vf = vs | fs;
         let table = |binding, stages| DataTable::layout_entry(backing, binding, stages);
-        match backing {
-            Backing::Storage => vec![
-                table(1, vf),
-                table(2, vs),
-                table(3, vs),
-                table(4, vs),
-                table(5, vs),
-                // Extrusions' fragments read colours over the elevation.
-                table(6, vf),
-                table(7, vs),
-            ],
-            // The row tables in one texture, at the bases of a uniform.
-            #[cfg(cpu_driven)]
-            Backing::Texture => vec![
-                table(1, vf),
-                BindGroupLayoutEntry::uniform(2, vf),
-                table(4, vs),
-                table(5, vs),
-                table(6, vf),
-            ],
-        }
+        vec![
+            table(1, vf),
+            table(2, vs),
+            table(3, vs),
+            table(4, vs),
+            table(5, vs),
+            // Extrusions' fragments read colours over the elevation.
+            table(6, vf),
+            table(7, vs),
+        ]
     }
 
     /// The tables' entries in block `block`'s scene group (bindings 1 to
@@ -1113,25 +958,15 @@ impl Tables {
         let pools = self.blocks[block].expect("a block's pools");
         let [vertices, indices] =
             BlockPool::ALL.map(|pool| pools[pool as usize].entry(pool.binding()));
-        match self.backing {
-            Backing::Storage => vec![
-                entry(1, Table::Tiles),
-                entry(2, Table::Chunks),
-                entry(3, Table::Visible),
-                vertices,
-                indices,
-                entry(6, Table::Props),
-                entry(7, Table::NodeCull),
-            ],
-            #[cfg(cpu_driven)]
-            Backing::Texture => vec![
-                entry(1, Table::Tiles),
-                BindGroupEntry::buffer(2, self.rows.as_ref().expect("the row texture").bases),
-                vertices,
-                indices,
-                entry(6, Table::Props),
-            ],
-        }
+        vec![
+            entry(1, Table::Tiles),
+            entry(2, Table::Chunks),
+            entry(3, Table::Visible),
+            vertices,
+            indices,
+            entry(6, Table::Props),
+            entry(7, Table::NodeCull),
+        ]
     }
 
     /// `table`'s entry at `binding`: its buffer, or the texture it's in.
@@ -1139,25 +974,12 @@ impl Tables {
         self.places[table.index()].entry(binding)
     }
 
-    #[cfg_attr(not(cpu_driven), allow(unused_variables))]
     pub(super) fn destroy(self, gpu: &mut dyn Gpu) {
         for place in self.blocks.into_iter().flatten().flatten() {
             place.destroy(gpu);
         }
-        for (i, place) in self.places.into_iter().enumerate() {
-            match place {
-                Place::Buffer(buffer) => gpu.destroy_buffer(buffer),
-                #[cfg(cpu_driven)]
-                Place::Texture { texture, .. } if !ROWS.iter().any(|t| t.index() == i) => {
-                    gpu.destroy_texture(texture)
-                }
-                #[cfg(cpu_driven)]
-                Place::Texture { .. } | Place::Cpu => {}
-            }
-        }
-        #[cfg(cpu_driven)]
-        if let Some(rows) = self.rows {
-            rows.destroy(gpu);
+        for place in self.places {
+            place.destroy(gpu);
         }
     }
 }

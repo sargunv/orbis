@@ -1480,11 +1480,19 @@ impl Scene {
             *start = (*start).min(largest);
             *max = (*max).min(largest).max(*start);
         }
-        #[cfg(cpu_driven)]
-        if backing == Backing::Texture {
-            let limits = &gpu.caps().limits;
-            let width = tables::data_width(limits);
-            fit_row_texture(&mut capacity, limits.max_texture_dimension_2d, width);
+        // And the chunk and candidate tables: a data texture each at
+        // WebGL 2's least side holds fewer chunks than the ceiling.
+        for (start, max, words) in [
+            (&mut capacity.chunks, &mut capacity.max_chunks, CHUNK_WORDS),
+            (
+                &mut capacity.candidates,
+                &mut capacity.max_candidates,
+                CANDIDATE_WORDS.max(VISIBLE_WORDS),
+            ),
+        ] {
+            let rows = largest / words as u32;
+            *start = (*start).min(rows);
+            *max = (*max).min(rows).max(*start);
         }
         // The symbol placements read the draw arguments.
         let args_usage = driver.args_usage() | crate::symbol::read_usage(gpu.caps());
@@ -3501,37 +3509,6 @@ fn shrunk(old: u32, held: u32, first: u32) -> u32 {
     new
 }
 
-/// Lowers `capacity`'s chunk and candidate ceilings, and first sizes,
-/// until the row tables fit one data texture of `side` rows `width` words
-/// wide, the texture backing's (`tables::RowTexture`): halving whichever
-/// takes more rows. At the ceilings they take about 2,830 rows of 4096,
-/// which a device of 4096 or more holds whole; a device at WebGL 2's least
-/// side, 2048 rows of 2048, holds fewer chunks at once, and drops what
-/// doesn't fit as at any ceiling.
-#[cfg(cpu_driven)]
-fn fit_row_texture(capacity: &mut SceneCapacity, side: u32, width: u32) {
-    let c = capacity;
-    let rows = |count: u32, per: usize| tables::rows(u64::from(count) * per as u64, width);
-    let fixed = rows(c.placements, TILE_WORDS) + rows(c.nodes, NODE_CULL_WORDS);
-    loop {
-        let chunks = c.max_chunks.max(c.chunks);
-        let candidates = c.max_candidates.max(c.candidates);
-        let (chunk_rows, visible_rows) =
-            (rows(chunks, CHUNK_WORDS), rows(candidates, VISIBLE_WORDS));
-        if fixed + chunk_rows + visible_rows <= side || chunks.max(candidates) <= 1 {
-            return;
-        }
-        // The one taking more rows, of those that can still halve.
-        let (max, start, count) = if chunks > 1 && (chunk_rows >= visible_rows || candidates <= 1) {
-            (&mut c.max_chunks, &mut c.chunks, chunks)
-        } else {
-            (&mut c.max_candidates, &mut c.candidates, candidates)
-        };
-        *max = count / 2;
-        *start = (*start).min(*max);
-    }
-}
-
 /// The smallest of `old`'s doublings (from 1 when it is 0) that holds
 /// `need`, at most `max`: a capacity's next size.
 fn grown(old: u32, need: u64, max: u32) -> u32 {
@@ -3606,39 +3583,5 @@ mod tests {
             grown(u32::MAX / 2 + 1, u64::from(u32::MAX) + 1, u32::MAX),
             u32::MAX
         );
-    }
-
-    /// The row tables fit one texture at any WebGL 2 device's side, and
-    /// keep their ceilings where they already fit.
-    #[cfg(cpu_driven)]
-    #[test]
-    fn row_tables_fit_any_texture_side() {
-        use super::{
-            CHUNK_WORDS, NODE_CULL_WORDS, SceneCapacity, TILE_WORDS, VISIBLE_WORDS,
-            fit_row_texture, tables::rows,
-        };
-        let total = |c: &SceneCapacity, width: u32| {
-            let rows = |count: u32, per: usize| rows(u64::from(count) * per as u64, width);
-            rows(c.placements, TILE_WORDS)
-                + rows(c.nodes, NODE_CULL_WORDS)
-                + rows(c.max_chunks.max(c.chunks), CHUNK_WORDS)
-                + rows(c.max_candidates.max(c.candidates), VISIBLE_WORDS)
-        };
-        for start in [SceneCapacity::growable(), SceneCapacity::fixed()] {
-            for side in [4096, 8192] {
-                let mut c = start;
-                fit_row_texture(&mut c, side, 4096);
-                assert_eq!(c, start);
-            }
-            let mut c = start;
-            fit_row_texture(&mut c, 2048, 2048);
-            assert!(total(&c, 2048) <= 2048, "{} rows", total(&c, 2048));
-            assert!(c.max_chunks.max(c.chunks) >= 1 << 16);
-            assert!(c.max_candidates.max(c.candidates) >= 1 << 16);
-            // A side the fixed tables fill halves both down to one, and ends.
-            let mut c = start;
-            fit_row_texture(&mut c, 1, 2048);
-            assert!(c.max_chunks.max(c.chunks) <= 1 && c.max_candidates.max(c.candidates) <= 1);
-        }
     }
 }

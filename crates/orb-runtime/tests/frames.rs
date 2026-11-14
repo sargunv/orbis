@@ -292,19 +292,19 @@ mod tests {
         }
         let [held_at, free_at] = loaded.map(|f| f.expect("loaded"));
         assert_eq!(held_at, free_at, "frames to load, held and let go");
-        let memory = held.frame().memory.scene;
+        let whole = held.frame().memory;
+        let memory = whole.scene;
         assert!(
             memory.vertices.allocated > u64::from(small.vertex_words) * 4,
             "the view grew the pools: {memory:#?}"
         );
         // Blocks copy nothing as the view fills them: what moves as it
-        // grows (the property rows, the chunk table, the block of what
-        // draws as points) copies no more than the rows and tables hold.
-        // The CPU driver keeps the row tables in one data texture (WebGL
-        // 2 binds few textures), which a block's new node rows move
-        // whole.
+        // grows (the property rows, the chunk table, the glyph page, the
+        // block of what draws as points) copies no more than the rows,
+        // tables and glyphs hold, on either driver and either backing of
+        // the tables, whose tables move alone.
         assert!(
-            !gpu_driven() || copied <= memory.props.allocated + memory.tables,
+            copied <= memory.props.allocated + memory.tables + whole.glyph_textures,
             "{copied} bytes copied growing the scene: {memory:#?}"
         );
         crate::common::take_warnings(&mut held.map);
