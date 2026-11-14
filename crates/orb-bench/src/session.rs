@@ -1110,9 +1110,10 @@ impl SessionReport {
     fn write_fetches(&self, out: &mut String) -> std::fmt::Result {
         writeln!(
             out,
-            "| session | fetches started | aborted | completed | started after the last input |"
+            "| session | fetches started | aborted | completed | started after the last input | \
+             tiles in after the last input ms | loaded after it ms |"
         )?;
-        writeln!(out, "|{}", "---|".repeat(5))?;
+        writeln!(out, "|{}", "---|".repeat(7))?;
         for r in &self.results {
             let mut all = orb_api::FetchCounts::default();
             let mut after = 0;
@@ -1123,17 +1124,32 @@ impl SessionReport {
                     after += f.report.fetches.started;
                 }
             }
+            // The first frame after the last input with every tile the
+            // view needs in.
+            let tiles_in = (r.frames.iter())
+                .find(|f| f.t > end && f.report.tiles_loading == 0)
+                .map(|f| f.t - end);
+            let loaded = (r.frames.iter())
+                .find(|f| f.t > end && f.report.loaded)
+                .map(|f| f.t - end);
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {after} |",
-                r.name, all.started, all.aborted, all.completed
+                "| {} | {} | {} | {} | {after} | {} | {} |",
+                r.name,
+                all.started,
+                all.aborted,
+                all.completed,
+                opt_ms(tiles_in),
+                opt_ms(loaded)
             )?;
         }
         writeln!(out)?;
         writeln!(
             out,
             "Tile fetches the map's jobs started, aborted once started (the view left their \
-             tiles), and completed."
+             tiles), and completed; tiles in: from the last input to the first frame with \
+             nothing the view needs loading; loaded: to the first with its labels placed \
+             too (GL JS's `loaded()`; fades may run on)."
         )?;
         writeln!(out)
     }
