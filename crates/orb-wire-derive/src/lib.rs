@@ -74,25 +74,29 @@ pub fn derive_wire(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// that binds them, the statements that put them, and the expression that
 /// takes them, in declaration order.
 fn fields(fields: &Fields, path: TokenStream) -> (TokenStream, TokenStream, TokenStream) {
-    let skipped = |field: &syn::Field| {
-        field.attrs.iter().any(|attr| {
-            attr.path().is_ident("wire")
-                && attr
-                    .parse_nested_meta(|meta| {
-                        if meta.path.is_ident("skip") {
-                            Ok(())
-                        } else {
-                            Err(meta.error("the one `wire` attribute is `skip`"))
-                        }
-                    })
-                    .is_ok()
-        })
+    let skipped = |field: &syn::Field| -> syn::Result<bool> {
+        let mut skip = false;
+        for attr in field.attrs.iter().filter(|a| a.path().is_ident("wire")) {
+            attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("skip") {
+                    skip = true;
+                    Ok(())
+                } else {
+                    Err(meta.error("the one `wire` attribute is `skip`"))
+                }
+            })?;
+        }
+        Ok(skip)
     };
     let mut bindings = Vec::new();
     let mut puts = Vec::new();
     let mut takes = Vec::new();
     for (i, field) in fields.iter().enumerate() {
-        let skip = skipped(field);
+        // A misspelt attribute fails the build rather than sending the field.
+        let skip = skipped(field).unwrap_or_else(|e| {
+            puts.push(e.to_compile_error());
+            false
+        });
         let binding = format_ident!("field{i}");
         let take = if skip {
             quote!(::core::default::Default::default())
