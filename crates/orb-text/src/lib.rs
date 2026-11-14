@@ -33,7 +33,7 @@ pub use glyph::{
 pub use label::{
     Content, IMAGE_PADDING, Images, InlineImage, Label, Section, VerticalAlign, js_max, js_min,
 };
-pub use segment::{HostWords, WordBreaker};
+pub use segment::{HostGraphemes, HostWords, WordBreaker, set_host_graphemes};
 pub use shaping::{
     Anchor, DEFAULT_OFFSET, GlyphSource, Justify, ONE_EM, PositionedGlyph, PositionedLine,
     ShapeContext, ShapeOptions, ShapedSection, Shaping, Unjustified, WritingMode,

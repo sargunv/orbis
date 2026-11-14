@@ -1,6 +1,7 @@
 //! Grapheme clusters and word boundaries (GL JS `graphemes.ts`).
 //!
-//! Clusters come from ICU4X's grapheme segmenter, corrected as GL JS
+//! Clusters come from the host's segmenter ([`set_host_graphemes`]: the
+//! browser's `Intl.Segmenter`, as GL JS asks) or ICU4X's, corrected as GL JS
 //! corrects `Intl.Segmenter`: a cluster ending in a virama or ZWJ joins the
 //! next one, and so does one followed by a spacing mark. Word boundaries are
 //! only asked for inside scripts written without spaces, from ICU4X's
@@ -8,8 +9,7 @@
 //! host's (the browser's `Intl.Segmenter`, which GL JS asks).
 
 use std::ops::Range;
-
-use icu_segmenter::GraphemeClusterSegmenter;
+use std::sync::OnceLock;
 
 use crate::unicode;
 
@@ -22,7 +22,7 @@ pub(crate) fn graphemes(text: &str) -> Vec<Range<usize>> {
         return clusters;
     }
     let mut start = 0;
-    for end in GraphemeClusterSegmenter::new().segment_str(text).skip(1) {
+    for end in cluster_ends(text) {
         let segment = start..end;
         start = end;
         if let Some(last) = clusters.last_mut()
@@ -43,6 +43,36 @@ fn can_combine(former: &str, latter: &str) -> bool {
         .next_back()
         .is_some_and(unicode::joins_following)
         || latter.chars().next().is_some_and(unicode::is_spacing_mark)
+}
+
+/// A segmenter's extended grapheme clusters (UAX #29) in a text: the byte
+/// offset each ends at, in order.
+pub type HostGraphemes = dyn Fn(&str) -> Vec<usize> + Send + Sync;
+
+static HOST: OnceLock<Box<HostGraphemes>> = OnceLock::new();
+
+/// Takes clusters from `graphemes` in this process (or wasm instance) from
+/// now on, rather than from ICU4X's rules: the web asks the browser's
+/// `Intl.Segmenter`, which carries them anyway, and leaves the rules out of
+/// its build (`grapheme-data`). Only the first call counts. With neither,
+/// each code point is a cluster, as in GL JS without `Intl.Segmenter`.
+pub fn set_host_graphemes(graphemes: Box<HostGraphemes>) {
+    let _ = HOST.set(graphemes);
+}
+
+/// Where `text`'s extended grapheme clusters end.
+fn cluster_ends(text: &str) -> Vec<usize> {
+    if let Some(host) = HOST.get() {
+        return host(text);
+    }
+    #[cfg(any(feature = "grapheme-data", not(target_arch = "wasm32")))]
+    let ends = icu_segmenter::GraphemeClusterSegmenter::new()
+        .segment_str(text)
+        .skip(1)
+        .collect();
+    #[cfg(all(target_arch = "wasm32", not(feature = "grapheme-data")))]
+    let ends = text.char_indices().map(|(i, c)| i + c.len_utf8()).collect();
+    ends
 }
 
 /// Whether a cluster is more than one code point, and so must be drawn as a

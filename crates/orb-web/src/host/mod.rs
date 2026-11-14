@@ -36,20 +36,25 @@ impl ImageDecode for WebImageDecode {
 }
 
 thread_local! {
-    /// The browser's word segmenter, made once per context when first
-    /// asked for: making one takes 4–6 ms, which a worker's first tiles
-    /// would wait for.
-    static WORDS: Option<JsValue> = word_segmenter_class().and_then(|segmenter| {
-        let options = js_sys::Object::new();
-        Reflect::set(&options, &"granularity".into(), &"word".into()).ok()?;
-        let args = js_sys::Array::of2(&JsValue::UNDEFINED, &options);
-        Reflect::construct(&segmenter, &args).ok()
-    });
+    /// The browser's word and grapheme segmenters, each made once per
+    /// context when first asked for: making one takes 4–6 ms, which a
+    /// worker's first tiles would wait for.
+    static WORDS: Option<JsValue> = segmenter("word");
+    static GRAPHEMES: Option<JsValue> = segmenter("grapheme");
 }
 
-/// `Intl.Segmenter`, where the browser has one; GL JS makes its word
-/// segmenter as `new Intl.Segmenter(undefined, {granularity: "word"})`.
-fn word_segmenter_class() -> Option<js_sys::Function> {
+/// `new Intl.Segmenter(undefined, {granularity})`, as GL JS makes its
+/// segmenters, where the browser has one.
+fn segmenter(granularity: &str) -> Option<JsValue> {
+    let class = segmenter_class()?;
+    let options = js_sys::Object::new();
+    Reflect::set(&options, &"granularity".into(), &granularity.into()).ok()?;
+    let args = js_sys::Array::of2(&JsValue::UNDEFINED, &options);
+    Reflect::construct(&class, &args).ok()
+}
+
+/// `Intl.Segmenter`, where the browser has one.
+fn segmenter_class() -> Option<js_sys::Function> {
     let intl = Reflect::get(&js_sys::global(), &"Intl".into()).ok()?;
     Reflect::get(&intl, &"Segmenter".into())
         .ok()?
@@ -60,16 +65,30 @@ fn word_segmenter_class() -> Option<js_sys::Function> {
 /// Words in scripts written without spaces, from the browser's
 /// `Intl.Segmenter` (as GL JS takes them), where it has one.
 pub(crate) fn browser_words() -> Option<orb_text::WordBreaker> {
-    word_segmenter_class().is_some().then(|| {
+    segmenter_class().is_some().then(|| {
         orb_text::WordBreaker::from_host(Box::new(|text: &str| {
-            WORDS.with(|segmenter| word_starts(segmenter.as_ref(), text))
+            WORDS.with(|segmenter| segment_starts(segmenter.as_ref(), text))
         }))
     })
 }
 
-/// The byte offsets at which `segmenter`'s words in `text` start, and
+/// Grapheme clusters from the browser's `Intl.Segmenter`, where it has
+/// one, as GL JS takes them: core.wasm leaves ICU4X's rules out.
+pub(crate) fn browser_graphemes() -> Option<Box<orb_text::HostGraphemes>> {
+    segmenter_class()
+        .is_some()
+        .then(|| -> Box<orb_text::HostGraphemes> {
+            Box::new(|text: &str| {
+                let mut ends = GRAPHEMES.with(|segmenter| segment_starts(segmenter.as_ref(), text));
+                ends.retain(|&end| end > 0);
+                ends
+            })
+        })
+}
+
+/// The byte offsets at which `segmenter`'s segments of `text` start, and
 /// the text's end.
-fn word_starts(segmenter: Option<&JsValue>, text: &str) -> Vec<usize> {
+fn segment_starts(segmenter: Option<&JsValue>, text: &str) -> Vec<usize> {
     let mut starts = Vec::new();
     // The segments' UTF-16 indices, in order.
     let mut indices = Vec::new();

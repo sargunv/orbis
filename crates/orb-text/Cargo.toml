@@ -7,10 +7,18 @@ publish.workspace = true
 version.workspace = true
 
 [features]
-default = ["sea-dictionaries"]
+default = ["sea-dictionaries", "grapheme-data"]
 # ICU4X's Thai, Lao, Khmer and Burmese dictionaries (≈1 MB), compiled in.
 # The web asks the browser's `Intl.Segmenter` instead.
-sea-dictionaries = ["dep:icu_provider", "icu_provider/sync"]
+sea-dictionaries = [
+  "dep:icu_provider",
+  "icu_provider/sync",
+  "dep:icu_segmenter",
+]
+# ICU4X's grapheme cluster rules in a web build, which otherwise asks the
+# browser's `Intl.Segmenter` (`set_host_graphemes`). Native builds always
+# compile them in.
+grapheme-data = ["dep:icu_segmenter"]
 # Glyphs from font bytes: HarfRust shaping, skrifa outlines, coverage
 # (`font`). Native hosts link it; the web loads it as `shaper.wasm`.
 fonts = ["dep:harfrust", "dep:skrifa", "dep:wuff", "dep:zeno"]
@@ -22,7 +30,7 @@ harfrust = { version = "0.15.0", default-features = false, features = [
   "std",
 ], optional = true }
 icu_provider = { version = "2.4.0", default-features = false, optional = true }
-icu_segmenter = { version = "2.4.0", default-features = false, features = [
+icu_segmenter = { version = "2.4.0", default-features = false, optional = true, features = [
   "compiled_data",
 ] }
 skrifa = { version = "0.49.0", default-features = false, features = [
@@ -35,6 +43,11 @@ zeno = { version = "0.3.3", default-features = false, features = [
 wuff = { version = "0.2.9", optional = true }
 unicode-bidi = { version = "0.3.18", default-features = false, features = [
   "hardcoded-data",
+] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+icu_segmenter = { version = "2.4.0", default-features = false, features = [
+  "compiled_data",
 ] }
 
 [dev-dependencies]
