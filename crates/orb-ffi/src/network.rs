@@ -87,10 +87,12 @@ pub unsafe extern "C" fn mln_network_set_status(
     }
 }
 
-/// HTTPS verifies servers with Android's trust store once it has the app's
-/// JVM and `Context` (its Kotlin half, `org.rustls:rustls-platform-verifier`,
-/// in the app); before, it trusts Mozilla's roots. Elsewhere there is
-/// nothing to give.
+/// Gives fetching the app's JVM and `Context` (`orb_host_native::android::init`):
+/// HTTPS then verifies servers with Android's verifier (its Kotlin half,
+/// `org.rustls:rustls-platform-verifier`, in the app; before, or without
+/// it, the system store's certificate files), plain HTTP follows the app's
+/// network security config, and `file:///android_asset/` URLs read the
+/// app's assets. Elsewhere there is nothing to give.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_android_init(
     jni_env: *mut std::ffi::c_void,

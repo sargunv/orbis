@@ -3,7 +3,9 @@
 //! ureq alone tries each address in turn, waiting out the first.
 //! HTTPS runs over rustls with ring and verifies servers as the platform
 //! does (rustls-platform-verifier): its trust store, enterprise and user
-//! roots, and revocation, rather than a copy of Mozilla's roots.
+//! roots, and revocation, rather than a copy of Mozilla's roots. On
+//! Android plain HTTP follows the app's network security config
+//! (`cleartext_refusal`).
 
 use std::net::SocketAddr;
 use std::sync::{Arc, mpsc};
@@ -54,6 +56,50 @@ fn agent_with(
         })
         .chain(RustlsConnector::default());
     ureq::Agent::with_parts(config, connector, resolver)
+}
+
+/// The error of plain HTTP to `url` that `permitted` refuses for its host
+/// (Android's network security config), worded as Android's own clients
+/// word it, or `None` when it may go; HTTPS isn't asked about.
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn cleartext_refusal(
+    url: &str,
+    permitted: impl FnOnce(&str) -> bool,
+) -> Option<orb_host::FetchError> {
+    let uri = url.parse::<ureq::http::Uri>().ok()?;
+    if !uri.scheme_str()?.eq_ignore_ascii_case("http") {
+        return None;
+    }
+    let host = uri.host()?;
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    // The app's policy, which no retry changes.
+    (!permitted(host)).then(|| {
+        orb_host::FetchError::UnsupportedUrl(format!(
+            "Cleartext HTTP traffic to {host} not permitted"
+        ))
+    })
+}
+
+/// The PEM certificates in the first of `dirs` holding any (Android's
+/// system store, one file a certificate), or none.
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn certificates_in(dirs: &[&std::path::Path]) -> RootCerts {
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        let certificates: Vec<_> = entries
+            .filter_map(|entry| std::fs::read(entry.ok()?.path()).ok())
+            .filter_map(|pem| ureq::tls::Certificate::from_pem(&pem).ok())
+            .collect();
+        if !certificates.is_empty() {
+            return RootCerts::new_with_certs(&certificates);
+        }
+    }
+    RootCerts::new_with_certs(&[])
 }
 
 /// The TCP step: the addresses alternate between the families, starting
@@ -249,5 +295,71 @@ mod tests {
             "{took:?}"
         );
         thread.join().unwrap();
+    }
+
+    #[test]
+    fn plain_http_to_a_refused_host_fails_naming_the_host() {
+        let refuse = |expected: &'static str| {
+            move |host: &str| {
+                assert_eq!(host, expected);
+                false
+            }
+        };
+        let refusal = cleartext_refusal("http://localhost:8080/style.json", refuse("localhost"));
+        assert_eq!(
+            refusal.map(|e| e.to_string()).as_deref(),
+            Some("unsupported URL: Cleartext HTTP traffic to localhost not permitted")
+        );
+        assert!(cleartext_refusal("HTTP://Tiles.Example/a", refuse("Tiles.Example")).is_some());
+        assert!(cleartext_refusal("http://[::1]:80/a", refuse("::1")).is_some());
+        assert!(cleartext_refusal("http://localhost/a", |_| true).is_none());
+        let unasked = |_: &str| -> bool { panic!("HTTPS isn't cleartext") };
+        assert!(cleartext_refusal("https://localhost/a", unasked).is_none());
+    }
+
+    /// A self-signed certificate, followed by text as in Android's store
+    /// files.
+    const CERTIFICATE: &str = "-----BEGIN CERTIFICATE-----
+MIICEDCCAbYCCQDTvof//xWPnzAKBggqhkjOPQQDAjAVMRMwEQYDVQQDDApvcmJp
+cy10ZXN0MCAXDTI2MTExNDAxMjAwM1oYDzIxMjYxMDIxMDEyMDAzWjAVMRMwEQYD
+VQQDDApvcmJpcy10ZXN0MIIBSzCCAQMGByqGSM49AgEwgfcCAQEwLAYHKoZIzj0B
+AQIhAP////8AAAABAAAAAAAAAAAAAAAA////////////////MFsEIP////8AAAAB
+AAAAAAAAAAAAAAAA///////////////8BCBaxjXYqjqT57PrvVV2mIa8ZR0GsMxT
+sPY7zjw+J9JgSwMVAMSdNgiG5wSTamZ44ROdJreBn36QBEEEaxfR8uEsQkf4vObl
+Y6RA8ncDfYEt6zOg9KE5RdiYwpZP40Li/hp/m47n60p8D54WK84zV2sxXs7LtkBo
+N79R9QIhAP////8AAAAA//////////+85vqtpxeehPO5ysL8YyVRAgEBA0IABCTX
+yc6DNcPJ/p6butNmm+cRjkv66jB5EbvNmRZ3b2tnlfQUDpYGJoJG8RaTbkYZbVrN
+uDY4FWOPlHkcLFr6oWwwCgYIKoZIzj0EAwIDSAAwRQIhAIgWGiUzQNlgO5sBtv+s
+N5qHX+fDwKwdRd+tsAM5O4PyAiAugj7ZoNxvLc1kA7AIMgWou5CUqMdjfSoUaf+E
+oloFuA==
+-----END CERTIFICATE-----
+Certificate:
+    Data:
+        Version: 1 (0x0)
+";
+
+    #[test]
+    fn certificates_come_from_the_first_store_that_has_any() {
+        let count = |roots: RootCerts| match roots {
+            RootCerts::Specific(certificates) => certificates.len(),
+            _ => panic!("not specific certificates"),
+        };
+        let scratch = crate::Scratch::new("stores");
+        let [missing, empty, store, later] =
+            ["missing", "empty", "store", "later"].map(|name| scratch.join(name));
+        for dir in [&empty, &store, &later] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(store.join("0a1b2c3d.0"), CERTIFICATE).unwrap();
+        std::fs::write(store.join("README"), "not a certificate").unwrap();
+        std::fs::write(later.join("0a1b2c3d.0"), CERTIFICATE).unwrap();
+        std::fs::write(later.join("0a1b2c3d.1"), CERTIFICATE).unwrap();
+        assert_eq!(
+            count(certificates_in(&[&missing, &empty, &store, &later])),
+            1
+        );
+        assert_eq!(count(certificates_in(&[&later, &store])), 2);
+        // Without any, nothing is trusted.
+        assert_eq!(count(certificates_in(&[&empty, &missing])), 0);
     }
 }

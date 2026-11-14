@@ -1,6 +1,6 @@
 //! The entry point from android-activity's `NativeActivity` glue.
 //! `cargo xtask android` packages the library with the web demo's data as
-//! assets, which this unpacks once a build.
+//! assets, which maps read in place (`file:///android_asset/`).
 //!
 //! Intent extras stand in for arguments: `--es style tokyo` draws the
 //! committed Tokyo extract instead of live OpenFreeMap Liberty over Tokyo
@@ -14,8 +14,6 @@
 //! under the tag `Orbis`.
 
 use std::ffi::CString;
-use std::io::Read;
-use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -33,10 +31,6 @@ use crate::{Options, Wake};
 /// Live Liberty over Tokyo Station.
 const LIBERTY: &str = "https://tiles.openfreemap.org/styles/liberty";
 const TOKYO: (f64, f64, f64) = (139.767, 35.681, 13.0);
-
-/// The asset listing the packaged data's files, one path a line, under a
-/// first line that changes with every build (`cargo xtask android`).
-const INDEX: &str = "orbis-files.txt";
 
 /// The running activity.
 static APP: OnceLock<AndroidApp> = OnceLock::new();
@@ -63,16 +57,17 @@ fn android_main(app: AndroidApp) {
     let started = Instant::now();
     std::panic::set_hook(Box::new(|info| log(&format!("panic: {info}"))));
     let _ = APP.set(app.clone());
-    // HTTPS verifies servers with Android's trust store from here on.
-    let https = with_activity(&app, |env, activity| {
+    // HTTPS verifies servers with Android's trust store from here on, and
+    // `file:///android_asset/` reads the app's assets.
+    let init = with_activity(&app, |env, activity| {
         // SAFETY: the thread's env and a live reference to the activity.
         let init = unsafe { orb_api::init_android(env.get_raw().cast(), activity.as_raw().cast()) };
         Ok(init)
     });
-    match https {
+    match init {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => log(&format!("HTTPS keeps Mozilla's roots: {e}")),
-        Err(e) => log(&format!("HTTPS keeps Mozilla's roots: {e}")),
+        Ok(Err(e)) => log(&format!("android init: {e}")),
+        Err(e) => log(&format!("android init: {e}")),
     }
     let extras = match extras(&app) {
         Ok(extras) => extras,
@@ -90,14 +85,7 @@ fn android_main(app: AndroidApp) {
     let files = app
         .internal_data_path()
         .expect("the activity has a files directory");
-    let data = match unpack(&app, &files) {
-        Ok(data) => data,
-        Err(e) => {
-            log(&format!("unpacking the demo data: {e}"));
-            return;
-        }
-    };
-    let tokyo = format!("file://{}", data.join("tokyo-mvt.json").display());
+    let tokyo = "file:///android_asset/tokyo-mvt.json".to_owned();
     let mut at = match extras.at.as_deref().map(parse_at).transpose() {
         Ok(at) => at,
         Err(e) => {
@@ -287,49 +275,4 @@ fn extras(app: &AndroidApp) -> jni::errors::Result<Extras> {
             leakcheck,
         })
     })
-}
-
-/// Copies the packaged data to `files/data-<build>` once per build, since
-/// the runtime reads files (PMTiles by range) and assets aren't files.
-/// Returns that directory.
-fn unpack(app: &AndroidApp, files: &Path) -> Result<PathBuf, String> {
-    let assets = app.asset_manager();
-    let read = |path: &str| -> Result<Vec<u8>, String> {
-        let name = CString::new(path).map_err(|e| e.to_string())?;
-        let mut asset = assets
-            .open(&name)
-            .ok_or_else(|| format!("no asset {path}"))?;
-        let mut bytes = Vec::new();
-        asset
-            .read_to_end(&mut bytes)
-            .map_err(|e| format!("{path}: {e}"))?;
-        Ok(bytes)
-    };
-    let index = String::from_utf8(read(INDEX)?).map_err(|e| e.to_string())?;
-    let mut lines = index.lines();
-    let build = lines.next().ok_or("an empty asset index")?;
-    let out = files.join(format!("data-{build}"));
-    if out.is_dir() {
-        return Ok(out);
-    }
-    // Earlier builds' data goes.
-    for entry in std::fs::read_dir(files)
-        .map_err(|e| e.to_string())?
-        .flatten()
-    {
-        if entry.file_name().to_string_lossy().starts_with("data-") {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
-    let partial = files.join("unpacking");
-    let _ = std::fs::remove_dir_all(&partial);
-    for path in lines {
-        let to = partial.join(path);
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        std::fs::write(&to, read(path)?).map_err(|e| format!("{}: {e}", to.display()))?;
-    }
-    std::fs::rename(&partial, &out).map_err(|e| e.to_string())?;
-    Ok(out)
 }

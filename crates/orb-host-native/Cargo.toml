@@ -24,11 +24,15 @@ ureq = { workspace = true, features = [
 ] }
 
 # On Android the verifier calls the app's JVM, which the app hands in
-# (`android::init`); until then HTTPS trusts Mozilla's roots.
+# (`android::init`), as do the network security config and the app's
+# assets (ndk's asset manager); until then HTTPS trusts the system store's
+# certificate files.
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22.4"
+log.workspace = true
+ndk = { version = "0.9.0", default-features = false }
+ndk-sys = "0.6.0"
 rustls-platform-verifier = "0.7.1"
-ureq = { workspace = true, features = ["rustls-webpki-roots"] }
 
 [lints]
 workspace = true

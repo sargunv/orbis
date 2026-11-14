@@ -21,9 +21,9 @@ android {
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
     }
   }
-  // The web demo's Tokyo extract, styles, glyphs and sprites, and the
-  // index of them that `cargo xtask android` writes.
-  sourceSets["main"].assets.srcDirs("../../../web/demo/data", "build/generated/assets")
+  // The web demo's Tokyo extract, styles, glyphs and sprites, which the
+  // app reads in place as file:///android_asset/ URLs.
+  sourceSets["main"].assets.srcDirs("../../../web/demo/data")
   androidResources {
     // PMTiles are read by range: keep them uncompressed in the APK.
     noCompress += "pmtiles"

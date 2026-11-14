@@ -32,9 +32,10 @@ pub struct NativeFetch {
     /// HTTPS verifying servers as the platform does.
     agent: ureq::Agent,
     /// On Android until [`android::init`] gives the verifier the app's
-    /// JVM: HTTPS trusting Mozilla's roots.
+    /// JVM: HTTPS trusting the system store's certificates, read with the
+    /// first request that needs them.
     #[cfg(target_os = "android")]
-    roots: ureq::Agent,
+    roots: std::sync::OnceLock<ureq::Agent>,
     pool: Arc<ThreadPool>,
     cache: Option<Arc<HttpCache>>,
     transform: std::sync::RwLock<Option<Arc<RequestTransform>>>,
@@ -89,7 +90,7 @@ impl NativeFetch {
             // Every thread's connection stays open for the next request.
             agent: connect::agent(FETCH_THREADS, RootCerts::PlatformVerifier),
             #[cfg(target_os = "android")]
-            roots: connect::agent(FETCH_THREADS, RootCerts::WebPki),
+            roots: std::sync::OnceLock::new(),
             pool: Arc::new(ThreadPool::new("fetch", FETCH_THREADS)),
             cache,
             transform: Default::default(),
@@ -126,7 +127,9 @@ impl NativeFetch {
     fn agent(&self) -> &ureq::Agent {
         #[cfg(target_os = "android")]
         if !android::ready() {
-            return &self.roots;
+            return self
+                .roots
+                .get_or_init(|| connect::agent(FETCH_THREADS, android::system_roots()));
         }
         &self.agent
     }
@@ -286,13 +289,32 @@ fn percent_decode(text: &str) -> std::borrow::Cow<'_, [u8]> {
 
 /// Reads a `file://` URL's path (what follows `file://`), `range` of it
 /// when given, on the caller's thread: what [`NativeFetch`] does with such
-/// a URL on its I/O threads.
+/// a URL on its I/O threads. On Android a query or fragment ends the path,
+/// and `/android_asset/` names the app's assets once [`android::init`]
+/// gave their manager.
 pub fn read_file(url_path: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, FetchError> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut file = std::fs::File::open(file_path(url_path)).map_err(|e| match e.kind() {
+    #[cfg(target_os = "android")]
+    let url_path = url_path.split(['?', '#']).next().unwrap_or_default();
+    let path = file_path(url_path);
+    #[cfg(target_os = "android")]
+    if let Some(read) = android::asset_name(&path).and_then(|name| android::read_asset(name, range))
+    {
+        return read;
+    }
+    let file = std::fs::File::open(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => FetchError::NotFound,
         _ => FetchError::Network(e.to_string()),
     })?;
+    read_from(file, range)
+}
+
+/// `range` of what `file` reads when given, else all of it up to
+/// [`MAX_BODY`].
+fn read_from(
+    mut file: impl std::io::Read + std::io::Seek,
+    range: Option<(u64, u64)>,
+) -> Result<Vec<u8>, FetchError> {
+    use std::io::{Read, SeekFrom};
     let mut bytes = Vec::new();
     let limit = if let Some((offset, length)) = range {
         orb_host::range_end(offset, length)?;
@@ -323,7 +345,9 @@ const MAX_REDIRECTS: usize = 10;
 /// A request carrying the host's headers follows its redirects itself and
 /// drops those headers once a redirect leaves the URL's origin: ureq strips
 /// only `Authorization` and `Cookie`, so a key in a header of the host's
-/// own (`X-Api-Key`) would reach whatever origin a redirect names.
+/// own (`X-Api-Key`) would reach whatever origin a redirect names. On
+/// Android every request does, since the app's network security config
+/// decides for each URL of a redirect chain whether plain HTTP may go.
 fn http(
     agent: &ureq::Agent,
     req: &Request,
@@ -331,11 +355,15 @@ fn http(
     validators: Option<(Option<&str>, Option<&str>)>,
     abort: &Abort,
 ) -> Result<Response, FetchError> {
-    let manual = !req.headers.is_empty();
+    let manual = !req.headers.is_empty() || cfg!(target_os = "android");
     let mut url = encode_url(&req.url).into_owned();
     let mut headers = req.headers.as_slice();
     let mut redirects = 0;
     let mut response = loop {
+        #[cfg(target_os = "android")]
+        if let Some(refusal) = android::cleartext_refusal(&url) {
+            return Err(refusal);
+        }
         let mut request = agent.get(&url);
         if manual {
             request = request.config().max_redirects(0).build();

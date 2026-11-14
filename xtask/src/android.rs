@@ -20,12 +20,6 @@ const TARGET: &str = "aarch64-linux-android";
 const ABI: &str = "arm64-v8a";
 const API: u32 = 24;
 const PROJECT: &str = "hosts/android";
-/// The web demo's data, packaged as the app's assets.
-const DATA: &str = "web/demo/data";
-/// The asset listing the data's files for the app to unpack (NDK asset
-/// directories don't list subdirectories): `orb-android`'s `src/android.rs`
-/// reads it.
-const INDEX: &str = "orbis-files.txt";
 
 pub(crate) fn run(args: &[String]) -> Result<(), String> {
     let (install_app, leakcheck) = match args {
@@ -81,10 +75,6 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         so_size as f64 / 1e6
     );
 
-    write_index(
-        &root.join(DATA),
-        &project.join("app/build/generated/assets"),
-    )?;
     let verifier = format!(
         "-PrustlsPlatformVerifier={}",
         locked_version(&root, "rustls-platform-verifier-android")?
@@ -121,36 +111,6 @@ fn locked_version(root: &Path, package: &str) -> Result<String, String> {
         .and_then(|v| v.strip_suffix('"'))
         .map(str::to_string)
         .ok_or_else(|| format!("android: Cargo.lock pins no {package}"))
-}
-
-/// Writes the asset index into `out`: a line naming this build, so the app
-/// unpacks each build's data once, then every file under `data`.
-fn write_index(data: &Path, out: &Path) -> Result<(), String> {
-    fn walk(dir: &Path, prefix: &str, files: &mut Vec<String>) -> Result<(), String> {
-        let mut entries: Vec<_> = std::fs::read_dir(dir)
-            .map_err(|e| format!("{}: {e}", dir.display()))?
-            .filter_map(Result::ok)
-            .collect();
-        entries.sort_by_key(|e| e.file_name());
-        for entry in entries {
-            let name = format!("{prefix}{}", entry.file_name().to_string_lossy());
-            if entry.path().is_dir() {
-                walk(&entry.path(), &format!("{name}/"), files)?;
-            } else {
-                files.push(name);
-            }
-        }
-        Ok(())
-    }
-    let mut files = Vec::new();
-    walk(data, "", &mut files)?;
-    let build = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_millis();
-    std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
-    let index = format!("{build}\n{}\n", files.join("\n"));
-    std::fs::write(out.join(INDEX), index).map_err(|e| e.to_string())
 }
 
 /// The 32-bit Android ABIs (armeabi-v7a, x86) as Rust targets, each with
