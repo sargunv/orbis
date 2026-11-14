@@ -770,7 +770,7 @@ impl Scene {
         let in_order: Vec<(u32, Range<u32>)> = (laid_runs.into_iter())
             .map(|(_, block, words)| (block, words))
             .collect();
-        let segments = segments_in_order(&in_order);
+        let segments = segments_in_order(&in_order, &places(&in_order));
         (held.len() > 1 || segments.len() > 1).then_some(segments)
     }
 
@@ -792,7 +792,8 @@ impl Scene {
             return None;
         }
         // Each run's slot and place in the order (its tile's, then its
-        // mesh's), its block and its compacted words.
+        // mesh's), its block and its compacted words. A run of no slot
+        // draws in none, but holds slots of the row all the same.
         let mut laid_runs = Vec::new();
         let mut runs = Vec::new();
         for block in self.blocks() {
@@ -803,22 +804,32 @@ impl Scene {
             let kept = laid.runs.as_ref()?;
             self.node_runs(row, &mut runs);
             for run in &runs {
-                let (Some(slot), Some(laid_run)) = (run.drape_slot, kept.get(&run.key)) else {
+                let Some(laid_run) = kept.get(&run.key) else {
                     continue;
                 };
                 let words = laid_run.words.clone();
                 let base = laid.word_base;
-                let order = (slot, run.rank, run.key.0);
+                let order = (run.drape_slot, run.rank, run.key.0);
                 laid_runs.push((order, (block, base + words.start..base + words.end)));
             }
         }
         // Stable: a mesh's runs in their order in its block.
         laid_runs.sort_by_key(|r| r.0);
+        // Where each lies among all the row's runs in its block: two of a
+        // slot draw as one stretch only where no other slot's lies between
+        // them, which would draw in this slot's pass too.
+        let all: Vec<(u32, Range<u32>)> = laid_runs.iter().map(|(_, run)| run.clone()).collect();
+        let place = places(&all);
         let mut slots = FxHashMap::default();
+        let mut at = 0;
         for in_slot in laid_runs.chunk_by(|a, b| a.0.0 == b.0.0) {
-            let in_order: Vec<(u32, Range<u32>)> =
-                in_slot.iter().map(|(_, run)| run.clone()).collect();
-            slots.insert(in_slot[0].0.0, segments_in_order(&in_order));
+            let (from, to) = (at, at + in_slot.len());
+            at = to;
+            let Some(slot) = in_slot[0].0.0 else {
+                continue;
+            };
+            let segments = segments_in_order(&all[from..to], &place[from..to]);
+            slots.insert(slot, segments);
         }
         Some(slots)
     }
@@ -1470,18 +1481,23 @@ impl NodePlan {
     }
 }
 
-/// The segments that draw `runs`, each a block and its compacted words, in
-/// the order given: runs that follow one another both in it and in their
-/// block's slots draw as one stretch, as what lies between them there is
-/// holes, which hold hidden indices.
-fn segments_in_order(runs: &[(u32, Range<u32>)]) -> Vec<Segment> {
-    // Each run's place in its block's slots.
+/// Each of `runs`' place among them in their blocks' slots.
+fn places(runs: &[(u32, Range<u32>)]) -> Vec<usize> {
     let mut by_slot: Vec<usize> = (0..runs.len()).collect();
     by_slot.sort_unstable_by_key(|&i| (runs[i].0, runs[i].1.start));
     let mut place = vec![0; runs.len()];
     for (p, &i) in by_slot.iter().enumerate() {
         place[i] = p;
     }
+    place
+}
+
+/// The segments that draw `runs`, each a block and its compacted words, in
+/// the order given, `place` each one's place among its row's runs in their
+/// blocks' slots ([`places`]): runs that follow one another both in the
+/// order and there draw as one stretch, as what lies between them in
+/// their block is holes, which hold hidden indices.
+fn segments_in_order(runs: &[(u32, Range<u32>)], place: &[usize]) -> Vec<Segment> {
     let mut segments: Vec<Segment> = Vec::new();
     for (i, (block, words)) in runs.iter().enumerate() {
         match segments.last_mut() {
@@ -1704,16 +1720,30 @@ mod tests {
             compacted_words: 1 << 20,
             candidates: 1 << 20,
         };
-        let drawn = |in_order: &[(u32, Range<u32>)]| {
-            let runs: Vec<(u32, u32)> = (in_order.iter())
+        let words = |runs: &[(u32, Range<u32>)]| -> Vec<(u32, u32)> {
+            (runs.iter())
                 .flat_map(|(block, words)| words.clone().map(|w| (*block, w)))
-                .collect();
-            let drawn: Vec<(u32, u32)> = (segments_in_order(in_order).iter())
-                .flat_map(|s| s.indices.clone().map(|w| (s.block, w)))
-                .filter(|w| runs.contains(w))
-                .collect();
-            assert_eq!(drawn, runs, "{in_order:?}");
+                .collect()
         };
+        // Those of a row's runs (in order) that `keep` keeps, as a drape
+        // slot's: their words in order, and besides them only holes, none
+        // of another run's. Returns how many stretches draw them.
+        let drawn_of = |row: &[(u32, Range<u32>)], keep: &dyn Fn(usize) -> bool| {
+            let (kept, place): (Vec<_>, Vec<_>) = (row.iter().cloned().zip(places(row)))
+                .enumerate()
+                .filter(|&(i, _)| keep(i))
+                .map(|(_, run)| run)
+                .unzip();
+            let segments = segments_in_order(&kept, &place);
+            let any = words(row);
+            let drawn: Vec<(u32, u32)> = (segments.iter())
+                .flat_map(|s| s.indices.clone().map(|w| (s.block, w)))
+                .filter(|w| any.contains(w))
+                .collect();
+            assert_eq!(drawn, words(&kept), "{row:?}");
+            segments.len()
+        };
+        let drawn = |in_order: &[(u32, Range<u32>)]| drawn_of(in_order, &|_| true);
         // A row changed in place: the run that came has no room in its
         // place in the order and takes slots past the others.
         let runs = [run(1, 2), run(2, 2), run(3, 2), run(4, 2)];
@@ -1723,8 +1753,7 @@ mod tests {
         assert!(node.lay_out_changes(&more, &limits, &mut Writes::default(), true));
         assert!(!node.tidy);
         let in_order: Vec<_> = (more.iter()).map(|r| (0, slots(&node, r.key.0))).collect();
-        drawn(&in_order);
-        assert_eq!(segments_in_order(&in_order).len(), 3);
+        assert_eq!(drawn(&in_order), 3);
         // A hole where a run went draws as hidden indices, in one stretch.
         let mut holed = laid(&runs, &limits);
         let fewer = [run(1, 2), run(3, 2), run(4, 2)];
@@ -1732,14 +1761,20 @@ mod tests {
         let in_order: Vec<_> = (fewer.iter())
             .map(|r| (0, slots(&holed, r.key.0)))
             .collect();
-        drawn(&in_order);
-        assert_eq!(segments_in_order(&in_order).len(), 1);
+        assert_eq!(drawn(&in_order), 1);
         // Tiles in two blocks, in turn.
         drawn(&[(0, 0..6), (1, 0..6), (0, 6..12), (1, 6..9)]);
         // A block's runs whose slots run backwards.
         drawn(&[(1, 6..9), (0, 0..6), (1, 0..6)]);
         // A row out of order beside another block's.
         drawn(&[(0, 0..6), (0, 12..18), (1, 0..6), (0, 6..12)]);
+        // Meshes each placed in two drape slots, whose runs take turns in
+        // the row: a slot draws its own alone, a stretch each.
+        let row = [(0, 0..6), (0, 6..12), (0, 12..18), (0, 18..24)];
+        assert_eq!(drawn_of(&row, &|i| i % 2 == 0), 2);
+        assert_eq!(drawn_of(&row, &|i| i % 2 == 1), 2);
+        // A slot's runs side by side still draw as one.
+        assert_eq!(drawn_of(&row[..3], &|i| i < 2), 1);
     }
 
     #[test]
