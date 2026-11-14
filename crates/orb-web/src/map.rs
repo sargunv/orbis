@@ -137,6 +137,14 @@ pub struct FrameStats {
     /// missing or failed).
     #[wasm_bindgen(readonly, js_name = tilesArrived)]
     pub tiles_arrived: u32,
+    /// Tile fetches started, aborted once started and completed since the
+    /// last frame.
+    #[wasm_bindgen(readonly, js_name = fetchesStarted)]
+    pub fetches_started: u32,
+    #[wasm_bindgen(readonly, js_name = fetchesAborted)]
+    pub fetches_aborted: u32,
+    #[wasm_bindgen(readonly, js_name = fetchesCompleted)]
+    pub fetches_completed: u32,
     #[wasm_bindgen(readonly, js_name = paintsWritten)]
     pub paints_written: u32,
     #[wasm_bindgen(readonly, js_name = uploadedFromWasm)]
@@ -1292,6 +1300,9 @@ impl OrbisMap {
             placements_written: report.frame.placements_written,
             times: FrameTimes::from(&report.times),
             tiles_arrived: report.tiles_arrived,
+            fetches_started: report.fetches.started as u32,
+            fetches_aborted: report.fetches.aborted as u32,
+            fetches_completed: report.fetches.completed as u32,
             paints_written: report.frame.paints_written,
             uploaded_from_wasm: uploaded.buffer_bytes_from_core as f64,
             uploaded_from_js: uploaded.buffer_bytes_from_host as f64,

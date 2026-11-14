@@ -15,6 +15,12 @@
 //! own. A suspect lost again is quarantined: it loads as missing, so its
 //! ancestor stands in, rather than take down a worker each time it is
 //! loaded.
+//!
+//! Tile loads take turns across the workers ([`Turns`], [`FETCHES`] at
+//! once): a load goes to its worker in its turn, which passes on once
+//! the worker says its fetch ended ([`JobReply::Fetched`]), so the
+//! map's order, which it sets again each frame, holds across them all and
+//! the browser's network queue stays short.
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::collections::VecDeque;
@@ -24,8 +30,8 @@ use orb_crs::TileIndex;
 use orb_host::Fetch;
 use orb_runtime::wire;
 use orb_runtime::{
-    GlyphRaster, JobReply, JobRequest, Jobs, RasterDone, SpriteIcons, StyleUpdate, TileDone,
-    TileOutcome, TileRequest, TileResult, TileWorker,
+    FETCHES, FetchCounts, GlyphRaster, JobReply, JobRequest, Jobs, RasterDone, SpriteIcons,
+    StyleUpdate, TileDone, TileOutcome, TileRequest, TileResult, TileWorker, Turn, Turns,
 };
 
 /// Posts a message, a [`JobRequest`] in [`wire`]'s bytes, to each of the
@@ -41,6 +47,8 @@ pub(crate) struct WorkerJobs {
     /// Where glyph ranges are fetched, once for every worker.
     fetch: Arc<dyn Fetch>,
     state: Mutex<State>,
+    /// Tile loads taking turns across the workers.
+    turns: Turns,
     /// Itself, for fetches that answer later.
     me: Weak<WorkerJobs>,
 }
@@ -65,6 +73,8 @@ struct State {
     /// The worker each request went to, until it answers, and a load's
     /// request, to send again if the worker is lost.
     sent_to: HashMap<u32, (u32, Option<TileRequest>)>,
+    /// The turns of loads sent whose fetch hasn't ended.
+    turns: HashMap<u32, Turn>,
     /// Tiles whose loads were lost with a worker, by how many times: one
     /// is a suspect, two quarantine it.
     lost_loads: HashMap<LoadKey, u8>,
@@ -112,6 +122,7 @@ impl WorkerJobs {
                 lost: vec![false; workers as usize],
                 ..State::default()
             }),
+            turns: Turns::new(orb_host::fetch_limit().unwrap_or(FETCHES)),
             me: me.clone(),
         })
     }
@@ -132,7 +143,7 @@ impl WorkerJobs {
         why: &str,
         replacement: Option<Option<(u64, StyleUpdate, SpriteIcons)>>,
     ) {
-        let (failed, loads, rasters, heads) = {
+        let (failed, loads, rasters, heads, turns) = {
             let mut state = self.state.lock().expect("jobs poisoned");
             let Some(lost) = state.lost.get_mut(worker as usize) else {
                 return;
@@ -145,10 +156,13 @@ impl WorkerJobs {
                 .map(|(&id, _)| id)
                 .collect();
             let (mut failed, mut loads, mut rasters) = (Vec::new(), Vec::new(), Vec::new());
+            // Their turns pass on: the loads go again, in turns of their own.
+            let mut turns = Vec::new();
             for id in ids {
                 let Some((_, request)) = state.sent_to.remove(&id) else {
                     continue;
                 };
+                turns.extend(state.turns.remove(&id));
                 if state.suspect == Some(id) {
                     state.suspect = None;
                 }
@@ -168,7 +182,7 @@ impl WorkerJobs {
                     loads.push((request, done));
                 }
             }
-            (failed, loads, rasters, state.heads.clone())
+            (failed, loads, rasters, state.heads.clone(), turns)
         };
         if let Some(style) = replacement {
             if let Some((style, update, icons)) = style {
@@ -181,6 +195,8 @@ impl WorkerJobs {
                 self.post(worker, &JobRequest::ArchiveHead { url, head });
             }
         }
+        // Their turns pass on once a replacement has the style.
+        drop(turns);
         let message = format!("job worker {worker} lost: {why}");
         for id in failed {
             self.fail(id, message.clone());
@@ -233,6 +249,13 @@ impl WorkerJobs {
     ) -> Result<(), String> {
         let id = message.id();
         let mut state = self.state.lock().expect("jobs poisoned");
+        // Dropped once the state is let go: the next load's turn sends it.
+        let turn = state.turns.remove(&id);
+        if let JobReply::Fetched { .. } = message {
+            drop(state);
+            drop(turn);
+            return Ok(());
+        }
         let sent = state.sent_to.remove(&id);
         if let Some(done) = state.features.remove(&id) {
             drop(state);
@@ -263,10 +286,11 @@ impl WorkerJobs {
             return Ok(());
         }
         state.done += 1;
-        let done = state
-            .pending
-            .remove(&id)
-            .ok_or_else(|| format!("reply to unknown job {id}"))?;
+        let pending = state.pending.remove(&id);
+        drop(state);
+        drop(turn);
+        let done = pending.ok_or_else(|| format!("reply to unknown job {id}"))?;
+        let mut state = self.state.lock().expect("jobs poisoned");
         // A suspect answered: it didn't take its worker down.
         let answered = state.suspect == Some(id);
         if answered {
@@ -386,6 +410,35 @@ impl State {
     }
 }
 
+impl WorkerJobs {
+    /// Sends a load to its tile's worker, in its `turn` (none for a
+    /// relayout), which it holds until the worker's fetch ends.
+    fn send_load(
+        &self,
+        mut request: TileRequest,
+        done: TileDone,
+        suspect: bool,
+        turn: Option<Turn>,
+    ) {
+        request.rank = turn.as_ref().map_or(request.rank, Turn::rank);
+        let (source, tile) = (request.source, request.data_tile());
+        self.send(
+            |state| state.home(source, tile),
+            Some(request.clone()),
+            |state, id| {
+                state.pending.insert(id, done);
+                if let Some(turn) = turn {
+                    state.turns.insert(id, turn);
+                }
+                if suspect {
+                    state.suspect = Some(id);
+                }
+            },
+            |id| JobRequest::Load { id, request },
+        );
+    }
+}
+
 /// The first worker not lost from `preferred` on, if any is left.
 fn route(lost: &[bool], preferred: u32) -> Option<u32> {
     let n = lost.len() as u32;
@@ -493,22 +546,27 @@ impl Jobs for WorkerJobs {
                 found => found.is_some(),
             }
         };
-        let (source, tile) = (request.source, request.data_tile());
-        self.send(
-            |state| state.home(source, tile),
-            Some(request.clone()),
-            |state, id| {
-                state.pending.insert(id, done);
-                if suspect {
-                    state.suspect = Some(id);
-                }
-            },
-            |id| JobRequest::Load { id, request },
-        );
+        if !request.loads_whole() {
+            return self.send_load(request, done, suspect, None);
+        }
+        let (me, key, rank) = (self.me.clone(), load_key(&request), request.rank);
+        let start: orb_runtime::Start = Box::new(move |turn| {
+            let Some(turn) = turn else {
+                return done(Ok(TileOutcome::Cancelled));
+            };
+            match me.upgrade() {
+                Some(jobs) => jobs.send_load(request, done, suspect, Some(turn)),
+                None => done(Ok(TileOutcome::Cancelled)),
+            }
+        });
+        self.turns.wait(rank, Some(key), start);
     }
 
     fn cancel(&self, style: u64, source: u32, tile: TileIndex) {
         let key = (style, source, tile);
+        // One waiting for its turn is answered here; one sent hears from
+        // its worker.
+        self.turns.cancel(key);
         let worker = {
             let state = self.state.lock().expect("jobs poisoned");
             state.sent_to.values().find_map(|(worker, request)| {
@@ -526,6 +584,14 @@ impl Jobs for WorkerJobs {
                 },
             );
         }
+    }
+
+    fn fetch_counts(&self) -> FetchCounts {
+        self.turns.counts()
+    }
+
+    fn reorder(&self, rank: &dyn Fn(orb_runtime::LoadKey) -> Option<u64>) {
+        self.turns.reorder(rank);
     }
 
     fn features(&self, request: orb_runtime::FeatureRequest, done: orb_runtime::FeaturesDone) {

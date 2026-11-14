@@ -2,16 +2,18 @@
 //! query and glyph jobs need beyond a worker's CPU work. It keeps the style
 //! revisions requests name, shares fetches between the requests that need
 //! them (a source's data document, glyph ranges, word data, font files), and
-//! answers each request once. Tile fetches take turns, [`FETCHES`] at once,
-//! by their requests' rank (the view's centre first): a load its map gives
-//! up ([`cancel`](JobHost::cancel)) before its turn never starts, and one
-//! fetching is aborted. Natively
-//! [`PoolJobs`](crate::PoolJobs) runs one in the map's process; on the web
-//! every job worker runs one behind the page's messages. Image tiles come
-//! out as their encoded bytes: each platform decodes them its own way.
+//! answers each request once. Tile fetches take turns ([`Turns`]), by
+//! their requests' rank, which the map sets again each frame
+//! ([`reorder`](JobHost::reorder)): a load its map gives up
+//! ([`cancel`](JobHost::cancel)) before its turn never starts, and one
+//! fetching is aborted. Natively [`PoolJobs`](crate::PoolJobs) runs one
+//! in the map's process, [`FETCHES`] at once; on the web every job worker
+//! runs one behind the page's messages, fetching whatever the page sends,
+//! since the page's turns order fetches across the workers. Image tiles
+//! come out as their encoded bytes: each platform decodes them its own
+//! way.
 
 use rustc_hash::FxHashMap as HashMap;
-use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -21,6 +23,7 @@ use orb_host::{Abort, Fetch, FetchError, FontFiles, ResourceKind};
 use crate::glyphs::{GlyphRaster, LocalGlyphs, RasterDone};
 use crate::loader::TileLoader;
 use crate::style::ImageKind;
+use crate::turns::{FetchCounts, LoadKey, Start, Turns};
 use crate::worker::{Built, StyleUpdate, TileRequest, TileWorker};
 use crate::{FeatureRequest, FeaturesDone, SpriteIcons, TileBuild};
 use orb_crs::TileIndex;
@@ -42,141 +45,17 @@ pub enum Loaded {
     Cancelled,
 }
 
-/// Tile fetches a job host runs at once, unless `ORB_FETCHES` says
+/// Tile fetches a map keeps in flight at once, unless `ORB_FETCHES` says
 /// otherwise ([`orb_host::fetch_limit`]). Natively they feed the fetch
 /// threads; in a browser they keep the network queue short, so that loads
-/// given up wait here, where they can be dropped, rather than there.
-pub(crate) const FETCHES: usize = 16;
+/// given up wait where they can be dropped, and loads wait in the view's
+/// order rather than the network's.
+pub const FETCHES: usize = 16;
 
-/// Tile fetches started, aborted once started, and completed, since a
-/// job host began: [`FrameReport::fetches`](crate::FrameReport::fetches)
-/// counts them a frame at a time.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FetchCounts {
-    pub started: u64,
-    pub aborted: u64,
-    pub completed: u64,
-}
-
-impl std::ops::Sub for FetchCounts {
-    type Output = Self;
-
-    fn sub(self, before: Self) -> Self {
-        Self {
-            started: self.started - before.started,
-            aborted: self.aborted - before.aborted,
-            completed: self.completed - before.completed,
-        }
-    }
-}
-
-impl std::ops::AddAssign for FetchCounts {
-    fn add_assign(&mut self, other: Self) {
-        self.started += other.started;
-        self.aborted += other.aborted;
-        self.completed += other.completed;
-    }
-}
-
-/// A load its map can give up: its style, source and tile.
-type LoadKey = (u64, u32, TileIndex);
-
-/// Tile fetches running, and those waiting for a turn by rank, with the
-/// aborts that give each up.
-#[derive(Default)]
-struct Fetches {
-    limit: usize,
-    counts: FetchCounts,
-    running: Vec<(Option<LoadKey>, Abort)>,
-    waiting: BinaryHeap<WaitingFetch>,
-    /// Counts the fetches queued, for their order within a rank.
-    queued: u64,
-    /// A thread starts waiting fetches: one whose fetch completes as it
-    /// starts hands its turn on without starting more itself.
-    starting: bool,
-}
-
-/// Starts a fetch with its turn, or, given none, answers it cancelled.
-type Waiting = Box<dyn FnOnce(Option<Turn>) + Send>;
-
-/// A fetch waiting for its turn: the heap's greatest is the lowest rank
-/// queued first.
-struct WaitingFetch {
-    rank: u32,
-    order: u64,
-    key: Option<LoadKey>,
-    abort: Abort,
-    start: Waiting,
-}
-
-impl Ord for WaitingFetch {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (other.rank, other.order).cmp(&(self.rank, self.order))
-    }
-}
-
-impl PartialOrd for WaitingFetch {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for WaitingFetch {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other).is_eq()
-    }
-}
-
-impl Eq for WaitingFetch {}
-
-/// A running fetch's turn, and the abort its fetch takes: dropped, the
-/// next waiting fetch starts.
-struct Turn {
-    fetches: Arc<Mutex<Fetches>>,
-    abort: Abort,
-}
-
-impl Drop for Turn {
-    fn drop(&mut self) {
-        let mut fetches = self.fetches.lock().expect("fetches poisoned");
-        let running = &mut fetches.running;
-        if let Some(i) = running.iter().position(|(_, a)| a.same(&self.abort)) {
-            running.swap_remove(i);
-        }
-        if !self.abort.is_aborted() {
-            fetches.counts.completed += 1;
-        }
-        drop(fetches);
-        start_waiting(&self.fetches);
-    }
-}
-
-/// Starts waiting fetches while turns are free, unless another call
-/// already does.
-fn start_waiting(fetches: &Arc<Mutex<Fetches>>) {
-    let mut state = fetches.lock().expect("fetches poisoned");
-    if state.starting {
-        return;
-    }
-    state.starting = true;
-    while state.running.len() < state.limit {
-        let Some(WaitingFetch {
-            key, abort, start, ..
-        }) = state.waiting.pop()
-        else {
-            break;
-        };
-        state.running.push((key, abort.clone()));
-        state.counts.started += 1;
-        drop(state);
-        start(Some(Turn {
-            fetches: Arc::clone(fetches),
-            abort,
-        }));
-        state = fetches.lock().expect("fetches poisoned");
-    }
-    state.starting = false;
-}
+/// Called once a load's fetch has ended, or at once for a load that
+/// fetches nothing: a browser's job worker tells the page, whose turns
+/// ([`Turns`]) its fetch held.
+pub type Fetched = Box<dyn FnOnce() + Send>;
 
 /// Called once with a load's outcome, on any thread.
 pub(crate) type LoadedDone = Box<dyn FnOnce(Result<Loaded, String>) + Send>;
@@ -195,7 +74,7 @@ type GlyphWaiters = HashMap<(u64, String), Vec<Box<dyn FnOnce() + Send>>>;
 pub struct JobHost {
     fetch: Arc<dyn Fetch>,
     loader: Arc<TileLoader>,
-    fetches: Arc<Mutex<Fetches>>,
+    turns: Turns,
     executor: Arc<dyn Executor>,
     /// The latest revision of the current style and of the one before it,
     /// whose requests may still be in flight.
@@ -266,11 +145,9 @@ impl Wants {
 
 /// A whole tile's load, which its map may give up; not a relayout.
 fn load_key(request: &TileRequest) -> Option<LoadKey> {
-    (request.nodes.is_none() && !request.rows_only).then_some((
-        request.style,
-        request.source,
-        request.tile,
-    ))
+    request
+        .loads_whole()
+        .then_some((request.style, request.source, request.tile))
 }
 
 /// The glyph ranges fetched last, up to [`RecentRanges::BUDGET`] bytes.
@@ -485,13 +362,23 @@ fn missing(error: FetchError) -> Result<Loaded, String> {
 }
 
 impl JobHost {
+    /// A map's job host, its tile fetches taking turns [`FETCHES`] at
+    /// once (or `ORB_FETCHES`).
     pub fn new(fetch: Arc<dyn Fetch>, executor: Arc<dyn Executor>) -> Arc<Self> {
+        let limit = orb_host::fetch_limit().unwrap_or(FETCHES);
+        Self::with_turns(fetch, executor, Turns::new(limit))
+    }
+
+    /// A job host fetching every load as it comes: a browser's job
+    /// worker's, whose page sends loads in their turns.
+    pub fn unlimited(fetch: Arc<dyn Fetch>, executor: Arc<dyn Executor>) -> Arc<Self> {
+        Self::with_turns(fetch, executor, Turns::new(usize::MAX))
+    }
+
+    fn with_turns(fetch: Arc<dyn Fetch>, executor: Arc<dyn Executor>, turns: Turns) -> Arc<Self> {
         Arc::new(Self {
             loader: TileLoader::new(Arc::clone(&fetch)),
-            fetches: Arc::new(Mutex::new(Fetches {
-                limit: orb_host::fetch_limit().unwrap_or(FETCHES),
-                ..Fetches::default()
-            })),
+            turns,
             glyphs: Arc::new(GlyphLoads {
                 fetch: Arc::clone(&fetch),
                 executor: Arc::clone(&executor),
@@ -619,22 +506,27 @@ impl JobHost {
         self.loader.add_head(url, head);
     }
 
-    /// Loads and lays out a tile.
-    pub fn load(&self, request: TileRequest, done: LoadedDone) {
+    /// Loads and lays out a tile; `fetched` hears when its fetch ends.
+    pub fn load(&self, request: TileRequest, fetched: Option<Fetched>, done: LoadedDone) {
+        let fetched = fetched.unwrap_or_else(|| Box::new(|| {}));
         let Some(worker) = self.worker(request.style) else {
+            fetched();
             return done(Err(format!("style {} was replaced", request.style)));
         };
         let done = self.glyphs.wants.track(&request, done);
         let glyphs = Arc::clone(&self.glyphs);
         let rank = request.rank;
         if worker.has_data(&request) {
+            fetched();
             self.executor.spawn_ranked(
                 rank,
                 Box::new(move || glyphs.complete(worker, Arc::default(), request, done)),
             );
             return;
         }
+        // A document's one fetch serves every tile of its source.
         if let Some(url) = worker.data_url(request.source).map(str::to_string) {
+            fetched();
             self.load_data(worker, url, request, done);
             return;
         }
@@ -643,20 +535,22 @@ impl JobHost {
         if let Some(kind) = worker.image_kind(request.source) {
             let (source, tile, warp) = (request.source, request.tile, request.warp);
             let resource = worker.resource_kind(source);
-            let fetch: Waiting = Box::new(move |turn| {
+            let fetch: Start = Box::new(move |turn| {
                 let Some(turn) = turn else {
+                    fetched();
                     return done(Ok(Loaded::Cancelled));
                 };
-                let abort = turn.abort.clone();
+                let (abort, rank) = (turn.abort().clone(), turn.rank());
                 loader.load(
                     resource,
                     request.location.clone(),
                     request.tile,
                     request.encoding,
                     &abort,
-                    Box::new(move |fetched| {
+                    Box::new(move |bytes| {
                         drop(turn);
-                        match fetched {
+                        fetched();
+                        match bytes {
                             // Given up while it was fetched: not decoded.
                             Ok(_) if !glyphs.wants.wanted(&request) => done(Ok(Loaded::Cancelled)),
                             // An archive's left-out tile draws nothing.
@@ -686,26 +580,28 @@ impl JobHost {
                     }),
                 );
             });
-            return self.take_turn(rank, key, fetch);
+            return self.turns.wait(rank, key, fetch);
         }
         let newest = Arc::clone(&self.newest);
-        let fetch: Waiting = Box::new(move |turn| {
+        let fetch: Start = Box::new(move |turn| {
             let Some(turn) = turn else {
+                fetched();
                 return done(Ok(Loaded::Cancelled));
             };
             let data_tile = request.data_tile();
-            let abort = turn.abort.clone();
+            let (abort, rank) = (turn.abort().clone(), turn.rank());
             loader.load(
                 ResourceKind::Tile,
                 request.location.clone(),
                 data_tile,
                 request.encoding,
                 &abort,
-                Box::new(move |fetched| {
+                Box::new(move |bytes| {
                     drop(turn);
+                    fetched();
                     executor.spawn_ranked(
                         rank,
-                        Box::new(move || match fetched {
+                        Box::new(move || match bytes {
                             Err(FetchError::Aborted) => done(Ok(Loaded::Cancelled)),
                             _ if newest.load(Ordering::Relaxed) > request.style => {
                                 done(Err(format!("style {} was replaced", request.style)))
@@ -723,31 +619,18 @@ impl JobHost {
                 }),
             );
         });
-        self.take_turn(rank, key, fetch);
+        self.turns.wait(rank, key, fetch);
     }
 
-    /// Runs `fetch` in its turn: at once while fewer than [`FETCHES`] run,
-    /// or once one ends and none of a lower `rank` waits.
-    fn take_turn(&self, rank: u32, key: Option<LoadKey>, start: Waiting) {
-        // Each turn its own, which names its place among the running.
-        let abort = Abort::new();
-        let mut fetches = self.fetches.lock().expect("fetches poisoned");
-        let order = fetches.queued;
-        fetches.queued += 1;
-        fetches.waiting.push(WaitingFetch {
-            rank,
-            order,
-            key,
-            abort,
-            start,
-        });
-        drop(fetches);
-        start_waiting(&self.fetches);
+    /// Ranks the loads waiting for their turns again
+    /// ([`Turns::reorder`]).
+    pub fn reorder(&self, rank: &dyn Fn(LoadKey) -> Option<u64>) {
+        self.turns.reorder(rank);
     }
 
     /// The tile fetches this host started, aborted and completed so far.
     pub fn fetch_counts(&self) -> FetchCounts {
-        self.fetches.lock().expect("fetches poisoned").counts
+        self.turns.counts()
     }
 
     /// Drops what style `style`'s worker keeps of `tile` of its source
@@ -766,26 +649,7 @@ impl JobHost {
     /// answers [`Loaded::Cancelled`], unless its bytes already came.
     pub fn cancel(&self, style: u64, source: u32, tile: TileIndex) {
         self.glyphs.wants.give_up((style, source, tile));
-        let key = Some((style, source, tile));
-        let (given_up, running): (Vec<Waiting>, Vec<Abort>) = {
-            let mut fetches = self.fetches.lock().expect("fetches poisoned");
-            let (given_up, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut fetches.waiting)
-                .into_iter()
-                .partition(|w| w.key == key);
-            fetches.waiting = kept.into();
-            let running: Vec<Abort> = (fetches.running.iter())
-                .filter(|(k, _)| *k == key)
-                .map(|(_, abort)| abort.clone())
-                .collect();
-            fetches.counts.aborted += running.len() as u64;
-            (given_up.into_iter().map(|w| w.start).collect(), running)
-        };
-        for fetch in given_up {
-            fetch(None);
-        }
-        for abort in running {
-            abort.abort();
-        }
+        self.turns.cancel((style, source, tile));
     }
 
     /// Loads a tile of a source whose data is one document (GeoJSON by

@@ -217,11 +217,12 @@ impl Map {
         }
     }
 
-    /// A load's place in the order loads apply in: by its tile's distance
-    /// from the view's focus, as [`crate::frame::focus_first`] orders a
-    /// cover; results nothing waits for (given up, of a replaced style),
-    /// `None`, first, since they take no upload.
-    fn load_rank(&self, message: &Message) -> Option<(u64, std::cmp::Reverse<u8>)> {
+    /// A load's place in the order loads apply in: the fetch order
+    /// ([`crate::frame::fetch_order`]), coarse stand-ins first, then by
+    /// its tile's distance from the view's focus; results nothing waits
+    /// for (given up, of a replaced style), `None`, first, since they
+    /// take no upload.
+    fn load_rank(&self, message: &Message) -> Option<u64> {
         let Message::Tile {
             generation,
             source,
@@ -236,25 +237,27 @@ impl Map {
             .style
             .as_ref()
             .filter(|_| *generation == self.tile_generation);
-        let endpoint = style.and_then(|style| match terrain {
+        let (endpoint, tier) = style.and_then(|style| match terrain {
             true => (style.terrain.as_ref())
                 .filter(|t| t.key == *source)
-                .map(|t| &t.endpoint),
+                .map(|t| (&t.endpoint, crate::frame::Tier::View)),
             false => {
                 let index = style.worker.plan().source(*source)?;
                 match &style.sources[index] {
-                    SourceState::Ready { endpoint, .. } => Some(endpoint),
+                    SourceState::Ready {
+                        endpoint, pyramid, ..
+                    } => {
+                        let coarse = style.coarse.get(index).copied().flatten();
+                        let used = pyramid.used_last(*tile);
+                        Some((endpoint, crate::frame::Tier::of(*tile, coarse, used)))
+                    }
                     _ => None,
                 }
             }
-        });
-        let endpoint =
-            endpoint.filter(|_| *terrain || self.awaited(*source, *tile) == Awaited::Wanted)?;
-        let key = crate::frame::focus_key(&endpoint.tms, self.camera.state().target);
-        Some(key(orb_crs::CoveredTile {
-            index: *tile,
-            wrap: 0,
-        }))
+        })?;
+        (*terrain || self.awaited(*source, *tile) == Awaited::Wanted).then_some(())?;
+        let order = crate::frame::fetch_order(&endpoint.tms, self.camera.state().target);
+        Some(order(*tile, tier))
     }
 
     /// Applies an arrived message other than a tile's result.

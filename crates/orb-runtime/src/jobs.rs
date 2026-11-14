@@ -132,6 +132,11 @@ pub enum JobReply {
     Cancelled {
         id: u32,
     },
+    /// A load's fetch ended (its reply comes later): the page's turn
+    /// ([`Turns`](crate::Turns)) passes to the next.
+    Fetched {
+        id: u32,
+    },
     Features {
         id: u32,
         features: Vec<crate::TileFeature>,
@@ -159,6 +164,7 @@ impl JobReply {
             | Self::Dem { id, .. }
             | Self::Missing { id }
             | Self::Cancelled { id }
+            | Self::Fetched { id }
             | Self::Features { id, .. }
             | Self::Answer { id, .. }
             | Self::Glyphs { id, .. }
@@ -186,6 +192,9 @@ pub trait Jobs: Send + Sync {
     fn fetch_counts(&self) -> crate::FetchCounts {
         crate::FetchCounts::default()
     }
+    /// Ranks the loads waiting for their fetches again: each that `rank`
+    /// ranks takes that rank ([`Turns::reorder`](crate::Turns::reorder)).
+    fn reorder(&self, _rank: &dyn Fn(crate::LoadKey) -> Option<u64>) {}
     /// Gives up the load of `tile` of style `style`'s source `source`: one
     /// whose fetch hasn't started never does and answers
     /// [`TileResult::cancelled`]; others complete as usual.
@@ -295,6 +304,10 @@ impl Jobs for PoolJobs {
         self.host.fetch_counts()
     }
 
+    fn reorder(&self, rank: &dyn Fn(crate::LoadKey) -> Option<u64>) {
+        self.host.reorder(rank);
+    }
+
     fn forget(&self, style: u64, source: u32, tile: orb_crs::TileIndex) {
         self.host.forget(style, source, tile);
     }
@@ -304,6 +317,7 @@ impl Jobs for PoolJobs {
         let (dem_unpack, rank) = (request.dem_unpack, request.rank);
         self.host.load(
             request,
+            None,
             Box::new(move |loaded| match loaded {
                 Ok(crate::Loaded::Tile(build)) => done(Ok(TileOutcome::Built(build.into()))),
                 Ok(crate::Loaded::Missing) => done(Ok(TileOutcome::Missing {

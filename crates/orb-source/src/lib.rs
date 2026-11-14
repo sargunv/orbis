@@ -43,6 +43,8 @@ pub struct Update {
     pub used: Vec<TileIndex>,
     /// The cover's tiles the source has (at or above its least zoom).
     pub cover: Vec<TileIndex>,
+    /// Tiles kept loaded to stand in ([`TilePyramid::plan_keeping`]).
+    pub kept: Vec<TileIndex>,
 }
 
 #[derive(Debug)]
@@ -102,6 +104,26 @@ fn z_order(tile: TileIndex) -> u64 {
     spread(tile.col << shift) | spread(tile.row << shift) << 1
 }
 
+/// Whether `tile` is one of `cover`'s or beside one at its zoom, across
+/// the antimeridian too.
+fn beside(cover: &FxHashSet<TileIndex>, tile: TileIndex) -> bool {
+    let n = 1u32.checked_shl(u32::from(tile.z)).unwrap_or(0);
+    (-1i64..=1).any(|dc| {
+        let col = i64::from(tile.col) + dc;
+        let col = match n {
+            0 => col,
+            n => col.rem_euclid(i64::from(n)),
+        };
+        (-1i64..=1).any(|dr| {
+            let row = i64::from(tile.row) + dr;
+            let (Ok(col), Ok(row)) = (u32::try_from(col), u32::try_from(row)) else {
+                return false;
+            };
+            cover.contains(&TileIndex::new(tile.z, col, row))
+        })
+    })
+}
+
 /// What stands in for a missing tile.
 enum StandIn {
     Ready(TileIndex),
@@ -151,8 +173,10 @@ pub struct TilePyramid<T> {
     frame: u64,
     /// Failures in a row of tiles that last failed, for their backoff.
     failures: FxHashMap<TileIndex, u32>,
-    /// The last committed plan's cover.
+    /// The last committed plan's cover, and the tiles it kept to stand
+    /// in.
     cover: FxHashSet<TileIndex>,
+    kept: Vec<TileIndex>,
     /// Entries in flight, wanted or given up.
     loading: usize,
     /// Counts changes to the tiles held and their states.
@@ -169,6 +193,7 @@ impl<T> TilePyramid<T> {
             frame: 0,
             failures: FxHashMap::default(),
             cover: FxHashSet::default(),
+            kept: Vec::new(),
             loading: 0,
             revision: 0,
         }
@@ -381,6 +406,30 @@ impl<T> TilePyramid<T> {
         update
     }
 
+    /// As [`plan`](Self::plan), keeping `kept` loaded too, requested ahead
+    /// of the cover's tiles: coarse tiles that stand in, as any loaded
+    /// ancestor does, wherever the cover's own haven't loaded. Nothing
+    /// draws them otherwise.
+    pub fn plan_keeping(&self, cover: &[CoveredTile], kept: &[TileIndex]) -> Update {
+        let mut update = self.plan(cover);
+        let mut request = Vec::new();
+        for &tile in kept {
+            if tile.z < self.min_zoom || tile.z > self.max_zoom {
+                continue;
+            }
+            update.used.push(tile);
+            update.kept.push(tile);
+            if !self.tiles.contains_key(&tile) && !update.request.contains(&tile) {
+                request.push(tile);
+            }
+        }
+        if !request.is_empty() {
+            request.append(&mut update.request);
+            update.request = request;
+        }
+        update
+    }
+
     /// Records a frame's plan: its requests load from now on, and the tiles
     /// it used are the cache's most recent.
     pub fn commit(&mut self, update: &Update) {
@@ -388,6 +437,7 @@ impl<T> TilePyramid<T> {
         let frame = self.frame;
         self.cover.clear();
         self.cover.extend(&update.cover);
+        self.kept.clone_from(&update.kept);
         for &tile in &update.request {
             self.tiles.entry(tile).or_insert_with(|| {
                 self.loading += 1;
@@ -412,26 +462,42 @@ impl<T> TilePyramid<T> {
 
     /// Wanted loads the last update didn't use, given up, each once:
     /// nothing draws them or waits for them now, so their loads may be
-    /// cancelled, as GL JS aborts the requests of tiles it drops. One a
-    /// later update wants again loads on until its result comes back; a
-    /// cancelled one is then forgotten
-    /// ([`forget_loading`](Self::forget_loading)) and requested anew.
-    pub fn unwanted_loads(&mut self) -> Vec<TileIndex> {
+    /// cancelled, as GL JS aborts the requests of tiles it drops. With
+    /// `beside_loads_on`, a tile beside one of the cover's at its zoom
+    /// loads on, as MapLibre Native keeps it: a view turned back and forth
+    /// brings its corners back before their loads would come again, for a
+    /// caller that keeps what such a load brings. One a later update wants
+    /// again loads on until its result comes back; a cancelled one is then
+    /// forgotten ([`forget_loading`](Self::forget_loading)) and requested
+    /// anew.
+    pub fn unwanted_loads(&mut self, beside_loads_on: bool) -> Vec<TileIndex> {
         let frame = self.frame;
-        self.give_up(|e| e.last_used != frame)
+        let cover = std::mem::take(&mut self.cover);
+        let near = |tile| beside_loads_on && beside(&cover, tile);
+        let given_up = self.give_up(|tile, e| e.last_used != frame && !near(tile));
+        self.cover = cover;
+        given_up
+    }
+
+    /// Whether the last update used `tile`: loads that load on beside the
+    /// view ([`unwanted_loads`](Self::unwanted_loads)) it didn't.
+    pub fn used_last(&self, tile: TileIndex) -> bool {
+        self.tiles
+            .get(&tile)
+            .is_some_and(|e| e.last_used == self.frame)
     }
 
     /// Every wanted load, given up, as
     /// [`unwanted_loads`](Self::unwanted_loads) gives up those out of
     /// view: for a caller that drops the pyramid, or stops drawing.
     pub fn give_up_loads(&mut self) -> Vec<TileIndex> {
-        self.give_up(|_| true)
+        self.give_up(|_, _| true)
     }
 
     /// Gives up the wanted loads `which` picks.
-    fn give_up(&mut self, which: impl Fn(&Entry<T>) -> bool) -> Vec<TileIndex> {
+    fn give_up(&mut self, which: impl Fn(TileIndex, &Entry<T>) -> bool) -> Vec<TileIndex> {
         let given_up: Vec<TileIndex> = (self.tiles.iter_mut())
-            .filter(|(_, e)| matches!(e.state, State::Loading) && which(e))
+            .filter(|(tile, e)| matches!(e.state, State::Loading) && which(**tile, e))
             .map(|(&tile, e)| {
                 e.state = State::GivenUp;
                 tile
@@ -670,13 +736,15 @@ impl<T> TilePyramid<T> {
     }
 
     /// Evicts a ready tile that only stands in: one the last plan's cover
-    /// doesn't hold, standing in for no missing tile. A fresh view of the
-    /// cover would never have loaded it, so it makes room for the cover's
-    /// tiles; `near`'s ancestors, which draw in its place, go first.
+    /// doesn't hold or keep, standing in for no missing tile. A fresh view
+    /// of the cover would never have loaded it, so it makes room for the
+    /// cover's tiles; `near`'s ancestors, which draw in its place, go
+    /// first.
     pub fn evict_stand_in(&mut self, near: Option<TileIndex>) -> Option<T> {
         let stands_in = |tile: TileIndex| {
             self.is_ready(tile)
                 && !self.cover.contains(&tile)
+                && !self.kept.contains(&tile)
                 && !self
                     .tiles
                     .iter()
@@ -708,6 +776,16 @@ impl<T> TilePyramid<T> {
     /// Tiles requested and not yet answered, wanted or given up.
     pub fn loading(&self) -> usize {
         self.loading
+    }
+
+    /// [`loading`](Self::loading), but for loads beside the view that
+    /// the last update didn't use ([`unwanted_loads`](Self::unwanted_loads)):
+    /// what the view waits for.
+    pub fn loading_for_view(&self) -> usize {
+        let beside = (self.tiles.values())
+            .filter(|e| matches!(e.state, State::Loading) && e.last_used != self.frame)
+            .count();
+        self.loading - beside
     }
 
     fn is_ready(&self, tile: TileIndex) -> bool {
@@ -841,6 +919,44 @@ mod tests {
                 regions: vec![t(1, 0, 0)]
             }]
         );
+    }
+
+    /// Tiles kept load ahead of the cover's and stay, drawn only where a
+    /// cover tile hasn't loaded: a view whose tiles are in looks the same
+    /// with them or without.
+    #[test]
+    fn kept_tiles_load_first_and_draw_only_as_stand_ins() {
+        let mut p = TilePyramid::new(0, 14, 0);
+        let (view, kept) = (cover(&[(3, 6, 2), (3, 7, 2)]), [t(0, 0, 0)]);
+        let plan = |p: &mut TilePyramid<&str>| {
+            let update = p.plan_keeping(&view, &kept);
+            p.commit(&update);
+            update
+        };
+        assert_eq!(plan(&mut p).request, [t(0, 0, 0), t(3, 6, 2), t(3, 7, 2)]);
+        p.insert(t(0, 0, 0), "world");
+        p.insert(t(3, 6, 2), "tile");
+        let standing_in = plan(&mut p);
+        assert!(standing_in.request.is_empty());
+        let drawn: Vec<_> = (standing_in.draw.iter())
+            .map(|d| (d.tile, d.regions.clone()))
+            .collect();
+        assert_eq!(
+            drawn,
+            [
+                (t(0, 0, 0), vec![t(3, 7, 2)]),
+                (t(3, 6, 2), vec![t(3, 6, 2)])
+            ]
+        );
+        p.insert(t(3, 7, 2), "tile");
+        let loaded = plan(&mut p);
+        assert!(loaded.draw.iter().all(|d| d.tile.z == 3));
+        assert_eq!(loaded.draw, p.plan(&view).draw);
+        // Kept, the cache holds it even with no room past what's used,
+        // and it never makes room for the cover's tiles.
+        p.evict();
+        assert!(p.evict_stand_in(None).is_none());
+        assert!(p.get(t(0, 0, 0)).is_some());
     }
 
     /// An ancestor's regions come in Z order, whatever order the cover
@@ -1286,14 +1402,43 @@ mod tests {
         let mut p: TilePyramid<()> = TilePyramid::new(0, 14, 8);
         let (here, there) = (cover(&[(3, 1, 2)]), cover(&[(3, 6, 6)]));
         p.update(&here);
-        assert!(p.unwanted_loads().is_empty());
+        assert!(p.unwanted_loads(true).is_empty());
         p.update(&there);
-        assert_eq!(p.unwanted_loads(), [t(3, 1, 2)]);
-        assert!(p.unwanted_loads().is_empty());
+        assert_eq!(p.unwanted_loads(true), [t(3, 1, 2)]);
+        assert!(p.unwanted_loads(true).is_empty());
         // Back before the cancelled load answers: nothing asks twice.
         assert!(p.update(&here).request.is_empty());
         p.forget_loading(t(3, 1, 2));
         assert_eq!(p.update(&here).request, [t(3, 1, 2)]);
+    }
+
+    /// A load the view left beside one of its tiles, across the
+    /// antimeridian too, loads on where its caller keeps such loads, and
+    /// goes last in the fetch order's eyes: the last plan didn't use it.
+    #[test]
+    fn loads_beside_the_view_load_on_when_asked_to() {
+        let mut p: TilePyramid<()> = TilePyramid::new(0, 14, 8);
+        let near = [t(3, 7, 2), t(3, 2, 3), t(3, 1, 3)];
+        p.update(&cover(&[
+            (3, 7, 2),
+            (3, 2, 3),
+            (3, 1, 3),
+            (3, 0, 4),
+            (3, 4, 6),
+        ]));
+        p.update(&cover(&[(3, 0, 2), (3, 2, 2)]));
+        let mut given_up = p.unwanted_loads(true);
+        given_up.sort();
+        assert_eq!(given_up, [t(3, 0, 4), t(3, 4, 6)]);
+        assert!(
+            near.iter()
+                .all(|&tile| p.is_loading(tile) && !p.used_last(tile))
+        );
+        assert_eq!((p.loading(), p.loading_for_view()), (7, 4));
+        assert_eq!(p.awaited(near[0]), Awaited::Wanted);
+        let mut given_up = p.unwanted_loads(false);
+        given_up.sort();
+        assert_eq!(given_up, [t(3, 1, 3), t(3, 2, 3), t(3, 7, 2)]);
     }
 
     /// A given-up load's answer finds it given up, unless a plan wanted
@@ -1305,7 +1450,7 @@ mod tests {
         p.update(&here);
         assert_eq!(p.awaited(t(3, 1, 2)), Awaited::Wanted);
         p.update(&there);
-        p.unwanted_loads();
+        p.unwanted_loads(false);
         assert_eq!(p.awaited(t(3, 1, 2)), Awaited::GivenUp);
         assert_eq!(p.loading(), 2, "given up, still in flight");
         p.update(&here);

@@ -20,7 +20,7 @@ pub trait Executor: Send + Sync {
     /// map's tiles nearer the view's centre rank lower. Equal ranks run in
     /// the order queued. Executors that queue nothing run it as
     /// [`spawn`](Self::spawn) does.
-    fn spawn_ranked(&self, _rank: u32, job: Job) {
+    fn spawn_ranked(&self, _rank: u64, job: Job) {
         self.spawn(job);
     }
 }
@@ -61,7 +61,7 @@ struct Queued {
 
 /// A queued job: the heap's greatest is the lowest rank queued first.
 struct Ranked {
-    rank: u32,
+    rank: u64,
     order: u64,
     job: Job,
 }
@@ -149,7 +149,7 @@ impl Executor for ThreadPool {
         self.spawn_ranked(0, job);
     }
 
-    fn spawn_ranked(&self, rank: u32, job: Job) {
+    fn spawn_ranked(&self, rank: u64, job: Job) {
         let mut jobs = self.queue.jobs.lock().expect("job queue poisoned");
         let order = jobs.next;
         jobs.next += 1;

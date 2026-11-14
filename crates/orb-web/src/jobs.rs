@@ -33,6 +33,10 @@ thread_local! {
     /// runtime's `Send` jobs reach it here.
     static POSTS: std::cell::RefCell<HashMap<u32, js_sys::Function>> =
         std::cell::RefCell::new(HashMap::default());
+    /// A job worker's `notify(reply)`, which posts a reply to the page
+    /// ahead of a request's answer: a load's fetch ended.
+    static NOTIFY: std::cell::RefCell<Option<js_sys::Function>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Forgets map `map`'s job workers' `post`.
@@ -185,7 +189,8 @@ pub struct JobWorker {
 impl JobWorker {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        let host = JobHost::new(crate::regions::service(), Arc::new(orb_host::jobs::Inline));
+        // The page's turns order the fetches across its workers.
+        let host = JobHost::unlimited(crate::regions::service(), Arc::new(orb_host::jobs::Inline));
         host.set_local_glyphs(Arc::new(crate::host::CanvasGlyphs));
         host.set_font_files(Arc::new(crate::host::ShaperFiles));
         if let Some(words) = crate::host::browser_words() {
@@ -199,6 +204,13 @@ impl JobWorker {
     #[wasm_bindgen(js_name = setShaperLoader)]
     pub fn set_shaper_loader(&mut self, loader: js_sys::Function) {
         crate::host::ShaperFiles::set_loader(loader);
+    }
+
+    /// How this worker tells the page a load's fetch ended:
+    /// `notify(reply)` posts a reply, as `receive`'s are posted.
+    #[wasm_bindgen(js_name = setNotify)]
+    pub fn set_notify(&mut self, notify: js_sys::Function) {
+        NOTIFY.with(|n| *n.borrow_mut() = Some(notify));
     }
 
     /// Traps, as a bug would: the page replaces the worker. To exercise
@@ -260,8 +272,17 @@ impl JobWorker {
             }
             JobRequest::Load { id, request } => {
                 let dem_unpack = request.dem_unpack;
+                let fetched = Box::new(move || {
+                    let message = reply(&JobReply::Fetched { id }, None, None);
+                    NOTIFY.with(|n| {
+                        if let Some(notify) = &*n.borrow() {
+                            let _ = notify.call1(&JsValue::NULL, &message);
+                        }
+                    });
+                });
                 self.host.load(
                     request,
+                    Some(fetched),
                     Box::new(move |r| drop(sender.send(JobAnswer::Load(r)))),
                 );
                 (id, dem_unpack)

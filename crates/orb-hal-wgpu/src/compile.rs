@@ -841,7 +841,7 @@ mod native {
             // Behind every job queued, ranked ones too: a map's tiles rank
             // theirs by distance from the view's centre.
             let executor = self.executor.clone();
-            executor.spawn_ranked(u32::MAX, Box::new(move || self.run()));
+            executor.spawn_ranked(u64::MAX, Box::new(move || self.run()));
         }
 
         fn run(self) {

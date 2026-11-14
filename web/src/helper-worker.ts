@@ -113,6 +113,10 @@ function jobs(
   onRegionsChanged(glue.reloadRegions);
   // Styles with `font-faces` draw their files with shaper.wasm.
   jobs.setShaperLoader(loadShaper);
+  // A load's fetch ended: the page's turn passes on ahead of its answer.
+  jobs.setNotify((reply: { message: Uint8Array }) =>
+    port.postMessage(reply, [reply.message.buffer]),
+  );
   // The page's request transform, asked for each fetch while it has one.
   const page = askPage(port);
   return async ({ data }) => {

@@ -21,13 +21,13 @@ use orb_style::v8::{StyleDoc, Transaction};
 
 use crate::MapEvent;
 use crate::frame::*;
-use crate::job_host::FetchCounts;
 use crate::jobs::{Jobs, TileResult};
 use crate::meshes::*;
 use crate::modules::Modules;
 use crate::resident::*;
 use crate::state::FeatureStates;
 use crate::style::StylePlan;
+use crate::turns::FetchCounts;
 use crate::worker::{StyleUpdate, TileRequest, TileWorker};
 use orb_source::endpoint::{TileEndpoint, TileLocation};
 
@@ -464,6 +464,9 @@ pub(crate) struct LoadedStyle {
     /// This frame's tiles to draw, per source, between their update and
     /// their placement.
     pub(crate) draws: Vec<Option<Vec<Draw>>>,
+    /// The zoom whose tiles each source keeps loaded to stand in, as its
+    /// last plan had it ([`Map::coarse_level`]).
+    pub(crate) coarse: Vec<Option<u8>>,
     /// The terrain, once its DEM source is ready.
     pub(crate) terrain: Option<crate::terrain::Terrain>,
     /// Whether the background and image tiles' meshes are grids for a
@@ -1631,6 +1634,7 @@ impl Map {
             states: FeatureStates::default(),
             symbol_tiles: Vec::new(),
             draws: Vec::new(),
+            coarse: Vec::new(),
             terrain: None,
             globe_meshes: self.surface.globe().is_some(),
             pipelines: None,
@@ -2199,11 +2203,12 @@ impl Map {
             for (index, update) in plan.into_iter().enumerate() {
                 self.apply_source(renderer, index, update, report);
             }
+            self.reorder_fetches();
             self.planned = key;
         } else {
             report.tiles_loading += (self.style.iter().flat_map(|s| &s.sources))
                 .map(|s| match s {
-                    SourceState::Ready { pyramid, .. } => pyramid.loading() as u32,
+                    SourceState::Ready { pyramid, .. } => pyramid.loading_for_view() as u32,
                     _ => 0,
                 })
                 .sum::<u32>();
@@ -2599,7 +2604,7 @@ impl Map {
         tile: TileIndex,
         (nodes, rows_only, neighbour): (Option<Vec<u32>>, bool, bool),
         edit: Option<u64>,
-        rank: u32,
+        rank: u64,
     ) {
         let style = self.style.as_mut().expect("jobs need a style");
         let key = style.worker.plan().sources[index].key;
@@ -2857,6 +2862,44 @@ impl Map {
         }
         self.events.wake();
         Ok(())
+    }
+
+    /// Ranks the loads still waiting for their fetches again, by the
+    /// view as this frame plans it ([`fetch_order`]): those of a view the
+    /// camera has left wait behind the new view's.
+    fn reorder_fetches(&self) {
+        let Some(style) = &self.style else {
+            return;
+        };
+        let focus = self.camera.state().target;
+        let plan = style.worker.plan();
+        let mut ranks: HashMap<crate::LoadKey, u64> = HashMap::default();
+        for (index, source) in style.sources.iter().enumerate() {
+            let SourceState::Ready {
+                endpoint, pyramid, ..
+            } = source
+            else {
+                continue;
+            };
+            let order = fetch_order(&endpoint.tms, focus);
+            let (key, coarse) = (
+                plan.sources[index].key,
+                style.coarse.get(index).copied().flatten(),
+            );
+            for tile in pyramid.loading_tiles() {
+                let tier = Tier::of(tile, coarse, pyramid.used_last(tile));
+                ranks.insert((style.id, key, tile), order(tile, tier));
+            }
+        }
+        if let Some(terrain) = &style.terrain {
+            let order = fetch_order(&terrain.endpoint.tms, focus);
+            for tile in terrain.pyramid.loading_tiles() {
+                ranks.insert((style.id, terrain.key, tile), order(tile, Tier::View));
+            }
+        }
+        if !ranks.is_empty() {
+            self.services.jobs.reorder(&|key| ranks.get(&key).copied());
+        }
     }
 
     /// Sends a request to the jobs; its result comes back as a message.
@@ -3153,6 +3196,7 @@ impl Map {
         let at = (view, self.surface.tms(), self.camera.state().target);
         let ground = (view.world_z(skirt), cover_room);
         let (frame, requests) = terrain.upkeep(gpu, renderer, at, unpack, ground);
+        let order = fetch_order(&endpoint.tms, self.camera.state().target);
         let mut loads = Vec::new();
         for tile in requests {
             if !endpoint.contains(tile) {
@@ -3163,12 +3207,12 @@ impl Map {
             loads.push(TileRequest {
                 zoom: endpoint.tms.style_zoom(tile),
                 dem_unpack: endpoint.dem_unpack.map(crate::DemUnpack),
-                rank: loads.len() as u32,
+                rank: order(tile, Tier::View),
                 ..TileRequest::whole(style.id, terrain.key, tile, location, endpoint.encoding)
             });
         }
         report.tiles_loading += terrain.pyramid.loading() as u32;
-        for tile in terrain.pyramid.unwanted_loads() {
+        for tile in terrain.pyramid.unwanted_loads(false) {
             self.services.jobs.cancel(style.id, terrain.key, tile);
         }
         self.counts.loads += loads.len() as u32;
@@ -3542,7 +3586,7 @@ impl Map {
                 continue;
             };
             let loaded = match &style.sources[index] {
-                SourceState::Ready { pyramid, .. } => pyramid.loading() == 0,
+                SourceState::Ready { pyramid, .. } => pyramid.loading_for_view() == 0,
                 SourceState::Resolving => false,
                 _ => true,
             };

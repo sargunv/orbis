@@ -268,7 +268,13 @@ fn a_geojson_source_s_tiles_share_one_worker() {
                 TileRequest::whole(1, source, tile(col), location, orb_style::Encoding::Mvt);
             jobs.load(request, Box::new(|_| {}));
         }
-        let mut workers: Vec<u32> = posted.loads().iter().map(|l| l.0).collect();
+        let loads = posted.loads();
+        // Their fetches end, as their workers say: their turns pass on.
+        for &(_, id, _) in &loads {
+            jobs.complete(JobReply::Fetched { id }, |_| unreachable!())
+                .unwrap();
+        }
+        let mut workers: Vec<u32> = loads.iter().map(|l| l.0).collect();
         workers.sort_unstable();
         workers.dedup();
         workers
@@ -286,4 +292,47 @@ fn a_geojson_source_s_tiles_share_one_worker() {
     assert!(other.whole_sources().is_empty());
     assert_eq!(geojson, 1, "the vector source takes the GeoJSON's key");
     assert!(workers(geojson).len() > 1);
+}
+
+/// Loads take turns across the workers, [`FETCHES`] at once: the next
+/// goes once a worker says a fetch ended, lowest rank first by the map's
+/// latest ranks, and one given up while it waits is answered here.
+#[test]
+fn loads_take_turns_across_workers_in_the_map_s_order() {
+    let (jobs, posted) = jobs(3);
+    let n = FETCHES as u32;
+    let mut outcomes = Vec::new();
+    for col in 0..n + 3 {
+        let location = TileLocation::Url("test://tile.mvt".into());
+        let mut request = TileRequest::whole(1, 1, tile(col), location, orb_style::Encoding::Mvt);
+        request.rank = u64::from(col);
+        let outcome = Outcome::default();
+        let into = outcome.clone();
+        jobs.load(request, Box::new(move |r| *into.lock().unwrap() = Some(r)));
+        outcomes.push(outcome);
+    }
+    let sent = posted.loads();
+    assert_eq!(sent.len(), n as usize);
+    assert!(sent.iter().map(|l| l.0).collect::<HashSet<_>>().len() > 1);
+    // The view moved: the last waiting is nearest now, the first given up.
+    jobs.reorder(&|(_, _, t)| (t.col == n + 2).then_some(0));
+    jobs.cancel(1, 1, tile(n));
+    assert!(matches!(
+        *outcomes[n as usize].lock().unwrap(),
+        Some(Ok(TileOutcome::Cancelled))
+    ));
+    assert!(posted.loads().is_empty());
+    // A fetch ends; its answer comes later.
+    jobs.complete(JobReply::Fetched { id: sent[0].1 }, |_| unreachable!())
+        .unwrap();
+    let next = posted.loads();
+    assert_eq!(next.iter().map(|l| l.2.col).collect::<Vec<_>>(), [n + 2]);
+    answer(&jobs, sent[0].1);
+    assert!(posted.loads().is_empty(), "its turn passed on already");
+    // An answer ends a fetch too.
+    answer(&jobs, sent[1].1);
+    let next = posted.loads();
+    assert_eq!(next.iter().map(|l| l.2.col).collect::<Vec<_>>(), [n + 1]);
+    let counts = jobs.fetch_counts();
+    assert_eq!((counts.started, counts.completed), (u64::from(n) + 2, 2));
 }

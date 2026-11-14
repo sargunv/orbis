@@ -180,6 +180,8 @@ const counters = (s) => ({
   input: s.input,
   moved: s.moved,
   centre: s.centreLoaded,
+  // Tile fetches since the last frame: started, aborted once started, completed.
+  fetches: [s.fetchesStarted, s.fetchesAborted, s.fetchesCompleted],
   // session.mjs's running tally of WebGPU calls, where it wraps them.
   gpu: globalThis.sessionGpuCalls?.(),
 });

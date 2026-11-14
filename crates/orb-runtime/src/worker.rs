@@ -986,7 +986,7 @@ pub struct TileRequest {
     /// Its place in the map's load order, lowest first: the tiles nearest
     /// the view's focus take fetch turns and workers before the rest
     /// ([`Executor::spawn_ranked`](orb_host::jobs::Executor::spawn_ranked)).
-    pub rank: u32,
+    pub rank: u64,
 }
 
 /// GL JS's unpack vector of a DEM encoding: metres are
@@ -1004,6 +1004,12 @@ impl PartialEq for DemUnpack {
 impl Eq for DemUnpack {}
 
 impl TileRequest {
+    /// Whether it loads its whole tile, which a map may give up and whose
+    /// fetch takes a turn ([`Turns`](crate::Turns)): a relayout has its data.
+    pub fn loads_whole(&self) -> bool {
+        self.nodes.is_none() && !self.rows_only
+    }
+
     /// The whole of `tile`, every node of source `source` of style `style`
     /// laid out at the tile's own zoom from its own bytes at `location`:
     /// no bend, warp, DEM or icons to wait for. Requests that differ
@@ -1724,7 +1730,7 @@ pub(crate) mod tests {
                 location: TileLocation::Url(format!("local://{col}")),
                 ..request(tile)
             };
-            host.load(request, Box::new(move |r| tx.send((col, r)).unwrap()));
+            host.load(request, None, Box::new(move |r| tx.send((col, r)).unwrap()));
         }
         assert_eq!(fetch.0.lock().unwrap().len(), n as usize);
         // The first waits its turn: cancelled. The second fetches already:
@@ -1766,7 +1772,11 @@ pub(crate) mod tests {
         let first = worker.first_glyphs(symbol_request().zoom);
         host.expect_glyphs(1, first.clone());
         let (tx, rx) = std::sync::mpsc::channel();
-        host.load(symbol_request(), Box::new(move |r| tx.send(r).unwrap()));
+        host.load(
+            symbol_request(),
+            None,
+            Box::new(move |r| tx.send(r).unwrap()),
+        );
         assert_eq!(rx.try_iter().count(), 0, "layout waits for the range");
         let path = format!("{ASSETS}/{}", first[0].strip_prefix("local://").unwrap());
         host.glyph_range(1, first[0].clone(), Ok(std::fs::read(path).unwrap()));
@@ -1810,7 +1820,11 @@ pub(crate) mod tests {
         let worker = Arc::new(TileWorker::new(SYMBOLS).unwrap());
         host.set_style(1, Arc::clone(&worker));
         let (tx, rx) = std::sync::mpsc::channel();
-        host.load(symbol_request(), Box::new(move |r| tx.send(r).unwrap()));
+        host.load(
+            symbol_request(),
+            None,
+            Box::new(move |r| tx.send(r).unwrap()),
+        );
         host.set_style(2, worker);
         let (z, x, y) = SYMBOL_TILE;
         let bytes = std::fs::read(format!("{ASSETS}/tiles/{z}-{x}-{y}.mvt")).unwrap();
@@ -1862,7 +1876,7 @@ pub(crate) mod tests {
         let tile = request(TileIndex::new(0, 0, 0));
         let (tx, rx) = std::sync::mpsc::channel();
         let sent = tx.clone();
-        host.load(tile.clone(), Box::new(move |r| sent.send(r).unwrap()));
+        host.load(tile.clone(), None, Box::new(move |r| sent.send(r).unwrap()));
         // The next revision points the source elsewhere, before A arrives.
         let parsed = orb_style::v8::parse(&style("test://b.json")).unwrap();
         let second = Arc::new(TileWorker::with_style(
@@ -1876,7 +1890,7 @@ pub(crate) mod tests {
             crate::surface::SurfaceTiles::default(),
         ));
         host.set_style(1, Arc::clone(&second));
-        host.load(tile.clone(), Box::new(move |r| tx.send(r).unwrap()));
+        host.load(tile.clone(), None, Box::new(move |r| tx.send(r).unwrap()));
         let held = std::mem::take(&mut *fetch.0.lock().unwrap());
         let urls: Vec<&str> = held.iter().map(|(url, _)| url.as_str()).collect();
         assert_eq!(urls, ["test://a.json", "test://b.json"]);

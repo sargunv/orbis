@@ -54,6 +54,7 @@ mod terrain;
 mod testing;
 mod tile;
 mod transitions;
+mod turns;
 mod video;
 pub mod wire;
 mod worker;
@@ -65,7 +66,7 @@ pub use features::{FeatureRequest, FeaturesDone, TileFeature};
 pub use geojson::{ClusterQuery, ClusterRequest};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
 pub use host_heights::HostElevations;
-pub use job_host::{FetchCounts, JobHost, Loaded};
+pub use job_host::{FETCHES, Fetched, JobHost, Loaded};
 pub use jobs::{
     ImagePixels, JobReply, JobRequest, Jobs, PoolJobs, TileDone, TileImage, TileOutcome,
     TileResult, pack, packed_header, unpack, unpremultiply,
@@ -100,4 +101,5 @@ pub use style_image::StyleImage;
 pub use symbol::SpriteIcons;
 pub use terrain::{TerrainElevation, apply_pyramid_delta, pyramid_delta};
 pub use tile::TileBuild;
+pub use turns::{FetchCounts, LoadKey, Start, Turn, Turns};
 pub use worker::{Built, DemUnpack, StyleUpdate, TileRequest, TileWorker};

@@ -359,6 +359,22 @@ function presents(traceEvents, origin) {
 const round = (x, d = 1) => +x.toFixed(d);
 const mib = (b) => round(b / (1 << 20));
 
+/** Orbis's tile fetches over `frames` (each frame's since the one before):
+ * started, aborted once started and completed, and those started after
+ * `lastInput`. */
+function fetchTotals(frames, lastInput) {
+  const sum = (i, from = -Infinity) =>
+    frames
+      .filter((f) => f.t > from)
+      .reduce((s, f) => s + (f.fetches?.[i] ?? 0), 0);
+  return {
+    started: sum(0),
+    aborted: sum(1),
+    completed: sum(2),
+    startedAfterInput: sum(0, lastInput),
+  };
+}
+
 /** What Orbis's device did over `frames` (each frame's counts since the
  * one before): pipelines asked for, buffers and textures made and their
  * bytes, bytes copied on the GPU, uploads and their calls, texture-write
@@ -976,6 +992,9 @@ async function run(server, engine) {
         lastCompilingAtMs: Math.round(
           frames.findLast((f) => f.pending > 0)?.t ?? 0,
         ),
+        // Tile fetches started, aborted once started (the view left
+        // their tiles) and completed, and those started after the last input.
+        fetches: fetchTotals(frames, lastInput),
       };
       if (last.device) {
         // The gates' counts: what the device did while input held the

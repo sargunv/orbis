@@ -224,9 +224,18 @@ impl Map {
         let Some(middle) = middle else {
             let mut cover = cover_of(cover_view);
             focus_first(&mut cover, tms, focus);
+            let geojson = matches!(
+                plan.source_def(index).kind,
+                orb_style::SourceKind::GeoJson(_)
+            );
+            let coarse = (!geojson)
+                .then(|| self.coarse_level(view, tms, pyramid.min_zoom()))
+                .flatten();
+            let kept: Vec<TileIndex> = coarse.map_or_else(Vec::new, |z| level(tms, z));
             return Some(SourcePlan {
-                update: pyramid.plan(&cover),
+                update: pyramid.plan_keeping(&cover, &kept),
                 neighbours: Vec::new(),
+                coarse,
             });
         };
         let drawn = cover_of(middle);
@@ -242,7 +251,26 @@ impl Map {
         Some(SourcePlan {
             update: pyramid.plan(&cover),
             neighbours,
+            coarse: None,
         })
+    }
+
+    /// The level a source keeps loaded on a globe, `min_zoom` where that
+    /// is a tile or four (zoom 0 or 1), to stand in wherever the view's
+    /// tiles haven't come, as after a fling to the far side: while the
+    /// planet's radius is at most twice the viewport's longer side, when
+    /// a fling across a few view widths reaches ground no loaded tile
+    /// covers. Continuous maps alone; it draws only as a stand-in, so a
+    /// loaded view shows the same with it or without. MapLibre Native
+    /// keeps it so (mln-rs#334, after WhirlyGlobe's `forceMinLevel`).
+    fn coarse_level(&self, view: &View, tms: &TileMatrixSet, min_zoom: u8) -> Option<u8> {
+        let globe = view.globe().filter(|g| g.plane.is_none())?;
+        let (cols, rows) = tms.matrix_size(min_zoom);
+        let continuous = self.mode == RenderMode::Continuous;
+        (continuous && min_zoom <= 1 && cols * rows <= 4).then_some(())?;
+        let viewport = view.viewport();
+        let radius = orb_crs::sphere::RADIUS / globe.metres_per_px;
+        (radius <= 2.0 * viewport.width.max(viewport.height)).then_some(min_zoom)
     }
 
     /// Applies source `index`'s plan: its pyramid records it, its requests
@@ -261,10 +289,13 @@ impl Map {
         let Some(SourcePlan {
             mut update,
             neighbours,
+            coarse,
         }) = plan
         else {
             return;
         };
+        style.coarse.resize(style.sources.len(), None);
+        style.coarse[index] = coarse;
         // Tiles held for their labels stay until a placement covers what
         // replaced them ([`place_source`](Self::place_source)).
         update
@@ -327,17 +358,26 @@ impl Map {
             }
             requests.push(tile);
         }
-        report.tiles_loading += pyramid.loading() as u32;
-        // Loads nothing wants now give way to those the view waits for.
-        let unwanted = pyramid.unwanted_loads();
+        report.tiles_loading += pyramid.loading_for_view() as u32;
+        // Loads nothing wants now give way to those the view waits for,
+        // but for vector tiles beside the view, which the cache keeps:
+        // image tiles take the least recently used one's room in their
+        // pages ([`crate::arrival`]), so loading them on fetches as many.
+        let unwanted = pyramid.unwanted_loads(vector);
         style.draws[index] = Some(update.draw);
         let id = style.id;
         for tile in unwanted {
             self.services.jobs.cancel(id, key, tile);
         }
-        for (rank, tile) in requests.into_iter().enumerate() {
+        let ranks: Vec<u64> = {
+            let order = fetch_order(tms, self.camera.state().target);
+            (requests.iter())
+                .map(|&tile| order(tile, Tier::of(tile, coarse, true)))
+                .collect()
+        };
+        for (tile, rank) in requests.into_iter().zip(ranks) {
             let neighbour = neighbours.contains(&tile);
-            self.send_tile_job(index, tile, (None, false, neighbour), None, rank as u32);
+            self.send_tile_job(index, tile, (None, false, neighbour), None, rank);
         }
     }
 
@@ -1126,7 +1166,7 @@ pub(crate) fn focus_first(
 /// A tile's place in the order [`focus_first`] gives: by the squared
 /// distance of its centre from `focus` in `tms`'s plane (whose bits,
 /// never negative, order as it does), then finer first.
-pub(crate) fn focus_key(
+fn focus_key(
     tms: &TileMatrixSet,
     focus: Geodetic,
 ) -> impl Fn(orb_crs::CoveredTile) -> (u64, std::cmp::Reverse<u8>) {
@@ -1137,6 +1177,59 @@ pub(crate) fn focus_key(
         let distance = (tms.tile_bounds(t.index).center() + wrap).distance_squared(at);
         (distance.to_bits(), std::cmp::Reverse(t.index.z))
     }
+}
+
+/// Where a load stands in the fetch order, first first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Tier {
+    /// A source's coarse stand-ins ([`Map::coarse_level`]).
+    Coarse,
+    /// The view's tiles.
+    View,
+    /// Tiles beside the view, which load on after it leaves them
+    /// ([`orb_source::TilePyramid::unwanted_loads`]).
+    Beside,
+}
+
+impl Tier {
+    /// `tile`'s tier, for a source keeping `coarse`'s tiles, `used` by
+    /// the last plan or not.
+    pub(crate) fn of(tile: TileIndex, coarse: Option<u8>, used: bool) -> Self {
+        match (used, Some(tile.z) == coarse) {
+            (false, _) => Self::Beside,
+            (true, true) => Self::Coarse,
+            (true, false) => Self::View,
+        }
+    }
+}
+
+/// A load's place in the map's fetch order, lowest first, alike for
+/// every source and frame: by its [`Tier`], then by the distance of the
+/// tile's centre in `tms`'s plane (its nearest world copy) from the
+/// view's `focus`, the finer of two as far. The order [`focus_first`]
+/// gives a cover, which the map asks again of the loads still waiting
+/// each frame it plans ([`Map::reorder_fetches`]): the view the camera
+/// is at loads first, wherever it was when each load was asked for.
+pub(crate) fn fetch_order(tms: &TileMatrixSet, focus: Geodetic) -> impl Fn(TileIndex, Tier) -> u64 {
+    let at = tms.projection().forward(focus);
+    let period = tms.projection().wrap_period().unwrap_or(0.0);
+    move |tile, tier| {
+        let mut off = tms.tile_bounds(tile).center() - at;
+        if period > 0.0 {
+            off.x -= period * (off.x / period).round();
+        }
+        // Never negative: its bits order as it does, in 31 of them.
+        let distance = (off.length_squared() as f32).to_bits();
+        (tier as u64) << 40 | u64::from(distance) << 8 | u64::from(u8::MAX - tile.z)
+    }
+}
+
+/// The tiles of `tms`'s matrix at zoom `z`.
+fn level(tms: &TileMatrixSet, z: u8) -> Vec<TileIndex> {
+    let ((col, row), (cols, rows)) = (tms.matrix_start(z), tms.matrix_size(z));
+    (row..row + rows)
+        .flat_map(|r| (col..col + cols).map(move |c| TileIndex::new(z, c, r)))
+        .collect()
 }
 
 /// Per side of `tile` (top, right, bottom, left), how many zooms finer
@@ -1775,6 +1868,9 @@ pub(crate) struct SourcePlan {
     /// needed of: in Tile mode, the drawn tile's neighbours, which lay out
     /// that alone (`TileRequest::neighbour`).
     pub(crate) neighbours: Vec<TileIndex>,
+    /// The zoom whose tiles the source keeps loaded to stand in, on a
+    /// globe ([`Map::coarse_level`]).
+    pub(crate) coarse: Option<u8>,
 }
 
 impl SourcePlan {
@@ -1782,6 +1878,7 @@ impl SourcePlan {
         Self {
             update,
             neighbours: Vec::new(),
+            coarse: None,
         }
     }
 }
