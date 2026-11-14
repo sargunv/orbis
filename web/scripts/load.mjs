@@ -182,11 +182,11 @@ try {
           ...(backend && engine.startsWith("orbis") && { backend }),
         });
         const row = { engine, view, run };
-        // When the style's fetch starts, on the epoch clock: from whichever
-        // thread the engine fetches it.
-        let styleRequest;
+        // When each URL's first fetch starts, on the epoch clock: from
+        // whichever thread the engine fetches it, for the style's.
+        const requests = new Map();
         const onRequest = (r) => {
-          if (r.url() === styleOf(view) && !styleRequest) styleRequest = r;
+          if (!requests.has(r.url())) requests.set(r.url(), r);
         };
         context.on("request", onRequest);
         try {
@@ -208,7 +208,16 @@ try {
                 row,
                 await page.evaluate(() => window.loadDetails?.()),
               );
-            const started = styleRequest?.timing().startTime;
+            // The style's URL as the page resolved it: a catalogue key
+            // such as `tokyo` names a file of the build.
+            const url = await page.evaluate(() =>
+              typeof window.mapStyle === "string"
+                ? new URL(window.mapStyle, location.href).href
+                : undefined,
+            );
+            const started = requests
+              .get(url ?? styleOf(view))
+              ?.timing().startTime;
             if (started > 0) row.style = started - done.origin;
           } else {
             row.error = title;
