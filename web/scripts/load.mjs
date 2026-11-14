@@ -41,8 +41,9 @@
 // compiles them; `--warm` keeps both caches and the shaders as they are,
 // as a later visit finds them. `--cold` gives Orbis shaders unique to the
 // sample on this machine too. `--backend=webgl2` draws Orbis with WebGL 2 (`createMap`'s
-// `backend`). `--style=tokyo` loads the committed extract, which GL JS
-// can't (it has no `pmtiles://`).
+// `backend`); a list (`--backend=webgpu,webgl2`) runs Orbis on each, as
+// engines `orbis:<backend>` interleaved with the rest. `--style=tokyo`
+// loads the committed extract, which GL JS can't (it has no `pmtiles://`).
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -78,10 +79,14 @@ if (!style && !cache && !scene) {
   );
 }
 const runs = Number(option("runs", "5"));
-const engines = option(
-  "engines",
-  scene ? "orbis,gljs" : "orbis,gljs,mlnrs",
-).split(",");
+const backends = option("backend")?.split(",") ?? [];
+const engines = option("engines", scene ? "orbis,gljs" : "orbis,gljs,mlnrs")
+  .split(",")
+  .flatMap((e) =>
+    e.startsWith("orbis") && backends.length > 1
+      ? backends.map((b) => `${e}:${b}`)
+      : [e],
+  );
 // Native draws the style flat in Mercator: another scene, timed as if the same.
 if (scene === "globe" && engines.includes("native"))
   throw new Error("--scene=globe: MapLibre Native has no globe projection");
@@ -105,7 +110,6 @@ const throttle = option("throttle") && (Number(option("throttle")) * 1e6) / 8;
 const physical = args.includes("--physical");
 const warm = args.includes("--warm");
 const cold = args.includes("--cold");
-const backend = option("backend");
 const android = physical || args.includes("--android");
 const out = option(
   "out",
@@ -161,6 +165,9 @@ try {
     for (const view of views) {
       // The engines' order turns each run, so that neither always follows the other.
       for (const engine of run % 2 ? [...engines].reverse() : engines) {
+        const [label, own] = engine.split(":");
+        const [name, build] = label.split("@");
+        const backend = name === "orbis" ? (own ?? backends[0]) : undefined;
         const { page, close } = await samplePage();
         const context = page.context();
         const errors = [];
@@ -169,17 +176,17 @@ try {
         });
         page.on("pageerror", (e) => errors.push(e.message));
         const query = new URLSearchParams({
-          engine: engine.split("@")[0],
+          engine: name,
           style: styleOf(view),
           at: VIEWS[view],
           mlnrs: `${new URL(server.url).pathname}mlnrs/index.js`,
           ...(scene === "globe" && { globe: "" }),
           // Orbis's shaders unique to the sample.
-          ...(engine.startsWith("orbis") &&
+          ...(name === "orbis" &&
             (android ? !warm : cold) && {
               nonce: 1 + Math.floor(Math.random() * 9999),
             }),
-          ...(backend && engine.startsWith("orbis") && { backend }),
+          ...(backend && { backend }),
         });
         const row = { engine, view, run };
         // When each URL's first fetch starts, on the epoch clock: from
@@ -190,7 +197,6 @@ try {
         };
         context.on("request", onRequest);
         try {
-          const build = engine.split("@")[1];
           await page.goto(
             `${server.url}${build ? `@${build}/` : ""}load.html?${query}`,
           );
@@ -203,11 +209,15 @@ try {
           if (title.startsWith("done ")) {
             const done = JSON.parse(title.slice(5));
             Object.assign(row, done);
-            if (engine.startsWith("orbis"))
+            if (name === "orbis") {
               Object.assign(
                 row,
                 await page.evaluate(() => window.loadDetails?.()),
               );
+              // A backend the map didn't start on isn't the one asked for.
+              if (backend && row.backend !== backend)
+                row.error = `asked for ${backend}, drew on ${row.backend}`;
+            }
             // The style's URL as the page resolved it: a catalogue key
             // such as `tokyo` names a file of the build.
             const url = await page.evaluate(() =>
@@ -259,7 +269,7 @@ for (const [what, from] of [
   ["the style's fetch", "style"],
 ]) {
   lines.push(
-    `### Web load: ms from ${what} to first idle (${android ? `Chrome on Android, ${warm ? "warm" : "cold"} GPU cache` : `Chromium${cold ? ", Orbis with cold shaders" : ""}`}, ${backend === "webgl2" ? "Orbis on WebGL 2" : "WebGPU"}, ${width}×${height}${android ? "" : " @1×"}; ${runs} runs)`,
+    `### Web load: ms from ${what} to first idle (${android ? `Chrome on Android, ${warm ? "warm" : "cold"} GPU cache` : `Chromium${cold ? ", Orbis with cold shaders" : ""}`}, ${backends.length > 1 ? `Orbis on ${backends.join(" and ")}` : backends[0] === "webgl2" ? "Orbis on WebGL 2" : "WebGPU"}, ${width}×${height}${android ? "" : " @1×"}; ${runs} runs)`,
     "",
     `| view | ${engines.join(" | ")} |`,
     `|---|${engines.map(() => "---|").join("")}`,
@@ -267,7 +277,11 @@ for (const [what, from] of [
   const idles = (engine, view) =>
     results
       .filter(
-        (r) => r.engine === engine && r.view === view && r[from] !== undefined,
+        (r) =>
+          r.engine === engine &&
+          r.view === view &&
+          !r.error &&
+          r[from] !== undefined,
       )
       .map((r) => r.idle - r[from]);
   for (const view of views) {
