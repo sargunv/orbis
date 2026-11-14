@@ -783,9 +783,14 @@ impl Map {
                 self.warnings.append(&mut warnings);
                 // A vector tile left out of its tileset may mean no data
                 // there ([`MissingTiles`]); an image tile's ancestor fills
-                // the hole.
+                // the hole, as it does a `sparse` source's.
+                let sparse = matches!(
+                    &plan.source_def(source).kind,
+                    orb_style::SourceKind::Vector(v) if v.sparse
+                );
                 if self.missing_tiles == crate::MissingTiles::Empty
                     && plan.image_kind(source).is_none()
+                    && !sparse
                 {
                     pyramid.insert_empty(tile);
                 } else {

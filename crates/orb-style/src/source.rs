@@ -118,6 +118,10 @@ pub struct VectorSource {
     /// Feature ids from a property instead of the tile's ids: one key for
     /// every source layer, or one per named layer.
     pub promote_id: Option<PromoteId>,
+    /// `sparse`: an empty response (HTTP 204, or a tile an archive leaves
+    /// out) means the tileset has no tile there at that zoom, rather than
+    /// nothing there, so the tile's nearest ancestor draws in its place.
+    pub sparse: bool,
 }
 /// A vector source's `promoteId`.
 #[derive(Clone, Debug, PartialEq)]

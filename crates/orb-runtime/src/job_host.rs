@@ -606,6 +606,11 @@ impl JobHost {
                             _ if newest.load(Ordering::Relaxed) > request.style => {
                                 done(Err(format!("style {} was replaced", request.style)))
                             }
+                            // A sparse tileset has no tile there: an
+                            // ancestor stands in.
+                            Ok((bytes, _)) if bytes.is_empty() && worker.sparse(request.source) => {
+                                done(Ok(Loaded::Missing))
+                            }
                             Ok((bytes, encoding)) => {
                                 let request = TileRequest {
                                     encoding,

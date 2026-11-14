@@ -307,11 +307,18 @@ fn parse_vector(cx: &mut Cx, json: &Json, path: &str) -> Option<VectorSource> {
             None => cx.string(p, &at).map(PromoteId::All),
         }
     });
+    let sparse = json.get("sparse").is_some_and(|v| {
+        v.as_bool().unwrap_or_else(|| {
+            cx.error(format!("{path}.sparse"), v.span, "expected a boolean");
+            false
+        })
+    });
     let tileset = tileset?;
     (cx.diagnostics.errors.len() == errors).then_some(VectorSource {
         tileset,
         encoding,
         promote_id,
+        sparse,
     })
 }
 
@@ -605,6 +612,21 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn vector_sources_read_sparse() {
+        let sparse = |json: &str| {
+            let style = parse(&format!(r#"{{"type":"vector","tiles":["t"]{json}}}"#))?;
+            let SourceKind::Vector(v) = &style.sources[0].kind else {
+                panic!("{json}")
+            };
+            Ok::<_, crate::v8::Diagnostics>(v.sparse)
+        };
+        assert!(!sparse("").unwrap());
+        assert!(sparse(r#","sparse":true"#).unwrap());
+        assert!(!sparse(r#","sparse":false"#).unwrap());
+        assert!(sparse(r#","sparse":"yes""#).is_err());
+    }
+
     #[test]
     fn invalid_geojson_options_are_errors() {
         for option in [

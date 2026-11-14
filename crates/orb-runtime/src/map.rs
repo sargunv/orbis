@@ -560,7 +560,9 @@ impl Retired {
 /// Raster and raster-dem tiles draw their nearest ancestor either way, as
 /// GL JS and MapLibre Native draw them: a tileset leaves a vector tile out
 /// because nothing is in it, where a hole in imagery or elevation is a
-/// hole in coverage that coarser data fills. Other failures (server
+/// hole in coverage that coarser data fills. So does a `sparse` vector
+/// source's tile, missing or answered empty, since its tileset leaves
+/// tiles out where coarser ones hold the data. Other failures (server
 /// errors, the network) also draw the nearest ancestor, and the tile is
 /// requested again later, whatever this says.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

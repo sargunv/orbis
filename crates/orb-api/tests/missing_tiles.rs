@@ -131,6 +131,43 @@ fn a_child_tile_that_404s_draws_its_parent_or_nothing() {
     assert_eq!(results[3], blue, "the raster parent stands in either way");
 }
 
+#[test]
+fn an_empty_child_tile_of_a_sparse_source_draws_its_parent() {
+    let dir = common::Scratch::new("sparse-tiles");
+    std::fs::create_dir_all(dir.join("v/0/0")).unwrap();
+    std::fs::write(dir.join("v/0/0/0.pbf"), full_tile()).unwrap();
+    // Every tile past zoom 0 an empty response.
+    for z in 1..=2u32 {
+        for x in 0..1 << z {
+            std::fs::create_dir_all(dir.join(format!("v/{z}/{x}"))).unwrap();
+            for y in 0..1 << z {
+                std::fs::write(dir.join(format!("v/{z}/{x}/{y}.pbf")), b"").unwrap();
+            }
+        }
+    }
+    let vector = |sparse: bool| {
+        format!(
+            r#"{{"type": "vector", "maxzoom": 2, "sparse": {sparse},
+                "tiles": ["file://{}/v/{{z}}/{{x}}/{{y}}.pbf"]}}"#,
+            dir.display()
+        )
+    };
+    let fill = r##"{"id": "f", "type": "fill", "source": "s", "source-layer": "l",
+        "paint": {"fill-color": "#ff0000"}}"##;
+    for missing_tiles in [MissingTiles::Parent, MissingTiles::Empty] {
+        assert_eq!(
+            middle(&vector(true), fill, missing_tiles),
+            [255, 0, 0, 255],
+            "the parent stands in ({missing_tiles:?})"
+        );
+        assert_eq!(
+            middle(&vector(false), fill, missing_tiles),
+            [255, 255, 255, 255],
+            "the empty tile draws nothing ({missing_tiles:?})"
+        );
+    }
+}
+
 /// Fails each URL's first request, as a network that dropped out does,
 /// and serves `full_tile` after.
 struct FlakyNetwork(std::sync::Mutex<std::collections::HashSet<String>>);

@@ -555,6 +555,15 @@ impl TileWorker {
         }
     }
 
+    /// Whether `source` (a source key) is a `sparse` vector source, whose
+    /// empty responses mean its tileset has no tile there.
+    pub(crate) fn sparse(&self, source: u32) -> bool {
+        let at = self.plan.source_keys.iter().position(|&k| k == source);
+        at.is_some_and(
+            |at| matches!(&self.plan.style.sources[at].kind, SourceKind::Vector(v) if v.sparse),
+        )
+    }
+
     /// What a fetch of `source`'s data is (a source key): an image
     /// source's image, a GeoJSON document, or a tile.
     pub(crate) fn resource_kind(&self, source: u32) -> orb_host::ResourceKind {
