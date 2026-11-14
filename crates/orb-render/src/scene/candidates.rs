@@ -712,28 +712,36 @@ impl Scene {
     }
 
     /// Works out every row's [segments](Segment) again, after a layout:
-    /// those of a visible indexed node's stream (all its placements, or a
-    /// split node's untested or tested ones) whose candidates lie in more
-    /// than one block, or in one row changed in place out of its runs'
-    /// order. A stream in one row laid out in order, or hidden, draws its
-    /// row whole. An extrusion's streams draw by depth, in any order.
+    /// those of a visible indexed node's stream whose candidates lie in
+    /// more than one block, or in one row changed in place out of its
+    /// runs' order. A stream in one row laid out in order, or hidden,
+    /// draws its row whole. An extrusion's streams draw in their tiles'
+    /// order too, though depth decides most of what shows: a building
+    /// whole in one tile's data and cut at its neighbour's buffer draws
+    /// twice in the neighbour's square, whole from the one and cut from
+    /// the other, walls in one plane, and where they meet at one depth
+    /// the later draw shows.
     pub(super) fn lay_out_segments(&mut self) {
         let segments: Vec<Option<Vec<Segment>>> =
             (0..self.rows).map(|n| self.node_segments(n)).collect();
-        if segments != self.segments {
-            self.segments = segments;
-            self.segments_revision += 1;
+        let mut changed = [segments.len() != self.segments.len(); 2];
+        for (n, row) in segments.iter().enumerate() {
+            if self.segments.get(n) != Some(row) {
+                let apart = (self.nodes.get(n))
+                    .is_some_and(|e| matches!(e.stream, Stream::Whole(_) | Stream::Cut(_)));
+                changed[usize::from(apart)] = true;
+            }
         }
+        for (revision, changed) in self.segments_revision.iter_mut().zip(changed) {
+            *revision += u64::from(changed);
+        }
+        self.segments = segments;
     }
 
     /// Row `node`'s segments, if it draws in them.
     fn node_segments(&self, node: usize) -> Option<Vec<Segment>> {
         let entry = self.nodes.get(node)?;
-        let stream = matches!(
-            entry.stream,
-            Stream::All | Stream::Untested(_) | Stream::Tested(_)
-        );
-        if entry.cull.draw != NodeDraw::Indexed || !entry.cull.visible || !stream {
+        if entry.cull.draw != NodeDraw::Indexed || !entry.cull.visible {
             return None;
         }
         let held: Vec<(u32, usize)> = (self.blocks())

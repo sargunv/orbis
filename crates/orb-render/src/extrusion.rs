@@ -56,27 +56,33 @@ pub(crate) struct Extrusions {
 /// An extrusion layer's node, drawn apart.
 pub(crate) type NodeExtrusion = Apart;
 
-/// An extrusion node's two draws, each with the node group it binds: the
-/// buildings its placements may draw whole, which the whole pipeline
-/// draws, and its cut stream ([`Scene::second_row`](crate::scene::Scene::second_row)),
-/// what they draw cut, which the cut pipelines draw.
+/// An extrusion node's two streams, each with the node group it binds and
+/// its draws, which bind their blocks' scene groups: the buildings its
+/// placements may draw whole, which the whole pipeline draws, and its cut
+/// stream ([`Scene::second_row`](crate::scene::Scene::second_row)), what
+/// they draw cut, which the cut pipelines draw. Each draws its tiles in
+/// their order ([`Scene::segments`](crate::scene::Scene::segments)).
 #[derive(Clone, Debug)]
 pub(crate) struct Streams {
-    pub(crate) whole: (BindGroupId, RenderCommand),
-    pub(crate) cut: (BindGroupId, RenderCommand),
+    pub(crate) whole: (BindGroupId, Vec<RenderCommand>),
+    pub(crate) cut: (BindGroupId, Vec<RenderCommand>),
 }
 
 impl Streams {
     /// Records each of `draws` whose pipeline is made, a pipeline over a
     /// stream, binding each stream's group as it changes.
     fn record<'a>(
-        &self,
-        draws: impl Iterator<Item = (Option<RenderPipelineId>, &'a (BindGroupId, RenderCommand))>,
+        draws: impl Iterator<
+            Item = (
+                Option<RenderPipelineId>,
+                &'a (BindGroupId, Vec<RenderCommand>),
+            ),
+        >,
         commands: &mut Vec<RenderCommand>,
     ) {
         let mut bound = None;
-        for (pipeline, (group, draw)) in draws {
-            let Some(pipeline) = pipeline else {
+        for (pipeline, (group, draws)) in draws {
+            let Some(pipeline) = pipeline.filter(|_| !draws.is_empty()) else {
                 continue;
             };
             if bound != Some(*group) {
@@ -86,7 +92,8 @@ impl Streams {
                     group: *group,
                 });
             }
-            commands.extend([RenderCommand::SetPipeline(pipeline), draw.clone()]);
+            commands.push(RenderCommand::SetPipeline(pipeline));
+            commands.extend(draws.iter().cloned());
         }
     }
 }
@@ -379,35 +386,30 @@ impl Extrusions {
 
     /// An extrusion node's pass into its target over the shared depth,
     /// which the `first` clears, replaying its draws, recorded once, after
-    /// `before` (the terrain's depth): in each scene block, over its
-    /// group, the block's buildings (`streams`).
+    /// `before` (the terrain's depth): its buildings (`streams`, which a
+    /// bundle recorded before needs no more).
     pub(crate) fn prepare(
         &self,
         gpu: &mut dyn Gpu,
         node: &mut NodeExtrusion,
         buffers: &SceneBuffers,
-        (streams, shape): (&[(BindGroupId, Streams)], ExtrusionShape),
+        (streams, shape): (Option<&Streams>, ExtrusionShape),
         (first, mut before): (bool, Vec<RenderCommand>),
     ) -> RenderPass {
         let [whole, cut] = self.slot(shape);
         let bundle = *node.bundle.get_or_insert_with(|| {
+            let streams = streams.expect("a bundle to record has its draws");
             let mut commands = vec![RenderCommand::SetIndexBuffer {
                 buffer: buffers.compacted,
                 offset: 0,
             }];
-            for (scene, streams) in streams {
-                commands.push(RenderCommand::SetBindGroup {
-                    index: 0,
-                    group: *scene,
-                });
-                // The buildings, each pipeline over its stream; with clip
-                // distances the whole pipeline draws the cut stream's
-                // buildings it clips by planes too.
-                let [w, c] = [&streams.whole, &streams.cut];
-                let planes = self.planes.then_some((whole, c));
-                let draws = [(whole, w), (cut, c)].into_iter().chain(planes);
-                streams.record(draws, &mut commands);
-            }
+            // The buildings, each pipeline over its stream; with clip
+            // distances the whole pipeline draws the cut stream's
+            // buildings it clips by planes too.
+            let [w, c] = [&streams.whole, &streams.cut];
+            let planes = self.planes.then_some((whole, c));
+            let draws = [(whole, w), (cut, c)].into_iter().chain(planes);
+            Streams::record(draws, &mut commands);
             gpu.create_render_bundle(
                 &RenderBundleDesc {
                     label: "3d layer",

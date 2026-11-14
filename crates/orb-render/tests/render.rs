@@ -4,8 +4,9 @@ use orb_hal::{Gpu, TextureDesc, TextureFormat, TextureId, TextureUsages};
 use orb_hal_wgpu::WgpuGpu;
 use orb_layout::fill;
 use orb_render::{
-    Blend, ClipRect, Curve, DemRef, Family, FillPaint, FrameBlock, FrameLight, FrameStats,
-    MeshData, NodePaint, PlacementTarget, Renderer, SceneCapacity, TargetFormat, TileRow, Words,
+    Blend, ClipRect, Curve, DemRef, ExtrusionPaint, Family, FillPaint, FrameBlock, FrameLight,
+    FrameStats, MeshData, NodePaint, PlacementTarget, Renderer, SceneCapacity, TargetFormat,
+    TileRow, Words,
 };
 use orb_tile::{GeometryType, LayerBuilder};
 
@@ -1526,6 +1527,93 @@ fn overlapping_fills_draw_in_tile_order_whatever_block_they_landed_in() {
     };
     for arrivals in [[0, 1, 2], [2, 1, 0], [1, 2, 0], [2, 0, 1]] {
         assert_eq!(draw(arrivals), [255, 0, 0, 255], "arrived {arrivals:?}");
+    }
+}
+
+/// Where one 3D layer's buildings from three tiles stand in one place, as
+/// a building whole in one tile's data and cut at its neighbour's buffer
+/// does in the neighbour's square, their faces meet at one depth, and the
+/// tile order says which shows, whatever block of the pools each landed
+/// in: an extrusion node with tiles in several blocks draws them in the
+/// tiles' order, not the blocks'.
+#[test]
+fn coinciding_buildings_draw_in_tile_order_whatever_block_they_landed_in() {
+    use orb_shaders::layout::{EXTRUSION_ROW_CENTROID, EXTRUSION_ROW_WHOLE, EXTRUSION_ROW_WORDS};
+    let mut b = LayerBuilder::new("building", 4096);
+    b.begin_feature(None, GeometryType::Polygon);
+    b.begin_part();
+    b.begin_ring();
+    for v in [
+        [1024, 1024],
+        [3072, 1024],
+        [3072, 3072],
+        [1024, 3072],
+        [1024, 1024],
+    ] {
+        b.push_vertex(v);
+    }
+    let layer = b.finish();
+    let mesh = orb_layout::extrusion::layout(&layer, &[0]);
+    let [x, y] = orb_layout::extrusion::centroid(&layer, 0, EXTENT);
+    let colors = [
+        [0.0, 1.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+    ];
+    let draw = |arrivals: [usize; 3]| {
+        // A block holds one tile's building: each tile takes a block of
+        // its own.
+        let capacity = SceneCapacity {
+            vertex_words: mesh.vertices.len() as u32,
+            index_words: mesh.indices.len() as u32,
+            max_vertex_words: 1 << 12,
+            max_index_words: 1 << 12,
+            ..Harness::SMALL
+        };
+        let mut h = Harness::with(4, 2, 8, capacity, None);
+        h.renderer.set_nodes(&mut h.gpu, &[Family::FillExtrusion]);
+        let paint = ExtrusionPaint {
+            color: [0.0; 4],
+            height: 0.5,
+            base: 0.0,
+            opacity: 1.0,
+            translate: Default::default(),
+            vertical_gradient: false,
+            table_mask: 1,
+            curves: [Curve::STEP; 4],
+            state: Default::default(),
+            elevation: None,
+        };
+        h.renderer
+            .set_paint(&mut h.gpu, 0, &NodePaint::Extrusion(paint));
+        let mut tiles = [None; 3];
+        for i in arrivals {
+            let key = orb_render::TileKey {
+                source: 0,
+                tile: orb_crs::TileIndex::new(2, i as u32, 0),
+            };
+            let tile = h.renderer.add_tile(&mut h.gpu, key, None).unwrap();
+            h.renderer
+                .place(tile, EXTENT, &[full_view_tile(0.0)])
+                .unwrap();
+            let mut props = [0; EXTRUSION_ROW_WORDS];
+            props[0] = orb_render::pack_color(colors[i]);
+            props[1] = props[0];
+            props[EXTRUSION_ROW_CENTROID] = u32::from(x as u16) | u32::from(y as u16) << 16;
+            props[EXTRUSION_ROW_WHOLE] = 1;
+            let data = MeshData::new(&mesh, &props, EXTRUSION_ROW_WORDS as u32);
+            h.renderer
+                .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data, &Default::default())
+                .unwrap();
+            tiles[i] = Some(tile);
+        }
+        // Tiles 0, 1, 2: the red roof shows, lit.
+        h.renderer.set_tile_order(0, &tiles.map(Option::unwrap));
+        let [r, g, b, _] = pixel(&h.render(), 32, 32);
+        r > 128 && g < 32 && b < 32
+    };
+    for arrivals in [[0, 1, 2], [2, 1, 0], [1, 2, 0], [2, 0, 1]] {
+        assert!(draw(arrivals), "arrived {arrivals:?}");
     }
 }
 

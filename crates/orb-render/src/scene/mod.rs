@@ -1370,9 +1370,10 @@ pub(crate) struct Scene {
     segments: Vec<Option<Vec<Segment>>>,
     /// The node rows changed since the segments were worked out.
     segments_dirty: bool,
-    /// Changes whenever a node's segments do: bundles that recorded them
-    /// record again.
-    segments_revision: u64,
+    /// Change whenever a node's segments do, the map's bundles' and the
+    /// extrusions' streams' apart: bundles that recorded them record
+    /// again.
+    segments_revision: [u64; 2],
     /// The node rows as the last rebuild laid them out, with their cull
     /// parameters (margin, elevation, visibility) patched since.
     node_rows: Vec<u32>,
@@ -1562,7 +1563,7 @@ impl Scene {
             relaid: false,
             segments: Vec::new(),
             segments_dirty: false,
-            segments_revision: 0,
+            segments_revision: [0; 2],
             node_rows: Vec::new(),
             params_dirty: false,
             cull_groups: 0,
@@ -3420,8 +3421,10 @@ impl Scene {
         self.segments.get(node as usize)?.as_deref()
     }
 
-    /// Changes whenever a node's [segments](Self::segments) do.
-    pub(crate) fn segments_revision(&self) -> u64 {
+    /// Change whenever a node's [segments](Self::segments) do: those the
+    /// map's bundles draw, and those of the extrusions' streams, which
+    /// draw apart.
+    pub(crate) fn segments_revision(&self) -> [u64; 2] {
         self.segments_revision
     }
 

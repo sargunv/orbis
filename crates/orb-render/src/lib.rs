@@ -526,9 +526,9 @@ pub struct Renderer {
     glyphs_bound: u32,
     /// The scene's buffer revision its groups bind.
     buffers_bound: u64,
-    /// The scene's segments revision the bundles drew
-    /// ([`Scene::segments`]).
-    segments_drawn: u64,
+    /// The scene's segments revisions the bundles drew, the map's and the
+    /// extrusions' ([`Scene::segments`]).
+    segments_drawn: [u64; 2],
     /// What the scene group binds besides the scene's buffers.
     image_bindings: ImageBindings,
     /// The image texture the scene group binds.
@@ -815,7 +815,7 @@ impl Renderer {
             terrain_depth_bound: no_terrain_depth,
             glyphs_bound: glyphs.revision(),
             buffers_bound: 0,
-            segments_drawn: 0,
+            segments_drawn: [0; 2],
             glyphs,
             images_bound: image_bindings.texture,
             image_bindings,
@@ -2735,13 +2735,20 @@ impl Renderer {
             self.shrink(gpu);
         }
         let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame, self.settling);
-        // Nodes that draw in stretches of one block's slots record them.
+        // Nodes that draw in stretches of one block's slots record them,
+        // extrusions' passes too.
         // The drape's recorded draws take each slot's stretches as its
         // pass draws ([`Renderer::slot_commands`]): they, the nodes they
         // left out and the slots' bundles stay.
-        let segments = self.scene.segments_revision();
-        if segments != self.segments_drawn {
-            self.segments_drawn = segments;
+        let [segments, apart] = self.scene.segments_revision();
+        if apart != self.segments_drawn[1] {
+            self.segments_drawn[1] = apart;
+            for extrusion in self.nodes.iter_mut().filter_map(|n| n.extrusion.as_mut()) {
+                extrusion.forget_bundle(gpu);
+            }
+        }
+        if segments != self.segments_drawn[0] {
+            self.segments_drawn[0] = segments;
             self.drop_bundles(gpu);
             let terrain_on = self.terrain.as_ref().is_some_and(terrain::Terrain::active);
             for node in &self.nodes {
@@ -3325,29 +3332,30 @@ impl Renderer {
         let terrain = (self.terrain.as_ref()).filter(|t| t.active());
         let mut terrain_depth = terrain.map(|t| t.depth_commands(terrain::THREE_D));
         let mut first = !split;
-        for (index, node) in self.nodes.iter_mut().enumerate() {
-            let Some(target) = node
-                .extrusion
-                .as_mut()
-                .filter(|_| extrusions_ready && node.drawn)
-            else {
+        for index in 0..self.nodes.len() {
+            let node = &self.nodes[index];
+            let Some(extrusion) = node.extrusion.as_ref() else {
                 continue;
             };
-            let draw = |row| self.driver.draw(&buffers, row, NodeDraw::Indexed);
-            let cut = self.scene.second_row(index as u32).zip(node.second_group);
-            let (cut_row, cut_group) = cut.expect("an extrusion node draws a cut stream");
-            // Each block's buildings, over its group.
-            let streams: Vec<(BindGroupId, extrusion::Streams)> = (self.scene.blocks())
-                .filter_map(|block| {
-                    let group = self.draw_groups.get(block as usize).copied().flatten()?;
-                    let [whole, cut] = [index as u32, cut_row].map(|r| self.scene.row(r, block));
-                    let streams = extrusion::Streams {
-                        whole: (node.group, draw(whole)),
-                        cut: (cut_group, draw(cut)),
-                    };
-                    Some((group, streams))
-                })
-                .collect();
+            if !(extrusions_ready && node.drawn) {
+                continue;
+            }
+            // Its draws, where its bundle records them again.
+            let streams = extrusion.bundle.is_none().then(|| {
+                let cut = self.scene.second_row(index as u32).zip(node.second_group);
+                let (cut_row, cut_group) = cut.expect("an extrusion node draws a cut stream");
+                let draws = |row| {
+                    let mut commands = Vec::new();
+                    self.whole_draws(&self.draw_groups, row, &mut commands);
+                    commands
+                };
+                extrusion::Streams {
+                    whole: (node.group, draws(index as u32)),
+                    cut: (cut_group, draws(cut_row)),
+                }
+            });
+            let shape = node.shape.elevation;
+            let target = (self.nodes[index].extrusion.as_mut()).expect("an extrusion node");
             let before = if first {
                 terrain_depth.take().unwrap_or_default()
             } else {
@@ -3357,7 +3365,7 @@ impl Renderer {
                 gpu,
                 target,
                 &buffers,
-                (&streams, node.shape.elevation),
+                (streams.as_ref(), shape),
                 (first, before),
             );
             first = false;
