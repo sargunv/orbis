@@ -86,6 +86,23 @@ checksum_source = "mise-versions"
 url = "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.darwin.aarch64.tar.xz"
 url_api = "https://api.github.com/repos/koalaman/shellcheck/releases/assets/279056932"
 
+[[tools."aqua:nextest-rs/nextest/cargo-nextest"]]
+version = "0.9.151"
+backend = "aqua:nextest-rs/nextest/cargo-nextest"
+specifiers = ["0.9.151"]
+
+[tools."aqua:nextest-rs/nextest/cargo-nextest"."platforms.linux-x64"]
+checksum = "sha256:1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4"
+checksum_source = "mise-versions"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.151/cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/703600788"
+
+[tools."aqua:nextest-rs/nextest/cargo-nextest"."platforms.macos-arm64"]
+checksum = "sha256:d1d7d025d4bfc9fb154cd76aea3949bd78534829a0589abefa6e5dd4edb135dd"
+checksum_source = "mise-versions"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.151/cargo-nextest-0.9.151-universal-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/703616437"
+
 [[tools."aqua:pnpm/pnpm"]]
 version = "11.25.0"
 backend = "aqua:pnpm/pnpm"

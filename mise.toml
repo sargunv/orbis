@@ -32,6 +32,9 @@ ORB_ANDROID_EMULATOR_API = "{{vars.android_system_image_api}}"
 "cargo:twiggy" = "0.8.0"
 # `cargo xtask fuzz` runs orb-fuzz's targets with it.
 "cargo:cargo-fuzz" = "0.13.2"
+# `cargo xtask check` runs the tests under nextest, which names a test that
+# hangs and stops it (`.config/nextest.toml`).
+"aqua:nextest-rs/nextest/cargo-nextest" = "0.9.151"
 "core:node" = "24.22.2"
 "aqua:pnpm/pnpm" = "11.25.0"
 # The Android app: Gradle and its JDK package and sign the APK.

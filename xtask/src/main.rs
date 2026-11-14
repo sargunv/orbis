@@ -30,10 +30,11 @@ cargo xtask <task>
   check [--affected [--base <rev>]]  formatting (dprint), clippy (native,
                wasm32, orb-hal-wgpu for Windows and orb-ffi for 32-bit
                Android (armv7, i686, with ANDROID_HOME's NDK) where those
-               Rust targets are installed), tests and boundary rules;
-               --affected scopes them to the packages changed since <rev>'s
-               merge base with HEAD (default origin/main), the working tree
-               and untracked files, and every package depending on those
+               Rust targets are installed), tests (under nextest, which
+               stops a hung one by name) and boundary rules; --affected
+               scopes them to the packages changed since <rev>'s merge
+               base with HEAD (default origin/main), the working tree and
+               untracked files, and every package depending on those
   clippy [--fix]  clippy over the workspace, native and wasm32 (WebGL 2 too), denying
                warnings; --fix applies its suggestions
   android [--run [--leakcheck]]  the Android app: orb-android as
@@ -294,10 +295,10 @@ fn checks(selection: &affected::Selection) -> Result<(), String> {
     eprintln!("{}", selection.report());
 
     let mut clippy = vec!["clippy", "--all-targets", "--quiet"];
-    let mut test = vec!["test", "--quiet"];
+    let mut test = nextest();
     for name in &packages {
         clippy.extend(["-p", name.as_str()]);
-        test.extend(["-p", name.as_str()]);
+        test.args(["-p", name.as_str()]);
     }
     clippy.extend(["--", "-D", "warnings"]);
     cargo(&clippy)?;
@@ -327,7 +328,7 @@ fn checks(selection: &affected::Selection) -> Result<(), String> {
     if selection.contains("orb-ffi") {
         android::clippy_32bit()?;
     }
-    cargo(&test)?;
+    run(&mut test)?;
     cpu_driver_tests(selection)?;
     if selection.contains("orb-ffi") {
         mln_ffi::check_declarations()?;
@@ -341,21 +342,34 @@ fn checks(selection: &affected::Selection) -> Result<(), String> {
 /// selected packages among them. `orb-runtime`'s `drivers` test holds the
 /// CPU driver to the GPU's word for word in every run.
 fn cpu_driver_tests(selection: &affected::Selection) -> Result<(), String> {
-    // One run each: `--test` would narrow orb-render's too.
-    let runs: [(&str, &[&str]); 3] = [
-        ("orb-render", &[]),
-        ("orb-runtime", &["--test", "frames"]),
-        ("orb-api", &["--test", "path"]),
+    let runs = [
+        ("orb-render", "package(orb-render)"),
+        ("orb-runtime", "package(orb-runtime) & binary(frames)"),
+        ("orb-api", "package(orb-api) & binary(path)"),
     ];
-    for (package, tests) in runs {
+    let mut test = nextest();
+    let mut filters = Vec::new();
+    for (package, filter) in runs {
         if selection.contains(package) {
-            run(Command::new(env!("CARGO"))
-                .args(["test", "--quiet", "-p", package])
-                .args(tests)
-                .env("ORB_DRIVER", "cpu-tex"))?;
+            test.args(["-p", package]);
+            filters.push(format!("({filter})"));
         }
     }
-    Ok(())
+    if filters.is_empty() {
+        return Ok(());
+    }
+    run(test
+        .args(["-E", &filters.join(" | ")])
+        .env("ORB_DRIVER", "cpu-tex"))
+}
+
+/// `cargo nextest run`, which `check` runs the tests under: each test in a
+/// process of its own, named and stopped once it runs past the time
+/// `.config/nextest.toml` gives it.
+fn nextest() -> Command {
+    let mut command = Command::new(env!("CARGO"));
+    command.args(["nextest", "run", "--cargo-quiet", "--no-tests=pass"]);
+    command
 }
 
 /// Clippy over orb-hal-wgpu for Windows, where its D3D12 code builds: it
