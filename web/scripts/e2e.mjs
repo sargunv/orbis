@@ -2618,54 +2618,63 @@ async function regions(browser, server) {
         .browserType()
         .launchPersistentContext(profile, { headless: true, viewport })
     : await browser.newContext({ viewport });
-  const { page, errors } = await open(context, viewport);
-  const idle = async (page) => {
-    await page.waitForFunction(
-      () =>
-        ["idle", "error"].includes(document.getElementById("app")?.dataset.map),
-      null,
-      { timeout: 60_000 },
+  // The context and its profile go whether the check passes or not.
+  try {
+    const { page, errors } = await open(context, viewport);
+    const idle = async (page) => {
+      await page.waitForFunction(
+        () =>
+          ["idle", "error"].includes(
+            document.getElementById("app")?.dataset.map,
+          ),
+        null,
+        { timeout: 60_000 },
+      );
+      return page.evaluate(() => document.getElementById("app").dataset.map);
+    };
+    const url = `${server.url}?style=${encodeURIComponent(`${tiles}style.json`)}#1/0/0`;
+    await page.goto(url);
+    assert.equal(await idle(page), "idle", errors.join("\n"));
+    await page.click("#menu-button");
+    await page.click("#offline-button");
+    await page.click("#offline .primary");
+    // A download that stops says why on the console, not in the dialog.
+    await page
+      .waitForFunction(
+        () =>
+          /Downloaded|failed/.test(
+            document.querySelector(".offline-status")?.textContent ?? "",
+          ),
+        null,
+        { timeout: 30_000 },
+      )
+      .catch(() => {});
+    const status = await page.textContent(".offline-status");
+    assert.ok(
+      status.startsWith("Downloaded"),
+      `${status}\n${errors.join("\n")}`,
     );
-    return page.evaluate(() => document.getElementById("app").dataset.map);
-  };
-  const url = `${server.url}?style=${encodeURIComponent(`${tiles}style.json`)}#1/0/0`;
-  await page.goto(url);
-  assert.equal(await idle(page), "idle", errors.join("\n"));
-  await page.click("#menu-button");
-  await page.click("#offline-button");
-  await page.click("#offline .primary");
-  // A download that stops says why on the console, not in the dialog.
-  await page
-    .waitForFunction(
-      () =>
-        /Downloaded|failed/.test(
-          document.querySelector(".offline-status")?.textContent ?? "",
-        ),
-      null,
-      { timeout: 30_000 },
-    )
-    .catch(() => {});
-  const status = await page.textContent(".offline-status");
-  assert.ok(status.startsWith("Downloaded"), `${status}\n${errors.join("\n")}`);
-  assert.deepEqual(errors, []);
-  // Reopened in a page of the same context, which keeps the origin's
-  // files, every context reads the region, and the tiles come from its
-  // extract. A page of its own, as a later visit is: what the first logs
-  // as it goes (in WebKit, loads of the blob URLs it made failing access
-  // control) stays the first's.
-  const fetched = [];
-  await context.route(`${tiles}*/*/*`, (route) => {
-    fetched.push(route.request().url());
-    return route.abort("internetdisconnected");
-  });
-  await page.close();
-  const again = await open(context, viewport);
-  await again.page.goto(url);
-  assert.equal(await idle(again.page), "idle", again.errors.join("\n"));
-  assert.deepEqual(fetched, [], "tiles the region holds went to the network");
-  assert.deepEqual(again.errors, []);
-  await context.close();
-  if (profile) await rm(profile, { recursive: true, force: true });
+    assert.deepEqual(errors, []);
+    // Reopened in a page of the same context, which keeps the origin's
+    // files, every context reads the region, and the tiles come from its
+    // extract. A page of its own, as a later visit is: what the first logs
+    // as it goes (in WebKit, loads of the blob URLs it made failing access
+    // control) stays the first's.
+    const fetched = [];
+    await context.route(`${tiles}*/*/*`, (route) => {
+      fetched.push(route.request().url());
+      return route.abort("internetdisconnected");
+    });
+    await page.close();
+    const again = await open(context, viewport);
+    await again.page.goto(url);
+    assert.equal(await idle(again.page), "idle", again.errors.join("\n"));
+    assert.deepEqual(fetched, [], "tiles the region holds went to the network");
+    assert.deepEqual(again.errors, []);
+  } finally {
+    await context.close();
+    if (profile) await rm(profile, { recursive: true, force: true });
+  }
   console.log("regions: a plain style drew from its downloaded region");
 }
 
