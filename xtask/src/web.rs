@@ -28,8 +28,8 @@ const NAMED_CORE: &str = "target/web/core-names.wasm";
 /// crossing one means something grew. Find what in the per-crate report;
 /// if the growth earns its bytes, raise the level to the new size plus the
 /// same margin, and when a change shrinks a module, lower it.
-const CORE_WATCH_KIB: usize = 745;
-const CORE_GL_WATCH_KIB: usize = 1040;
+const CORE_WATCH_KIB: usize = 730;
+const CORE_GL_WATCH_KIB: usize = 1020;
 const SHAPER_WATCH_KIB: usize = 380;
 
 /// Crates whose code the size report attributes separately.
