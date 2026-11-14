@@ -62,6 +62,8 @@ const CHECKED_TEXTURE_BYTES: u64 = 64 << 20;
 /// and not yet submitted, which a frame that redraws every drape slot of
 /// a steep view passes where it draws their mip levels (WebGL 2's frame
 /// driver: 11 render passes and 10 copies a slot, 3000 passes in all).
+/// The copies and debug markers between two passes share one, so 1024
+/// passes make at most 3072, and the uploads and readback a few more.
 const PASSES_PER_ENCODER: usize = 1024;
 
 /// The frame driver a native device's renderers take: `gpu` (the default

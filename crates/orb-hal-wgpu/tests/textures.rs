@@ -208,16 +208,19 @@ fn packed_writes_in_one_submission_all_land() {
 }
 
 /// A submission of thousands of passes, as WebGL 2's frame driver makes
-/// drawing every drape slot's mip levels through scratch: each pass runs,
-/// in order, and the device holds. wgpu's Metal back end lost the device
-/// once one command encoder held more than 4096 command buffers (#204).
+/// drawing every drape slot's mip levels through scratch, inside debug
+/// groups as a capture records them: each pass runs, in order, and the
+/// device holds. wgpu's Metal back end lost the device once one command
+/// encoder held more than 4096 command buffers (#204).
 #[test]
 fn thousands_of_passes_in_one_submission_run_in_order() {
+    const ROUNDS: u32 = 3000;
     let mut gpu = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
-    let texture = |gpu: &mut WgpuGpu, label| {
+    gpu.set_debug_groups(true);
+    let texture = |gpu: &mut WgpuGpu, label, width| {
         gpu.create_texture(&TextureDesc {
             label,
-            width: 256,
+            width,
             height: 1,
             array_layers: 1,
             dimension: TextureViewDimension::D2,
@@ -229,39 +232,47 @@ fn thousands_of_passes_in_one_submission_run_in_order() {
             mip_levels: 1,
         })
     };
-    let (scratch, kept) = (texture(&mut gpu, "scratch"), texture(&mut gpu, "kept"));
-    // A level drawn into scratch and copied out, 3000 times.
-    let passes: Vec<Pass> = (0..3000u32)
-        .flat_map(|i| {
-            let value = f64::from(i % 255) / 255.0;
-            [
-                Pass::Render(RenderPass {
-                    label: "level",
-                    colors: vec![ColorAttachment {
-                        target: scratch,
-                        resolve: None,
-                        store: StoreOp::Store,
-                        load: LoadOp::Clear([value, 0.0, 0.0, 1.0]),
-                    }],
-                    depth: None,
-                    commands: Vec::new(),
-                }),
-                Pass::CopyTextureLevel {
-                    source: (scratch, 0),
-                    destination: (kept, 0),
-                    copies: vec![TextureCopy {
-                        from: [0; 3],
-                        to: [0; 3],
-                        size: [256, 1, 1],
-                    }],
-                },
-            ]
-        })
-        .collect();
+    let scratch = texture(&mut gpu, "scratch", 1);
+    let kept = texture(&mut gpu, "kept", ROUNDS.next_multiple_of(256));
+    // Round i draws i into scratch and copies it to texel i of `kept`, in
+    // a debug group of its own inside one around them all.
+    let value = |i: u32| (i % 255) as u8;
+    let mut passes = vec![Pass::PushDebugGroup("levels")];
+    for i in 0..ROUNDS {
+        passes.extend([
+            Pass::PushDebugGroup("level"),
+            Pass::Render(RenderPass {
+                label: "level",
+                colors: vec![ColorAttachment {
+                    target: scratch,
+                    resolve: None,
+                    store: StoreOp::Store,
+                    load: LoadOp::Clear([f64::from(value(i)) / 255.0, 0.0, 0.0, 1.0]),
+                }],
+                depth: None,
+                commands: Vec::new(),
+            }),
+            Pass::CopyTextureLevel {
+                source: (scratch, 0),
+                destination: (kept, 0),
+                copies: vec![TextureCopy {
+                    from: [0; 3],
+                    to: [i, 0, 0],
+                    size: [1, 1, 1],
+                }],
+            },
+            Pass::PopDebugGroup,
+        ]);
+    }
+    passes.push(Pass::PopDebugGroup);
     gpu.submit(&passes);
     gpu.end_frame(0);
     assert!(!gpu.lost(), "{:?}", gpu.lost_reason());
-    assert_eq!(read_layers(&gpu, kept), [(2999 % 255) as u8; 256]);
+    let texels = read_layers(&gpu, kept);
+    let wrong: Vec<u32> = (0..ROUNDS)
+        .filter(|&i| texels[i as usize] != value(i))
+        .collect();
+    assert!(wrong.is_empty(), "rounds whose copy is wrong: {wrong:?}");
 }
 
 /// An array copied into a larger one, as a page grows: every layer lands
