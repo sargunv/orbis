@@ -1867,8 +1867,8 @@ fn a_fast_zoom_drapes_state_paint_of_its_new_zoom() {
     fresh.jump_to(&camera(at(16.0)));
     common::settle(&mut fresh, &mut target);
     let rest = centre(&target.read_pixels().unwrap());
-    assert!(
-        jumped.iter().zip(&rest).all(|(a, b)| a.abs_diff(*b) <= 2),
+    assert_eq!(
+        jumped, rest,
         "the first frame at z16 draws {jumped:?}, a fresh map at rest {rest:?}"
     );
 }
