@@ -128,13 +128,13 @@ impl Heatmaps {
     }
 
     /// The node's density pass: its draw in each scene block, over the
-    /// block's group (`draws`).
+    /// block's group (`draws`, asked for only when its bundle records).
     pub(crate) fn prepare(
         &self,
         gpu: &mut dyn Gpu,
         node: &mut NodeHeatmap,
         group: BindGroupId,
-        draws: &[(BindGroupId, RenderCommand)],
+        draws: impl FnOnce() -> Vec<(BindGroupId, RenderCommand)>,
     ) -> Option<RenderPass> {
         let pipeline = self.pipeline?;
         let target = &node.apart.offscreen.as_ref()?.target;
@@ -143,13 +143,13 @@ impl Heatmaps {
                 RenderCommand::SetPipeline(pipeline),
                 RenderCommand::SetBindGroup { index: 1, group },
             ];
-            for (scene, draw) in draws {
+            for (scene, draw) in draws() {
                 commands.extend([
                     RenderCommand::SetBindGroup {
                         index: 0,
-                        group: *scene,
+                        group: scene,
                     },
-                    draw.clone(),
+                    draw,
                 ]);
             }
             gpu.create_render_bundle(

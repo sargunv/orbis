@@ -3257,21 +3257,23 @@ impl Renderer {
         stats.dispatches += dispatches;
         let start = passes.len();
         for (index, node) in self.nodes.iter_mut().enumerate() {
-            let draws: Vec<(BindGroupId, RenderCommand)> = (self.scene.blocks())
-                .filter_map(|block| {
-                    let row = self.scene.row(index as u32, block);
-                    let group = self.draw_groups.get(block as usize).copied().flatten()?;
-                    let draw = self
-                        .driver
-                        .draw(self.scene.buffers(), row, NodeDraw::Points);
-                    Some((group, draw))
-                })
-                .collect();
+            let draws = || {
+                (self.scene.blocks())
+                    .filter_map(|block| {
+                        let row = self.scene.row(index as u32, block);
+                        let group = self.draw_groups.get(block as usize).copied().flatten()?;
+                        let draw = self
+                            .driver
+                            .draw(self.scene.buffers(), row, NodeDraw::Points);
+                        Some((group, draw))
+                    })
+                    .collect()
+            };
             if let Some(heatmap) = &mut node.heatmap
                 && node.drawn
                 && cull_ready
                 && self.heatmaps.ready(gpu, &self.composites)
-                && let Some(pass) = self.heatmaps.prepare(gpu, heatmap, node.group, &draws)
+                && let Some(pass) = self.heatmaps.prepare(gpu, heatmap, node.group, draws)
             {
                 stats.draws += 1;
                 passes.push(Pass::Render(pass));
