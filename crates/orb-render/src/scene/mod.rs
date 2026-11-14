@@ -3200,8 +3200,8 @@ impl Scene {
     /// Halves the property rows or a pool of the block for what draws from
     /// lists while what it holds all lies in its lowest quarter, down to
     /// its first size: a view that emptied gives back what it grew them
-    /// to, and each keeps room to grow fourfold before it doubles again. At most one a call, copying what it keeps:
-    /// whether one shrank.
+    /// to, and each keeps room to grow fourfold before it doubles again.
+    /// At most one a call, copying what it keeps: whether one shrank.
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
         let old = self.capacity.prop_words;
         let props = shrunk(old, self.prop_arena.free_from(old), self.first.prop_words);

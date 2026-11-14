@@ -299,10 +299,10 @@ mod tests {
             "the view grew the pools: {memory:#?}"
         );
         // Blocks copy nothing as the view fills them: what moves as it
-        // grows (the property rows, the block of what draws as points)
-        // copies no more than the rows and tables hold, on either driver
-        // and either backing of the tables, whose tables move alone; the
-        // glyph pages and chunk rows copy nothing.
+        // grows (the property rows, the block of what draws as points with
+        // its chunk rows) copies no more than the rows and tables hold, on
+        // either driver and either backing of the tables, whose tables
+        // move alone; the glyph pages copy nothing.
         assert!(
             copied <= memory.props.allocated + memory.tables,
             "{copied} bytes copied growing the scene: {memory:#?}"

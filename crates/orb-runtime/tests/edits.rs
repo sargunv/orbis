@@ -935,10 +935,9 @@ fn sky_and_light_edits_ease_then_match_a_fresh_map() {
 }
 
 /// Layers added to a loaded, pitched view get the scene room they need,
-/// as in a fresh load of the edited style: an edit's upload once grew the
-/// pools by one doubling and never the chunk table, so heavy layers added
-/// over a loaded view, as a style editor adds them, went undrawn. Taking
-/// them out again gives the room back.
+/// as in a fresh load of the edited style, however far past the first
+/// sizes heavy layers added over a loaded view (as a style editor adds
+/// them) take the pools. Taking them out again gives the room back.
 #[test]
 fn layers_added_to_a_loaded_pitched_view_get_scene_room() {
     let scratch = crate::common::Scratch::new("edits-room");

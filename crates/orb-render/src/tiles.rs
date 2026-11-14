@@ -853,13 +853,13 @@ impl Renderer {
         self.attach(gpu, mesh, rows)
     }
 
-    /// Halves the property rows and the block for what
-    /// draws as points while a view left them mostly free, copying what
-    /// they keep (a quarter at most), moves the meshes of blocks of
-    /// vertices and indices it left mostly free into one that holds just
-    /// them ([`Scene::repack`]; empty ones go whole, copying nothing),
-    /// moves raster tiles' layers down their pages ([`compact_pages`](Self::compact_pages)),
-    /// and gives back the image tile pages' chunks no tile holds, copying
+    /// Halves the property rows and the block for what draws as points
+    /// while a view left them mostly free, copying what they keep (a
+    /// quarter at most), moves the meshes of blocks of vertices and indices
+    /// it left mostly free into one that holds just them
+    /// ([`Scene::repack`]; empty ones go whole, copying nothing), moves
+    /// raster tiles' layers down their pages
+    /// ([`compact_pages`](Self::compact_pages)), and gives back the image tile pages' chunks no tile holds, copying
     /// nothing, and what a chunk holds free past its held layers. The
     /// renderer does so in a frame that settles the map, the last before
     /// it idles, so all at once.
