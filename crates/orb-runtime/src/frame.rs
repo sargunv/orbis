@@ -822,7 +822,7 @@ impl Map {
         let slots: Vec<(u32, u8, &[u8])> = (redraw.iter())
             .map(|r| (r.slot, r.shrink, &r.stacks[..]))
             .collect();
-        if let Err(full) = renderer.redraw_drape(gpu, zoom, &slots) {
+        if let Err(full) = renderer.redraw_drape(gpu, zoom, (&tiles, &slots)) {
             self.drape_full(gpu, renderer, full);
             return None;
         }

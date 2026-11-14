@@ -38,8 +38,8 @@ mod tiles;
 pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
 pub use layer_composite::Blend;
 pub use terrain::{
-    DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeFull, DrapeLayout, MAX_SHRINK, TERRAIN_EXTENT, TERRAIN_GRID,
-    TerrainDem, TerrainGlobe, TerrainPaint, TerrainTile,
+    DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeFull, DrapeLayout, MAX_SHRINK, SlotRedraw, TERRAIN_EXTENT,
+    TERRAIN_GRID, TerrainDem, TerrainGlobe, TerrainPaint, TerrainTile,
 };
 
 pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, PageKind};
@@ -1604,23 +1604,26 @@ impl Renderer {
     /// a map at style zoom `zoom` draws: their drape placements are in the
     /// scene, and every draped node's paint was set at that zoom
     /// ([`set_drape_paint`](Self::set_drape_paint)). The drape pass's
-    /// frame takes it, for what its shaders blend by the zoom. Before the
-    /// frame's [`set_terrain_tiles`](Self::set_terrain_tiles), which draw
-    /// from the texels slots take here. Fails where the device refuses a
-    /// texture, which leaves every slot blank: the room then keeps to the
-    /// tiles held before, so that the next frame's cover fits what the
-    /// device gave, until [`lift_drape_ceiling`](Self::lift_drape_ceiling).
+    /// frame takes it, for what its shaders blend by the zoom. With the
+    /// frame's terrain `tiles`, whose slots alone keep their texels, and
+    /// before [`set_terrain_tiles`](Self::set_terrain_tiles) gives them,
+    /// which draw from the texels slots take here. Fails where the device
+    /// refuses a texture, which leaves every slot blank: the room then
+    /// keeps to the tiles held before, so that the next frame's cover fits
+    /// what the device gave, until
+    /// [`lift_drape_ceiling`](Self::lift_drape_ceiling).
     pub fn redraw_drape(
         &mut self,
         gpu: &mut dyn Gpu,
         zoom: f64,
-        tile_slots: &[(u32, u8, &[u8])],
+        (tiles, tile_slots): (&[TerrainTile], &[SlotRedraw<'_>]),
     ) -> Result<(), DrapeFull> {
         let Some(terrain) = &mut self.terrain else {
             return Ok(());
         };
         let held = terrain.held_slots();
-        let drawn = terrain.redraw(gpu, zoom, tile_slots, &mut self.downsampler);
+        let slots = (tiles, tile_slots);
+        let drawn = terrain.redraw(gpu, zoom, slots, &mut self.downsampler);
         if let Err(DrapeFull::Refused(bytes)) = drawn {
             self.drape_ceiling = Some((held, bytes));
         }

@@ -152,6 +152,10 @@ pub struct TerrainPaint {
     pub dem_tile_px: f32,
 }
 
+/// A tile slot whose drape a frame redraws: its index, how many times its
+/// side halves its page's, and the stacks redrawn.
+pub type SlotRedraw<'a> = (u32, u8, &'a [u8]);
+
 /// A terrain tile to draw this frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TerrainTile {
@@ -335,17 +339,18 @@ fn slots_desc(layers: u32, side: u32, computes: bool) -> TextureDesc<'static> {
     }
 }
 
-/// The tile slots a texture of each page holds: one, or two where the
-/// device would make one's layers with a layer more than they take (wgpu's
-/// GL back end, for one layer: [`Gpu::allocated_layers`]).
+/// The tile slots a texture of each page holds: one, or the fewest more
+/// where the device would make one's layers with a layer more than they
+/// take (wgpu's GL back end, for one layer or a square of 6n:
+/// [`Gpu::allocated_layers`]).
 fn slots_per_texture(gpu: &dyn Gpu, stacks: [u32; 2]) -> u32 {
-    let exact = |shared: u32| {
+    let exact = |shared: &u32| {
         (0..2).filter(|&p| stacks[p] > 0).all(|page| {
             let desc = slots_desc(stacks[page] * shared, PAGE_PX[page], gpu.caps().compute);
             gpu.allocated_layers(&desc) == desc.array_layers
         })
     };
-    if exact(1) || !exact(2) { 1 } else { 2 }
+    (1..=3).find(exact).unwrap_or(1)
 }
 
 /// A page's texture of tile slots of one side: a layer a slot's stack,
@@ -414,6 +419,11 @@ impl crate::release::Release for SlotTexture {
 struct Texels {
     /// The slots' side, in halvings of their page's.
     level: u8,
+    /// The run of tile slots its slots hold, [`slots_per_texture`] of
+    /// them: tile slot `t` is slot `t % n` of a texture of run `t / n`, a
+    /// function of the tile slot alone, so that a map at rest holds the
+    /// textures a fresh one there does.
+    run: u32,
     pages: [Option<SlotTexture>; 2],
     group: Option<BindGroupId>,
     holds: Vec<Option<u32>>,
@@ -487,11 +497,10 @@ pub(crate) struct Terrain {
     dem: Option<(TextureId, u32)>,
     /// The frame and property buffers the textures' groups bind.
     bound: Option<(BufferId, BindGroupEntry)>,
-    /// Each run of this frame's tiles whose slots one texture holds, which
-    /// the table holds in order: the texture, and the run's range.
-    runs: Vec<(u32, std::ops::Range<u32>)>,
-    /// What this frame's draws of the terrain draw: each run's group and
-    /// tiles, and the grid's indices; none while the terrain can't draw.
+    /// The texture of each of this frame's tiles, in the table's order.
+    tile_textures: Vec<u32>,
+    /// What this frame's draws of the terrain draw: each tile's group, and
+    /// the grid's indices; none while the terrain can't draw.
     drawn: Option<Drawn>,
     /// The terrain's depth as a colour, and the depth it's drawn with: what
     /// hides symbols and circles.
@@ -552,11 +561,11 @@ impl TerrainLayer {
     }
 }
 
-/// What a frame's draws of the terrain draw: each run's group and the
-/// range of its tiles, and the grid's indices at the frame's step.
+/// What a frame's draws of the terrain draw: each tile's group, by its
+/// instance, and the grid's indices at the frame's step.
 #[derive(Debug)]
 struct Drawn {
-    runs: Vec<(BindGroupId, std::ops::Range<u32>)>,
+    tiles: Vec<Option<BindGroupId>>,
     indices: std::ops::Range<u32>,
 }
 
@@ -668,7 +677,7 @@ impl Terrain {
             },
             dem: None,
             bound: None,
-            runs: Vec::new(),
+            tile_textures: Vec::new(),
             drawn: None,
             occlusion: None,
             occlusion_pipeline: None,
@@ -875,20 +884,30 @@ impl Terrain {
 
     /// Redraws tile slots' stacks this frame at style zoom `zoom`: per
     /// tile slot, how many times its side halves its page's and the
-    /// stacks to redraw. A slot of another side than its texels' takes a
-    /// texture's slot of its side, all its stacks redrawn, and leaves the
-    /// old one for the next slot of that side; one no texture has free
-    /// takes a new texture. Fails where the device refuses one, which
-    /// leaves the slots blank.
+    /// stacks to redraw. The slots none of the frame's `tiles` shows give
+    /// their texels back first, for these to take. A slot of another side
+    /// than its texels' takes a texture's slot of its side
+    /// ([`take`](Self::take)), all its stacks redrawn, and leaves the old
+    /// one. Fails where the device refuses a texture, which leaves the
+    /// slots blank.
     pub(crate) fn redraw(
         &mut self,
         gpu: &mut dyn Gpu,
         zoom: f64,
-        tile_slots: &[(u32, u8, &[u8])],
+        (tiles, tile_slots): (&[TerrainTile], &[SlotRedraw<'_>]),
         downsampler: &mut crate::downsample::Downsampler,
     ) -> Result<(), DrapeFull> {
         self.zoom = zoom;
         self.pending.clear();
+        let shown: std::collections::BTreeSet<u32> = tiles.iter().map(|t| t.slot).collect();
+        let gone: Vec<u32> = (self.held.keys())
+            .filter(|s| !shown.contains(s))
+            .copied()
+            .collect();
+        for slot in gone {
+            let (texture, at) = self.held.remove(&slot).expect("held");
+            self.texture_mut(texture).holds[at as usize] = None;
+        }
         let layout = self.layout_state;
         let counts = allocated(layout.stacks);
         for &(slot, shrink, redrawn) in tile_slots {
@@ -899,7 +918,7 @@ impl Terrain {
                     if let Some(&(texture, at)) = held {
                         self.texture_mut(texture).holds[at as usize] = None;
                     }
-                    let (texture, at) = self.take(gpu, level, downsampler)?;
+                    let (texture, at) = self.take(gpu, (slot, level), downsampler)?;
                     self.texture_mut(texture).holds[at as usize] = Some(slot);
                     self.held.insert(slot, (texture, at));
                     (texture, at)
@@ -933,21 +952,30 @@ impl Terrain {
         self.texels[texture as usize].as_mut().expect("a texture")
     }
 
-    /// A texture's free slot of `level`, in a new texture where none has
-    /// one.
+    /// Tile slot `slot`'s texture of `level`, and its slot of it: that of
+    /// its run ([`Texels::run`]), else one of `level` that holds no slot,
+    /// which a view that moves keeps until it settles, else a new one.
     fn take(
         &mut self,
         gpu: &mut dyn Gpu,
-        level: u8,
+        (slot, level): (u32, u8),
         downsampler: &mut crate::downsample::Downsampler,
     ) -> Result<(u32, u32), DrapeFull> {
-        let free = (self.texels.iter().enumerate()).find_map(|(texture, texels)| {
-            let texels = texels.as_ref().filter(|t| t.level == level)?;
-            let at = texels.holds.iter().position(Option::is_none)?;
-            Some((texture as u32, at as u32))
-        });
-        if let Some(free) = free {
-            return Ok(free);
+        let (run, at) = (slot / self.shared, slot % self.shared);
+        let find = |fits: &dyn Fn(&Texels) -> bool| {
+            (self.texels.iter())
+                .position(|t| t.as_ref().is_some_and(|t| t.level == level && fits(t)))
+        };
+        let found =
+            find(&|t| t.run == run).or_else(|| find(&|t| t.holds.iter().all(Option::is_none)));
+        if let Some(texture) = found {
+            let texels = self.texels[texture].as_mut().expect("found");
+            debug_assert!(
+                texels.holds[at as usize].is_none(),
+                "a slot holds one tile slot"
+            );
+            texels.run = run;
+            return Ok((texture as u32, at));
         }
         let before = gpu.counters();
         let counts = allocated(self.layout_state.stacks);
@@ -968,6 +996,7 @@ impl Terrain {
         }
         let texels = Texels {
             level,
+            run,
             pages,
             group: None,
             holds: vec![None; self.shared as usize],
@@ -981,7 +1010,7 @@ impl Terrain {
         };
         self.texels[index] = Some(texels);
         self.resized.count(gpu, &before);
-        Ok((index as u32, 0))
+        Ok((index as u32, at))
     }
 
     /// The tile slots whose texels the textures hold.
@@ -997,10 +1026,9 @@ impl Terrain {
         stacks
     }
 
-    /// This frame's terrain tiles, each drawn from its slot's texels: the
-    /// slots no tile shows give theirs back. They draw in the order
-    /// given, which decides what shows where two meet, a run of those
-    /// whose slots one texture holds at a time.
+    /// This frame's terrain tiles, each drawn from the texels its slot
+    /// took in the frame's [`redraw`](Self::redraw) or before. They draw
+    /// in the order given, which decides what shows where two meet.
     pub(crate) fn set_tiles(&mut self, gpu: &mut dyn Gpu, tiles: &[TerrainTile]) {
         if tiles.len() as u32 > self.tile_capacity {
             self.tiles.destroy(gpu);
@@ -1012,27 +1040,12 @@ impl Terrain {
             );
             self.forget_group(gpu);
         }
-        let shown: std::collections::BTreeSet<u32> = tiles.iter().map(|t| t.slot).collect();
-        let gone: Vec<u32> = (self.held.keys())
-            .filter(|s| !shown.contains(s))
-            .copied()
-            .collect();
-        for slot in gone {
-            let (texture, at) = self.held.remove(&slot).expect("held");
-            self.texture_mut(texture).holds[at as usize] = None;
-        }
         // A tile shows a slot it drew, or its ancestor did.
         let order: Vec<(&TerrainTile, (u32, u32))> = (tiles.iter())
             .filter_map(|t| Some((t, *self.held.get(&t.slot)?)))
             .collect();
         debug_assert_eq!(order.len(), tiles.len(), "every tile shows a slot drawn");
-        self.runs.clear();
-        for (i, (_, (texture, _))) in (0u32..).zip(&order) {
-            match self.runs.last_mut() {
-                Some((run, range)) if run == texture => range.end = i + 1,
-                _ => self.runs.push((*texture, i..i + 1)),
-            }
-        }
+        self.tile_textures = order.iter().map(|&(_, (texture, _))| texture).collect();
         let words: Vec<u32> = (order.iter())
             .flat_map(|&(t, (_, at))| {
                 use terrain_tile as n;
@@ -1418,14 +1431,10 @@ impl Terrain {
         self.bound = Some((frame, props));
         let step = GRID_STEPS.iter().position(|&s| s == self.grid_step);
         let indices = self.grid_ranges[step.expect("a grid step")].clone();
-        // Each run of tiles with its texture bound.
-        let runs = (self.runs.iter())
-            .filter_map(|(texture, tiles)| {
-                let group = self.texels.get(*texture as usize)?.as_ref()?.group?;
-                Some((group, tiles.clone()))
-            })
+        let tiles = (self.tile_textures.iter())
+            .map(|&texture| self.texels.get(texture as usize)?.as_ref()?.group)
             .collect();
-        self.drawn = Some(Drawn { runs, indices });
+        self.drawn = Some(Drawn { tiles, indices });
         // The terrain's depth, for what it hides.
         if let (Some([color, depth]), Some(pipeline)) = (self.occlusion, self.occlusion_pipeline) {
             let mut commands = vec![RenderCommand::SetPipeline(pipeline)];
@@ -1450,8 +1459,12 @@ impl Terrain {
         drawn
     }
 
-    /// The frame's tiles drawn, each run with its texture bound, over the
-    /// pipeline set before: nothing while the terrain can't draw.
+    /// The frame's tiles drawn, over the pipeline set before: nothing while
+    /// the terrain can't draw. Each tile is a draw of its own, with its
+    /// slots' texture bound, never an instance of a draw of tiles that
+    /// share one: tiles drawn together showed otherwise where they meet
+    /// than drawn apart, by a unit of colour here and there on Apple's GPUs,
+    /// which made what shows depend on which texture holds which slot.
     fn draw(&self, commands: &mut Vec<RenderCommand>) {
         let Some(drawn) = &self.drawn else {
             return;
@@ -1460,16 +1473,16 @@ impl Terrain {
             buffer: self.grid_indices,
             offset: 0,
         });
-        for (group, tiles) in &drawn.runs {
+        for (tile, group) in (0u32..).zip(&drawn.tiles) {
+            let Some(group) = *group else {
+                continue;
+            };
             commands.extend([
-                RenderCommand::SetBindGroup {
-                    index: 0,
-                    group: *group,
-                },
+                RenderCommand::SetBindGroup { index: 0, group },
                 RenderCommand::DrawIndexed {
                     indices: drawn.indices.clone(),
                     base_vertex: 0,
-                    instances: tiles.clone(),
+                    instances: tile..tile + 1,
                 },
             ]);
         }

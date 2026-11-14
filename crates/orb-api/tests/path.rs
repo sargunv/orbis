@@ -1642,8 +1642,9 @@ fn every_terrain_view_fits_the_drape_atlas() {
 }
 
 /// A moving view's drape pages hold what a fresh map's do once it rests.
-/// Its cover takes more tiles and fewer as it turns and tilts, and the
-/// pages grow and shrink by sheets of slots as it does, copying none.
+/// Its cover takes more tiles and fewer as it turns and tilts, and its
+/// slots change sides, and the pages take textures as slots need them and
+/// keep those no slot holds until the map settles, copying none.
 /// Here the view over the Alps at pitch 80 looking north holds larger
 /// pages than looking north-east, and a slow turn from one to the other
 /// ends in the pages a fresh map there holds.

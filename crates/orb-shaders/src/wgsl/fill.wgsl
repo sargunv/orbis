@@ -174,7 +174,7 @@ fn fs_fill_outline(in: FillOut) -> @location(0) vec4<f32> {
     if !clip_drawn(in.clip, in.tile, in.owner_pos, in.tile_pos) {
         discard;
     }
-    // A drape slot's fragments lie in its sheet, whose viewport moves the
+    // A drape slot's fragments lie in its texture, whose viewport moves the
     // drape's grid by a multiple of 1024 texels (orb-render's `terrain`):
     // the outline is within a pixel of them, so what lies whole 1024s off
     // is that move.
