@@ -1101,23 +1101,33 @@ fn turning_terrain_on_and_off_eases_with_every_tile_drawn() {
         let (mut map, clock) = idle_at(&runtime, &mut target, start);
         let mut frames = vec![target.read_pixels().unwrap()];
         set_terrain(&mut map, terrain);
-        // Past the style's transition, 300 ms, at 60 frames a second.
+        // Each frame the map draws 1/60 s after the last until it rests,
+        // however long its pipelines take on this machine: the turn eases
+        // over the style's 300 ms transition once they're made.
         let mut t = clock();
-        for _ in 0..30 {
-            map.render(&mut target, t).unwrap();
-            frames.push(target.read_pixels().unwrap());
+        let started = std::time::Instant::now();
+        loop {
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "{name}: never idle"
+            );
+            let Some(report) = map.render(&mut target, t).unwrap() else {
+                std::thread::sleep(Duration::from_millis(4));
+                continue;
+            };
             t += 1000.0 / 60.0;
+            frames.push(target.read_pixels().unwrap());
+            if report.idle {
+                break;
+            }
         }
-        common::settle(&mut map, &mut target);
-        frames.push(target.read_pixels().unwrap());
         for (i, frame) in frames.iter().enumerate() {
             assert_eq!(bare(frame), 0, "{name}: frame {i} shows no tile");
         }
         let (first, last) = (&frames[0], frames.last().unwrap());
         assert_ne!(first, last, "{name} changed nothing");
-        let middle = &frames[frames.len() / 3];
         assert!(
-            middle != first && middle != last,
+            frames.iter().any(|frame| frame != first && frame != last),
             "{name}: the map jumped rather than eased"
         );
         let camera = map.camera();
