@@ -1122,9 +1122,10 @@ impl SessionReport {
         writeln!(
             out,
             "| session | fetches started | aborted | completed | started after the last input | \
-             tiles in after the last input ms | loaded after it ms |"
+             tiles in after the last input ms | nodes waiting on pipelines then | \
+             loaded after it ms |"
         )?;
-        writeln!(out, "|{}", "---|".repeat(7))?;
+        writeln!(out, "|{}", "---|".repeat(8))?;
         for r in &self.results {
             let mut all = orb_api::FetchCounts::default();
             let mut after = 0;
@@ -1137,15 +1138,15 @@ impl SessionReport {
             }
             // The first frame after the last input with every tile the
             // view needs in.
-            let tiles_in = (r.frames.iter())
-                .find(|f| f.t > end && f.report.tiles_loading == 0)
-                .map(|f| f.t - end);
+            let tiles_in = (r.frames.iter()).find(|f| f.t > end && f.report.tiles_loading == 0);
+            let waiting = tiles_in.map_or(0, |f| f.report.frame.nodes_waiting);
+            let tiles_in = tiles_in.map(|f| f.t - end);
             let loaded = (r.frames.iter())
                 .find(|f| f.t > end && f.report.loaded)
                 .map(|f| f.t - end);
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {after} | {} | {} |",
+                "| {} | {} | {} | {} | {after} | {} | {waiting} | {} |",
                 r.name,
                 all.started,
                 all.aborted,
@@ -1159,8 +1160,10 @@ impl SessionReport {
             out,
             "Tile fetches the map's jobs started, aborted once started (the view left their \
              tiles), and completed; tiles in: from the last input to the first frame with \
-             nothing the view needs loading; loaded: to the first with its labels placed \
-             too (GL JS's `loaded()`; fades may run on)."
+             nothing the view needs loading, and how many of its nodes (layers' draws) \
+             waited on pipelines still compiling there; loaded: to the first with its labels placed and every \
+             layer drawn too (GL JS's `loaded()`; fades may run on). Cold, under load, the \
+             pipelines of the first view's labels may compile seconds after its tiles came."
         )?;
         writeln!(out)
     }
