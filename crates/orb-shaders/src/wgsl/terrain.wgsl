@@ -57,6 +57,8 @@ struct Terrain {
     // Colour stacks, and slope stacks: each slot's layers in a texture.
     colour_stacks: u32,
     slope_stacks: u32,
+    // Grid points a side of the mesh's cells (orb-render's `grid_step`).
+    grid_step: u32,
 };
 
 // A hillshade a terrain layer shades: the slope stack (by its rank on
@@ -98,7 +100,7 @@ const NO_DEM: u32 = 0xffffffffu;
 const NO_STACK: u32 = 0xffffffffu;
 // Grid cells per tile side.
 const GRID: u32 = 128u;
-// Whether the vertices work out the drape's footprint (`uv_footprint`):
+// Whether the vertices work out the drape's footprint (`cell_footprint`):
 // not for the terrain's depth alone, whose fragments sample nothing.
 override terrain_footprint: bool = true;
 
@@ -144,44 +146,78 @@ struct TerrainOut {
     // (`terrain_shade.wgsl`): per vertex rather than per fragment, which
     // a grid cell's smooth change of latitude doesn't show.
     @location(3) stretch: f32,
-    // A framebuffer pixel's step right and down in `uv` (`uv_footprint`).
-    @location(4) footprint: vec4<f32>,
+    // A framebuffer pixel's step right and down in `uv` over the mesh's
+    // cell the triangle is in (`cell_footprint`), packed (`pack_halves`):
+    // its provoking vertex's, which is the cell's first grid point
+    // (orb-render's `grid`).
+    @location(4) @interpolate(flat, either) footprint: vec2<u32>,
 };
 
-// The surface's point at grid point `uv`, in clip space: as `vs_terrain`
-// places it, a skirt aside.
-fn surface_clip(tile: TerrainTile, uv: vec2<f32>) -> vec4<f32> {
-    let z = terrain_elevation(tile, uv) * frame.extrusion_scale;
-    let world = tile.origin + vec2<f32>(uv.x, -uv.y) * TERRAIN_EXTENT * tile.scale;
-    if frame.globe_amount > 0.0 && tile.globe_cells > 0u {
-        var g: Ground;
-        g.flat = world;
-        g.on_plane = true;
-        let origin = vec3<f32>(tile.globe_origin[0], tile.globe_origin[1], tile.globe_origin[2]);
-        g.globe = sphere_at(tile.globe_base, tile.globe_cells, origin, uv);
-        return ground_clip_3d(g, vec2<f32>(0.0), z);
-    }
-    return frame.view_proj * vec4<f32>(world, z, 1.0);
+// Two floats in a word, each its top 16 bits: its sign, exponent and 7
+// bits of mantissa (bfloat16), which a footprint's level takes to within
+// a hundredth.
+fn pack_halves(v: vec2<f32>) -> u32 {
+    return (bitcast<u32>(v.x) & 0xffff0000u) | (bitcast<u32>(v.y) >> 16u);
 }
 
-// What a framebuffer pixel's step right and down move the surface's grid
-// point `uv`, at `clip`, by in tile uv: the screen's steps toward the
-// grid points beside it, inverted. The footprint the drape samples comes
-// from these rather than from the fragments' derivatives, coarse or fine,
-// which on Apple's GPUs came out otherwise at a few pixels from one frame
-// to the next: the same frame drawn again sampled them a unit apart, and
-// through a hillshade's slopes several. Near the camera, where w goes to
-// 0, the footprint shrinks to nothing, and the finest level shows.
-fn uv_footprint(tile: TerrainTile, uv: vec2<f32>, clip: vec4<f32>) -> vec4<f32> {
-    let h = 1.0 / f32(GRID);
-    let w = max(clip.w, 1e-6);
+fn unpack_halves(word: u32) -> vec2<f32> {
+    return vec2<f32>(bitcast<f32>(word & 0xffff0000u), bitcast<f32>(word << 16u));
+}
+
+// What a whole unit of tile uv along u and along v moves the surface by
+// in clip space at the point `sphere` (on a globe, from the globe's
+// target), over the cell of the mesh there, whose height climbs `slope`
+// world units a unit of uv: on the plane, on the low-zoom surface, mixed
+// as the globe hands over. From the surface's tangents rather than its
+// points beside it placed again, which would be a second copy of the
+// globe's placement, one Adreno's compilers inline and the moto g pays a
+// tenth of its terrain's frame for though no frame runs it.
+fn surface_steps(tile: TerrainTile, sphere: vec3<f32>, slope: vec2<f32>, globe: bool) -> array<vec4<f32>, 2> {
+    let span = TERRAIN_EXTENT * tile.scale;
+    let flat_u = vec3<f32>(span, 0.0, slope.x);
+    let flat_v = vec3<f32>(0.0, -span, slope.y);
+    var du = frame.view_proj * vec4<f32>(flat_u, 0.0);
+    var dv = frame.view_proj * vec4<f32>(flat_v, 0.0);
+    if globe {
+        let metres = frame.globe_metres;
+        var u = flat_u * metres;
+        var v = flat_v * metres;
+        if frame.globe_plane == 0u {
+            // Along the sphere, a plane world unit is `globe_metres` at the
+            // target's latitude and shrinks with the latitude's cosine.
+            let up = normalize(sphere + frame.globe_target);
+            let level = vec3<f32>(-up.y, up.x, 0.0);
+            let east = select(vec3<f32>(0.0, 1.0, 0.0), normalize(level), length(level) > 1e-6);
+            let north = cross(up, east);
+            let along = metres * length(up.xy) / max(length(normalize(frame.globe_target).xy), 1e-6);
+            u = east * (span * along) + up * (slope.x * metres);
+            v = -north * (span * along) + up * (slope.y * metres);
+        }
+        du = mix(du, frame.globe_view_proj * vec4<f32>(u, 0.0), frame.globe_amount);
+        dv = mix(dv, frame.globe_view_proj * vec4<f32>(v, 0.0), frame.globe_amount);
+    }
+    return array<vec4<f32>, 2>(du, dv);
+}
+
+// What a framebuffer pixel's step right and down move the surface by in
+// tile uv over a cell of the mesh `h` uv a side whose first grid point is
+// at `first` in clip space and whose sides move it by `steps`
+// (`surface_steps`): the screen's steps along them at its centre,
+// inverted. A cell's fragments all sample with it, as a triangle's do
+// with the derivatives GL JS's GPU takes: not ours, coarse or fine, which
+// on Apple's GPUs came out otherwise at a few pixels from one frame to
+// the next, so that the same frame drawn again sampled them a unit apart,
+// and through a hillshade's slopes several. Near the camera, where w goes
+// to 0, the footprint shrinks to nothing, and the finest level shows.
+fn cell_footprint(first: vec4<f32>, steps: array<vec4<f32>, 2>, h: f32) -> vec4<f32> {
+    let du = steps[0];
+    let dv = steps[1];
+    let centre = first + 0.5 * h * (du + dv);
+    let w = max(centre.w, 1e-6);
     // Framebuffer pixels per unit of clip x and y over w, rows down.
     let px = vec2<f32>(0.5, -0.5) * frame.viewport * frame.pixel_ratio;
-    // The pixels a whole step of uv along each axis moves the point by.
-    let du = (surface_clip(tile, uv + vec2<f32>(h, 0.0)) - clip) / h;
-    let dv = (surface_clip(tile, uv + vec2<f32>(0.0, h)) - clip) / h;
-    let a = (du.xy * w - clip.xy * du.w) / (w * w) * px;
-    let b = (dv.xy * w - clip.xy * dv.w) / (w * w) * px;
+    let a = (du.xy * w - centre.xy * du.w) / (w * w) * px;
+    let b = (dv.xy * w - centre.xy * dv.w) / (w * w) * px;
     var det = a.x * b.y - a.y * b.x;
     det = select(det, 1e-12, abs(det) < 1e-12);
     let step = vec4<f32>(b.y, -a.y, -b.x, a.x) / det;
@@ -200,12 +236,14 @@ fn vs_terrain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) insta
     let world = tile.origin + vec2<f32>(uv.x, -uv.y) * TERRAIN_EXTENT * tile.scale;
     var clip = frame.view_proj * vec4<f32>(world, z, 1.0);
     let globe = frame.globe_amount > 0.0 && tile.globe_cells > 0u;
+    var sphere = vec3<f32>(0.0);
     if globe {
         var g: Ground;
         g.flat = world;
         g.on_plane = true;
         let origin = vec3<f32>(tile.globe_origin[0], tile.globe_origin[1], tile.globe_origin[2]);
         g.globe = sphere_at(tile.globe_base, tile.globe_cells, origin, uv);
+        sphere = g.globe;
         // A top or bottom row's skirt reaches the pole its set stops short
         // of, closing the globe with the edge's colour, as the layers' caps
         // do.
@@ -223,9 +261,18 @@ fn vs_terrain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) insta
     out.position = vec4<f32>(clip.xy, depth, clip.w);
     out.uv = uv * tile.slot_scale + tile.slot_offset;
     if terrain_footprint {
-        // From the surface's own point: a skirt hangs below it.
-        let surface = select(clip, surface_clip(tile, uv), skirt != 0u);
-        out.footprint = uv_footprint(tile, uv, surface) * tile.slot_scale;
+        // The cell's slope through its first, right and down corners. A
+        // skirt's vertex provokes no triangle (orb-render's `grid`), so its
+        // lowered point serves.
+        let h = f32(terrain.grid_step) / f32(GRID);
+        let beside = vec2<f32>(
+            terrain_elevation(tile, uv + vec2<f32>(h, 0.0)),
+            terrain_elevation(tile, uv + vec2<f32>(0.0, h)),
+        );
+        let slope = (beside - elevation) / h * frame.extrusion_scale;
+        let steps = surface_steps(tile, sphere, slope, globe);
+        let f = cell_footprint(clip, steps, h) * tile.slot_scale;
+        out.footprint = vec2<u32>(pack_halves(f.xy), pack_halves(f.zw));
     }
     out.slot = tile.slot;
     out.stretch = 1.0 / cos(radians(mix(tile.latitudes.x, tile.latitudes.y, uv.y)));
@@ -256,7 +303,7 @@ fn fs_terrain_hidden() -> @location(0) vec4<f32> {
 // sampler reads, the footprint shrunk where it would reach past it, on a
 // 1/512-texel grid. With the sampler's own clamp to the edge, what a
 // moved map showed at a seam differed from a fresh map's by a speck. The
-// footprint is the vertices' (`uv_footprint`), not the derivatives'.
+// footprint is the cell's (`cell_footprint`), not the derivatives'.
 struct DrapeSample {
     uv: vec2<f32>,
     dx: vec2<f32>,
@@ -265,8 +312,8 @@ struct DrapeSample {
 
 fn drape_sample(in: TerrainOut, slot_px: f32) -> DrapeSample {
     let texel = in.uv * slot_px;
-    let dx = in.footprint.xy * slot_px;
-    let dy = in.footprint.zw * slot_px;
+    let dx = unpack_halves(in.footprint.x) * slot_px;
+    let dy = unpack_halves(in.footprint.y) * slot_px;
     // A texel of the level the sampler reads: the footprint's longer side
     // over up to 16 probes along it, no finer than its shorter side.
     let level_texel = max(max(length(dx), length(dy)) / 16.0, min(length(dx), length(dy)));

@@ -635,7 +635,7 @@ impl Terrain {
                 E::texture(2, fs, true, TextureViewDimension::D2),
             ],
         });
-        let (grid, indices, grid_ranges) = grid();
+        let (grid, indices, grid_ranges) = grid(gpu.caps().flat_from_last);
         let grid_buffer = DataTable::new(gpu, "terrain grid", grid.len() as u64);
         grid_buffer.write(gpu, 0, &grid);
         let grid_indices = gpu.create_buffer(&BufferDesc {
@@ -1112,7 +1112,8 @@ impl Terrain {
         let counts = allocated(self.layout_state.stacks);
         b.u(params::TILES, &[self.tile_count])
             .u(params::COLOUR_STACKS, &[counts[0]])
-            .u(params::SLOPE_STACKS, &[counts[1]]);
+            .u(params::SLOPE_STACKS, &[counts[1]])
+            .u(params::GRID_STEP, &[self.grid_step]);
         gpu.write_buffer(self.params, 0, bytemuck::cast_slice(&b.0));
         self.paint = Some(paint);
     }
@@ -1759,7 +1760,12 @@ impl Terrain {
 /// The shared tile mesh: `(GRID + 1)²` vertices, then a skirt copy of
 /// each edge vertex; and per [`GRID_STEPS`] step, the index range of two
 /// triangles per cell of that many vertices a side and per edge segment.
-fn grid() -> (Vec<u32>, Vec<u32>, [std::ops::Range<u32>; GRID_STEPS.len()]) {
+/// A triangle's provoking vertex, whose flat varyings its fragments take,
+/// is its cell's first grid point (`terrain.wgsl`'s `cell_footprint`), or
+/// its edge segment's first: first in its indices, or last where the
+/// device takes the last's (`flat_from_last`). The terrain draws both
+/// faces, so the order turns none away.
+fn grid(flat_from_last: bool) -> (Vec<u32>, Vec<u32>, [std::ops::Range<u32>; GRID_STEPS.len()]) {
     let n = TERRAIN_GRID;
     let side = n + 1;
     let pack = |x: u32, y: u32, skirt: u32| x | y << 8 | skirt << 16;
@@ -1782,18 +1788,16 @@ fn grid() -> (Vec<u32>, Vec<u32>, [std::ops::Range<u32>; GRID_STEPS.len()]) {
         }
     }
     let mut indices = Vec::new();
+    let triangle = |indices: &mut Vec<u32>, provoking: u32, b: u32, c: u32| match flat_from_last {
+        false => indices.extend([provoking, b, c]),
+        true => indices.extend([b, c, provoking]),
+    };
     let ranges = GRID_STEPS.map(|s| {
         let start = indices.len() as u32;
         for y in (0..n).step_by(s as usize) {
             for x in (0..n).step_by(s as usize) {
-                indices.extend([
-                    at(x, y),
-                    at(x, y + s),
-                    at(x + s, y + s),
-                    at(x, y),
-                    at(x + s, y + s),
-                    at(x + s, y),
-                ]);
+                triangle(&mut indices, at(x, y), at(x, y + s), at(x + s, y + s));
+                triangle(&mut indices, at(x, y), at(x + s, y + s), at(x + s, y));
             }
         }
         for edge_index in 0..4 {
@@ -1803,7 +1807,8 @@ fn grid() -> (Vec<u32>, Vec<u32>, [std::ops::Range<u32>; GRID_STEPS.len()]) {
                 let (x1, y1) = edge(edge_index, i + s);
                 let (a, b) = (at(x0, y0), at(x1, y1));
                 let (sa, sb) = (base + i, base + i + s);
-                indices.extend([a, sa, sb, a, sb, b]);
+                triangle(&mut indices, a, sa, sb);
+                triangle(&mut indices, a, sb, b);
             }
         }
         start..indices.len() as u32
@@ -1837,19 +1842,34 @@ mod tests {
 
     #[test]
     fn the_grid_has_cells_and_skirts() {
-        let (vertices, indices, ranges) = grid();
-        let side = TERRAIN_GRID + 1;
-        assert_eq!(vertices.len() as u32, side * side + 4 * side);
-        assert!(indices.iter().all(|&i| (i as usize) < vertices.len()));
-        let skirts = vertices.iter().filter(|v| *v >> 16 == 1).count() as u32;
-        assert_eq!(skirts, 4 * side);
-        for (step, range) in GRID_STEPS.into_iter().zip(ranges) {
-            let n = TERRAIN_GRID / step;
-            assert_eq!(range.len() as u32, n * n * 6 + 4 * n * 6, "step {step}");
-            // Every vertex it reads lies on its step's grid.
-            for &i in &indices[range.start as usize..range.end as usize] {
-                let (x, y) = (vertices[i as usize] & 255, vertices[i as usize] >> 8 & 255);
-                assert_eq!((x % step, y % step), (0, 0), "step {step}");
+        for flat_from_last in [false, true] {
+            let (vertices, indices, ranges) = grid(flat_from_last);
+            let side = TERRAIN_GRID + 1;
+            assert_eq!(vertices.len() as u32, side * side + 4 * side);
+            assert!(indices.iter().all(|&i| (i as usize) < vertices.len()));
+            let skirts = vertices.iter().filter(|v| *v >> 16 == 1).count() as u32;
+            assert_eq!(skirts, 4 * side);
+            let point = |i: u32| (vertices[i as usize] & 255, vertices[i as usize] >> 8 & 255);
+            for (step, range) in GRID_STEPS.into_iter().zip(ranges) {
+                let n = TERRAIN_GRID / step;
+                assert_eq!(range.len() as u32, n * n * 6 + 4 * n * 6, "step {step}");
+                let range = &indices[range.start as usize..range.end as usize];
+                // Every vertex it reads lies on its step's grid.
+                for &i in range {
+                    let (x, y) = point(i);
+                    assert_eq!((x % step, y % step), (0, 0), "step {step}");
+                }
+                // A cell's triangles take their flat varyings from its
+                // first grid point, the one whose drape footprint it
+                // samples with.
+                for triangle in range.chunks(3) {
+                    if triangle.iter().any(|&i| vertices[i as usize] >> 16 == 1) {
+                        continue;
+                    }
+                    let provoking = triangle[if flat_from_last { 2 } else { 0 }];
+                    let first = triangle.iter().map(|&i| point(i)).min().unwrap();
+                    assert_eq!(point(provoking), first, "step {step}");
+                }
             }
         }
     }

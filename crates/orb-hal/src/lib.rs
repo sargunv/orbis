@@ -339,6 +339,10 @@ pub struct Caps {
     /// nothing until its style's pipelines compiled, nor while any
     /// compiles ([`Gpu::presents_wait`]).
     pub compiles_hold_presents: bool,
+    /// A flat varying (`@interpolate(flat, either)`) takes its triangle's
+    /// last vertex's value, as GL's convention has it, where the device
+    /// keeps it; elsewhere its first vertex's.
+    pub flat_from_last: bool,
 }
 
 impl Caps {
