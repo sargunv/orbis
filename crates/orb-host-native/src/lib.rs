@@ -60,6 +60,12 @@ const MAX_BODY: u64 = 64 << 20;
 /// Cold loads take as long with 16 (and longer with 4).
 const FETCH_THREADS: usize = 8;
 
+/// [`FETCH_THREADS`], or as many as tile fetches take turns
+/// ([`orb_host::fetch_limit`]) where that is more.
+fn fetch_threads() -> usize {
+    orb_host::fetch_limit().map_or(FETCH_THREADS, |n| n.max(FETCH_THREADS))
+}
+
 /// A request's cache key, when it has one, and the stale copy the
 /// network's answer replaces or confirms.
 type Stale = (Option<String>, Option<cache::Cached>);
@@ -88,10 +94,10 @@ impl NativeFetch {
     pub fn with_cache(cache: Option<Arc<HttpCache>>) -> Arc<Self> {
         Arc::new(Self {
             // Every thread's connection stays open for the next request.
-            agent: connect::agent(FETCH_THREADS, RootCerts::PlatformVerifier),
+            agent: connect::agent(fetch_threads(), RootCerts::PlatformVerifier),
             #[cfg(target_os = "android")]
             roots: std::sync::OnceLock::new(),
-            pool: Arc::new(ThreadPool::new("fetch", FETCH_THREADS)),
+            pool: Arc::new(ThreadPool::new("fetch", fetch_threads())),
             cache,
             transform: Default::default(),
             hook: Default::default(),
@@ -129,7 +135,7 @@ impl NativeFetch {
         if !android::ready() {
             return self
                 .roots
-                .get_or_init(|| connect::agent(FETCH_THREADS, android::system_roots()));
+                .get_or_init(|| connect::agent(fetch_threads(), android::system_roots()));
         }
         &self.agent
     }

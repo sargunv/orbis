@@ -20,7 +20,10 @@
 //! globe with the Globe entry's Mapterhorn terrain, wheel-zoomed from z2
 //! over New York, tilting on the way) and `nepal` (the same, flung in and
 //! out between z1 and z7 over the Himalaya at a spun wheel's and a
-//! trackpad's rates). A style given that sets a projection of its own
+//! trackpad's rates) and `spin` (Liberty on the globe, alone, carried at
+//! z4 from Switzerland 130° east to Japan in a second, as mln-rs measures
+//! its fetch order: its settle time is how long the new view takes to
+//! complete). A style given that sets a projection of its own
 //! draws as it is in the globe sessions: the web demo's Globe entry, say,
 //! as `load.html` designs it (its `mapStyle`). `--dump prefix` writes each
 //! session's frames to `<prefix>-<session>.tsv`. `--filter` picks them by name;
@@ -66,7 +69,8 @@ const WORST: usize = 6;
 /// pixels, not a notch.
 const NOTCH: f64 = 0.5;
 
-/// One move: wheel notches, or a drag with a button held.
+/// One move: wheel notches, a drag with a button held, or the camera
+/// carried.
 #[derive(Clone, Copy, Debug)]
 enum Move {
     /// `n` notches of `delta` pixels at a point (as a fraction of the
@@ -85,6 +89,20 @@ enum Move {
         ms: f64,
         button: Button,
     },
+    /// The camera's centre carried straight from one lon, lat to another
+    /// over `ms`, a step every 16 ms, as an animation carries it.
+    Fly {
+        from: [f64; 2],
+        to: [f64; 2],
+        ms: f64,
+    },
+}
+
+/// What a session does at a time: input, or the camera's centre set.
+#[derive(Debug)]
+enum Step {
+    Input(Input),
+    Centre([f64; 2]),
 }
 
 const C: [f64; 2] = [0.5, 0.5];
@@ -144,6 +162,8 @@ enum Style {
     Alps,
     /// Liberty on the globe with the Globe entry's terrain.
     Globe,
+    /// Liberty on the globe, without terrain.
+    Sphere,
 }
 
 /// A session: its style, first camera (lon, lat, zoom, bearing, pitch)
@@ -274,7 +294,21 @@ const SESSIONS: &[Session] = &[
         ],
         pause: 150.0,
     },
+    Session {
+        name: "spin",
+        style: Style::Sphere,
+        at: [8.23, 46.82, 4.0, 0.0, 0.0],
+        moves: &[Move::Fly {
+            from: [8.23, 46.82],
+            to: [138.25, 36.2],
+            ms: 1000.0,
+        }],
+        pause: PAUSE,
+    },
 ];
+
+/// Liberty on the globe.
+const SPHERE: &str = r#"[["setProjection", {"type": "globe"}]]"#;
 
 /// The Globe entry's terrain, on Liberty on the globe.
 const GLOBE: &str = r#"[
@@ -290,7 +324,7 @@ fn timeline(
     pause: f64,
     viewport: [f64; 2],
     start: f64,
-) -> (Vec<(f64, Input)>, Vec<[f64; 2]>) {
+) -> (Vec<(f64, Step)>, Vec<[f64; 2]>) {
     let px = |[x, y]: [f64; 2]| DVec2::new(x * viewport[0], y * viewport[1]);
     let mut inputs = Vec::new();
     let mut windows = Vec::new();
@@ -303,11 +337,11 @@ fn timeline(
                     t = from + f64::from(i) * ms;
                     inputs.push((
                         t,
-                        Input::Wheel {
+                        Step::Input(Input::Wheel {
                             position: px(at),
                             delta: WheelDelta::Pixels(delta * NOTCH),
                             modifiers: Modifiers::default(),
-                        },
+                        }),
                     ));
                 }
                 t += ms;
@@ -317,33 +351,42 @@ fn timeline(
                 let by = DVec2::from(by);
                 inputs.push((
                     t,
-                    Input::PointerDown {
+                    Step::Input(Input::PointerDown {
                         id: 1,
                         kind: PointerKind::Mouse,
                         button,
                         position: at,
                         modifiers: Modifiers::default(),
-                    },
+                    }),
                 ));
                 let steps = (ms / 16.0).ceil() as u32;
                 for i in 1..=steps {
                     let f = f64::from(i) / f64::from(steps);
                     inputs.push((
                         from + f * ms,
-                        Input::PointerMove {
+                        Step::Input(Input::PointerMove {
                             id: 1,
                             position: at + by * f,
-                        },
+                        }),
                     ));
                 }
                 t = from + ms + 150.0;
                 inputs.push((
                     t,
-                    Input::PointerUp {
+                    Step::Input(Input::PointerUp {
                         id: 1,
                         position: at + by,
-                    },
+                    }),
                 ));
+            }
+            Move::Fly { from: a, to: b, ms } => {
+                let steps = (ms / 16.0).ceil() as u32;
+                for i in 0..=steps {
+                    let f = f64::from(i) / f64::from(steps);
+                    let centre = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+                    inputs.push((t + f * ms, Step::Centre(centre)));
+                }
+                t += ms;
             }
         }
         windows.push([from, t]);
@@ -435,7 +478,7 @@ pub(crate) fn run(
         .filter(|s| (settings.filter.as_ref()).is_none_or(|f| s.name.contains(f.as_str())));
     for session in chosen {
         let style = match session.style {
-            Style::Liberty | Style::Globe => liberty,
+            Style::Liberty | Style::Globe | Style::Sphere => liberty,
             Style::Alps => alps,
         };
         let state = StateDir::new()?;
@@ -492,6 +535,7 @@ fn run_session(
     let mut map = crate::new_map(&runtime, style, camera, settings.antialias);
     let mut edit = match session.style {
         Style::Globe => Some(orb_api::Transaction::from_commands(GLOBE)?),
+        Style::Sphere => Some(orb_api::Transaction::from_commands(SPHERE)?),
         _ => None,
     };
     let mut edited = false;
@@ -501,7 +545,7 @@ fn run_session(
     let now = || epoch.elapsed().as_secs_f64() * 1000.0;
     let viewport = [f64::from(settings.width), f64::from(settings.height)];
     let mut frames: Vec<Frame> = Vec::new();
-    let mut inputs: std::collections::VecDeque<(f64, Input)> = Default::default();
+    let mut inputs: std::collections::VecDeque<(f64, Step)> = Default::default();
     let mut windows = Vec::new();
     let mut first_ms = None;
     let mut last_input = None;
@@ -520,8 +564,15 @@ fn run_session(
         }
         let t = now();
         while inputs.front().is_some_and(|&(at, _)| at <= t) {
-            let (at, input) = inputs.pop_front().expect("checked");
-            map.input(input, at);
+            match inputs.pop_front().expect("checked") {
+                (at, Step::Input(input)) => {
+                    map.input(input, at);
+                }
+                (_, Step::Centre([lon, lat])) => map.jump_to(&orb_api::CameraTarget {
+                    center: Some(Geodetic::new(lon, lat)),
+                    ..orb_api::CameraTarget::default()
+                }),
+            }
         }
         if let Some(tx) = &edit {
             map.apply_arrivals().map_err(|e| e.to_string())?;
@@ -670,9 +721,10 @@ fn run_session(
     };
     Ok(SessionResult {
         name: session.name,
-        style: match edited {
-            true => format!("{style} on the globe, with the Globe entry's terrain"),
-            false => style.to_string(),
+        style: match (edited, session.style) {
+            (true, Style::Sphere) => format!("{style} on the globe"),
+            (true, _) => format!("{style} on the globe, with the Globe entry's terrain"),
+            (false, _) => style.to_string(),
         },
         warm: false,
         device_ms,
@@ -982,6 +1034,7 @@ impl SessionReport {
              any frame (a pool's peaks: the most it used and the most it held, each in any \
              frame); the cache keeps at most two views' worth of tiles."
         )?;
+        self.write_fetches(out)?;
         self.write_steadiness(out)?;
         for r in &self.results {
             writeln!(out)?;
@@ -1052,6 +1105,39 @@ impl SessionReport {
 }
 
 impl SessionReport {
+    /// The tile fetches each session started, aborted and completed, in
+    /// all and after its last input.
+    fn write_fetches(&self, out: &mut String) -> std::fmt::Result {
+        writeln!(
+            out,
+            "| session | fetches started | aborted | completed | started after the last input |"
+        )?;
+        writeln!(out, "|{}", "---|".repeat(5))?;
+        for r in &self.results {
+            let mut all = orb_api::FetchCounts::default();
+            let mut after = 0;
+            let end = r.windows.last().map_or(f64::INFINITY, |w| w[1]);
+            for f in &r.frames {
+                all += f.report.fetches;
+                if f.t > end {
+                    after += f.report.fetches.started;
+                }
+            }
+            writeln!(
+                out,
+                "| {} | {} | {} | {} | {after} |",
+                r.name, all.started, all.aborted, all.completed
+            )?;
+        }
+        writeln!(out)?;
+        writeln!(
+            out,
+            "Tile fetches the map's jobs started, aborted once started (the view left their \
+             tiles), and completed."
+        )?;
+        writeln!(out)
+    }
+
     /// How still the terrain's cover held between successive frames, in
     /// the sessions on the plane with terrain.
     fn write_steadiness(&self, out: &mut String) -> std::fmt::Result {

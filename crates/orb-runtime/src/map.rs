@@ -21,6 +21,7 @@ use orb_style::v8::{StyleDoc, Transaction};
 
 use crate::MapEvent;
 use crate::frame::*;
+use crate::job_host::FetchCounts;
 use crate::jobs::{Jobs, TileResult};
 use crate::meshes::*;
 use crate::modules::Modules;
@@ -113,6 +114,9 @@ pub struct FrameReport {
     /// up, missing or failed) since the last frame drawn, in its
     /// preparations or in it.
     pub tiles_arrived: u32,
+    /// Tile fetches the map's jobs started, aborted once started and
+    /// completed since the last frame drawn.
+    pub fetches: FetchCounts,
     /// Bytes of tiles' and edits' results and label commits the frame
     /// uploaded: within its [`Budget`](crate::Budget)'s, but for a first one that
     /// can't go up in pieces (an image tile's texels, an edit's, a
@@ -669,6 +673,8 @@ pub struct Map {
     pub(crate) placement_ms: f64,
     pub(crate) upload_ms: f64,
     pub(crate) tiles_arrived: u32,
+    /// The jobs' fetch counts at the last frame drawn.
+    fetches_seen: FetchCounts,
     /// What the frames prepared since the last one drawn did.
     prepared: Prepared,
     /// The device's counts at the last frame drawn.
@@ -945,6 +951,7 @@ impl Map {
             placement_ms: 0.0,
             upload_ms: 0.0,
             tiles_arrived: 0,
+            fetches_seen: FetchCounts::default(),
             prepared: Default::default(),
             counted: GpuCounters::default(),
             placements_counted: 0,
@@ -2014,6 +2021,8 @@ impl Map {
         report.prepared = prepared.times;
         report.prepared_resized = prepared.resized;
         report.tiles_arrived = self.tiles_arrived + prepared.tiles_arrived;
+        let fetches = self.services.jobs.fetch_counts();
+        report.fetches = fetches - std::mem::replace(&mut self.fetches_seen, fetches);
         report.tile_bytes = self.beat.bytes();
 
         if !self.retired.ramps.is_empty() {

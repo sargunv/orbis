@@ -56,6 +56,14 @@ pub trait Fetch: Send + Sync {
     );
 }
 
+/// Tile fetches a map keeps in flight at once, where `ORB_FETCHES` sets
+/// it: a stand-in for a host with fewer connections, or more, for
+/// measuring how loads take turns. `None` leaves each host its default.
+pub fn fetch_limit() -> Option<usize> {
+    let limit = std::env::var("ORB_FETCHES").ok()?.parse().ok()?;
+    (limit > 0).then_some(limit)
+}
+
 /// A request a [`NetworkHook`] can serve where the network would: one the
 /// HTTP cache had no fresh copy of.
 #[derive(Clone, Debug)]

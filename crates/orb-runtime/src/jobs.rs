@@ -181,6 +181,11 @@ pub trait Jobs: Send + Sync {
     /// Loads and lays out a tile. A tile that doesn't exist yields an empty
     /// result.
     fn load(&self, request: TileRequest, done: TileDone);
+    /// The tile fetches these jobs started, aborted once started and
+    /// completed so far.
+    fn fetch_counts(&self) -> crate::FetchCounts {
+        crate::FetchCounts::default()
+    }
     /// Gives up the load of `tile` of style `style`'s source `source`: one
     /// whose fetch hasn't started never does and answers
     /// [`TileResult::cancelled`]; others complete as usual.
@@ -284,6 +289,10 @@ impl Jobs for PoolJobs {
 
     fn cancel(&self, style: u64, source: u32, tile: orb_crs::TileIndex) {
         self.host.cancel(style, source, tile);
+    }
+
+    fn fetch_counts(&self) -> crate::FetchCounts {
+        self.host.fetch_counts()
     }
 
     fn forget(&self, style: u64, source: u32, tile: orb_crs::TileIndex) {

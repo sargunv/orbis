@@ -42,10 +42,41 @@ pub enum Loaded {
     Cancelled,
 }
 
-/// Tile fetches a job host runs at once. Natively they feed the fetch
+/// Tile fetches a job host runs at once, unless `ORB_FETCHES` says
+/// otherwise ([`orb_host::fetch_limit`]). Natively they feed the fetch
 /// threads; in a browser they keep the network queue short, so that loads
 /// given up wait here, where they can be dropped, rather than there.
 pub(crate) const FETCHES: usize = 16;
+
+/// Tile fetches started, aborted once started, and completed, since a
+/// job host began: [`FrameReport::fetches`](crate::FrameReport::fetches)
+/// counts them a frame at a time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FetchCounts {
+    pub started: u64,
+    pub aborted: u64,
+    pub completed: u64,
+}
+
+impl std::ops::Sub for FetchCounts {
+    type Output = Self;
+
+    fn sub(self, before: Self) -> Self {
+        Self {
+            started: self.started - before.started,
+            aborted: self.aborted - before.aborted,
+            completed: self.completed - before.completed,
+        }
+    }
+}
+
+impl std::ops::AddAssign for FetchCounts {
+    fn add_assign(&mut self, other: Self) {
+        self.started += other.started;
+        self.aborted += other.aborted;
+        self.completed += other.completed;
+    }
+}
 
 /// A load its map can give up: its style, source and tile.
 type LoadKey = (u64, u32, TileIndex);
@@ -54,6 +85,8 @@ type LoadKey = (u64, u32, TileIndex);
 /// aborts that give each up.
 #[derive(Default)]
 struct Fetches {
+    limit: usize,
+    counts: FetchCounts,
     running: Vec<(Option<LoadKey>, Abort)>,
     waiting: BinaryHeap<WaitingFetch>,
     /// Counts the fetches queued, for their order within a rank.
@@ -110,6 +143,9 @@ impl Drop for Turn {
         if let Some(i) = running.iter().position(|(_, a)| a.same(&self.abort)) {
             running.swap_remove(i);
         }
+        if !self.abort.is_aborted() {
+            fetches.counts.completed += 1;
+        }
         drop(fetches);
         start_waiting(&self.fetches);
     }
@@ -123,7 +159,7 @@ fn start_waiting(fetches: &Arc<Mutex<Fetches>>) {
         return;
     }
     state.starting = true;
-    while state.running.len() < FETCHES {
+    while state.running.len() < state.limit {
         let Some(WaitingFetch {
             key, abort, start, ..
         }) = state.waiting.pop()
@@ -131,6 +167,7 @@ fn start_waiting(fetches: &Arc<Mutex<Fetches>>) {
             break;
         };
         state.running.push((key, abort.clone()));
+        state.counts.started += 1;
         drop(state);
         start(Some(Turn {
             fetches: Arc::clone(fetches),
@@ -451,7 +488,10 @@ impl JobHost {
     pub fn new(fetch: Arc<dyn Fetch>, executor: Arc<dyn Executor>) -> Arc<Self> {
         Arc::new(Self {
             loader: TileLoader::new(Arc::clone(&fetch)),
-            fetches: Arc::default(),
+            fetches: Arc::new(Mutex::new(Fetches {
+                limit: orb_host::fetch_limit().unwrap_or(FETCHES),
+                ..Fetches::default()
+            })),
             glyphs: Arc::new(GlyphLoads {
                 fetch: Arc::clone(&fetch),
                 executor: Arc::clone(&executor),
@@ -705,6 +745,11 @@ impl JobHost {
         start_waiting(&self.fetches);
     }
 
+    /// The tile fetches this host started, aborted and completed so far.
+    pub fn fetch_counts(&self) -> FetchCounts {
+        self.fetches.lock().expect("fetches poisoned").counts
+    }
+
     /// Drops what style `style`'s worker keeps of `tile` of its source
     /// `source` (its decoded frames), so that its next load fetches it
     /// again ([`Jobs::forget`](crate::Jobs::forget)).
@@ -728,11 +773,12 @@ impl JobHost {
                 .into_iter()
                 .partition(|w| w.key == key);
             fetches.waiting = kept.into();
-            let running = fetches.running.iter().filter(|(k, _)| *k == key);
-            (
-                given_up.into_iter().map(|w| w.start).collect(),
-                running.map(|(_, abort)| abort.clone()).collect(),
-            )
+            let running: Vec<Abort> = (fetches.running.iter())
+                .filter(|(k, _)| *k == key)
+                .map(|(_, abort)| abort.clone())
+                .collect();
+            fetches.counts.aborted += running.len() as u64;
+            (given_up.into_iter().map(|w| w.start).collect(), running)
         };
         for fetch in given_up {
             fetch(None);
