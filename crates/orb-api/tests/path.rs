@@ -300,6 +300,20 @@ fn a_globe_gesture_draws_what_a_fresh_globe_does() {
     assert_same("globe", both_ways(&style, start, end, 30));
 }
 
+/// A globe spun across the world from where it keeps each source's
+/// coarsest level loaded to stand in, and zoomed in past where it does,
+/// draws what a fresh globe there does, labels too: the coarse tiles it
+/// kept (the whole world, the extract's zoom 0) only ever stand in.
+#[test]
+fn a_globe_spun_past_its_coarse_level_draws_what_a_fresh_globe_does() {
+    let style = tokyo(r#""projection": {"type": "globe"},"#, "");
+    let start = (Geodetic::new(-60.0, 10.0), 2.0, 0.0, 0.0);
+    for (name, zoom) in [("globe-coarse", 3.2), ("globe-past-coarse", 5.0)] {
+        let end = (Geodetic::new(139.74, 35.685), zoom, 0.0, 0.0);
+        assert_same(name, both_ways(&style, start, end, 30));
+    }
+}
+
 /// A label of a tile that left the draw list, drawn as last placed while
 /// it fades out, stays where it is in the world as the globe comes in
 /// below zoom 12. Zooming out of zoom 12 with zoom 11's tiles resident, a
