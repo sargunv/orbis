@@ -37,12 +37,15 @@
 //! (a stale copy, a cache) would write other functions into the table, so
 //! the loader takes only its own.
 //!
-//! Data moves only as a custom section, `orbis.data.<module>`, which
-//! orb-web writes for read-only data only a module's code reads (the bidi
-//! tables, private to `orb_text::bidi`) and the split moves into that
-//! module; its loader hands the bytes to core.wasm as the module comes in,
-//! before its code can run. Data in core.wasm's memory stays: no scan of
-//! what code reads can be sure a module alone reads it.
+//! Data moves two ways, both before a module's code can run. Read-only
+//! data Rust names as one constant that only a module's code reads (the
+//! bidi tables, private to `orb_text::bidi`; the DEM shaders' WGSL) goes
+//! as a custom section, `orbis.data.<module>`, which orb-web writes and
+//! the split moves into the module; its loader hands the bytes to
+//! core.wasm (`setModuleData`). The rest of `.rodata` that only one
+//! module's code reads, by the linker's relocations rather than any scan
+//! of the code (data.rs), leaves core.wasm's data as zeros, and the module
+//! carries it in `orbis.memory`, which its loader writes into memory.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -342,7 +345,9 @@ const DATA: &str = "orbis.data.";
 
 /// What the split moved: per module, its functions and their code bytes.
 pub(crate) struct Split {
-    pub(crate) modules: Vec<(&'static str, usize, usize)>,
+    /// Per module, its name, its functions, their code bytes and the
+    /// bytes of data it carries.
+    pub(crate) modules: Vec<(&'static str, usize, usize, usize)>,
 }
 
 /// `name` without its crates' hashes (`orb_style[48b542d477ccbf4d]` →
@@ -571,9 +576,38 @@ fn assign(functions: &Functions, seeds: &[Option<usize>]) -> Vec<Option<usize>> 
         .collect()
 }
 
+/// What of `wasm` (core.wasm before wasm-opt, `names` naming its
+/// functions) wasm-opt must inline nowhere for the data a module's code
+/// reads to move ([`crate::data`]): the functions a module's paths name
+/// that a function they don't name for that module calls. A seed only its
+/// module's seeds call may go inline in them: it runs wherever they do.
+pub(crate) fn not_to_inline(
+    wasm: &[u8],
+    names: &HashMap<u32, String>,
+) -> Result<HashSet<u32>, String> {
+    let functions = functions(wasm)?;
+    let index = |i: usize| functions.imported + i as u32;
+    let seeds: Vec<Option<usize>> = (0..functions.defined.len())
+        .map(|i| seed(names.get(&index(i))?))
+        .collect();
+    let mut out = HashSet::new();
+    for (caller, function) in functions.defined.iter().enumerate() {
+        for &callee in &function.callees {
+            let callee = callee as usize;
+            if seeds[callee].is_some() && seeds[caller] != seeds[callee] {
+                out.insert(index(callee));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Splits `whole` (core.wasm, without names) into `primary` and a module
 /// per feature, `<prefix><name>.wasm`; `symbols` is the symbol map
 /// wasm-opt wrote for `whole`, which names its functions by index.
+/// `linked` is the module the linker wrote, with its relocations, and
+/// `not_inlined` the functions wasm-opt inlined nowhere ([`crate::data`]): what
+/// of its read-only data only one module's code reads moves there.
 /// Returns where each module went, by [`MODULES`]' order.
 pub(crate) fn split(
     whole: &Path,
@@ -581,6 +615,7 @@ pub(crate) fn split(
     primary: &Path,
     prefix: &str,
     features: &[&str],
+    (linked, not_inlined): (&Path, &HashSet<String>),
 ) -> Result<(Split, Vec<PathBuf>), String> {
     let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
     let functions = functions(&read(whole)?)?;
@@ -590,6 +625,7 @@ pub(crate) fn split(
         .lines()
         .filter_map(|line| {
             let (index, name) = line.split_once(':')?;
+            let name = name.strip_prefix(crate::data::NO_INLINE).unwrap_or(name);
             Some((index.parse().ok()?, name))
         })
         .collect();
@@ -626,7 +662,7 @@ pub(crate) fn split(
             .filter(|&i| modules[i] == Some(m))
             .collect();
         let bytes = held.iter().map(|&i| functions.defined[i].size).sum();
-        split.modules.push((module.name, held.len(), bytes));
+        split.modules.push((module.name, held.len(), bytes, 0));
         if held.is_empty() {
             continue;
         }
@@ -701,6 +737,30 @@ pub(crate) fn split(
                     .arg(path),
             )?;
         }
+    }
+    // Read-only data only one module's code reads, by the linker's
+    // relocations: a function of a name runs where wasm-opt's output
+    // keeps it, in core.wasm for all we know where several have the name
+    // in different places.
+    let mut status: HashMap<&str, Option<usize>> = HashMap::new();
+    for (i, &module) in modules.iter().enumerate() {
+        if let Some(name) = name(i) {
+            status
+                .entry(name)
+                .and_modify(|s| {
+                    if *s != module {
+                        *s = None;
+                    }
+                })
+                .or_insert(module);
+        }
+    }
+    let runs = crate::data::moves(&read(linked)?, not_inlined, |name| {
+        status.get(name).copied()
+    })?;
+    crate::data::apply(primary, &paths, &runs)?;
+    for run in &runs {
+        split.modules[run.module].3 += run.bytes.len();
     }
     // A module's data, which only its code reads, goes with it (orb-web's
     // `setModuleData`).
@@ -778,7 +838,7 @@ fn take_section(path: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
 }
 
 /// Appends a custom section `name` holding `payload` to the module at `path`.
-fn append_section(path: &Path, name: &str, payload: &[u8]) -> Result<(), String> {
+pub(crate) fn append_section(path: &Path, name: &str, payload: &[u8]) -> Result<(), String> {
     let mut wasm = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut body = Vec::new();
     leb128(&mut body, name.len());

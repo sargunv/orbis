@@ -6,6 +6,7 @@ mod affected;
 mod android;
 mod boundaries;
 mod compare;
+mod data;
 mod dxc;
 mod expression_fixtures;
 mod fixtures;

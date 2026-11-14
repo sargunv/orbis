@@ -16,7 +16,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
-use crate::{glue, run, split};
+use crate::{data, glue, run, split};
 
 const OUT_DIR: &str = "web/pkg";
 /// Where `cargo xtask web --names` writes `core.wasm` whole, with its
@@ -137,12 +137,13 @@ fn report_modules(build: &str, modules: &[Feature]) {
     );
     for m in modules {
         eprintln!(
-            "  {build}-{}.wasm: {} KiB raw, {} KiB brotli, {} functions ({} KiB of code)",
+            "  {build}-{}.wasm: {} KiB raw, {} KiB brotli, {} functions ({} KiB of code, {} bytes of core.wasm's data)",
             m.name,
             m.raw / 1024,
             m.brotli / 1024,
             m.functions,
             m.code / 1024,
+            m.data,
         );
     }
 }
@@ -171,6 +172,8 @@ struct Feature {
     functions: usize,
     /// Its functions' code bytes in the whole module.
     code: usize,
+    /// The bytes of core.wasm's read-only data it carries.
+    data: usize,
 }
 
 /// Builds `package` with `features` (cargo's feature arguments), binds it
@@ -216,10 +219,12 @@ fn module(
         // A derived `Debug` writes only its type's or variant's name
         // (10 KiB): what a message must show has a `Display`, as a tile's
         // `z/col/row` does. LLVM folds no functions with one body into
-        // one: the split takes each function by its name (split.rs).
+        // one: the split takes each function by its name (split.rs). The
+        // linker's relocations stay in the module, for the split to move
+        // the data only a module's code reads (data.rs).
         args.extend([
             "--config",
-            r#"target.wasm32-unknown-unknown.rustflags = ["-Zunstable-options", "-Cpanic=immediate-abort", "-Zlocation-detail=none", "-Zfmt-debug=shallow", "-Zmerge-functions=disabled"]"#,
+            r#"target.wasm32-unknown-unknown.rustflags = ["-Zunstable-options", "-Cpanic=immediate-abort", "-Zlocation-detail=none", "-Zfmt-debug=shallow", "-Zmerge-functions=disabled", "-Clink-arg=--emit-relocs"]"#,
         ]);
     }
     args.extend(features);
@@ -241,6 +246,7 @@ fn module(
     glue::shorten_imports(&out, name)?;
     glue::shorten_exports(&out, name)?;
     let wasm = out.join(format!("{name}_bg.wasm"));
+    data::strip_relocations(&wasm)?;
     let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
     // A module built to say why it panics stays whole, its feature
     // modules empty, so its stacks name every function.
@@ -256,7 +262,7 @@ fn module(
     let Some(names) = split else {
         // A module built to say why it panics names its functions in the
         // stacks it logs too (`-g`): it's never shipped.
-        let mut opt = wasm_opt(&wasm, &wasm);
+        let mut opt = wasm_opt(&wasm, &wasm, &[]);
         if panics {
             opt.arg("-g");
         }
@@ -277,8 +283,16 @@ fn module(
     // module's whose body is a closure of core.wasm's too would leave
     // core.wasm calling into the module. Whole, nothing is folded; the
     // split folds within each module (split.rs).
+    // Nor does it inline a function the split's paths name: so what
+    // reads a module's data is what read it before (data.rs).
+    let bytes = read(&wasm)?;
+    let seeds = data::mark(&wasm, &split::not_to_inline(&bytes, &data::names(&bytes)?)?)?;
     let whole_opt = |output: &Path| {
-        let mut opt = wasm_opt(&wasm, output);
+        let mut opt = wasm_opt(
+            &wasm,
+            output,
+            &[&format!("--no-inline={}*", data::NO_INLINE)],
+        );
         opt.arg("--skip-pass=duplicate-function-elimination");
         opt
     };
@@ -291,10 +305,17 @@ fn module(
     let whole = root.join(format!("target/web/{name}-whole.wasm"));
     let symbols = whole.with_extension("symbols");
     run(whole_opt(&whole).arg(format!("--symbolmap={}", symbols.display())))?;
-    let (split, paths) = split::split(&whole, &symbols, &wasm, &format!("{name}-"), FEATURES)?;
+    let (split, paths) = split::split(
+        &whole,
+        &symbols,
+        &wasm,
+        &format!("{name}-"),
+        FEATURES,
+        (&built, &seeds),
+    )?;
     let bytes = read(&wasm)?;
     let mut modules = Vec::new();
-    for (&(name, functions, code), path) in split.modules.iter().zip(&paths) {
+    for (&(name, functions, code, data), path) in split.modules.iter().zip(&paths) {
         let module = read(path)?;
         modules.push(Feature {
             name,
@@ -302,6 +323,7 @@ fn module(
             brotli: brotli(&module)?,
             functions,
             code,
+            data,
         });
     }
     Ok(Sizes {
@@ -355,10 +377,11 @@ const FEATURES: &[&str] = &[
     "--enable-reference-types",
 ];
 
-/// Shrinks `input` into `output`.
-fn wasm_opt(input: &Path, output: &Path) -> Command {
+/// Shrinks `input` into `output`, after the passes `first`.
+fn wasm_opt(input: &Path, output: &Path, first: &[&str]) -> Command {
     let mut command = Command::new("wasm-opt");
     command
+        .args(first)
         .args([
             "-Oz",
             "--converge",

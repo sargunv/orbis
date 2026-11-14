@@ -223,6 +223,10 @@ function functions(wasm) {
 /** A crate's hash after its name in a function's name. */
 const HASH = /(?<=[A-Za-z0-9_])\[[0-9a-f]+\]/g;
 
+/** A function's name as a reader wants it: without its crates' hashes,
+ * or the mark of a function binaryen inlines nowhere (xtask's `data.rs`). */
+const shown = (name) => name.replace(/^seed\$/, "").replace(HASH, "");
+
 const funcs = functions(readFileSync(named));
 
 /** A profile's first-call stamps, one per defined function (wasm-split's format: an 8-byte module hash, then u32s). */
@@ -647,7 +651,7 @@ if (scenes.length > 1) {
           `${module}: ${fs.length} (${fs
             .sort((a, b) => b.size - a.size)
             .slice(0, Number(option("show", 3)))
-            .map((f) => `\`${f.name.replace(HASH, "").slice(0, 80)}\``)
+            .map((f) => `\`${shown(f.name).slice(0, 80)}\``)
             .join(", ")})`,
       )
       .join("; ");

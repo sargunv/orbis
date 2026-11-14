@@ -112,6 +112,44 @@ const handData = (glue: Bindings, module: WebAssembly.Module, name: string) => {
     glue.setModuleData(name, new Uint8Array(data));
 };
 
+/** The custom section a feature module carries the build's read-only data
+ * in that only its code reads (xtask's `data.rs`), which goes into the
+ * instance's memory, where the build left zeros: runs of a gap from the
+ * end of the run before (from address 0 for the first), a length (both
+ * LEB128) and bytes. */
+const MEMORY = "orbis.memory";
+
+/** Writes `module`'s data into the memory of `exports`' instance. */
+const writeMemory = (
+  exports: WebAssembly.Exports,
+  module: WebAssembly.Module,
+) => {
+  const [section] = WebAssembly.Module.customSections(module, MEMORY);
+  if (!section) return;
+  const memory = Object.values(exports).find(
+    (e): e is WebAssembly.Memory => e instanceof WebAssembly.Memory,
+  );
+  if (!memory) throw new Error("the build exports no memory");
+  const bytes = new Uint8Array(memory.buffer);
+  const from = new Uint8Array(section);
+  let at = 0;
+  const leb128 = () => {
+    let value = 0;
+    for (let shift = 0; ; shift += 7) {
+      const byte = from[at++];
+      value += (byte & 0x7f) * 2 ** shift;
+      if (byte < 0x80) return value;
+    }
+  };
+  for (let end = 0; at < from.length;) {
+    const address = end + leb128();
+    const length = leb128();
+    bytes.set(from.subarray(at, at + length), address);
+    at += length;
+    end = address + length;
+  }
+};
+
 /** The build `module` names, if it names one. */
 const pair = (module: WebAssembly.Module) => {
   const [section] = WebAssembly.Module.customSections(module, PAIR);
@@ -225,6 +263,7 @@ function link(build: Held, name: ModuleName): void {
       throw new Error(`core-${name}.wasm is another build's`);
     }
     // Its data first: nothing can call its code before it's in.
+    writeMemory(instance.exports, module);
     handData(instance.glue, module, name);
     new WebAssembly.Instance(module, { primary: instance.exports });
   }
