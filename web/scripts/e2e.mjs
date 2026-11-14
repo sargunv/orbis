@@ -3826,9 +3826,14 @@ async function android(_browser, server) {
         physical: arg("android") === "physical",
       });
       const errors = [];
+      // What GL rejected: the validating command decoder of Android's
+      // Chrome (the emulator's) logs each, where desktop Chrome's ANGLE
+      // takes them (#202).
+      const rejected = [];
       onPageError(page, (m) => errors.push(m));
       page.on("console", (m) => {
         if (m.type() === "error") errors.push(m.text());
+        if (/GL_INVALID_/.test(m.text())) rejected.push(m.text());
       });
       try {
         await offlineGlobe(page, server);
@@ -3886,9 +3891,25 @@ async function android(_browser, server) {
           [],
           `${entry} on ${backend}`,
         );
+        // No draw samples the texture it draws into, whatever the levels:
+        // WebGL 2's drawn mip levels did, and left the drape's coarser
+        // levels blank. Its incomplete framebuffers are still open.
+        assert.deepEqual(
+          rejected.filter((m) => /Source and destination textures/.test(m)),
+          [],
+          `${entry} on ${backend}: draws into the texture they sample`,
+        );
         console.log(
           `android: ${entry} on ${drawn.backend}${backend === "auto" ? " (picked)" : ""} idle in ${((Date.now() - started) / 1000).toFixed(1)} s, ${drawn.memory} MiB of GPU memory`,
         );
+        // What else GL rejected, each kind once with its count.
+        const kinds = new Map();
+        for (const m of rejected) {
+          const kind = m.replace(/^\[[^\]]*\]\s*/, "");
+          kinds.set(kind, (kinds.get(kind) ?? 0) + 1);
+        }
+        for (const [kind, n] of kinds)
+          console.log(`  GL rejected ${n}×: ${kind}`);
       } finally {
         await close();
       }
