@@ -58,7 +58,10 @@
 // - `resize`: the Alps terrain style, offline, with circles over it,
 //   resized three times: each resize draws the map at the new size, not
 //   black, with no WebGPU error in any submit (a bundle bound to a target
-//   the resize destroyed failed its submit).
+//   the resize destroyed failed its submit). A lost device fails it, but
+//   one macOS logs as WebKit's GPU process aborting a command buffer after
+//   its low-memory handler, which no page prevents: the map must then
+//   start again and draw each size there.
 // - `compare`: the comparison on the Tokyo extract: the plain page fetches
 //   no other engine and isn't isolated; each pair of engines (Orbis, GL JS
 //   and MapLibre Native, Orbis and GL JS twice too) loads only its engines,
@@ -123,6 +126,7 @@
 //   pnpm e2e [--browsers=chromium,firefox,webkit] [--only=scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,compare,gestures,readback,boot,split,regions,android,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -2434,14 +2438,105 @@ function reportGpuErrors() {
   }
 }
 
+/**
+ * What macOS logged of WebKit's GPU process dropping a page's device near
+ * `at` (milliseconds since the epoch): a command buffer aborted for an
+ * invalid resource (`kIOGPUCommandBufferCallbackErrorInvalidResource`,
+ * CoreAnimation's own command buffers too) within 5 s of the process's
+ * low-memory handler, which runs when other sessions fill a shared
+ * machine's memory. WebKit then starts a new GPU process, says the device
+ * was `destroyed`, and gives the page no adapter. Null where macOS logged
+ * no such pair, or on another system.
+ */
+function webkitDroppedDevice(at) {
+  if (process.platform !== "darwin") return null;
+  const stamp = (t) => new Date(t).toLocaleString("sv-SE");
+  let out;
+  try {
+    out = execFileSync(
+      "log",
+      [
+        "show",
+        "--style",
+        "ndjson",
+        "--start",
+        stamp(at - 15_000),
+        "--end",
+        stamp(at + 2_000),
+        "--predicate",
+        'process BEGINSWITH "com.apple.WebKit.GPU" AND (eventMessage CONTAINS "GPUProcess::lowMemoryHandler" OR eventMessage CONTAINS "kIOGPUCommandBufferCallbackErrorInvalidResource")',
+      ],
+      { encoding: "utf8", maxBuffer: 64 << 20 },
+    );
+  } catch {
+    return null;
+  }
+  const entries = out
+    .split("\n")
+    .filter((line) => line.startsWith("{"))
+    .map((line) => JSON.parse(line))
+    .filter((e) => e.eventMessage)
+    .map((e) => ({
+      // "2026-11-14 01:47:39.726000-0800"
+      at: Date.parse(
+        e.timestamp.replace(" ", "T").replace(/([+-]\d\d)(\d\d)$/, "$1:$2"),
+      ),
+      pid: e.processID,
+      low: e.eventMessage.includes("lowMemoryHandler"),
+    }));
+  for (const abort of entries.filter((e) => !e.low)) {
+    const low = entries.findLast(
+      (e) =>
+        e.low &&
+        e.pid === abort.pid &&
+        e.at <= abort.at &&
+        abort.at - e.at <= 5_000,
+    );
+    if (low)
+      return `WebKit's GPU process aborted a command buffer for an invalid resource ${((abort.at - low.at) / 1000).toFixed(1)} s after its low-memory handler ran`;
+  }
+  return null;
+}
+
 async function resize(browser, server) {
   const { page, errors } = await open(browser, { width: 1000, height: 700 });
+  // When the map warned that it lost its GPU device.
+  const losses = [];
+  page.on("console", (m) => {
+    if (/the GPU device was lost/.test(m.text())) losses.push(Date.now());
+  });
   await page.addInitScript(`(${reportGpuErrors})()`);
+  await page.addInitScript(() => {
+    const watch = setInterval(() => {
+      if (!globalThis.app?.map) return;
+      clearInterval(watch);
+      app.map.on("restored", (e) => (globalThis.e2eRestored = e));
+    }, 10);
+  });
   await page.route(
     (u) => !u.href.startsWith(server.url),
     (route) => route.abort("internetdisconnected"),
   );
-  const idle = () => mapIdle(page, "the Alps");
+  // A lost GPU device fails the check, unless macOS says WebKit's GPU
+  // process dropped it under the machine's memory pressure, which no page
+  // can prevent; the map must then start again, and the check goes on
+  // there.
+  let survived = 0;
+  const idle = async () => {
+    await mapIdle(page, "the Alps");
+    for (; survived < losses.length; survived++) {
+      const why = webkitDroppedDevice(losses[survived]);
+      assert.ok(
+        why,
+        `the map lost its GPU device: ${errors.filter((e) => !/network error/.test(e)).join(" | ")}`,
+      );
+      console.log(`resize: ${why}; the map must start again`);
+      await page.waitForFunction(() => globalThis.e2eRestored, null, {
+        timeout: 60_000,
+      });
+      await mapIdle(page, "the Alps, started again");
+    }
+  };
   await page.goto(`${server.url}?style=alps`);
   await page.waitForFunction(() => app.map, null, { timeout: 60_000 });
   await idle();
@@ -2491,27 +2586,43 @@ async function resize(browser, server) {
         ),
     );
     await idle();
-    const { width, height, channels, pixels } = decodePng(
-      await page.locator("#map").screenshot(),
-    );
-    let dark = 0;
-    const colours = new Set();
-    for (let i = 0; i < pixels.length; i += channels) {
-      if (pixels[i] + pixels[i + 1] + pixels[i + 2] < 24) dark++;
-      colours.add((pixels[i] << 16) | (pixels[i + 1] << 8) | pixels[i + 2]);
+    const shot = async () => {
+      const { width, height, channels, pixels } = decodePng(
+        await page.locator("#map").screenshot(),
+      );
+      let dark = 0;
+      const colours = new Set();
+      for (let i = 0; i < pixels.length; i += channels) {
+        if (pixels[i] + pixels[i + 1] + pixels[i + 2] < 24) dark++;
+        colours.add((pixels[i] << 16) | (pixels[i + 1] << 8) | pixels[i + 2]);
+      }
+      return { share: dark / (width * height), colours };
+    };
+    let { share, colours } = await shot();
+    // A loss between the rest and the picture: once the map has started
+    // again, a picture of that.
+    if (losses.length > survived) {
+      await idle();
+      ({ share, colours } = await shot());
     }
-    const share = dark / (width * height);
     assert.ok(
       share < 0.2 && colours.size > 256,
       `at ${viewport.width}×${viewport.height} the map is ${(share * 100).toFixed(0)}% black in ${colours.size} colours`,
     );
     // Offline, the style's live basemap fails to load (the map, on the
-    // page, and the browser say so); nothing else may.
+    // page, and the browser say so); nothing else may, but a loss the map
+    // survived and what it says of the GPU it started again on.
     assert.deepEqual(
       errors.filter(
         (e) =>
           !/network error|^Failed to load resource: net::ERR_INTERNET_DISCONNECTED$/.test(
             e,
+          ) &&
+          !(
+            survived &&
+            /the GPU device was lost|draws with WebGL 2|otherwise than on WebGPU/.test(
+              e,
+            )
           ),
       ),
       [],
