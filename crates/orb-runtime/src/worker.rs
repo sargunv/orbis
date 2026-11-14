@@ -6,6 +6,7 @@
 //! no renderer or GPU type.
 
 use rustc_hash::FxHashMap as HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use orb_crs::{TileIndex, TileMatrixSet};
@@ -97,6 +98,9 @@ pub(crate) struct WorkerData {
     icons: Mutex<IconState>,
     /// How labels in scripts written without spaces break.
     words: Mutex<Words>,
+    /// Whether the bidirectional algorithm is in, as the job host
+    /// loading its module says; `None` where it always is.
+    bidi: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 #[derive(Default)]
@@ -156,6 +160,10 @@ pub enum Built {
     /// URLs (glyph PBF ranges, word data) to fetch and add with
     /// `TileWorker::add_resource`; then build again.
     Fetch(Vec<String>),
+    /// The bidirectional algorithm, for labels that read right to left:
+    /// load it into this context ([`Modules::BIDI`](crate::modules::Modules::BIDI)),
+    /// then build again.
+    Bidi,
 }
 
 impl TileWorker {
@@ -240,6 +248,13 @@ impl TileWorker {
     /// this revision and later ones.
     pub(crate) fn set_word_breaker(&self, breaker: Arc<orb_text::WordBreaker>) {
         *self.data.words.lock().expect("words poisoned") = Words(Some(breaker));
+    }
+
+    /// Lays labels that read right to left out only while `held` (the job
+    /// host loading the bidirectional algorithm's module sets it), for this
+    /// revision and later ones.
+    pub(crate) fn set_bidi(&self, held: Arc<AtomicBool>) {
+        *self.data.bidi.lock().expect("bidi poisoned") = Some(held);
     }
 
     /// Draws local glyphs with the host's fonts, for this revision and
@@ -688,6 +703,8 @@ impl TileWorker {
             ideographs: self.ideographs.as_deref(),
             fallback_fonts: &self.fallback_fonts,
             words: words.0.as_deref(),
+            bidi: (self.data.bidi.lock().expect("bidi poisoned").as_ref())
+                .is_none_or(|held| held.load(Ordering::Acquire)),
         };
         let bend = request.bend;
         match tile::build(
@@ -708,7 +725,8 @@ impl TileWorker {
                 build.warnings.splice(0..0, warnings);
                 Ok(Built::Tile(build))
             }
-            Err(missing) => Ok(Built::Fetch(missing)),
+            Err(tile::Missing::Fetch(urls)) => Ok(Built::Fetch(urls)),
+            Err(tile::Missing::Bidi) => Ok(Built::Bidi),
         }
     }
 
@@ -905,6 +923,7 @@ impl Built {
         match self {
             Self::Tile(build) => build,
             Self::Fetch(urls) => panic!("the tile needs resources: {urls:?}"),
+            Self::Bidi => panic!("the tile needs the bidirectional algorithm"),
         }
     }
 }
@@ -1795,6 +1814,51 @@ pub(crate) mod tests {
         assert_eq!(tile.symbols.len(), 1);
         let gets = fetch.gets.lock().unwrap();
         assert!(!gets.iter().any(|u| u.contains("/glyphs/")), "{gets:?}");
+    }
+
+    /// A tile whose labels read right to left lays them out only once its
+    /// job host has loaded the bidirectional algorithm, and then as a host
+    /// that had it all along does; plain labels never ask for it.
+    #[test]
+    fn right_to_left_labels_wait_for_bidi() {
+        type Asked = Vec<(
+            crate::modules::Modules,
+            Box<dyn FnOnce(Result<(), String>) + Send>,
+        )>;
+        let laid_out = |style: &str, loader: bool| {
+            let fetch = Arc::new(AssetFetch::default());
+            let host = crate::JobHost::new(fetch.clone(), Arc::new(orb_host::jobs::Inline));
+            let asked: Arc<Mutex<Asked>> = Arc::default();
+            if loader {
+                let asked = Arc::clone(&asked);
+                host.set_module_loader(Arc::new(move |modules, done| {
+                    asked.lock().unwrap().push((modules, done));
+                }));
+            }
+            host.set_style(1, Arc::new(TileWorker::new(style).unwrap()));
+            let (tx, rx) = std::sync::mpsc::channel();
+            host.load(
+                symbol_request(),
+                None,
+                Box::new(move |r| tx.send(r).unwrap()),
+            );
+            let waited = rx.try_iter().next().is_none() && fetch.held.lock().unwrap().is_empty();
+            for (modules, done) in std::mem::take(&mut *asked.lock().unwrap()) {
+                assert_eq!(modules, crate::modules::Modules::BIDI);
+                done(Ok(()));
+            }
+            fetch.release();
+            let Some(Ok(crate::Loaded::Tile(tile))) = rx.try_iter().next() else {
+                panic!("laid out")
+            };
+            (orb_wire::encode(&TileResult::from(tile)), waited)
+        };
+        let hebrew = SYMBOLS.replace(r#""{name_en}""#, r#""שלום""#);
+        let (with_loader, waited) = laid_out(&hebrew, true);
+        assert!(waited, "the labels wait for bidi before their glyphs");
+        assert_eq!(with_loader, laid_out(&hebrew, false).0);
+        let (_, waited) = laid_out(SYMBOLS, true);
+        assert!(!waited, "plain labels ask for glyphs at once");
     }
 
     /// A tile whose bytes arrive after its style was replaced isn't built:

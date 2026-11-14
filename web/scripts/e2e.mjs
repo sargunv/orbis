@@ -91,7 +91,9 @@
 //   throws: a bug in xtask/src/split.rs's paths or the map's gate), having
 //   fetched only the modules their styles declare, each once, and the
 //   API's once; then the extract takes GeoJSON the app answers for a
-//   tile it feeds, and a style on Equal Earth, loading their modules.
+//   tile it feeds, a label that reads right to left (the job workers
+//   load the bidirectional algorithm then, not before) and a style on
+//   Equal Earth, loading their modules.
 // - `regions`: a style of templated tiles, no archive, downloaded as a
 //   region from the Offline areas dialog, then reopened: it draws its
 //   tiles from the region's extract, with no error, though its style never
@@ -2652,7 +2654,7 @@ async function split(browser, server) {
     ],
   ];
   const MODULE =
-    /\/core(?:-gl)?-(mlt|archive|sqlite|dem|globe|geojson|api)[-.][^/]*$/;
+    /\/core(?:-gl)?-(mlt|archive|sqlite|dem|globe|geojson|api|bidi)[-.][^/]*$/;
   for (const [entry, offline, declared] of entries) {
     // Offline, the Globe's tiles fail and say so: `failing` checks that.
     const page = await browser.newPage({
@@ -2685,8 +2687,11 @@ async function split(browser, server) {
     );
     // The API's module comes on idle, after a while, or for a call the
     // app makes: when doesn't matter, as long as nothing called into it
-    // first.
-    const before = fetched.map((f) => f.name).filter((n) => n !== "api");
+    // first. The bidirectional algorithm comes into each job worker whose
+    // labels read right to left, whatever the style declares.
+    const before = fetched
+      .map((f) => f.name)
+      .filter((n) => n !== "api" && n !== "bidi");
     assert.ok(
       before.every((name) => declared.includes(name)),
       `${entry}: fetched ${before} before idle; its style declares ${declared}`,
@@ -2739,6 +2744,24 @@ async function split(browser, server) {
         );
       });
       await settles("geojson");
+      // A label that reads right to left: the job workers load the
+      // bidirectional algorithm then, and not before.
+      assert.ok(
+        !fetched.some((f) => f.name === "bidi"),
+        `${entry}: fetched bidi before a label read right to left`,
+      );
+      await page.evaluate(() =>
+        globalThis.orbis.edit((tx) =>
+          tx.addLayer({
+            id: "rtl",
+            type: "symbol",
+            source: "app",
+            "source-layer": "shapes",
+            layout: { "text-field": "שלום" },
+          }),
+        ),
+      );
+      await settles("bidi");
       await page.evaluate(() =>
         globalThis.orbis.map.setStyle({
           version: 8,

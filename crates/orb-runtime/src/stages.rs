@@ -79,6 +79,7 @@ impl Stages {
             {
                 Built::Tile(build) => Ok(build),
                 Built::Fetch(urls) => Err(urls),
+                Built::Bidi => return Err("the bidirectional algorithm isn't loaded".into()),
             },
         )
     }

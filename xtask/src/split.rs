@@ -212,6 +212,18 @@ pub(crate) const MODULES: &[Module] = &[
         except: &[],
         needs: &[],
     },
+    // Labels that read right to left: a job worker loads it once a tile's
+    // labels need it (orb-runtime's `JobHost::set_module_loader`).
+    Module {
+        name: "bidi",
+        paths: &[
+            "unicode_bidi::",
+            "orb_text::bidi::",
+            "orb_text::shaping::bidi_lines",
+        ],
+        except: &[],
+        needs: &[],
+    },
     // Queries, edits, the style's document, images, snapshots and offline
     // regions: on idle, or before the first call that needs it. JS calls
     // these exports only once the module is in (web/src/engine.ts's

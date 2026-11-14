@@ -4,7 +4,8 @@
 //! that changes the regions tells the other contexts on the
 //! `orbis-regions` broadcast channel, and each calls `reloadRegions`.
 //! Each context loads the archive module its regions' extracts are read
-//! and written with through its own loader (`setModuleLoader`).
+//! and written with through its own loader (`setModuleLoader`), as a job
+//! worker loads the bidirectional algorithm's.
 
 use rustc_hash::FxHashMap as HashMap;
 use std::cell::RefCell;
@@ -42,7 +43,7 @@ pub fn set_module_loader(loader: js_sys::Function) {
 }
 
 /// Loads modules into this context through its loader.
-fn load() -> Load {
+pub(crate) fn load() -> Load {
     Arc::new(|modules, done| {
         let loads: Result<js_sys::Array, JsValue> = LOADER.with(|l| {
             let loader = l.borrow().clone().ok_or("no module loader")?;

@@ -33,6 +33,17 @@ impl Label {
             })
             .collect()
     }
+
+    /// Whether shaping it runs the bidirectional algorithm: a text section
+    /// holds a right-to-left character, or an image section takes a private
+    /// use character, which counts as one. The web loads that code apart
+    /// (orb-runtime's `Modules::BIDI`).
+    pub fn needs_bidi(&self) -> bool {
+        self.sections.iter().any(|s| match &s.content {
+            Content::Text(text) => unicode::contains_rtl(text),
+            Content::Image(name) => !name.is_empty(),
+        })
+    }
 }
 
 /// One section of a `format` expression or plain text.

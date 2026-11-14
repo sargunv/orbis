@@ -202,6 +202,7 @@ impl JobWorker {
         if let Some(words) = crate::host::browser_words() {
             host.set_word_breaker(words);
         }
+        host.set_module_loader(crate::regions::load());
         Self { host }
     }
 

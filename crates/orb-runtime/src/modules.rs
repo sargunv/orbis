@@ -4,7 +4,9 @@
 //! of a module its host hasn't loaded: a style that needs one waits to be
 //! installed until it is in (edits go to it meanwhile), a source whose
 //! TileJSON names MLT sends no tile requests until its decoders are, and
-//! an app's GeoJSON answer for a tile it feeds waits for GeoJSON's code.
+//! an app's GeoJSON answer for a tile it feeds waits for GeoJSON's code;
+//! a tile whose labels read right to left lays them out once its job host
+//! has the bidirectional algorithm ([`Modules::BIDI`]), which it loads then.
 //! What runs before that gate (reading and parsing a style, and
 //! [`of_style`]) stays in the code every map has, whatever it calls
 //! (`cargo xtask web`'s split); editing one, which only the API starts,
@@ -40,10 +42,13 @@ impl Modules {
     /// Queries, edits, snapshots and offline regions: the host loads it
     /// on idle, or before the first call that needs it.
     pub const API: Self = Self(1 << 6);
-    pub const ALL: Self = Self((1 << 7) - 1);
+    /// The bidirectional algorithm, which labels in right-to-left scripts
+    /// lay out with: a job host loads it once a tile's labels need it.
+    pub const BIDI: Self = Self(1 << 7);
+    pub const ALL: Self = Self(u8::MAX);
 
     /// Each module and its name, as `cargo xtask web` names its file.
-    pub const NAMES: [(Self, &'static str); 7] = [
+    pub const NAMES: [(Self, &'static str); 8] = [
         (Self::MLT, "mlt"),
         (Self::ARCHIVE, "archive"),
         (Self::SQLITE, "sqlite"),
@@ -51,6 +56,7 @@ impl Modules {
         (Self::GLOBE, "globe"),
         (Self::GEOJSON, "geojson"),
         (Self::API, "api"),
+        (Self::BIDI, "bidi"),
     ];
 
     pub fn contains(self, other: Self) -> bool {
@@ -192,6 +198,6 @@ mod tests {
         assert_eq!(Modules::from_bits(Modules::DEM.bits()), Modules::DEM);
         assert_eq!(Modules::from_bits(0xff), Modules::ALL);
         assert!(Modules::ALL.contains(Modules::API));
-        assert_eq!(Modules::ALL.without(Modules::API).names().count(), 6);
+        assert_eq!(Modules::ALL.without(Modules::API).names().count(), 7);
     }
 }

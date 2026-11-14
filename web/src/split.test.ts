@@ -42,6 +42,7 @@ async function context(pair: string) {
   const glue = {
     __wbg_get_imports: () => ({}),
     __wbg_finalize_init: (i: WebAssembly.Instance) => (instance = i),
+    setModuleLoader: () => {},
   } as unknown as Bindings;
   const primary = module(PRIMARY, { "orbis.pair": "0123456789abcdef" });
   builds.instantiate(glue, { backend: "webgpu", module: primary });

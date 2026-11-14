@@ -54,7 +54,8 @@ export type ModuleName =
   | "dem"
   | "globe"
   | "geojson"
-  | "api";
+  | "api"
+  | "bidi";
 
 /** The feature modules in orb-runtime's `Modules::NAMES` order, which
  * the map's module bits follow. */
@@ -66,6 +67,7 @@ export const MODULE_NAMES: readonly ModuleName[] = [
   "globe",
   "geojson",
   "api",
+  "bidi",
 ];
 
 /** Each build's feature modules: literal URLs, which the bundler hashes. */
@@ -78,6 +80,7 @@ const MODULES: Record<Backend, Record<ModuleName, URL>> = {
     globe: new URL("../pkg/core-globe.wasm", import.meta.url),
     geojson: new URL("../pkg/core-geojson.wasm", import.meta.url),
     api: new URL("../pkg/core-api.wasm", import.meta.url),
+    bidi: new URL("../pkg/core-bidi.wasm", import.meta.url),
   },
   webgl2: {
     mlt: new URL("../pkg/core-gl-mlt.wasm", import.meta.url),
@@ -87,6 +90,7 @@ const MODULES: Record<Backend, Record<ModuleName, URL>> = {
     globe: new URL("../pkg/core-gl-globe.wasm", import.meta.url),
     geojson: new URL("../pkg/core-gl-geojson.wasm", import.meta.url),
     api: new URL("../pkg/core-gl-api.wasm", import.meta.url),
+    bidi: new URL("../pkg/core-gl-bidi.wasm", import.meta.url),
   },
 };
 

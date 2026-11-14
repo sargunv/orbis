@@ -62,6 +62,19 @@ pub(crate) struct Symbols<'a> {
     pub(crate) ideographs: Option<&'a str>,
     /// The map's fallback font files.
     pub(crate) fallback_fonts: &'a [orb_style::FontFace],
+    /// Whether this context has the bidirectional algorithm
+    /// ([`Modules::BIDI`](crate::modules::Modules::BIDI)).
+    pub(crate) bidi: bool,
+}
+
+/// What a tile's labels need before they lay out.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Missing {
+    /// Glyph ranges and word data to fetch, by URL.
+    Fetch(Vec<String>),
+    /// The bidirectional algorithm's module, for labels that read right
+    /// to left.
+    Bidi,
 }
 
 /// Which of a source's nodes to lay out.
@@ -549,7 +562,7 @@ fn build_symbols<'f>(
     symbols: Symbols<'_>,
     groups: &mut Groups<'f>,
     (warnings, glyphs_failed): (&mut Vec<String>, &mut bool),
-) -> Result<Vec<(u32, SymbolBuild)>, Vec<String>> {
+) -> Result<Vec<(u32, SymbolBuild)>, Missing> {
     let template = plan.style.glyphs.as_deref();
     let policy = orb_text::FontPolicy {
         glyphs_url: template.is_some(),
@@ -605,6 +618,14 @@ fn build_symbols<'f>(
             images,
             (tile, ancestor),
         );
+        // No label runs the bidirectional algorithm before its module is in.
+        if !symbols.bidi
+            && p.features
+                .iter()
+                .any(|f| f.text.as_ref().is_some_and(orb_text::Label::needs_bidi))
+        {
+            return Err(Missing::Bidi);
+        }
         let faces = crate::glyphs::Fonts {
             declared: &plan.style.font_faces,
             fallback: symbols.fallback_fonts,
@@ -617,7 +638,7 @@ fn build_symbols<'f>(
         prepared.push((node, labelled, ancestor, features, p));
     }
     if !missing.is_empty() {
-        return Err(missing);
+        return Err(Missing::Fetch(missing));
     }
     let mut built = Vec::with_capacity(prepared.len());
     for (node, layer, ancestor, features, mut p) in prepared {
@@ -672,7 +693,7 @@ pub(crate) fn build(
     bend: Option<orb_layout::fill::Bend>,
     select: Select<'_>,
     symbols: Symbols<'_>,
-) -> Result<TileBuild, Vec<String>> {
+) -> Result<TileBuild, Missing> {
     let mut groups = Groups::default();
     let mut laid = Laid::default();
     let mut build = TileBuild {
@@ -1286,6 +1307,7 @@ mod tests {
             words: None,
             ideographs: None,
             fallback_fonts: &[],
+            bidi: true,
         }
     }
 

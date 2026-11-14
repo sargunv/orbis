@@ -14,7 +14,7 @@
 //! way.
 
 use rustc_hash::FxHashMap as HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use orb_host::jobs::Executor;
@@ -22,6 +22,7 @@ use orb_host::{Abort, Fetch, FetchError, FontFiles, ResourceKind};
 
 use crate::glyphs::{GlyphRaster, LocalGlyphs, RasterDone};
 use crate::loader::TileLoader;
+use crate::modules::{Load, Modules};
 use crate::style::ImageKind;
 use crate::turns::{FetchCounts, LoadKey, Start, Turns};
 use crate::worker::{Built, StyleUpdate, TileRequest, TileWorker};
@@ -100,6 +101,53 @@ struct GlyphLoads {
     /// metrics only).
     recent: Mutex<RecentRanges>,
     wants: Arc<Wants>,
+    /// The bidirectional algorithm's module, where the host loads it apart
+    /// ([`JobHost::set_module_loader`]); `None` where it always has it.
+    bidi: Mutex<Option<Arc<BidiLoad>>>,
+}
+
+/// What a layout waiting for the bidirectional algorithm runs once it
+/// loaded, or with why it didn't.
+type BidiWaiter = Box<dyn FnOnce(Result<(), String>) + Send>;
+
+/// The bidirectional algorithm's module, loaded into this context the
+/// first time a tile's labels read right to left ([`Modules::BIDI`]).
+struct BidiLoad {
+    load: Load,
+    /// Whether it's in: every style's worker reads this.
+    held: Arc<AtomicBool>,
+    /// The layouts waiting while it loads; `None` while it isn't loading.
+    waiting: Mutex<Option<Vec<BidiWaiter>>>,
+}
+
+impl BidiLoad {
+    /// Runs `ready` once the module is in, loading it unless that's under
+    /// way, or with why it didn't load.
+    fn wait(self: &Arc<Self>, ready: BidiWaiter) {
+        if self.held.load(Ordering::Acquire) {
+            return ready(Ok(()));
+        }
+        let mut waiting = self.waiting.lock().expect("bidi waiters poisoned");
+        if let Some(waiters) = waiting.as_mut() {
+            waiters.push(ready);
+            return;
+        }
+        *waiting = Some(vec![ready]);
+        drop(waiting);
+        let this = Arc::clone(self);
+        (self.load)(
+            Modules::BIDI,
+            Box::new(move |loaded| {
+                if loaded.is_ok() {
+                    this.held.store(true, Ordering::Release);
+                }
+                let waiters = this.waiting.lock().expect("bidi waiters poisoned").take();
+                for ready in waiters.unwrap_or_default() {
+                    ready(loaded.clone());
+                }
+            }),
+        );
+    }
 }
 
 /// The whole-tile loads under way, each with whether its map still wants
@@ -293,15 +341,16 @@ impl GlyphLoads {
             worker.with_icons(epoch, ready);
             return;
         }
-        let urls = match worker.build(&bytes, request.encoding, &request) {
+        let (urls, bidi) = match worker.build(&bytes, request.encoding, &request) {
             Ok(Built::Tile(build)) => return done(Ok(Loaded::Tile(build))),
             Err(e) => return done(Err(e)),
-            Ok(Built::Fetch(urls)) => urls,
+            Ok(Built::Fetch(urls)) => (urls, false),
+            Ok(Built::Bidi) => (Vec::new(), true),
         };
         let style = request.style;
         // Labels never hold up a whole tile's other layers: those go now,
         // and its map lays the labels out again once their glyphs are in,
-        // which these fetches bring.
+        // which these fetches bring, and the bidirectional algorithm.
         if load_key(&request).is_some()
             && !request.neighbour
             && let Some((others, labels)) = worker.labels_apart(request.source)
@@ -314,31 +363,59 @@ impl GlyphLoads {
                 for url in urls {
                     self.wait(&worker, style, url, Box::new(|| {}));
                 }
+                if bidi {
+                    self.wait_bidi(Box::new(|_| {}));
+                }
                 build.labels_later = labels;
                 return done(Ok(Loaded::Tile(build)));
             }
         }
-        let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(urls.len()));
+        let remaining = std::sync::atomic::AtomicUsize::new(urls.len() + usize::from(bidi));
+        let remaining = Arc::new(remaining);
         let retry = Arc::new(Mutex::new(Some((bytes, request, done))));
-        for url in urls {
-            let (this, worker2) = (Arc::clone(self), Arc::clone(&worker));
+        let ready = || -> Box<dyn FnOnce() + Send> {
+            let (this, worker) = (Arc::clone(self), Arc::clone(&worker));
             let (remaining, retry) = (Arc::clone(&remaining), Arc::clone(&retry));
-            let ready = Box::new(move || {
+            Box::new(move || {
                 if remaining.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) != 1 {
                     return;
                 }
-                let (bytes, request, done) = retry
-                    .lock()
-                    .expect("retry poisoned")
-                    .take()
-                    .expect("retried once");
+                let Some((bytes, request, done)) = retry.lock().expect("retry poisoned").take()
+                else {
+                    return;
+                };
                 let executor = Arc::clone(&this.executor);
                 executor.spawn_ranked(
                     request.rank,
-                    Box::new(move || this.complete(worker2, bytes, request, done)),
+                    Box::new(move || this.complete(worker, bytes, request, done)),
                 );
-            });
-            self.wait(&worker, style, url, ready);
+            })
+        };
+        if bidi {
+            let (ready, retry) = (ready(), Arc::clone(&retry));
+            self.wait_bidi(Box::new(move |loaded| match loaded {
+                Ok(()) => ready(),
+                // Its labels can't lay out without it: the load fails, as
+                // one whose fetch failed does.
+                Err(e) => {
+                    if let Some((.., done)) = retry.lock().expect("retry poisoned").take() {
+                        done(Err(format!("labels read right to left: {e}")));
+                    }
+                }
+            }));
+        }
+        for url in urls {
+            self.wait(&worker, style, url, ready());
+        }
+    }
+
+    /// Runs `ready` once this context has the bidirectional algorithm,
+    /// loading it if its host loads it apart.
+    fn wait_bidi(&self, ready: BidiWaiter) {
+        let bidi = self.bidi.lock().expect("bidi poisoned").clone();
+        match bidi {
+            Some(bidi) => bidi.wait(ready),
+            None => ready(Err("no module loader".into())),
         }
     }
 }
@@ -377,6 +454,7 @@ impl JobHost {
                 waiting: Mutex::default(),
                 recent: Mutex::default(),
                 wants: Arc::default(),
+                bidi: Mutex::new(None),
             }),
             fetch,
             executor,
@@ -387,6 +465,18 @@ impl JobHost {
             files: Mutex::new(None),
             words: Mutex::new(None),
         })
+    }
+
+    /// How this host loads feature modules into its context: the
+    /// bidirectional algorithm's ([`Modules::BIDI`]), once a tile's labels
+    /// read right to left, for the styles set from now on. Without one it
+    /// has every module.
+    pub fn set_module_loader(&self, load: Load) {
+        *self.glyphs.bidi.lock().expect("bidi poisoned") = Some(Arc::new(BidiLoad {
+            load,
+            held: Arc::new(AtomicBool::new(false)),
+            waiting: Mutex::new(None),
+        }));
     }
 
     /// Draws local glyphs with the host's fonts: system
@@ -420,6 +510,9 @@ impl JobHost {
         }
         if let Some(words) = &*self.words.lock().expect("words poisoned") {
             worker.set_word_breaker(Arc::clone(words));
+        }
+        if let Some(bidi) = &*self.glyphs.bidi.lock().expect("bidi poisoned") {
+            worker.set_bidi(Arc::clone(&bidi.held));
         }
         let mut styles = self.styles.lock().expect("styles poisoned");
         styles.retain(|(i, _)| *i + 1 >= id && *i != id);
