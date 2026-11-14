@@ -282,6 +282,85 @@ fn a_full_block_adds_another_copying_nothing() {
     assert_eq!(h.renderer.memory().vertices.allocated, first);
 }
 
+/// Blocks a view left half empty give their meshes to one block that
+/// holds just them at rest, copying only those, and go: the meshes draw
+/// as before, still go one by one, and what arrives after takes a block
+/// again. Moving the map moves none.
+#[test]
+fn blocks_left_half_empty_move_into_one_at_rest() {
+    let (left, right) = (half_square(0), half_square(2048));
+    let mesh_words = |m: &orb_layout::Mesh| (m.vertices.len() as u32, m.indices.len() as u32);
+    let (v, i) = mesh_words(&left);
+    assert_eq!(mesh_words(&right), (v, i));
+    let capacity = SceneCapacity {
+        vertex_words: 2 * v,
+        index_words: 2 * i,
+        max_vertex_words: 1 << 12,
+        max_index_words: 1 << 12,
+        ..Harness::SMALL
+    };
+    let mut h = Harness::with(4, 2, 8, capacity, None);
+    red_fill(&mut h);
+    let tile = h.tile();
+    h.renderer
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .unwrap();
+    let add = |h: &mut Harness, mesh: &orb_layout::Mesh| {
+        let data = MeshData::new(mesh, &[], 0);
+        (h.renderer)
+            .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data, &Default::default())
+            .unwrap()
+    };
+    // Three blocks of a left and a right half each; then half of each
+    // goes, mid-move.
+    h.renderer.set_settling(false);
+    let ids: Vec<_> = (0..3)
+        .flat_map(|_| [&left, &right])
+        .map(|mesh| add(&mut h, mesh))
+        .collect();
+    h.render();
+    let bytes = |words: u32| u64::from(words) * 4;
+    let three_blocks = 3 * bytes(2 * v);
+    assert_eq!(h.renderer.memory().vertices.allocated, three_blocks);
+    for &gone in &[ids[1], ids[2], ids[5]] {
+        h.renderer.remove_mesh(tile, gone);
+    }
+    let pixels = h.render();
+    assert_eq!(pixel(&pixels, 4, 32), RED);
+    assert_eq!(pixel(&pixels, 36, 32), RED);
+    h.renderer.take_resized();
+    h.render();
+    assert_eq!(
+        h.renderer.take_resized(),
+        Default::default(),
+        "nothing moves"
+    );
+    assert_eq!(h.renderer.memory().vertices.allocated, three_blocks);
+    // At rest the three left go into one block of just them.
+    h.renderer.set_settling(true);
+    assert_eq!(h.render(), pixels);
+    let m = h.renderer.memory();
+    assert_eq!(
+        (m.vertices.used, m.vertices.allocated),
+        (bytes(3 * v), bytes(3 * v))
+    );
+    assert_eq!(
+        (m.indices.used, m.indices.allocated),
+        (bytes(3 * i), bytes(3 * i))
+    );
+    let moved = h.renderer.take_resized().bytes_copied;
+    assert!(moved >= bytes(3 * (v + i)), "{moved} bytes copied");
+    // The moved meshes go one by one: the right half's last goes.
+    h.renderer.remove_mesh(tile, ids[3]);
+    let pixels = h.render();
+    assert_eq!(pixel(&pixels, 4, 32), RED);
+    assert_eq!(pixel(&pixels, 36, 32), CLEAR);
+    // A full block takes a new one for what arrives.
+    add(&mut h, &right);
+    let pixels = h.render();
+    assert_eq!(pixel(&pixels, 36, 32), RED);
+}
+
 /// The candidate lists grow as a layout needs them, whatever else
 /// happens: written whole, nothing copied, every candidate drawn.
 #[test]
@@ -416,8 +495,9 @@ fn full_tile_pages_grow_and_shrink_by_chunks_keeping_their_layers() {
             assert_eq!(pixel(&pixels, 48, 32), blue, "the last tile's texels");
         };
         draws(&mut h, first, last);
-        // A tile of the first chunk goes: the settling frame keeps the
-        // second, which holds the last, and moves nothing.
+        // A tile of the first chunk goes while the map moves: the second
+        // chunk, which holds the last, stays, and nothing moves.
+        h.renderer.set_settling(false);
         h.renderer.release_tile(held.pop().unwrap());
         let two_chunks = h.renderer.texture_bytes().0;
         h.render_stats();
@@ -427,6 +507,7 @@ fn full_tile_pages_grow_and_shrink_by_chunks_keeping_their_layers() {
         held.push(upload(&mut h, 9, green).unwrap());
         assert_eq!(h.renderer.texture_bytes().0, two_chunks, "{kind:?}");
         draws(&mut h, first, last);
+        h.renderer.set_settling(true);
         // The second chunk's last tile goes, and the chunk with it.
         h.renderer.release_tile(last);
         h.render_stats();
@@ -459,6 +540,149 @@ fn full_tile_pages_grow_and_shrink_by_chunks_keeping_their_layers() {
         h.renderer.release_tile(last);
         h.render_stats();
     }
+}
+
+/// At rest a raster page moves the layers of tiles in a chunk it grew by
+/// down into those tiles of the first left free, copying them, and lets
+/// the chunk go: each tile draws its own texels still, and the next tile
+/// past the first chunk makes a chunk again.
+#[test]
+fn raster_pages_move_layers_down_at_rest() {
+    use orb_render::{ImageBuild, PageKind, Pixels, RasterPaint, RenderNode, TileKey};
+    let mut h = Harness::new();
+    let source = 5;
+    let node = RenderNode {
+        family: Family::Raster,
+        source: Some(source),
+    };
+    assert!(h.renderer.remap_nodes(&mut h.gpu, &[node], &[None]));
+    h.renderer.set_paint(
+        &mut h.gpu,
+        0,
+        &NodePaint::Raster(RasterPaint {
+            opacity: 1.0,
+            hue_rotate: 0.0,
+            brightness_min: 0.0,
+            brightness_max: 1.0,
+            saturation: 0.0,
+            contrast: 0.0,
+            nearest: true,
+            mipmapped: false,
+            fade_duration: 0.0,
+        }),
+    );
+    let upload = |h: &mut Harness, col: u32, rgba: [u8; 4]| {
+        let pixels = rgba.repeat(4);
+        let build = ImageBuild {
+            key: TileKey {
+                source,
+                tile: orb_crs::TileIndex::new(4, col, 0),
+            },
+            kind: PageKind::Raster,
+            size: [2, 2],
+            pixels: Pixels::Core(&pixels),
+            mesh: None,
+            patches: None,
+            fade_from: None,
+            unpack: None,
+            area: None,
+        };
+        h.renderer.upload_image(&mut h.gpu, &build, true).unwrap()
+    };
+    let (green, blue) = ([0, 255, 0, 255], [0, 0, 255, 255]);
+    let row = |from: i16, to: i16| TileRow {
+        extent: 8192.0,
+        scale: 2.0 / 8192.0,
+        clips: [
+            ClipRect::new([from, 0], [to, 8192]),
+            ClipRect::EMPTY,
+            ClipRect::EMPTY,
+            ClipRect::EMPTY,
+        ],
+        ..full_view_tile(0.0)
+    };
+    // While the map moves, a page of eight layers takes a second chunk
+    // for the ninth tile; then half the first chunk's tiles go.
+    h.renderer.set_settling(false);
+    let first = upload(&mut h, 0, RED);
+    let mut held: Vec<_> = (1..8).map(|col| upload(&mut h, col, green)).collect();
+    let one_chunk = h.renderer.texture_bytes().0;
+    let last = upload(&mut h, 8, blue);
+    h.renderer.place(first, 8192, &[row(0, 4096)]).unwrap();
+    h.renderer.place(last, 8192, &[row(4096, 8192)]).unwrap();
+    for tile in held.drain(..4) {
+        h.renderer.release_tile(tile);
+    }
+    let pixels = h.render();
+    assert!(h.renderer.texture_bytes().0 > one_chunk);
+    h.renderer.take_resized();
+    // At rest the last moves into the first chunk, which the second's
+    // going leaves alone.
+    h.renderer.set_settling(true);
+    assert_eq!(h.render(), pixels);
+    assert_eq!(pixel(&pixels, 16, 32), RED, "the first tile's texels");
+    assert_eq!(pixel(&pixels, 48, 32), blue, "the last tile's texels");
+    assert_eq!(h.renderer.texture_bytes().0, one_chunk);
+    assert!(h.renderer.take_resized().bytes_copied > 0, "the last moved");
+    // The first chunk takes three more; the fourth makes a chunk again.
+    held.extend((9..12).map(|col| upload(&mut h, col, green)));
+    assert_eq!(h.renderer.texture_bytes().0, one_chunk);
+    held.push(upload(&mut h, 12, green));
+    assert!(h.renderer.texture_bytes().0 > one_chunk);
+    assert_eq!(h.render(), pixels);
+}
+
+/// A tile page's chunk that grew in place, past its four, gives back at
+/// rest what a view grew it to once its tiles' layers lie low, down to
+/// its first size. DEM pages, whose layers stay where they are.
+#[test]
+fn a_chunk_grown_in_place_shrinks_at_rest() {
+    use orb_render::{ImageBuild, PageKind, Pixels, TileKey};
+    let mut h = Harness::new();
+    let upload = |h: &mut Harness, n: u32| {
+        let pixels = RED.repeat(4);
+        let build = ImageBuild {
+            key: TileKey {
+                source: 5,
+                tile: orb_crs::TileIndex::new(7, n, 0),
+            },
+            kind: PageKind::Dem,
+            size: [2, 2],
+            pixels: Pixels::Core(&pixels),
+            mesh: None,
+            patches: None,
+            fade_from: None,
+            unpack: Some([0.0; 4]),
+            area: None,
+        };
+        h.renderer.upload_image(&mut h.gpu, &build, true).unwrap()
+    };
+    // Eight, eight, sixteen and thirty-two layers, and the last chunk
+    // grows by half for the 65th tile.
+    h.renderer.set_settling(false);
+    let tiles: Vec<_> = (0..65).map(|n| upload(&mut h, n)).collect();
+    h.render_stats();
+    let grown = h.renderer.texture_bytes().0;
+    h.renderer.set_settling(true);
+    h.render_stats();
+    assert_eq!(h.renderer.texture_bytes().0, grown, "its layers fill it");
+    // All but the first of the last chunk's tiles go: it shrinks back to
+    // the thirty-two it was made with.
+    for &tile in &tiles[33..] {
+        h.renderer.release_tile(tile);
+    }
+    h.renderer.take_resized();
+    h.render_stats();
+    let shrunk = h.renderer.texture_bytes().0;
+    assert_eq!(shrunk * 80, grown * 64, "{shrunk} of {grown} bytes");
+    assert!(
+        h.renderer.take_resized().bytes_copied > 0,
+        "its tile copied"
+    );
+    // It grows again as tiles come.
+    let more: Vec<_> = (65..98).map(|n| upload(&mut h, n)).collect();
+    assert!(h.renderer.texture_bytes().0 > shrunk);
+    assert_eq!(more.len(), 33);
 }
 
 /// A tile page holds eight times its first chunk's layers before it grows

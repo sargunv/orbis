@@ -3,8 +3,8 @@
 //! block's vertex and index pools.
 //!
 //! The vertex and index pools are blocks of fixed size (`BlockPool`): a
-//! scene that needs more adds a block and never moves the ones it has, so
-//! growing copies nothing. A block's meshes draw with the block bound,
+//! scene that needs more adds a block rather than moving the ones it has,
+//! so growing copies nothing. A block's meshes draw with the block bound,
 //! each node once per block it has candidates in.
 //!
 //! Every write to them, and every move into a larger one, goes through
@@ -342,6 +342,31 @@ fn write_texels(gpu: &mut dyn Gpu, texture: TextureId, at: u32, words: &[u32]) {
         at += n as u32;
         words = &words[n..];
     }
+}
+
+/// The texel copies that move runs of words (`from`, `to`, `len`) between
+/// data textures `width` words wide: whole rows where a run's ends line up
+/// with them in both, else pieces that cross a row in neither.
+#[cfg(cpu_driven)]
+fn texel_copies(runs: &[(u32, u32, u32)], width: u32) -> Vec<TextureCopy> {
+    let mut copies = Vec::new();
+    for &(mut at, mut to, mut len) in runs {
+        while len > 0 {
+            let (x, to_x) = (at % width, to % width);
+            let (w, h) = if x == 0 && to_x == 0 && len >= width {
+                (width, len / width)
+            } else {
+                ((width - x).min(width - to_x).min(len), 1)
+            };
+            copies.push(TextureCopy {
+                from: [x, at / width, 0],
+                to: [to_x, to / width, 0],
+                size: [w, h, 1],
+            });
+            (at, to, len) = (at + w * h, to + w * h, len - w * h);
+        }
+    }
+    copies
 }
 
 /// A data texture of `rows` rows.
@@ -833,6 +858,69 @@ impl Tables {
             }
             #[cfg(cpu_driven)]
             Place::Cpu => {}
+        }
+    }
+
+    /// Adds to `passes`, for the caller to submit, the copies of runs of
+    /// pool `pool`'s words from block `source` into block `destination`,
+    /// each `(from, to, len)` in words; the copy the CPU keeps of an index
+    /// pool takes them at once. How meshes move out of a block a view left
+    /// mostly empty.
+    #[cfg_attr(not(cpu_driven), allow(unused_variables))]
+    pub(super) fn copy_between_blocks(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        pool: BlockPool,
+        (source, destination): (usize, usize),
+        runs: &[(u32, u32, u32)],
+        passes: &mut Vec<Pass>,
+    ) {
+        #[cfg(cpu_driven)]
+        self.flush(gpu);
+        let place = |block: usize| self.blocks[block].expect("a block's pools")[pool as usize];
+        match (place(source), place(destination)) {
+            (Place::Buffer(from), Place::Buffer(to)) => {
+                passes.extend(runs.iter().map(|&(at, to_at, len)| Pass::CopyBuffer {
+                    source: from,
+                    source_offset: u64::from(at) * 4,
+                    destination: to,
+                    destination_offset: u64::from(to_at) * 4,
+                    size: u64::from(len) * 4,
+                }));
+            }
+            #[cfg(cpu_driven)]
+            (Place::Texture { texture: from, .. }, Place::Texture { texture: to, .. }) => {
+                let width = data_width(&gpu.caps().limits);
+                passes.push(Pass::CopyTexture {
+                    source: from,
+                    destination: to,
+                    copies: texel_copies(runs, width),
+                });
+            }
+            #[cfg(cpu_driven)]
+            places => panic!("block pools on different backings: {places:?}"),
+        }
+        #[cfg(cpu_driven)]
+        if pool == BlockPool::Indices
+            && let Some(mirrors) = self.mirrors.indices.as_mut()
+        {
+            if mirrors.len() <= source.max(destination) {
+                mirrors.resize_with(source.max(destination) + 1, Vec::new);
+            }
+            let from = std::mem::take(&mut mirrors[source]);
+            let to = &mut mirrors[destination];
+            for &(at, to_at, len) in runs {
+                let (at, to_at, len) = (at as usize, to_at as usize, len as usize);
+                if to.len() < to_at + len {
+                    to.resize(to_at + len, 0);
+                }
+                // Words past the end of a copy are zero.
+                let kept = from.len().clamp(at, at + len);
+                to[to_at..to_at + kept - at].copy_from_slice(&from[at..kept]);
+                to[to_at + kept - at..to_at + len].fill(0);
+            }
+            mirrors[source] = from;
+            self.mirrors.revision += 1;
         }
     }
 

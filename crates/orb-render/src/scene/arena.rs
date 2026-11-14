@@ -225,6 +225,11 @@ impl Slots {
         self.next - self.free.len() as u32
     }
 
+    /// The slot [`alloc`](Self::alloc) would hand out next.
+    pub(crate) fn lowest_free(&self) -> Option<u32> {
+        (self.free.first().copied()).or((self.next < self.capacity).then_some(self.next))
+    }
+
     /// Extends to `capacity` slots.
     pub(crate) fn grow(&mut self, capacity: u32) {
         assert!(capacity > self.capacity, "slots only grow");

@@ -7,7 +7,9 @@
 //!
 //! Vertices and indices live in blocks ([`Block`]): a mesh takes room in
 //! one, a scene with no room for one adds another, and an empty one goes,
-//! so their memory follows what the scene holds and none ever moves. Each
+//! so their memory follows what the scene holds and nothing moves while
+//! the map does; at rest, the meshes of blocks a view left mostly empty
+//! move into one that holds just them ([`Scene::repack`]). Each
 //! block has its own cull rows, one per render node and second stream
 //! ([`Scene::row`]), which its meshes' candidates are laid out in: the
 //! cull runs once per block, and a node draws once per block it has
@@ -580,9 +582,9 @@ pub struct SceneCapacity {
     /// `(chunk, placement)` pairs the cull pass considers, over all nodes.
     pub candidates: u32,
     pub nodes: u32,
-    /// The first block's vertex pool. A later block holds what the blocks
-    /// before it hold together, up to `max_vertex_words`, the most one
-    /// block may (as the device's bindings allow).
+    /// The first block's vertex pool. A later block holds half what the
+    /// blocks before it hold together, up to `max_vertex_words`, the most
+    /// one block may (as the device's bindings allow).
     pub vertex_words: u32,
     /// The first block's index pool, as `vertex_words`.
     pub index_words: u32,
@@ -921,6 +923,57 @@ struct MeshEntry {
     symbol: Option<Box<symbol::SymbolEntry>>,
 }
 
+impl MeshEntry {
+    /// Its `k`th chunk's row in the chunk table (`types.wgsl`'s `Chunk`).
+    fn chunk_row(&self, k: usize) -> [u32; CHUNK_WORDS] {
+        let chunk = &self.chunks[k];
+        let pack = |p: [i16; 2]| u32::from(p[0] as u16) | u32::from(p[1] as u16) << 16;
+        let (first_index, first_vertex) = match &self.symbol {
+            // A symbol chunk's first index is a quad's, and its first
+            // vertex word the copies placement shows it in.
+            Some(symbol) => (chunk.first_index, symbol.mask(k)),
+            None => (
+                self.indices.start * 2 + chunk.first_index,
+                chunk.first_vertex,
+            ),
+        };
+        [
+            first_index,
+            chunk.index_count,
+            self.vertices.start,
+            first_vertex,
+            self.props.start,
+            pack(chunk.bounds.min),
+            pack(chunk.bounds.max),
+            state_base(&self.state),
+            self.row_words,
+        ]
+    }
+
+    /// Writes its chunks' rows, one write for each run of them in
+    /// adjacent slots.
+    fn write_chunk_rows(&self, gpu: &mut dyn Gpu, tables: &mut Tables) {
+        let mut order: Vec<usize> = (0..self.chunk_slots.len()).collect();
+        order.sort_unstable_by_key(|&k| self.chunk_slots[k]);
+        let mut words: Vec<u32> = Vec::with_capacity(order.len() * CHUNK_WORDS);
+        let mut first = 0;
+        for (i, &k) in order.iter().enumerate() {
+            let slot = self.chunk_slots[k];
+            if i > 0 && slot != self.chunk_slots[order[i - 1]] + 1 {
+                tables.write_words(gpu, Table::Chunks, first * CHUNK_WORDS as u32, &words);
+                words.clear();
+            }
+            if words.is_empty() {
+                first = slot;
+            }
+            words.extend(self.chunk_row(k));
+        }
+        if !words.is_empty() {
+            tables.write_words(gpu, Table::Chunks, first * CHUNK_WORDS as u32, &words);
+        }
+    }
+}
+
 /// Chunk word that holds the first word of the mesh's feature-state
 /// remap, or [`NO_STATE`].
 const CHUNK_STATE_WORD: u64 = layout::chunk::STATE_BASE as u64;
@@ -950,7 +1003,8 @@ impl NodeEntry {
 }
 
 /// A block of the vertex and index pools ([`Scene`]'s): fixed in size,
-/// made when no block there has room for what comes, freed once empty.
+/// made when no block there has room for what comes, freed once empty, or
+/// at rest once its meshes move out ([`Scene::repack`]).
 ///
 /// But for the one that holds what draws as points (circles, heatmaps and
 /// symbols, and the tiles that have any): a node draws a list per block,
@@ -1564,9 +1618,7 @@ impl Scene {
     }
 
     /// Frees the blocks no mesh holds a word of: a view that emptied gives
-    /// back what it took. Trailing free slots go with their rows, and the
-    /// row tables shrink to the slots left. A scene left with no block
-    /// takes one of the first size, as a fresh one has.
+    /// back what it took ([`drop_blocks`](Self::drop_blocks)).
     fn free_empty_blocks(&mut self, gpu: &mut dyn Gpu) {
         let empty = |b: &Block| b.vertices.used() == 0 && b.indices.used() == 0;
         // An empty block of the first size stays where every block is
@@ -1582,17 +1634,24 @@ impl Scene {
                     .position(|b| b.as_ref().is_some_and(fresh))
             })
             .flatten();
-        let mut freed = false;
-        for slot in 0..self.blocks.len() {
-            if Some(slot) != keep && self.blocks[slot].as_ref().is_some_and(empty) {
-                let block = self.blocks[slot].take().expect("checked");
-                gpu.destroy_buffer(block.frame);
-                self.tables.remove_block(gpu, slot);
-                freed = true;
-            }
-        }
-        if !freed {
+        let freed: Vec<usize> = (0..self.blocks.len())
+            .filter(|&slot| Some(slot) != keep && self.blocks[slot].as_ref().is_some_and(empty))
+            .collect();
+        self.drop_blocks(gpu, &freed);
+    }
+
+    /// Frees the blocks in slots `slots`, whose words no mesh draws.
+    /// Trailing free slots go with their rows, and the row tables shrink
+    /// to the slots left. A scene left with no block takes one of the
+    /// first size, as a fresh one has.
+    fn drop_blocks(&mut self, gpu: &mut dyn Gpu, slots: &[usize]) {
+        if slots.is_empty() {
             return;
+        }
+        for &slot in slots {
+            let block = self.blocks[slot].take().expect("a block");
+            gpu.destroy_buffer(block.frame);
+            self.tables.remove_block(gpu, slot);
         }
         while self.blocks.len() > 1 && self.blocks.last().is_some_and(Option::is_none) {
             self.blocks.pop();
@@ -2508,11 +2567,180 @@ impl Scene {
         self.buffers_revision += 1;
     }
 
-    /// The vertex and index words of a new block that holds `need`: what
-    /// the blocks there hold together (the block for what draws as points
-    /// aside), so that what the scene holds doubles with each block and a
-    /// view takes few, or the first block's size if more, to the device's
-    /// limit. `None` if `need` is past it.
+    /// Moves the meshes of the blocks a view left at most three quarters
+    /// full into one new block that holds just them, and frees those
+    /// blocks: blocks are made as uploads need them and go only once
+    /// empty, so a view that moved on leaves its tiles scattered over
+    /// blocks made for more, five times the words they use after a flight.
+    /// The block for what draws as points moves on its own, as it must
+    /// stay one ([`Block`]). Only blocks whose every held word a mesh
+    /// draws move (none of a tile's reserved words still being written),
+    /// and only where that gives back at least a first block's words. The
+    /// copies run on the GPU, and the candidates are laid out again from
+    /// the start, as the meshes changed rows. Whether any moved.
+    pub(crate) fn repack(&mut self, gpu: &mut dyn Gpu) -> bool {
+        let mut moved = false;
+        for points in [false, true] {
+            if let Some(from) = self.repacked(points) {
+                self.move_blocks(gpu, &from, points);
+                moved = true;
+            }
+        }
+        moved
+    }
+
+    /// The blocks [`repack`](Self::repack) moves of those for what draws
+    /// as `points` or the others, sparsest first, as many as one block
+    /// holds, if moving them gives back enough.
+    fn repacked(&self, points: bool) -> Option<Vec<usize>> {
+        let words = |b: &Block| [&b.vertices, &b.indices].map(|a| (a.used(), a.capacity()));
+        let mut sparse: Vec<(usize, [(u32, u32); 2])> = (self.blocks.iter().enumerate())
+            .filter_map(|(slot, b)| Some((slot, b.as_ref().filter(|b| b.points == points)?)))
+            .map(|(slot, b)| (slot, words(b)))
+            .filter(|&(_, [(vu, vc), (iu, ic)])| {
+                let (used, held) = (u64::from(vu) + u64::from(iu), u64::from(vc) + u64::from(ic));
+                used > 0 && used * 4 <= held * 3
+            })
+            .filter(|&(slot, _)| self.drawn_words(slot).is_some())
+            .collect();
+        sparse.sort_by_key(|&(_, [(vu, vc), (iu, ic)])| {
+            // Words held per word used, in 1024ths.
+            std::cmp::Reverse(
+                (u64::from(vc) + u64::from(ic)) * 1024 / (u64::from(vu) + u64::from(iu)),
+            )
+        });
+        let largest = [
+            self.capacity.max_vertex_words,
+            self.capacity.max_index_words,
+        ];
+        let (mut total, mut freed) = ([0u64; 2], 0u64);
+        let mut from = Vec::new();
+        for (slot, pools) in sparse {
+            let after = [0, 1].map(|p| total[p] + u64::from(pools[p].0));
+            if (0..2).any(|p| after[p] > u64::from(largest[p])) {
+                continue;
+            }
+            total = after;
+            freed += pools.iter().map(|&(u, c)| u64::from(c - u)).sum::<u64>();
+            from.push(slot);
+        }
+        let first = u64::from(self.first.vertex_words) + u64::from(self.first.index_words);
+        (freed >= first).then_some(from)
+    }
+
+    /// The vertex and index ranges block `slot`'s meshes draw, each once
+    /// (meshes that share one draw the same), by start: `None` if they
+    /// don't account for every word it holds, as while a tile's reserved
+    /// words are still being written.
+    fn drawn_words(&self, slot: usize) -> Option<[Vec<Range<u32>>; 2]> {
+        let block = self.blocks[slot].as_ref()?;
+        let mut ranges = [Vec::new(), Vec::new()];
+        for entry in self.meshes.iter().flatten() {
+            if entry.block as usize == slot {
+                for (p, range) in [&entry.vertices, &entry.indices].into_iter().enumerate() {
+                    if !range.is_empty() {
+                        ranges[p].push(range.clone());
+                    }
+                }
+            }
+        }
+        for (p, arena) in [&block.vertices, &block.indices].into_iter().enumerate() {
+            ranges[p].sort_unstable_by_key(|r| r.start);
+            ranges[p].dedup_by_key(|r| r.start);
+            let drawn: u64 = ranges[p].iter().map(|r| r.len() as u64).sum();
+            if drawn != u64::from(arena.used()) {
+                return None;
+            }
+        }
+        Some(ranges)
+    }
+
+    /// Moves every mesh of blocks `from` into one new block of just their
+    /// words, for what draws as `points` or not, and frees `from`. The
+    /// words move in one submission of GPU copies, ranges that lie end to
+    /// end in one copy, and the meshes keep their order in each row.
+    fn move_blocks(&mut self, gpu: &mut dyn Gpu, from: &[usize], points: bool) {
+        let drawn: Vec<[Vec<Range<u32>>; 2]> = (from.iter())
+            .map(|&slot| self.drawn_words(slot).expect("checked"))
+            .collect();
+        let words = [0, 1].map(|p| {
+            (drawn.iter())
+                .flat_map(|d| &d[p])
+                .map(|r| r.len() as u32)
+                .sum::<u32>()
+        });
+        let to = self.add_block(gpu, words, points);
+        let before = gpu.counters();
+        let mut passes = Vec::new();
+        // Where each block's ranges went, by pool and start.
+        let mut moved: Vec<[rustc_hash::FxHashMap<u32, u32>; 2]> = Vec::new();
+        for (&slot, drawn) in from.iter().zip(&drawn) {
+            let mut starts: [rustc_hash::FxHashMap<u32, u32>; 2] = Default::default();
+            for (p, pool) in BlockPool::ALL.into_iter().enumerate() {
+                let mut runs: Vec<(u32, u32, u32)> = Vec::new();
+                for range in &drawn[p] {
+                    let b = self.blocks[to as usize].as_mut().expect("a block");
+                    let arena = match pool {
+                        BlockPool::Vertices => &mut b.vertices,
+                        BlockPool::Indices => &mut b.indices,
+                    };
+                    let len = range.len() as u32;
+                    let at = arena.alloc(len).expect("sized to hold them").start;
+                    starts[p].insert(range.start, at);
+                    match runs.last_mut() {
+                        Some((s, d, n)) if *s + *n == range.start && *d + *n == at => *n += len,
+                        _ => runs.push((range.start, at, len)),
+                    }
+                }
+                let blocks = (slot, to as usize);
+                (self.tables).copy_between_blocks(gpu, pool, blocks, &runs, &mut passes);
+            }
+            moved.push(starts);
+        }
+        gpu.submit(&passes);
+        self.resized.count(gpu, &before);
+        for (&slot, starts) in from.iter().zip(&moved) {
+            let moved_range = |p: usize, r: &Range<u32>| match r.is_empty() {
+                true => 0..0,
+                false => starts[p][&r.start]..starts[p][&r.start] + r.len() as u32,
+            };
+            for row in 0..self.rows as u32 {
+                let at = self.row(row, slot as u32) as usize;
+                for id in std::mem::take(&mut self.nodes[at].meshes) {
+                    let entry = self.meshes[id.0 as usize].as_mut().expect("live mesh");
+                    entry.vertices = moved_range(0, &entry.vertices);
+                    entry.indices = moved_range(1, &entry.indices);
+                    entry.block = to;
+                    entry.write_chunk_rows(gpu, &mut self.tables);
+                    self.list_in_row(self.row(row, to), id);
+                }
+            }
+            for (p, shared) in self.shared.iter_mut().enumerate() {
+                let held: Vec<(u32, u32)> = (shared.keys())
+                    .filter(|&&(block, _)| block as usize == slot)
+                    .copied()
+                    .collect();
+                for key in held {
+                    let others = shared.remove(&key).expect("held");
+                    shared.insert((to, starts[p][&key.1]), others);
+                }
+            }
+        }
+        self.drop_blocks(gpu, from);
+        self.laid.clear();
+        self.candidates_dirty = true;
+        self.all_dirty = true;
+    }
+
+    /// The vertex and index words of a new block that holds `need`: half
+    /// what the blocks there hold together (the block for what draws as
+    /// points aside), so that what the scene holds grows by half with each
+    /// block and a view takes few, or the first block's size if more, to
+    /// the device's limit. `None` if `need` is past it. Blocks as large as
+    /// what the others hold left a scene twice what it used while moving
+    /// (the globe session's vertex pool held 281 MiB for 143 used, against
+    /// about 175 for 150 at half), and blocks at a quarter cost twice the
+    /// blocks, which each node draws once.
     fn block_for(&self, need: [u32; 2]) -> Option<[u32; 2]> {
         let c = &self.capacity;
         let held = |pool: fn(&Block) -> u32| -> u64 {
@@ -2529,7 +2757,9 @@ impl Scene {
             if need[p] > largest[p] {
                 return None;
             }
-            words[p] = held[p].max(u64::from(first[p])).min(u64::from(largest[p])) as u32;
+            words[p] = (held[p] / 2)
+                .max(u64::from(first[p]))
+                .min(u64::from(largest[p])) as u32;
             words[p] = words[p].max(need[p]);
         }
         Some(words)
@@ -2620,26 +2850,9 @@ impl Scene {
                 *self.shared[pool].entry((block, range.start)).or_default() += 1;
             }
         }
-        let mut chunk_ids = Vec::with_capacity(chunks.len());
-        for chunk in chunks {
-            let id = self.chunk_slots.alloc().expect("checked above");
-            let pack = |p: [i16; 2]| u32::from(p[0] as u16) | u32::from(p[1] as u16) << 16;
-            let row: [u32; CHUNK_WORDS] = [
-                indices.start * 2 + chunk.first_index,
-                chunk.index_count,
-                vertices.start,
-                chunk.first_vertex,
-                props.start,
-                pack(chunk.bounds.min),
-                pack(chunk.bounds.max),
-                NO_STATE,
-                row_words,
-            ];
-            self.tables
-                .write_words(gpu, Table::Chunks, id * CHUNK_WORDS as u32, &row);
-            chunk_ids.push(id);
-        }
-
+        let chunk_ids: Vec<u32> = (chunks.iter())
+            .map(|_| self.chunk_slots.alloc().expect("checked above"))
+            .collect();
         let entry = MeshEntry {
             tile,
             node,
@@ -2653,6 +2866,7 @@ impl Scene {
             state: 0..0,
             symbol: None,
         };
+        entry.write_chunk_rows(gpu, &mut self.tables);
         Ok(self.add_mesh(entry))
     }
 
@@ -2679,22 +2893,30 @@ impl Scene {
         self.mesh_serials.resize(self.meshes.len(), 0);
         self.mesh_serials[id.0 as usize] = self.next_serial;
         self.next_serial += 1;
-        // In its tile's place in the tile order, after the tile's others.
-        let at = place(&self.tiles, tile);
-        let (meshes, tiles) = (&self.meshes, &self.tiles);
-        let list = &mut self.nodes[node as usize].meshes;
-        let index = list.partition_point(|m| {
-            let other = meshes[m.0 as usize].as_ref().expect("live mesh");
-            place(tiles, other.tile) <= at
-        });
-        list.insert(index, id);
+        self.list_in_row(node, id);
         self.tiles[tile.0 as usize]
             .as_mut()
             .expect("checked above")
             .meshes
             .push(id);
-        self.dirty_node(node);
         id
+    }
+
+    /// Lists mesh `id` in cull row `row`, in its tile's place in the tile
+    /// order, after the tile's others there.
+    fn list_in_row(&mut self, row: u32, id: MeshId) {
+        let (meshes, tiles) = (&self.meshes, &self.tiles);
+        let at = place(
+            tiles,
+            meshes[id.0 as usize].as_ref().expect("live mesh").tile,
+        );
+        let list = &mut self.nodes[row as usize].meshes;
+        let index = list.partition_point(|m| {
+            let other = meshes[m.0 as usize].as_ref().expect("live mesh");
+            place(tiles, other.tile) <= at
+        });
+        list.insert(index, id);
+        self.dirty_node(row);
     }
 
     /// Patches image references after uploading rows from either core or

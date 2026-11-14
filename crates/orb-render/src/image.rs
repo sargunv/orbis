@@ -717,11 +717,23 @@ impl Images {
             .sum()
     }
 
-    /// Lets go of the pages' chunks no tile holds.
+    /// Lets go of the pages' chunks no tile holds, and what a chunk holds
+    /// free past its held layers ([`TilePage::shrink`]).
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) {
         for page in self.pages.iter_mut().flatten() {
             page.page.shrink(gpu);
         }
+    }
+
+    /// Moves a raster page's held layers down into free ones
+    /// ([`TilePage::compact`]), unless a layer waits for its mip levels:
+    /// each layer word that moved, and where to. DEM pages move none.
+    pub(crate) fn compact_page(&mut self, gpu: &mut dyn Gpu, id: PageId) -> Vec<(u32, u32)> {
+        let page = self.page_mut(id);
+        if page.kind != PageKind::Raster || !page.mip_layers.is_empty() {
+            return Vec::new();
+        }
+        page.page.compact(gpu)
     }
 
     /// Changes whenever a page's textures are replaced.

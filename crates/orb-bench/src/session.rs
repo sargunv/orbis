@@ -613,17 +613,20 @@ fn run_session(
     // input moved the camera and the tiles that arrived since the frame
     // before, for attributing slow frames and seeing loads come again;
     // the MiB the device made, and the drape atlas's and tile pages' MiB
-    // after it, for seeing pages made anew; over terrain on the plane,
+    // after it, for seeing pages made anew; the vertex, index and
+    // compacted index pools' MiB used and held; over terrain on the plane,
     // what it changed of the frame before ([`crate::steadiness`]): the
     // share of the ground re-zoomed, tile drops and the near ground's
     // wobble in pixels.
     if let Some(prefix) = &settings.dump {
         let mut out = String::from(
             "t\tzoom\ttiles\tcandidates\tcpu\tgpu\tdraws\tdrape_slots\tmoving\tarrived\tmade\t\
-             drape_atlas\ttile_pages\trezoomed\tdrops\twobble\n",
+             drape_atlas\ttile_pages\tvertices\tvertices_held\tindices\tindices_held\t\
+             compacted\tcompacted_held\trezoomed\tdrops\twobble\n",
         );
         for (i, f) in frames.iter().enumerate() {
             let moving = windows.iter().any(|w| (w[0]..=w[1]).contains(&f.t));
+            let scene = &f.report.memory.scene;
             let before = i.checked_sub(1).and_then(|p| frames[p].terrain.as_ref());
             let steadiness = match before.zip(f.terrain.as_ref()) {
                 Some((a, b)) => {
@@ -634,7 +637,8 @@ fn run_session(
             };
             writeln!(
                 out,
-                "{:.1}\t{:.3}\t{}\t{}\t{:.3}\t{:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{steadiness}",
+                "{:.1}\t{:.3}\t{}\t{}\t{:.3}\t{:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
+                 {steadiness}",
                 f.t,
                 f.zoom,
                 f.report.tiles_drawn,
@@ -648,6 +652,12 @@ fn run_session(
                 mib(f.report.gpu.bytes_allocated),
                 mib(f.report.memory.drape_atlas),
                 mib(f.report.memory.tile_textures),
+                mib(scene.vertices.used),
+                mib(scene.vertices.allocated),
+                mib(scene.indices.used),
+                mib(scene.indices.allocated),
+                mib(scene.compacted.used),
+                mib(scene.compacted.allocated),
             )
             .map_err(|e| e.to_string())?;
         }
@@ -922,9 +932,9 @@ impl SessionReport {
             out,
             "| session | allocated at the end | peak | vertices used / allocated | \
              indices | props | compacted | tables | tile pages | glyph pages | image atlas | drape \
-             atlas | cached |"
+             atlas | cached | peak vertices used / allocated | peak indices | peak compacted |"
         )?;
-        writeln!(out, "|{}", "---|".repeat(13))?;
+        writeln!(out, "|{}", "---|".repeat(16))?;
         for r in &self.results {
             let Some(end) = r.frames.last().map(|f| f.report.memory) else {
                 continue;
@@ -934,10 +944,17 @@ impl SessionReport {
                 .max()
                 .unwrap_or(0);
             let pool = |p: orb_api::PoolMemory| format!("{} / {}", mib(p.used), mib(p.allocated));
+            // Each pool's most used and most allocated in any frame.
+            let peak_pool = |of: fn(&orb_api::Memory) -> orb_api::PoolMemory| {
+                let (used, allocated) = (r.frames.iter())
+                    .map(|f| of(&f.report.memory))
+                    .fold((0, 0), |(u, a), p| (p.used.max(u), p.allocated.max(a)));
+                format!("{} / {}", mib(used), mib(allocated))
+            };
             let s = &end.scene;
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} ({} of {} tiles) |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} ({} of {} tiles) | {} | {} | {} |",
                 r.name,
                 mib(end.allocated()),
                 mib(peak),
@@ -953,13 +970,17 @@ impl SessionReport {
                 mib(end.cached),
                 end.cached_tiles,
                 end.cache_limit,
+                peak_pool(|m| m.scene.vertices),
+                peak_pool(|m| m.scene.indices),
+                peak_pool(|m| m.scene.compacted),
             )?;
         }
         writeln!(out)?;
         writeln!(
             out,
             "GPU memory in MiB when the map settled after the moves, and the most it held in \
-             any frame; the cache keeps at most two views' worth of tiles."
+             any frame (a pool's peaks: the most it used and the most it held, each in any \
+             frame); the cache keeps at most two views' worth of tiles."
         )?;
         self.write_steadiness(out)?;
         for r in &self.results {

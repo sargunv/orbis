@@ -16,10 +16,7 @@ use std::ops::Range;
 use super::Table;
 use orb_hal::Gpu;
 
-use crate::scene::{
-    CHUNK_WORDS, Chunk, MeshEntry, MeshId, NO_STATE, OutOfSpace, Scene, TileId, Words,
-    write_chunk_word,
-};
+use crate::scene::{Chunk, MeshEntry, MeshId, OutOfSpace, Scene, TileId, Words, write_chunk_word};
 
 /// Words of a symbol mesh's header, ahead of its tables.
 pub const SYMBOL_HEADER_WORDS: usize = 20;
@@ -217,6 +214,11 @@ impl SymbolEntry {
     /// the others' bits (every block for `None`), and calls `changed` with
     /// each chunk whose mask changed. Past 32 blocks a bit stands for
     /// several, and every chunk keeps them all.
+    /// Chunk `k`'s row word of copies it shows in, as last written.
+    pub(super) fn mask(&self, k: usize) -> u32 {
+        self.masks[k]
+    }
+
     fn update_masks(
         &mut self,
         block: Option<u32>,
@@ -395,26 +397,9 @@ impl Scene {
         self.tables
             .write_words(gpu, Table::Props, states.start, &zeros);
 
-        let mut chunk_ids = Vec::with_capacity(data.chunks.len());
-        for chunk in data.chunks {
-            let id = self.chunk_slots.alloc().expect("checked above");
-            let pack = |p: [i16; 2]| u32::from(p[0] as u16) | u32::from(p[1] as u16) << 16;
-            // Shown in no copy until placement says otherwise.
-            let row: [u32; CHUNK_WORDS] = [
-                chunk.first_index,
-                chunk.index_count,
-                vertices.start,
-                0,
-                props.start,
-                pack(chunk.bounds.min),
-                pack(chunk.bounds.max),
-                NO_STATE,
-                0,
-            ];
-            self.tables
-                .write_words(gpu, Table::Chunks, id * CHUNK_WORDS as u32, &row);
-            chunk_ids.push(id);
-        }
+        let chunk_ids: Vec<u32> = (data.chunks.iter())
+            .map(|_| self.chunk_slots.alloc().expect("checked above"))
+            .collect();
         let symbol = SymbolEntry::new(
             states,
             header[symbol_header::ORDER],
@@ -436,6 +421,8 @@ impl Scene {
             state: 0..0,
             symbol: Some(Box::new(symbol)),
         };
+        // Shown in no copy until placement says otherwise.
+        entry.write_chunk_rows(gpu, &mut self.tables);
         Ok(self.add_mesh(entry))
     }
 

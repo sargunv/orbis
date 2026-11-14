@@ -846,14 +846,57 @@ impl Renderer {
 
     /// Halves the property rows, the chunk table and the block for what
     /// draws as points while a view left them mostly free, copying what
-    /// they keep (a quarter at most; other blocks of vertices and indices
-    /// go whole once empty, copying nothing), and lets go of the image tile
-    /// pages' chunks no tile holds, copying nothing. The renderer does so
-    /// in a frame that settles the map, the last before it idles, so all
-    /// at once.
+    /// they keep (a quarter at most), moves the meshes of blocks of
+    /// vertices and indices it left mostly free into one that holds just
+    /// them ([`Scene::repack`]; empty ones go whole, copying nothing),
+    /// moves raster tiles' layers down their pages ([`compact_pages`](Self::compact_pages)),
+    /// and gives back the image tile pages' chunks no tile holds, copying
+    /// nothing, and what a chunk holds free past its held layers. The
+    /// renderer does so in a frame that settles the map, the last before
+    /// it idles, so all at once.
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) {
         while self.scene.shrink(gpu) {}
+        self.scene.repack(gpu);
+        self.compact_pages(gpu);
         self.images.shrink(gpu);
+    }
+
+    /// Moves the held layers of raster pages down into free ones
+    /// ([`TilePage::compact`](crate::scene::TilePage::compact)), and what
+    /// names them: each tile's layer, in its quads' rows, and the
+    /// ancestor a tile cross-faded from. DEM pages keep theirs: their
+    /// prepares and the terrain name their layers too.
+    fn compact_pages(&mut self, gpu: &mut dyn Gpu) {
+        let sources: Vec<(u32, PageId)> = self.tiles.sources().collect();
+        for (source, page) in sources {
+            let moved: FxHashMap<u32, u32> =
+                self.images.compact_page(gpu, page).into_iter().collect();
+            if moved.is_empty() {
+                continue;
+            }
+            for tile in self.tiles.of_source(source) {
+                let entry = self.tiles.entries[tile.0 as usize]
+                    .as_mut()
+                    .expect("indexed tiles are resident");
+                let image = entry.image.as_mut().expect("image tiles hold an image");
+                let layer = moved.get(&image.layer).copied();
+                let ancestor = (image.fade.ancestor.as_mut())
+                    .and_then(|(layer, ..)| Some((*moved.get(layer)?, layer)));
+                if layer.is_none() && ancestor.is_none() {
+                    continue;
+                }
+                if let Some((to, was)) = ancestor {
+                    *was = to;
+                }
+                image.layer = layer.unwrap_or(image.layer);
+                let row = image_row(entry.key.tile, image);
+                for &(_, mesh) in &entry.meshes {
+                    for (word, &value) in row.iter().enumerate() {
+                        self.scene.set_mesh_image(gpu, mesh, word as u32, value);
+                    }
+                }
+            }
+        }
     }
 
     /// How many world copies a symbol mesh keeps state words for.
