@@ -405,15 +405,17 @@ mod reflect {
     ];
 
     /// The rows WebGL 2's fetch modules read from data textures (#140):
-    /// type, the reader's prefix (`{prefix}_at` from `{prefix}_word`) and
-    /// the generated module it goes in.
-    const ROWS: &[(&str, &str, &str)] = &[
-        ("Tile", "tile", "rows_texture"),
-        ("Chunk", "chunk", "rows_texture"),
-        ("NodeCull", "node_cull", "rows_texture"),
-        ("Visible", "visible", "rows_texture"),
-        ("ImageRect", "image", "rows_texture"),
-        ("TerrainTile", "terrain_tile", "terrain_rows_texture"),
+    /// type, the reader's prefix (`{prefix}_at` from `{prefix}_word`), the
+    /// generated module it goes in, and whether a row is named by its
+    /// first word (a chunk's, in a block's index pool) rather than its
+    /// place in a table of them.
+    const ROWS: &[(&str, &str, &str, bool)] = &[
+        ("Tile", "tile", "rows_texture", false),
+        ("Chunk", "chunk", "rows_texture", true),
+        ("NodeCull", "node_cull", "rows_texture", false),
+        ("Visible", "visible", "rows_texture", false),
+        ("ImageRect", "image", "rows_texture", false),
+        ("TerrainTile", "terrain_tile", "terrain_rows_texture", false),
     ];
 
     pub(crate) fn write(modules: &[(&str, naga::Module)]) {
@@ -454,8 +456,8 @@ mod reflect {
                 .update(module.to_ctx())
                 .expect("lays out the shader");
             for (_, ty) in module.types.iter() {
-                let Some(&(name, prefix, file)) =
-                    ROWS.iter().find(|(n, _, _)| ty.name.as_deref() == Some(n))
+                let Some(&(name, prefix, file, by_word)) =
+                    ROWS.iter().find(|(n, ..)| ty.name.as_deref() == Some(n))
                 else {
                     continue;
                 };
@@ -466,10 +468,13 @@ mod reflect {
                     continue;
                 }
                 let out = rows.entry(file).or_default();
+                let first = match by_word {
+                    true => "i".to_owned(),
+                    false => format!("i * {}u", span / 4),
+                };
                 writeln!(
                     out,
-                    "fn {prefix}_at(i: u32) -> {name} {{\nlet b = i * {}u;\nvar r: {name};",
-                    span / 4
+                    "fn {prefix}_at(i: u32) -> {name} {{\nlet b = {first};\nvar r: {name};"
                 )
                 .unwrap();
                 for m in members {
@@ -494,7 +499,7 @@ mod reflect {
         if let Some(missing) = STRUCTS.iter().find(|(n, _)| !done.contains(n)) {
             panic!("no shader declares {}", missing.0);
         }
-        if let Some(missing) = ROWS.iter().find(|(_, p, _)| !done.contains(p)) {
+        if let Some(missing) = ROWS.iter().find(|(_, p, ..)| !done.contains(p)) {
             panic!("no shader declares {}", missing.0);
         }
         let dir = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");

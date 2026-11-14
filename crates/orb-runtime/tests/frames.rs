@@ -299,7 +299,7 @@ mod tests {
             "the view grew the pools: {memory:#?}"
         );
         // Blocks copy nothing as the view fills them: what moves as it
-        // grows (the property rows, the chunk table, the glyph page, the
+        // grows (the property rows, the glyph page, the
         // block of what draws as points) copies no more than the rows,
         // tables and glyphs hold, on either driver and either backing of
         // the tables, whose tables move alone.

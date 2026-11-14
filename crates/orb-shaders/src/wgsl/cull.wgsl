@@ -30,7 +30,6 @@
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> tiles: array<Tile>;
-@group(0) @binding(2) var<storage, read> chunks: array<Chunk>;
 struct Candidate {
     // The chunk, or NO_CHUNK in a hole.
     chunk: u32,
@@ -54,11 +53,18 @@ struct Candidate {
 // at 6 the indices it wrote, at 7 the vertex inputs it draws (vertex
 // pulling's padded vertices, or the visible chunks' indices).
 @group(0) @binding(6) var<storage, read_write> args: array<atomic<u32>>;
-// Mesh indices: u16s, two to a word, the first in the low half.
+// Mesh indices: u16s, two to a word, the first in the low half; and the
+// chunks' rows, which candidates name by their first word.
 @group(0) @binding(7) var<storage, read> indices: array<u32>;
 @group(0) @binding(8) var<storage, read_write> compacted: array<u32>;
 
 const ARGS_WORDS: u32 = 8u;
+
+// The chunk row at word `i` of the block's index pool.
+fn chunk_at(i: u32) -> Chunk {
+    return Chunk(indices[i], indices[i + 1u], indices[i + 2u], indices[i + 3u], indices[i + 4u],
+        indices[i + 5u], indices[i + 6u], indices[i + 7u], indices[i + 8u]);
+}
 // An indexed node's candidate row that holds none (orb-render's
 // `NO_CHUNK`): its slot is hidden and taken by no candidate.
 const NO_CHUNK: u32 = 0xffffffffu;
@@ -97,7 +103,7 @@ fn outside_planes(p: vec4<f32>, margin: vec2<f32>) -> u32 {
 // A test in orb-shaders keeps the cull shader free of them.
 fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation: f32, draped: bool, unclipped_meshes: bool, symbols: bool) -> bool {
     let point_instances = draw == DRAW_POINTS;
-    let chunk = chunks[candidate.chunk];
+    let chunk = chunk_at(candidate.chunk);
     let tile = tiles[candidate.tile];
     // A symbol chunk placement shows nothing of in the placement's world
     // copy: hidden labels leave here rather than run each quad's vertices
@@ -280,7 +286,7 @@ fn cull_indexed(index: u32, lane: u32, node: NodeCull, start: u32) {
     if i < count && candidates[node.visible_base + i].chunk != NO_CHUNK {
         let candidate = candidates[node.visible_base + i];
         let keep = select(0u, 1u, keep_all || candidate_visible(candidate, node.margin_px, DRAW_INDEXED, node.elevation, (node.draw & DRAPED) != 0u, (node.draw & UNCLIPPED) != 0u, false));
-        let chunk = chunks[candidate.chunk];
+        let chunk = chunk_at(candidate.chunk);
         if keep == 1u {
             atomicMax(&extent, candidate.slot + chunk.index_count - node.index_base);
             atomicAdd(&kept, 1u);

@@ -62,7 +62,6 @@ impl GpuDriver {
             entries: &[
                 E::uniform(0, cs),
                 E::storage(1, cs),
-                E::storage(2, cs),
                 E::storage_rw(3, cs),
                 E::storage(4, cs),
                 E::storage_rw(5, cs),
@@ -197,8 +196,8 @@ pub(crate) struct Writes {
 }
 
 /// The cull's group for each of the scene's block slots: its frame and
-/// index pool, the tables every block shares, and what the cull writes,
-/// the scene's or `swap`'s.
+/// index pool (with its chunk rows), the tables every block shares, and
+/// what the cull writes, the scene's or `swap`'s.
 fn groups(
     gpu: &mut dyn Gpu,
     layout: BindGroupLayoutId,
@@ -218,20 +217,17 @@ fn groups(
                 return None;
             }
             let entries: Vec<BindGroupEntry> = [
-                scene.block_frame(block),
-                tables.buffer(Table::Tiles),
-                tables.buffer(Table::Chunks),
-                tables.buffer(Table::Candidates),
-                tables.buffer(Table::NodeCull),
-                writes.visible,
-                writes.args,
-                tables.block_buffer(block as usize, BlockPool::Indices),
-                writes.compacted,
+                (0, scene.block_frame(block)),
+                (1, tables.buffer(Table::Tiles)),
+                (3, tables.buffer(Table::Candidates)),
+                (4, tables.buffer(Table::NodeCull)),
+                (5, writes.visible),
+                (6, writes.args),
+                (7, tables.block_buffer(block as usize, BlockPool::Indices)),
+                (8, writes.compacted),
             ]
-            .iter()
-            .enumerate()
-            .map(|(i, &buffer)| BindGroupEntry::buffer(i as u32, buffer))
-            .collect();
+            .map(|(binding, buffer)| BindGroupEntry::buffer(binding, buffer))
+            .into();
             Some(gpu.create_bind_group(&BindGroupDesc {
                 label: "cull",
                 layout,

@@ -965,7 +965,6 @@ fn layers_added_to_a_loaded_pitched_view_get_scene_room() {
         index_words: 1 << 12,
         prop_words: 1 << 12,
         compacted_words: 1 << 12,
-        chunks: 64,
         candidates: 64,
         ..orb_runtime::SceneCapacity::growable()
     };

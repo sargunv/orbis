@@ -495,17 +495,16 @@ fn placed_target(gpu: &mut dyn Gpu, rows: u32) -> TextureId {
 }
 
 /// The placement dispatch's group 0 (`symbol_place_compute.wgsl`): the
-/// frame, the tables but the indices, the terrain's DEM and depth, every
-/// node's uniform, the cull's draw arguments and the target.
+/// frame, the tables (the indices for the chunks' rows they hold), the
+/// terrain's DEM and depth, every node's uniform, the cull's draw
+/// arguments and the target: eight storage buffers, WebGPU's least.
 fn compute_layout(gpu: &mut dyn Gpu, backing: Backing) -> BindGroupLayoutId {
     use BindGroupLayoutEntry as E;
     let cs = ShaderStages::COMPUTE;
-    let tables = (Tables::layout_entries(backing).into_iter())
-        .filter(|e| e.binding != 5)
-        .map(|e| BindGroupLayoutEntry {
-            visibility: cs,
-            ..e
-        });
+    let tables = (Tables::layout_entries(backing).into_iter()).map(|e| BindGroupLayoutEntry {
+        visibility: cs,
+        ..e
+    });
     let mut entries = vec![E::uniform(0, cs)];
     entries.extend(tables);
     entries.extend([

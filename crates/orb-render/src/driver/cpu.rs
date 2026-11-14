@@ -80,13 +80,9 @@ const WRITE_GAP: u32 = 512;
 /// once, however many a frame changed.
 const WRITE_PIECE: u32 = 1 << 16;
 
-/// The tables its cull reads, besides the blocks' index pools.
-pub(crate) const MIRRORED: &[Table] = &[
-    Table::Tiles,
-    Table::Chunks,
-    Table::Candidates,
-    Table::NodeCull,
-];
+/// The tables its cull reads, besides the blocks' index pools (which hold
+/// the chunks' rows).
+pub(crate) const MIRRORED: &[Table] = &[Table::Tiles, Table::Candidates, Table::NodeCull];
 
 const CANDIDATE_WORDS: usize = layout::candidate::WORDS;
 const CHUNK_WORDS: usize = layout::chunk::WORDS;
@@ -358,20 +354,19 @@ impl CpuDriver {
         args: &mut [u32],
         changed: &mut Vec<Range<u32>>,
     ) {
+        let rows = scene.rows().max(1) as usize;
         let tables = scene.tables_mut();
         let mut candidates = std::mem::take(tables.mirror_mut(Table::Candidates).expect("copied"));
         let read = |table| tables.mirror(table).expect("copied");
-        let (tiles, chunks, node_rows) = (
-            read(Table::Tiles),
-            read(Table::Chunks),
-            read(Table::NodeCull),
-        );
+        let (tiles, node_rows) = (read(Table::Tiles), read(Table::NodeCull));
         let listed = (candidates.len() / CANDIDATE_WORDS) as u32;
         let mut visible: Vec<(u32, Vec<u32>)> = Vec::new();
         self.runs.resize_with(args.len() / ARGS_WORDS, Vec::new);
         for (n, out) in args.chunks_mut(ARGS_WORDS).enumerate() {
             use layout::node_cull as nc;
             let node = rows_at(node_rows, n, NODE_WORDS);
+            // The node's block's index pool, which holds its chunk rows.
+            let chunks = tables.block_indices(n / rows).unwrap_or_default();
             let base = node[nc::VISIBLE_BASE];
             let count = node[nc::CANDIDATE_COUNT].min(listed - base.min(listed));
             let word = node[nc::DRAW];
@@ -411,7 +406,7 @@ impl CpuDriver {
                     if candidate[c::CHUNK] == NO_CHUNK {
                         continue;
                     }
-                    let chunk = rows_at(chunks, candidate[c::CHUNK] as usize, CHUNK_WORDS);
+                    let chunk = chunk_at(chunks, candidate[c::CHUNK]);
                     let index_count = chunk[ch::INDEX_COUNT];
                     if keep {
                         extent = extent.max(
@@ -523,7 +518,7 @@ impl CpuDriver {
                     met && {
                         let candidate = candidate(i);
                         candidate[c::CHUNK] != NO_CHUNK && {
-                            let chunk = rows_at(chunks, candidate[c::CHUNK] as usize, CHUNK_WORDS);
+                            let chunk = chunk_at(chunks, candidate[c::CHUNK]);
                             let tile = rows_at(tiles, candidate[c::TILE] as usize, TILE_WORDS);
                             test.symbol_shown(tile, chunk)
                                 && test.candidate_visible(
@@ -664,11 +659,7 @@ fn segments(tables: &Tables, rows: u32) -> Vec<Segment> {
     use layout::chunk as ch;
     use layout::node_cull as nc;
     let read = |table| tables.mirror(table).expect("copied");
-    let (nodes, candidates, chunks) = (
-        read(Table::NodeCull),
-        read(Table::Candidates),
-        read(Table::Chunks),
-    );
+    let (nodes, candidates) = (read(Table::NodeCull), read(Table::Candidates));
     let listed = (candidates.len() / CANDIDATE_WORDS) as u32;
     let mut segments: Vec<Segment> = Vec::new();
     for (n, node) in nodes.as_chunks::<NODE_WORDS>().0.iter().enumerate() {
@@ -676,6 +667,7 @@ fn segments(tables: &Tables, rows: u32) -> Vec<Segment> {
             continue;
         }
         let block = n as u32 / rows.max(1);
+        let chunks = tables.block_indices(block as usize).unwrap_or_default();
         let ours = segments.len();
         let base = node[nc::VISIBLE_BASE].min(listed);
         for r in base..base.saturating_add(node[nc::CANDIDATE_COUNT]).min(listed) {
@@ -683,7 +675,7 @@ fn segments(tables: &Tables, rows: u32) -> Vec<Segment> {
             if row[c::CHUNK] == NO_CHUNK {
                 continue;
             }
-            let chunk = rows_at(chunks, row[c::CHUNK] as usize, CHUNK_WORDS);
+            let chunk = chunk_at(chunks, row[c::CHUNK]);
             let slot = row[c::SLOT];
             let end = slot.saturating_add(chunk[ch::INDEX_COUNT].min(orb_layout::CHUNK_INDICES));
             match segments[ours..].last_mut() {
@@ -712,18 +704,14 @@ fn fill_slots(words: &mut [u32], at: u32, segments: &[Segment], drawn: &[u64], t
     use layout::candidate as c;
     use layout::chunk as ch;
     let end = at + words.len() as u32;
-    let read = |table| tables.mirror(table).expect("copied");
-    let (candidates, chunks) = (read(Table::Candidates), read(Table::Chunks));
+    let candidates = tables.mirror(Table::Candidates).expect("copied");
     // A block's indices, two to a word, the first in its low half: in
     // order, as u16s, on a little-endian target.
     const _: () = assert!(cfg!(target_endian = "little"));
     let row = |r: u32| rows_at(candidates, r as usize, CANDIDATE_WORDS);
     for segment in segments.iter().take_while(|s| s.slot < end) {
-        let indices: &[u16] = bytemuck::cast_slice(
-            tables
-                .block_indices(segment.block as usize)
-                .expect("copied"),
-        );
+        let pool = (tables.block_indices(segment.block as usize)).expect("copied");
+        let indices: &[u16] = bytemuck::cast_slice(pool);
         let rows = segment.row..segment.row + segment.rows;
         // From its last row whose slot starts by `at`.
         let (mut lo, mut hi) = (rows.start, rows.end);
@@ -749,7 +737,7 @@ fn fill_slots(words: &mut [u32], at: u32, segments: &[Segment], drawn: &[u64], t
             if !shown {
                 continue;
             }
-            let chunk = rows_at(chunks, row[c::CHUNK] as usize, CHUNK_WORDS);
+            let chunk = chunk_at(pool, row[c::CHUNK]);
             let len = chunk[ch::INDEX_COUNT].min(orb_layout::CHUNK_INDICES);
             let [from, to] = [slot.max(at), slot.saturating_add(len).min(end)];
             if from >= to {
@@ -784,9 +772,18 @@ fn index_word(indices: &[u32], tag: u32, i: u32) -> u32 {
 
 /// `rows`' row `i`, `words` long, zeros where it isn't written.
 fn rows_at(rows: &[u32], i: usize, words: usize) -> &[u32] {
+    words_at(rows, i * words, words)
+}
+
+/// `len` of `words` from word `at`, zeros where they aren't written.
+fn words_at(words: &[u32], at: usize, len: usize) -> &[u32] {
     static ZERO: [u32; 64] = [0; 64];
-    rows.get(i * words..(i + 1) * words)
-        .unwrap_or(&ZERO[..words])
+    words.get(at..at + len).unwrap_or(&ZERO[..len])
+}
+
+/// The chunk row at word `at` of a block's index pool, `indices`.
+fn chunk_at(indices: &[u32], at: u32) -> &[u32] {
+    words_at(indices, at as usize, CHUNK_WORDS)
 }
 
 /// A node's `count` candidates in runs of one mesh (its vertex base) in
@@ -807,7 +804,7 @@ fn runs(count: u32, candidate: impl Fn(u32) -> [u32; CANDIDATE_WORDS], chunks: &
             key = None;
             continue;
         }
-        let chunk = rows_at(chunks, candidate[c::CHUNK] as usize, CHUNK_WORDS);
+        let chunk = chunk_at(chunks, candidate[c::CHUNK]);
         let this = (candidate[c::TILE], chunk[ch::VERTEX_BASE]);
         let [lo, hi] = [chunk[ch::BOUNDS_MIN], chunk[ch::BOUNDS_MAX]].map(unpack);
         match runs.last_mut() {
@@ -831,22 +828,28 @@ fn runs(count: u32, candidate: impl Fn(u32) -> [u32; CANDIDATE_WORDS], chunks: &
 
 /// Per compacted word up to `words`, whether a candidate's row says what
 /// it holds: its slot's, in any indexed node, once a cull wrote it.
-fn known_words(nodes: &[u32], candidates: &[u32], chunks: &[u32], words: usize) -> Vec<bool> {
+fn known_words(
+    nodes: &[u32],
+    candidates: &[u32],
+    (tables, rows): (&Tables, u32),
+    words: usize,
+) -> Vec<bool> {
     use layout::candidate as c;
     use layout::chunk as ch;
     use layout::node_cull as nc;
     let mut known = vec![false; words];
-    for node in nodes.as_chunks::<NODE_WORDS>().0 {
+    for (n, node) in nodes.as_chunks::<NODE_WORDS>().0.iter().enumerate() {
         if node[nc::DRAW] & 255 != DRAW_INDEXED {
             continue;
         }
+        let chunks = (tables.block_indices(n / rows.max(1) as usize)).unwrap_or_default();
         let base = node[nc::VISIBLE_BASE] as usize;
         for i in base..base + node[nc::CANDIDATE_COUNT] as usize {
             let row = rows_at(candidates, i, CANDIDATE_WORDS);
             if row[c::CHUNK] == NO_CHUNK || row[c::DRAWN] > MOVED {
                 continue;
             }
-            let chunk = rows_at(chunks, row[c::CHUNK] as usize, CHUNK_WORDS);
+            let chunk = chunk_at(chunks, row[c::CHUNK]);
             let n = chunk[ch::INDEX_COUNT].min(orb_layout::CHUNK_INDICES) as usize;
             let at = (row[c::SLOT] as usize).min(words);
             known[at..(at + n).min(words)].fill(true);
@@ -860,7 +863,6 @@ fn known_words(nodes: &[u32], candidates: &[u32], chunks: &[u32], words: usize) 
 fn decided_slots(
     nodes: &[u32],
     candidates: &[u32],
-    chunks: &[u32],
     (tables, rows): (&Tables, u32),
 ) -> Vec<(u32, u32)> {
     use layout::candidate as c;
@@ -880,7 +882,7 @@ fn decided_slots(
             if row[c::CHUNK] == NO_CHUNK {
                 continue;
             }
-            let chunk = rows_at(chunks, row[c::CHUNK] as usize, CHUNK_WORDS);
+            let chunk = chunk_at(indices, row[c::CHUNK]);
             let n = chunk[ch::INDEX_COUNT].min(orb_layout::CHUNK_INDICES);
             let tag = run_tag(row[c::RUN], node[nc::RUN_SHIFT], chunk[ch::FIRST_VERTEX]);
             for k in 0..n {
@@ -1152,17 +1154,13 @@ impl DriverCheck {
         let twin = driver.twin.as_ref()?;
         let tables = scene.tables();
         let node_rows = tables.mirror(Table::NodeCull)?;
-        let slots = decided_slots(
-            node_rows,
-            tables.mirror(Table::Candidates)?,
-            tables.mirror(Table::Chunks)?,
-            (tables, scene.rows()),
-        );
+        let candidates = tables.mirror(Table::Candidates)?;
+        let slots = decided_slots(node_rows, candidates, (tables, scene.rows()));
         let compacted_words = scene.stats().compacted_words as usize;
         let known = known_words(
             node_rows,
-            tables.mirror(Table::Candidates)?,
-            tables.mirror(Table::Chunks)?,
+            candidates,
+            (tables, scene.rows()),
             compacted_words,
         );
         Some(Self {

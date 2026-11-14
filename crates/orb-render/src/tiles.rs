@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use crate::scene::{
     MeshData, MeshId, MeshSize, OutOfSpace, Pixels, SymbolMeshData, TileId, TileRow, TileWarp,
-    Words,
+    Words, chunk_words,
 };
 use orb_crs::TileIndex;
 use orb_hal::Gpu;
@@ -207,6 +207,9 @@ pub struct Reserved {
     /// Per pool, the tile's words it holds (a range of the build's) and
     /// where in the pool they start.
     pools: [(Range<u32>, u32); 3],
+    /// The block's index words its meshes' chunk rows take, which
+    /// [`Renderer::finish_tile`] writes.
+    chunk_rows: Range<u32>,
     /// Bytes written, over the pools in turn.
     written: u64,
 }
@@ -595,16 +598,20 @@ impl Renderer {
             return Err(UploadError::Invalid("a tile's streams overlap".into()));
         }
         let extents = build.extents();
-        let lens = extents.clone().map(|e| e.end - e.start);
+        let [vertices, indices, props] = extents.clone().map(|e| e.end - e.start);
+        let chunks = (build.meshes.iter()).map(|m| m.chunks.len()).sum();
+        let lens = [vertices, indices, props, chunk_words(chunks)];
         // A tile with meshes that draw as points goes to the block for
         // them, whole: its draws overlap other tiles' (`scene::Block`).
         let points = (build.meshes.iter()).any(|m| self.scene.overlaps(m.node));
-        let (block, ranges) = (self.scene)
+        let (block, [vertices, indices, props, chunk_rows]) = (self.scene)
             .alloc_words(gpu, lens, None, points)
             .map_err(|OutOfSpace| UploadError::NoRoom)?;
+        let starts = [vertices.start, indices.start, props.start];
         Ok(Reserved {
             block,
-            pools: [0, 1, 2].map(|p| (extents[p].clone(), ranges[p].start)),
+            pools: [0, 1, 2].map(|p| (extents[p].clone(), starts[p])),
+            chunk_rows,
             written: 0,
         })
     }
@@ -647,6 +654,8 @@ impl Renderer {
             self.scene
                 .free_words(reserved.block, pool, at..at + (range.end - range.start));
         }
+        self.scene
+            .free_words(reserved.block, 3, reserved.chunk_rows);
     }
 
     /// Makes a reserved tile, its words all written, of its build: its
@@ -693,6 +702,8 @@ impl Renderer {
             }
         }
         let mut ids: Vec<MeshId> = Vec::with_capacity(build.meshes.len());
+        // Where the next mesh's chunk rows start.
+        let mut rows = reserved.chunk_rows.start;
         for (i, mesh) in build.meshes.iter().enumerate() {
             // Meshes a tile shares words between take them from its block.
             let shared = mesh
@@ -704,36 +715,34 @@ impl Renderer {
                 _ => at(p, &mesh.spans[p]),
             });
             let part = self.part(tile, mesh.extent);
-            let inserted = self.scene.insert_mesh_at(
+            let len = chunk_words(mesh.chunks.len());
+            // Empty ranges start at 0, as an arena's empty allocations do.
+            let chunk_rows = if len == 0 { 0..0 } else { rows..rows + len };
+            rows += len;
+            let id = self.scene.insert_mesh_at(
                 gpu,
                 part,
                 (mesh.node, block),
-                ranges,
+                (ranges, chunk_rows),
                 (mesh.chunks, mesh.row_words),
                 mesh.shares.map(|s| s.is_some()),
             );
-            let failed = match inserted {
-                Ok(id) => match self.attach(gpu, id, &mesh.rows) {
-                    Ok(()) => {
-                        self.entry_mut(tile).meshes.push((mesh.node, id));
-                        ids.push(id);
-                        continue;
-                    }
-                    Err(OutOfSpace) => {
-                        self.scene.remove_mesh(id);
-                        i + 1
-                    }
-                },
-                Err(OutOfSpace) => i,
-            };
+            if self.attach(gpu, id, &mesh.rows).is_ok() {
+                self.entry_mut(tile).meshes.push((mesh.node, id));
+                ids.push(id);
+                continue;
+            }
+            self.scene.remove_mesh(id);
             // The meshes not inserted give back their own words.
-            for mesh in &build.meshes[failed..] {
+            for mesh in &build.meshes[i + 1..] {
                 for (pool, span) in mesh.spans.iter().enumerate() {
                     if !span.is_empty() {
                         self.scene.free_words(block, pool, at(pool, span));
                     }
                 }
             }
+            let left = rows..reserved.chunk_rows.end.max(rows);
+            self.scene.free_words(block, 3, left);
             self.release_tile(tile);
             return Err(UploadError::NoRoom);
         }
@@ -844,7 +853,7 @@ impl Renderer {
         self.attach(gpu, mesh, rows)
     }
 
-    /// Halves the property rows, the chunk table and the block for what
+    /// Halves the property rows and the block for what
     /// draws as points while a view left them mostly free, copying what
     /// they keep (a quarter at most), moves the meshes of blocks of
     /// vertices and indices it left mostly free into one that holds just

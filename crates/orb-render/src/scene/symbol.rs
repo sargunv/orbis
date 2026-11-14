@@ -330,21 +330,29 @@ impl Scene {
     ) -> Result<Vec<MeshId>, OutOfSpace> {
         assert!(self.tiles[tile.0 as usize].is_some(), "unknown tile");
         let words: Vec<u32> = meshes.iter().map(|(_, data)| symbol_words(data)).collect();
-        let chunks: u32 = meshes
-            .iter()
-            .map(|(_, data)| data.chunks.len() as u32)
-            .sum();
-        self.reserve_chunks(gpu, chunks)?;
-        let total = words.iter().sum();
-        let (block, [mut all, _, _]) = self.alloc_words(gpu, [total, 0, 0], None, true)?;
+        let rows: Vec<u32> = (meshes.iter())
+            .map(|(_, data)| super::chunk_words(data.chunks.len()))
+            .collect();
+        let lens = [words.iter().sum(), 0, 0, rows.iter().sum()];
+        let (block, [mut all, _, _, mut all_rows]) = self.alloc_words(gpu, lens, None, true)?;
         let mut ids = Vec::with_capacity(meshes.len());
-        for (&(node, data), words) in meshes.iter().zip(words) {
+        for ((&(node, data), words), rows) in meshes.iter().zip(words).zip(rows) {
             let vertices = all.start..all.start + words;
             all.start += words;
-            match self.insert_symbol_mesh_in(gpu, tile, (node, block), vertices.clone(), data) {
+            let rows_from = all_rows.start;
+            all_rows.start += rows;
+            // Empty ranges start at 0, as an arena's empty allocations do.
+            let chunk_rows = match rows {
+                0 => 0..0,
+                _ => rows_from..all_rows.start,
+            };
+            let at = (vertices.clone(), chunk_rows);
+            match self.insert_symbol_mesh_in(gpu, tile, (node, block), at, data) {
                 Ok(id) => ids.push(id),
                 Err(e) => {
+                    // This mesh's words and those of the meshes after it.
                     self.free_words(block, 0, vertices.start..all.end);
+                    self.free_words(block, 3, rows_from..all_rows.end);
                     for id in ids {
                         self.remove_mesh(id);
                     }
@@ -356,14 +364,15 @@ impl Scene {
     }
 
     /// A symbol stream of `tile` for render `node`, its header and tables
-    /// written at `vertices` of block `block`'s vertex pool. On `Err` the
-    /// words are still the caller's.
+    /// written at `vertices` of block `block`'s vertex pool and its chunk
+    /// rows at `chunk_rows` of its index pool. On `Err` the words are
+    /// still the caller's.
     fn insert_symbol_mesh_in(
         &mut self,
         gpu: &mut dyn Gpu,
         tile: TileId,
         (node, block): (u32, u32),
-        vertices: Range<u32>,
+        (vertices, chunk_rows): (Range<u32>, Range<u32>),
         data: &SymbolMeshData<'_>,
     ) -> Result<MeshId, OutOfSpace> {
         assert!((node as usize) < self.rows, "unknown render node {node}");
@@ -397,9 +406,6 @@ impl Scene {
         self.tables
             .write_words(gpu, Table::Props, states.start, &zeros);
 
-        let chunk_ids: Vec<u32> = (data.chunks.iter())
-            .map(|_| self.chunk_slots.alloc().expect("checked above"))
-            .collect();
         let symbol = SymbolEntry::new(
             states,
             header[symbol_header::ORDER],
@@ -411,7 +417,7 @@ impl Scene {
             tile,
             node,
             block,
-            chunk_slots: chunk_ids,
+            chunk_rows,
             chunks: data.chunks.to_vec(),
             vertices,
             indices: 0..0,
@@ -435,10 +441,12 @@ impl Scene {
     /// changed: in block `block`'s copies, or (`None`) in any.
     fn write_symbol_masks(&mut self, gpu: &mut dyn Gpu, mesh: MeshId, block: Option<u32>) {
         let entry = self.meshes[mesh.0 as usize].as_mut().expect("live mesh");
+        let (mesh_block, rows) = (entry.block, entry.chunk_rows.start);
         let symbol = entry.symbol.as_deref_mut().expect("a symbol mesh");
         let tables = &mut self.tables;
         symbol.update_masks(block, self.labels_faded, |k, mask| {
-            write_chunk_word(gpu, tables, entry.chunk_slots[k], SHOWN_WORD, mask);
+            let chunk = rows + super::chunk_words(k);
+            write_chunk_word(gpu, tables, (mesh_block, chunk), SHOWN_WORD, mask);
         });
     }
 

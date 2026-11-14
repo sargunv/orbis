@@ -1,11 +1,14 @@
-//! The scene's tables as shaders read them: placements, chunks,
-//! candidates, node rows, visible lists, the property arena, and each
-//! block's vertex and index pools.
+//! The scene's tables as shaders read them: placements, candidates, node
+//! rows, visible lists, the property arena, and each block's vertex and
+//! index pools.
 //!
 //! The vertex and index pools are blocks of fixed size (`BlockPool`): a
 //! scene that needs more adds a block rather than moving the ones it has,
 //! so growing copies nothing. A block's meshes draw with the block bound,
-//! each node once per block it has candidates in.
+//! each node once per block it has candidates in. Their chunks' rows lie
+//! in the block's index pool, past their indices, where candidates name
+//! them by their first word: they come and go with their meshes, and
+//! grow with the blocks.
 //!
 //! Every write to them, and every move into a larger one, goes through
 //! [`Tables`], so where they live is one decision, the device's: storage
@@ -41,14 +44,13 @@ pub(crate) fn data_width(limits: &Limits) -> u32 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Table {
     Tiles,
-    Chunks,
     Candidates,
     NodeCull,
     Visible,
     Props,
 }
 
-const TABLES: usize = 6;
+const TABLES: usize = 5;
 
 /// A pool of a scene block: the words its meshes draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,7 +86,6 @@ impl BlockPool {
 impl Table {
     const ALL: [Self; TABLES] = [
         Self::Tiles,
-        Self::Chunks,
         Self::Candidates,
         Self::NodeCull,
         Self::Visible,
@@ -94,7 +95,6 @@ impl Table {
     fn label(self) -> &'static str {
         match self {
             Self::Tiles => "tiles",
-            Self::Chunks => "chunks",
             Self::Candidates => "candidates",
             Self::NodeCull => "node cull",
             Self::Visible => "visible",
@@ -103,16 +103,13 @@ impl Table {
     }
 
     /// Its buffer's usage on the storage backing: written from the CPU,
-    /// and copied from where it grows by moving (the chunks and property
-    /// rows) or the cull writes what tests read back (candidates and
-    /// visible lists).
+    /// and copied from where it grows by moving (the property rows) or the
+    /// cull writes what tests read back (candidates and visible lists).
     fn usage(self) -> BufferUsages {
         let written = BufferUsages::STORAGE | BufferUsages::COPY_DST;
         match self {
             Self::Tiles | Self::NodeCull => written,
-            Self::Chunks | Self::Candidates | Self::Visible | Self::Props => {
-                written | BufferUsages::COPY_SRC
-            }
+            Self::Candidates | Self::Visible | Self::Props => written | BufferUsages::COPY_SRC,
         }
     }
 
@@ -933,15 +930,15 @@ impl Tables {
         }
     }
 
-    /// The scene group's entries for the tables (bindings 1 to 7; the
-    /// image atlas's rects are 8), visible to the stages that read them.
+    /// The scene group's entries for the tables (bindings 1 and 3 to 7;
+    /// the image atlas's rects are 8), visible to the stages that read
+    /// them.
     pub(crate) fn layout_entries(backing: Backing) -> Vec<BindGroupLayoutEntry> {
         let (vs, fs) = (ShaderStages::VERTEX, ShaderStages::FRAGMENT);
         let vf = vs | fs;
         let table = |binding, stages| DataTable::layout_entry(backing, binding, stages);
         vec![
             table(1, vf),
-            table(2, vs),
             table(3, vs),
             table(4, vs),
             table(5, vs),
@@ -951,8 +948,8 @@ impl Tables {
         ]
     }
 
-    /// The tables' entries in block `block`'s scene group (bindings 1 to
-    /// 7): its pools, and the tables every block shares.
+    /// The tables' entries in block `block`'s scene group (bindings 1 and
+    /// 3 to 7): its pools, and the tables every block shares.
     pub(crate) fn entries(&self, block: usize) -> Vec<BindGroupEntry> {
         let entry = |binding, table: Table| self.entry(table, binding);
         let pools = self.blocks[block].expect("a block's pools");
@@ -960,7 +957,6 @@ impl Tables {
             BlockPool::ALL.map(|pool| pools[pool as usize].entry(pool.binding()));
         vec![
             entry(1, Table::Tiles),
-            entry(2, Table::Chunks),
             entry(3, Table::Visible),
             vertices,
             indices,

@@ -156,9 +156,6 @@ pub(crate) struct Slots {
     next: u32,
     /// Free slots below `next`.
     free: BTreeSet<u32>,
-    /// The capacity that would have held each reservation refused since
-    /// [`take_needed`](Self::take_needed) last asked.
-    needed: u32,
 }
 
 impl Slots {
@@ -167,7 +164,6 @@ impl Slots {
             capacity,
             next: 0,
             free: BTreeSet::new(),
-            needed: 0,
         }
     }
 
@@ -197,23 +193,6 @@ impl Slots {
     pub(crate) fn shrink(&mut self, capacity: u32) {
         assert!(self.next <= capacity && capacity < self.capacity);
         self.capacity = capacity;
-    }
-
-    /// Whether `count` slots are available; if not, the capacity that
-    /// would have held them is kept for [`take_needed`](Self::take_needed).
-    pub(crate) fn reserve(&mut self, count: u32) -> bool {
-        let available = self.available();
-        if count > available {
-            let needed = self.capacity.saturating_add(count - available);
-            self.needed = self.needed.max(needed);
-        }
-        count <= available
-    }
-
-    /// The capacity that would have held each reservation refused since
-    /// the last call when it was refused, or 0.
-    pub(crate) fn take_needed(&mut self) -> u32 {
-        std::mem::take(&mut self.needed)
     }
 
     pub(crate) fn available(&self) -> u32 {
@@ -342,10 +321,6 @@ mod tests {
         assert_eq!((arena.alloc(50), arena.alloc(70)), (None, None));
         arena.free(held);
         assert_eq!((arena.take_needed(), arena.take_needed()), (130, 0));
-        let mut slots = Slots::new(4);
-        slots.alloc().unwrap();
-        assert!(slots.reserve(3) && !slots.reserve(5) && !slots.reserve(4));
-        assert_eq!((slots.take_needed(), slots.take_needed()), (6, 0));
     }
 
     #[test]

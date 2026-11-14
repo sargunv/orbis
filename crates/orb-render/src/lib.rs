@@ -2694,8 +2694,8 @@ impl Renderer {
 
     /// What the symbol placements bind of the scene, as
     /// `symbol::compute_layout` has it, by block slot: the block's frame,
-    /// the tables but the indices, the terrain as the scene group binds
-    /// it, the node uniforms and the draw arguments.
+    /// the tables, the terrain as the scene group binds it, the node
+    /// uniforms and the draw arguments.
     fn symbol_scene(&self) -> Vec<Option<Vec<BindGroupEntry>>> {
         use TextureViewDimension::{D2, D2Array};
         let held: Vec<u32> = self.scene.blocks().collect();
@@ -2706,8 +2706,7 @@ impl Renderer {
                 }
                 let frame = self.scene.block_frame(block);
                 let mut entries = vec![BindGroupEntry::buffer(0, frame)];
-                let tables = self.scene.tables().entries(block as usize);
-                entries.extend(tables.into_iter().filter(|e| e.binding != 5));
+                entries.extend(self.scene.tables().entries(block as usize));
                 entries.extend([
                     BindGroupEntry::texture(14, self.dem_bound, D2Array),
                     BindGroupEntry::texture(15, self.terrain_depth_bound, D2),

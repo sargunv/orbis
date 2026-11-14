@@ -2,7 +2,6 @@
 // in a texture of its own at its storage buffer's binding.
 
 @group(0) @binding(1) var tiles: texture_2d<u32>;
-@group(0) @binding(2) var chunks: texture_2d<u32>;
 @group(0) @binding(3) var visible: texture_2d<u32>;
 @group(0) @binding(4) var vertices: texture_2d<u32>;
 @group(0) @binding(5) var indices: texture_2d<u32>;
@@ -11,7 +10,8 @@
 @group(0) @binding(8) var image_rects: texture_2d<u32>;
 
 fn tile_word(i: u32) -> u32 { return data_word(tiles, i); }
-fn chunk_word(i: u32) -> u32 { return data_word(chunks, i); }
+// A chunk's rows lie in the bound block's index pool.
+fn chunk_word(i: u32) -> u32 { return data_word(indices, i); }
 fn visible_word(i: u32) -> u32 { return data_word(visible, i); }
 // Word `i` of the bound block's rows.
 fn node_cull_word(i: u32) -> u32 { return data_word(node_cull, frame.block_row * NODE_CULL_WORDS + i); }

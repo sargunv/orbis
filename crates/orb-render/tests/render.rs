@@ -35,7 +35,6 @@ impl Harness {
 
     const SMALL: SceneCapacity = SceneCapacity {
         placements: 4,
-        chunks: 64,
         candidates: 128,
         nodes: 4,
         vertex_words: 4096,
@@ -47,7 +46,6 @@ impl Harness {
         max_index_words: 0,
         max_compacted_words: 0,
         max_prop_words: 0,
-        max_chunks: 0,
         max_candidates: 0,
     };
 
@@ -291,7 +289,10 @@ fn a_full_block_adds_another_copying_nothing() {
 #[test]
 fn blocks_left_half_empty_move_into_one_at_rest() {
     let (left, right) = (half_square(0), half_square(2048));
-    let mesh_words = |m: &orb_layout::Mesh| (m.vertices.len() as u32, m.indices.len() as u32);
+    // Its vertex words, and its index words with its chunks' rows.
+    let rows = |m: &orb_layout::Mesh| (m.chunks.len() * orb_shaders::layout::chunk::WORDS) as u32;
+    let mesh_words =
+        |m: &orb_layout::Mesh| (m.vertices.len() as u32, m.indices.len() as u32 + rows(m));
     let (v, i) = mesh_words(&left);
     assert_eq!(mesh_words(&right), (v, i));
     let capacity = SceneCapacity {
@@ -350,8 +351,12 @@ fn blocks_left_half_empty_move_into_one_at_rest() {
         (m.indices.used, m.indices.allocated),
         (bytes(3 * i), bytes(3 * i))
     );
+    // The chunks' rows are written anew, where the words moved.
     let moved = h.renderer.take_resized().bytes_copied;
-    assert!(moved >= bytes(3 * (v + i)), "{moved} bytes copied");
+    assert!(
+        moved >= bytes(3 * (v + i - rows(&left))),
+        "{moved} bytes copied"
+    );
     // The moved meshes go one by one: the right half's last goes.
     h.renderer.remove_mesh(tile, ids[3]);
     let pixels = h.render();
@@ -760,16 +765,20 @@ fn shared_geometry_lives_until_its_last_mesh() {
         let m = h.renderer.memory();
         (m.vertices.used, m.indices.used)
     };
-    let words = (
-        square.vertices.len() as u64 * 4,
-        square.indices.len() as u64 * 4,
-    );
-    assert_eq!(used(&h), words);
+    // Each mesh with chunks has their rows of its own.
+    let rows = (square.chunks.len() * orb_shaders::layout::chunk::WORDS) as u64 * 4;
+    let words = |meshes: u64| {
+        (
+            square.vertices.len() as u64 * 4,
+            square.indices.len() as u64 * 4 + meshes * rows,
+        )
+    };
+    assert_eq!(used(&h), words(2));
     h.renderer.remove_mesh(tile, ids[2]);
-    assert_eq!(used(&h), words);
+    assert_eq!(used(&h), words(2));
     h.renderer.remove_mesh(tile, ids[0]);
     assert_eq!(pixel(&h.render(), 4, 32), RED);
-    assert_eq!(used(&h), words);
+    assert_eq!(used(&h), words(1));
     h.renderer.remove_mesh(tile, ids[1]);
     assert_eq!(pixel(&h.render(), 4, 32), CLEAR);
     assert_eq!(used(&h), (0, 0));

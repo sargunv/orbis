@@ -4,7 +4,6 @@
 // from textures by swapping this module alone.
 
 @group(0) @binding(1) var<storage, read> tiles: array<Tile>;
-@group(0) @binding(2) var<storage, read> chunks: array<Chunk>;
 @group(0) @binding(3) var<storage, read> visible: array<Visible>;
 @group(0) @binding(4) var<storage, read> vertices: array<u32>;
 @group(0) @binding(5) var<storage, read> indices: array<u32>;
@@ -13,7 +12,11 @@
 @group(0) @binding(8) var<storage, read> image_rects: array<ImageRect>;
 
 fn tile_at(i: u32) -> Tile { return tiles[i]; }
-fn chunk_at(i: u32) -> Chunk { return chunks[i]; }
+// The chunk row at word `i` of the bound block's index pool.
+fn chunk_at(i: u32) -> Chunk {
+    return Chunk(indices[i], indices[i + 1u], indices[i + 2u], indices[i + 3u], indices[i + 4u],
+        indices[i + 5u], indices[i + 6u], indices[i + 7u], indices[i + 8u]);
+}
 fn visible_at(i: u32) -> Visible { return visible[i]; }
 fn vertex_at(i: u32) -> u32 { return vertices[i]; }
 // Mesh indices are u16s, two to a word, the first in the low half.

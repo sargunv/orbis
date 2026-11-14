@@ -153,8 +153,8 @@ pub struct FrameReport {
     pub gpu: GpuCounters,
     /// What this map's pools, tables, tile pages and drape atlas did in
     /// this frame moving into memory of another size, and its blocks being
-    /// made (part of `gpu`): a block copies nothing, the property rows,
-    /// chunk table and pages copy what they keep.
+    /// made (part of `gpu`): a block copies nothing, the property rows
+    /// and pages copy what they keep.
     pub resized: orb_render::Resized,
     /// What they did in [`Map::prepare`]'s frames since the last frame
     /// drawn (part of `gpu` too).

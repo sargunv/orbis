@@ -61,9 +61,18 @@ fn state_base(range: &Range<u32>) -> u32 {
     }
 }
 
-fn write_chunk_word(gpu: &mut dyn Gpu, tables: &mut Tables, chunk: u32, word: u64, value: u32) {
-    let at = u64::from(chunk) * CHUNK_WORDS as u64 + word;
-    tables.write_words(gpu, Table::Chunks, at as u32, &[value]);
+/// Writes word `word` of the chunk row at word `chunk` of block `block`'s
+/// index pool.
+fn write_chunk_word(
+    gpu: &mut dyn Gpu,
+    tables: &mut Tables,
+    (block, chunk): (u32, u32),
+    word: u64,
+    value: u32,
+) {
+    let at = chunk + word as u32;
+    let words = Words::Core(std::slice::from_ref(&value));
+    tables.write_block(gpu, (block as usize, BlockPool::Indices), at, words);
 }
 
 /// Per-frame values every pipeline reads.
@@ -581,7 +590,6 @@ const UNKNOWN: u32 = u32::MAX;
 pub struct SceneCapacity {
     /// Tile placements: a tile drawn in two world copies takes two.
     pub placements: u32,
-    pub chunks: u32,
     /// `(chunk, placement)` pairs the cull pass considers, over all nodes.
     pub candidates: u32,
     pub nodes: u32,
@@ -604,7 +612,6 @@ pub struct SceneCapacity {
     pub max_index_words: u32,
     pub max_compacted_words: u32,
     pub max_prop_words: u32,
-    pub max_chunks: u32,
     pub max_candidates: u32,
 }
 
@@ -618,13 +625,11 @@ impl SceneCapacity {
             index_words: start,
             compacted_words: start,
             prop_words: start,
-            chunks: 1 << 13,
             candidates: 1 << 14,
             max_vertex_words: u32::MAX,
             max_index_words: u32::MAX,
             max_compacted_words: u32::MAX,
             max_prop_words: u32::MAX,
-            max_chunks: 1 << 20,
             max_candidates: 1 << 20,
             ..Self::fixed()
         }
@@ -636,7 +641,6 @@ impl SceneCapacity {
     pub fn fixed() -> Self {
         Self {
             placements: 1024,
-            chunks: 1 << 17,
             candidates: 1 << 18,
             // A render node per drawn layer and symbol pass: Americana
             // needs about 400.
@@ -650,7 +654,6 @@ impl SceneCapacity {
             max_index_words: 0,
             max_compacted_words: 0,
             max_prop_words: 0,
-            max_chunks: 0,
             max_candidates: 0,
         }
     }
@@ -672,8 +675,8 @@ pub struct SceneMemory {
     pub indices: PoolMemory,
     pub compacted: PoolMemory,
     pub props: PoolMemory,
-    /// The fixed tables: placements, chunks, candidates, visible lists,
-    /// node tables and draw arguments.
+    /// The fixed tables: placements, candidates, visible lists, node
+    /// tables and draw arguments.
     pub tables: u64,
     /// Not GPU memory, so not [`allocated`](Self::allocated): what the
     /// CPU driver (WebGL 2) keeps in the heap, wasm memory on the web:
@@ -730,7 +733,7 @@ impl Default for SceneCapacity {
 /// pipeline reads of the frame, and what the driver writes for nodes to
 /// draw.
 ///
-/// The tables: tile placements; chunks; `(chunk, placement)` candidates,
+/// The tables: tile placements; `(chunk, placement)` candidates,
 /// grouped by node, with what the cull last wrote for indexed nodes'; node
 /// rows; per node, the visible `(chunk, placement)` list the cull writes
 /// for listed nodes, or an indexed node's runs; and the vertex, index and
@@ -912,9 +915,11 @@ pub(crate) struct Placement {
 struct MeshEntry {
     tile: TileId,
     node: u32,
-    /// The block holding its vertices and indices.
+    /// The block holding its vertices, indices and chunk rows.
     block: u32,
-    chunk_slots: Vec<u32>,
+    /// Its chunks' rows ([`CHUNK_WORDS`] each, in order) in its block's
+    /// index pool: a candidate names a chunk by its row's first word.
+    chunk_rows: Range<u32>,
     chunks: Vec<Chunk>,
     vertices: Range<u32>,
     indices: Range<u32>,
@@ -927,7 +932,12 @@ struct MeshEntry {
 }
 
 impl MeshEntry {
-    /// Its `k`th chunk's row in the chunk table (`types.wgsl`'s `Chunk`).
+    /// Its `k`th chunk's row's first word in its block's index pool.
+    fn chunk_at(&self, k: usize) -> u32 {
+        self.chunk_rows.start + (k * CHUNK_WORDS) as u32
+    }
+
+    /// Its `k`th chunk's row (`types.wgsl`'s `Chunk`).
     fn chunk_row(&self, k: usize) -> [u32; CHUNK_WORDS] {
         let chunk = &self.chunks[k];
         let pack = |p: [i16; 2]| u32::from(p[0] as u16) | u32::from(p[1] as u16) << 16;
@@ -953,29 +963,33 @@ impl MeshEntry {
         ]
     }
 
-    /// Writes its chunks' rows, one write for each run of them in
-    /// adjacent slots.
+    /// Writes its chunks' rows, in one write.
     fn write_chunk_rows(&self, gpu: &mut dyn Gpu, tables: &mut Tables) {
-        let mut order: Vec<usize> = (0..self.chunk_slots.len()).collect();
-        order.sort_unstable_by_key(|&k| self.chunk_slots[k]);
-        let mut words: Vec<u32> = Vec::with_capacity(order.len() * CHUNK_WORDS);
-        let mut first = 0;
-        for (i, &k) in order.iter().enumerate() {
-            let slot = self.chunk_slots[k];
-            if i > 0 && slot != self.chunk_slots[order[i - 1]] + 1 {
-                tables.write_words(gpu, Table::Chunks, first * CHUNK_WORDS as u32, &words);
-                words.clear();
-            }
-            if words.is_empty() {
-                first = slot;
-            }
-            words.extend(self.chunk_row(k));
+        if self.chunk_rows.is_empty() {
+            return;
         }
-        if !words.is_empty() {
-            tables.write_words(gpu, Table::Chunks, first * CHUNK_WORDS as u32, &words);
+        let words: Vec<u32> = (0..self.chunks.len())
+            .flat_map(|k| self.chunk_row(k))
+            .collect();
+        let pool = (self.block as usize, BlockPool::Indices);
+        tables.write_block(gpu, pool, self.chunk_rows.start, Words::Core(&words));
+    }
+
+    /// Writes word `word` of each of its chunks' rows.
+    fn write_chunk_words(&self, gpu: &mut dyn Gpu, tables: &mut Tables, word: u64, value: u32) {
+        for k in 0..self.chunks.len() {
+            write_chunk_word(gpu, tables, (self.block, self.chunk_at(k)), word, value);
         }
     }
 }
+
+/// Index pool words `chunks` chunks' rows take.
+pub(crate) fn chunk_words(chunks: usize) -> u32 {
+    (chunks * CHUNK_WORDS) as u32
+}
+
+/// A block's vertex and index ranges its meshes draw ([`Scene::repack`]).
+type Drawn = [Vec<Range<u32>>; 2];
 
 /// Chunk word that holds the first word of the mesh's feature-state
 /// remap, or [`NO_STATE`].
@@ -1321,7 +1335,6 @@ pub(crate) struct Scene {
     /// ([`SubmitLimits::index_bits`]).
     index_bits: u32,
     placement_slots: Slots,
-    chunk_slots: Slots,
     /// The vertex and index pools' blocks, by slot; `None` where one was
     /// freed, for the next to take.
     blocks: Vec<Option<Block>>,
@@ -1481,20 +1494,11 @@ impl Scene {
             *start = (*start).min(largest);
             *max = (*max).min(largest).max(*start);
         }
-        // And the chunk and candidate tables: a data texture each at
-        // WebGL 2's least side holds fewer chunks than the ceiling.
-        for (start, max, words) in [
-            (&mut capacity.chunks, &mut capacity.max_chunks, CHUNK_WORDS),
-            (
-                &mut capacity.candidates,
-                &mut capacity.max_candidates,
-                CANDIDATE_WORDS.max(VISIBLE_WORDS),
-            ),
-        ] {
-            let rows = largest / words as u32;
-            *start = (*start).min(rows);
-            *max = (*max).min(rows).max(*start);
-        }
+        // And the candidate lists: a data texture at WebGL 2's least side
+        // holds fewer candidates than the ceiling.
+        let rows = largest / CANDIDATE_WORDS.max(VISIBLE_WORDS) as u32;
+        capacity.candidates = capacity.candidates.min(rows);
+        capacity.max_candidates = (capacity.max_candidates).min(rows).max(capacity.candidates);
         // The symbol placements read the draw arguments.
         let args_usage = driver.args_usage() | crate::symbol::read_usage(gpu.caps());
         let mut buffer = |label: &str, words: u64, usage: BufferUsages| {
@@ -1524,7 +1528,6 @@ impl Scene {
             backing,
             [
                 words(c.placements, TILE_WORDS),
-                words(c.chunks, CHUNK_WORDS),
                 words(c.candidates, CANDIDATE_WORDS),
                 words(c.nodes, NODE_CULL_WORDS),
                 words(c.candidates, VISIBLE_WORDS),
@@ -1543,7 +1546,6 @@ impl Scene {
             capacity,
             index_bits: driver.index_bits(),
             placement_slots: Slots::new(c.placements),
-            chunk_slots: Slots::new(c.chunks),
             blocks: Vec::new(),
             prop_arena,
             shared: Default::default(),
@@ -2445,13 +2447,14 @@ impl Scene {
         let shared = shares.map(|of| of.map(|of| self.mesh_ranges(of)));
         let block = shared.iter().flatten().map(|&(block, _)| block).next();
         let words = [mesh.vertices, mesh.indices, mesh.props];
-        let lens = [0, 1, 2].map(|p| match p {
+        let lens = [0, 1, 2, 3].map(|p| match p {
             0 | 1 if shared[p].is_some() => 0,
+            3 => chunk_words(mesh.chunks.len()),
             _ => words[p].len(),
         });
         let points = self.overlaps(node);
         let (block, ranges) = self.alloc_words(gpu, lens, block, points)?;
-        for (pool, range) in ranges.iter().enumerate() {
+        for (pool, range) in ranges[..3].iter().enumerate() {
             if !range.is_empty() {
                 self.write_pool(gpu, block, pool, range.start, words[pool]);
             }
@@ -2461,20 +2464,14 @@ impl Scene {
             [_, Some((_, of))] if p == 1 => of[1].clone(),
             _ => ranges[p].clone(),
         });
-        let inserted = self.insert_mesh_at(
+        Ok(self.insert_mesh_at(
             gpu,
             tile,
             (node, block),
-            ranges_drawn,
+            (ranges_drawn, ranges[3].clone()),
             (mesh.chunks, mesh.row_words),
             shares.map(|s| s.is_some()),
-        );
-        if inserted.is_err() {
-            for (pool, range) in ranges.into_iter().enumerate() {
-                self.free_words(block, pool, range);
-            }
-        }
-        inserted
+        ))
     }
 
     /// Whether render `node` draws from a list, which its tiles' draws,
@@ -2484,21 +2481,22 @@ impl Scene {
         self.nodes[node as usize].cull.draw != NodeDraw::Indexed
     }
 
-    /// Takes `lens` words of each pool (vertices, indices, property rows),
-    /// all of them or none: the vertices and indices in one block, `block`
-    /// if given, else for what draws from lists (`points`) the block for
-    /// them, grown to hold them, else the first other with room for both,
-    /// else a new one. The property rows grow to hold theirs. `Err` only past the
-    /// device's limits.
+    /// Takes `lens` words of each pool (vertices, indices, property rows)
+    /// and of chunk rows, all of them or none: the vertices, indices and
+    /// chunk rows (in the index pool, past the indices) in one block,
+    /// `block` if given, else for what draws from lists (`points`) the
+    /// block for them, grown to hold them, else the first other with room
+    /// for them, else a new one. The property rows grow to hold theirs.
+    /// `Err` only past the device's limits.
     pub(crate) fn alloc_words(
         &mut self,
         gpu: &mut dyn Gpu,
-        lens: [u32; 3],
+        lens: [u32; 4],
         block: Option<u32>,
         points: bool,
-    ) -> Result<(u32, [Range<u32>; 3]), OutOfSpace> {
+    ) -> Result<(u32, [Range<u32>; 4]), OutOfSpace> {
         let props = self.alloc_props(gpu, lens[2])?;
-        let need = [lens[0], lens[1]];
+        let need = [lens[0], lens[1] + lens[3]];
         let fits = |b: &Block| b.vertices.fits_all([need[0]]) && b.indices.fits_all([need[1]]);
         let found = match block {
             Some(block) => self.blocks[block as usize]
@@ -2521,8 +2519,12 @@ impl Scene {
         };
         let b = self.blocks[block as usize].as_mut().expect("a block");
         let vertices = b.vertices.alloc(lens[0]).expect("checked");
-        let indices = b.indices.alloc(lens[1]).expect("checked");
-        Ok((block, [vertices, indices, props]))
+        let both = b.indices.alloc(need[1]).expect("checked");
+        let split = both.start + lens[1];
+        // Empty ranges start at 0, as an arena's empty allocations do.
+        let part = |r: Range<u32>| if r.is_empty() { 0..0 } else { r };
+        let (indices, chunks) = (part(both.start..split), part(split..both.end));
+        Ok((block, [vertices, indices, props, chunks]))
     }
 
     /// The block for what draws from lists ([`Block`]), made or moved into
@@ -2639,12 +2641,14 @@ impl Scene {
     }
 
     /// The vertex and index ranges block `slot`'s meshes draw, each once
-    /// (meshes that share one draw the same), by start: `None` if they
-    /// don't account for every word it holds, as while a tile's reserved
-    /// words are still being written.
-    fn drawn_words(&self, slot: usize) -> Option<[Vec<Range<u32>>; 2]> {
+    /// (meshes that share one draw the same), by start, and the index
+    /// words their chunk rows take: `None` if they don't account for every
+    /// word it holds, as while a tile's reserved words are still being
+    /// written.
+    fn drawn_words(&self, slot: usize) -> Option<(Drawn, u32)> {
         let block = self.blocks[slot].as_ref()?;
         let mut ranges = [Vec::new(), Vec::new()];
+        let mut chunk_rows = 0;
         for entry in self.meshes.iter().flatten() {
             if entry.block as usize == slot {
                 for (p, range) in [&entry.vertices, &entry.indices].into_iter().enumerate() {
@@ -2652,34 +2656,38 @@ impl Scene {
                         ranges[p].push(range.clone());
                     }
                 }
+                chunk_rows += entry.chunk_rows.len() as u32;
             }
         }
         for (p, arena) in [&block.vertices, &block.indices].into_iter().enumerate() {
             ranges[p].sort_unstable_by_key(|r| r.start);
             ranges[p].dedup_by_key(|r| r.start);
+            let rows = if p == 1 { chunk_rows } else { 0 };
             let drawn: u64 = ranges[p].iter().map(|r| r.len() as u64).sum();
-            if drawn != u64::from(arena.used()) {
+            if drawn + u64::from(rows) != u64::from(arena.used()) {
                 return None;
             }
         }
-        Some(ranges)
+        Some((ranges, chunk_rows))
     }
 
     /// Moves every mesh of blocks `from` into one new block of just their
     /// words, for what draws from lists (`points`) or not, and frees
     /// `from`. The words move in one submission of GPU copies, ranges that
     /// lie end to end in one copy, and the meshes keep their order in each
-    /// row.
+    /// row. Their chunk rows, which name where their words are, are written
+    /// anew.
     fn move_blocks(&mut self, gpu: &mut dyn Gpu, from: &[usize], points: bool) {
-        let drawn: Vec<[Vec<Range<u32>>; 2]> = (from.iter())
+        let (drawn, chunk_rows): (Vec<Drawn>, Vec<u32>) = (from.iter())
             .map(|&slot| self.drawn_words(slot).expect("checked"))
-            .collect();
-        let words = [0, 1].map(|p| {
+            .unzip();
+        let mut words = [0, 1].map(|p| {
             (drawn.iter())
                 .flat_map(|d| &d[p])
                 .map(|r| r.len() as u32)
                 .sum::<u32>()
         });
+        words[1] += chunk_rows.iter().sum::<u32>();
         let to = self.add_block(gpu, words, points);
         let before = gpu.counters();
         let mut passes = Vec::new();
@@ -2719,6 +2727,9 @@ impl Scene {
                 let at = self.row(row, slot as u32) as usize;
                 for id in std::mem::take(&mut self.nodes[at].meshes) {
                     let entry = self.meshes[id.0 as usize].as_mut().expect("live mesh");
+                    let b = self.blocks[to as usize].as_mut().expect("a block");
+                    let rows = b.indices.alloc(entry.chunk_rows.len() as u32);
+                    entry.chunk_rows = rows.expect("sized to hold them");
                     entry.vertices = moved_range(0, &entry.vertices);
                     entry.indices = moved_range(1, &entry.indices);
                     entry.block = to;
@@ -2792,15 +2803,17 @@ impl Scene {
         }
     }
 
-    /// Gives back words of pool `pool` (vertices, indices, property rows)
-    /// that no mesh holds: block `block`'s, for vertices and indices.
+    /// Gives back words of pool `pool` (vertices, indices, property rows,
+    /// or chunk rows, which are index words) that no mesh holds: block
+    /// `block`'s, for all but property rows.
     pub(crate) fn free_words(&mut self, block: u32, pool: usize, range: Range<u32>) {
+        if pool == 2 {
+            return self.prop_arena.free(range);
+        }
+        let b = self.blocks[block as usize].as_mut().expect("a block");
         match pool {
-            0 | 1 => {
-                let b = self.blocks[block as usize].as_mut().expect("a block");
-                [&mut b.vertices, &mut b.indices][pool].free(range);
-            }
-            _ => self.prop_arena.free(range),
+            0 => b.vertices.free(range),
+            _ => b.indices.free(range),
         }
     }
 
@@ -2824,36 +2837,23 @@ impl Scene {
         }
     }
 
-    /// Takes room for `chunks` more chunk rows, growing the chunk table to
-    /// hold them.
-    fn reserve_chunks(&mut self, gpu: &mut dyn Gpu, chunks: u32) -> Result<(), OutOfSpace> {
-        if self.chunk_slots.reserve(chunks) {
-            return Ok(());
-        }
-        let needed = self.chunk_slots.take_needed();
-        if self.grow_chunks(gpu, u64::from(needed)) && self.chunk_slots.reserve(chunks) {
-            return Ok(());
-        }
-        Err(OutOfSpace)
-    }
-
     /// Inserts a mesh of `tile` for render `node` whose words are written
     /// at `ranges` of the pools (vertices and indices of block `block`,
-    /// property rows): its own, or for those `shared`, an earlier mesh's.
-    /// On `Err` it holds nothing and the ranges are still the caller's.
+    /// property rows): its own, or for those `shared`, an earlier mesh's;
+    /// its chunks' rows go to `chunk_rows` of the block's index pool, the
+    /// mesh's own.
     pub(crate) fn insert_mesh_at(
         &mut self,
         gpu: &mut dyn Gpu,
         tile: TileId,
         (node, block): (u32, u32),
-        [vertices, indices, props]: [Range<u32>; 3],
+        ([vertices, indices, props], chunk_rows): ([Range<u32>; 3], Range<u32>),
         (chunks, row_words): (&[Chunk], u32),
         shared: [bool; 2],
-    ) -> Result<MeshId, OutOfSpace> {
+    ) -> MeshId {
         assert!((node as usize) < self.rows, "unknown render node {node}");
         assert!(self.tiles[tile.0 as usize].is_some(), "unknown tile");
-        let len = u32::try_from(chunks.len()).map_err(|_| OutOfSpace)?;
-        self.reserve_chunks(gpu, len)?;
+        assert_eq!(chunk_rows.len() as u32, chunk_words(chunks.len()));
         for (pool, range) in [&vertices, &indices].into_iter().enumerate() {
             // Empty ranges all start at 0, where the first allocation
             // does: they hold nothing to share.
@@ -2861,14 +2861,11 @@ impl Scene {
                 *self.shared[pool].entry((block, range.start)).or_default() += 1;
             }
         }
-        let chunk_ids: Vec<u32> = (chunks.iter())
-            .map(|_| self.chunk_slots.alloc().expect("checked above"))
-            .collect();
         let entry = MeshEntry {
             tile,
             node,
             block,
-            chunk_slots: chunk_ids,
+            chunk_rows,
             chunks: chunks.to_vec(),
             vertices,
             indices,
@@ -2878,7 +2875,7 @@ impl Scene {
             symbol: None,
         };
         entry.write_chunk_rows(gpu, &mut self.tables);
-        Ok(self.add_mesh(entry))
+        self.add_mesh(entry)
     }
 
     /// A mesh's block, and its vertex and index ranges there, which a
@@ -2958,24 +2955,14 @@ impl Scene {
         let entry = self.meshes[mesh.0 as usize].as_mut().expect("live mesh");
         if row_words != entry.row_words {
             entry.row_words = row_words;
-            for &chunk in &entry.chunk_slots {
-                write_chunk_word(
-                    gpu,
-                    &mut self.tables,
-                    chunk,
-                    CHUNK_ROW_WORDS_WORD,
-                    row_words,
-                );
-            }
+            entry.write_chunk_words(gpu, &mut self.tables, CHUNK_ROW_WORDS_WORD, row_words);
         }
         if props.len() != entry.props.len() as u32 {
             let range = self.alloc_props(gpu, props.len())?;
             let entry = self.meshes[mesh.0 as usize].as_mut().expect("live mesh");
             self.prop_arena
                 .free(std::mem::replace(&mut entry.props, range.clone()));
-            for &chunk in &entry.chunk_slots {
-                write_chunk_word(gpu, &mut self.tables, chunk, CHUNK_PROPS_WORD, range.start);
-            }
+            entry.write_chunk_words(gpu, &mut self.tables, CHUNK_PROPS_WORD, range.start);
         }
         let entry = self.meshes[mesh.0 as usize].as_ref().expect("live mesh");
         self.tables
@@ -2997,15 +2984,7 @@ impl Scene {
             let entry = self.meshes[mesh.0 as usize].as_mut().expect("live mesh");
             self.prop_arena
                 .free(std::mem::replace(&mut entry.state, range.clone()));
-            for &chunk in &entry.chunk_slots {
-                write_chunk_word(
-                    gpu,
-                    &mut self.tables,
-                    chunk,
-                    CHUNK_STATE_WORD,
-                    state_base(&range),
-                );
-            }
+            entry.write_chunk_words(gpu, &mut self.tables, CHUNK_STATE_WORD, state_base(&range));
         }
         if !indices.is_empty() {
             let at = self.meshes[mesh.0 as usize]
@@ -3061,10 +3040,8 @@ impl Scene {
         let row = self.row(entry.node, entry.block);
         self.nodes[row as usize].meshes.retain(|&m| m != id);
         self.dirty_node(row);
-        for chunk in entry.chunk_slots {
-            self.chunk_slots.free(chunk);
-        }
         let block = entry.block;
+        self.free_words(block, 3, entry.chunk_rows);
         for (pool, range) in [entry.vertices, entry.indices].into_iter().enumerate() {
             if self.release_shared(pool, block, &range) {
                 self.free_words(block, pool, range);
@@ -3220,15 +3197,15 @@ impl Scene {
         self.scratch.map_or(0, |(_, bytes)| bytes)
     }
 
-    /// Halves the property rows, the chunk table or a pool of the block
-    /// for what draws from lists while what it holds all lies in its lowest
-    /// quarter, down to its first size: a view that emptied gives back
-    /// what it grew them to, and each keeps room to grow fourfold before
-    /// it doubles again. At most one a call, copying what it keeps:
+    /// Halves the property rows or a pool of the block for what draws from
+    /// lists while what it holds all lies in its lowest quarter, down to
+    /// its first size: a view that emptied gives back what it grew them
+    /// to, and each keeps room to grow fourfold before it doubles again. At most one a call, copying what it keeps:
     /// whether one shrank.
     pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
-        let (props, chunks) = self.shrunk_sizes();
-        if props < self.capacity.prop_words {
+        let old = self.capacity.prop_words;
+        let props = shrunk(old, self.prop_arena.free_from(old), self.first.prop_words);
+        if props < old {
             self.resize_props(gpu, props);
             return true;
         }
@@ -3245,32 +3222,7 @@ impl Scene {
                 }
             }
         }
-        let (old, new) = (self.capacity.chunks, chunks);
-        if new >= old {
-            return false;
-        }
-        let words = |count: u32| u64::from(count) * CHUNK_WORDS as u64;
-        let kept = words(self.chunk_slots.held_below());
-        let before = gpu.counters();
-        self.tables.resize(gpu, Table::Chunks, words(new), kept);
-        self.resized.count(gpu, &before);
-        self.chunk_slots.shrink(new);
-        self.capacity.chunks = new;
-        self.buffers_revision += 1;
-        true
-    }
-
-    /// The sizes [`shrink`](Self::shrink) halves the property rows (in
-    /// words) and the chunk table to.
-    fn shrunk_sizes(&self) -> (u32, u32) {
-        let old = self.capacity.prop_words;
-        let props = shrunk(old, self.prop_arena.free_from(old), self.first.prop_words);
-        let chunks = shrunk(
-            self.capacity.chunks,
-            self.chunk_slots.held_below(),
-            self.first.chunks,
-        );
-        (props, chunks)
+        false
     }
 
     /// Moves the property rows into a buffer of `new` words, its contents
@@ -3289,26 +3241,6 @@ impl Scene {
         }
         self.capacity.prop_words = new;
         self.buffers_revision += 1;
-    }
-
-    /// Moves the chunk table into the smallest doubling of at least
-    /// `needed` rows, to its ceiling, its rows copied over. Returns whether
-    /// it grew.
-    fn grow_chunks(&mut self, gpu: &mut dyn Gpu, needed: u64) -> bool {
-        let old = self.capacity.chunks;
-        let new = grown(old, needed, self.capacity.max_chunks);
-        if new <= old {
-            return false;
-        }
-        let words = |count: u32| u64::from(count) * CHUNK_WORDS as u64;
-        let kept = words(self.chunk_slots.held_below());
-        let before = gpu.counters();
-        self.tables.resize(gpu, Table::Chunks, words(new), kept);
-        self.resized.count(gpu, &before);
-        self.chunk_slots.grow(new);
-        self.capacity.chunks = new;
-        self.buffers_revision += 1;
-        true
     }
 
     /// Makes the candidate and visible lists room for at least `short`
@@ -3402,6 +3334,7 @@ impl Scene {
         self.meshes[mesh.0 as usize].as_ref().map_or(0, |m| {
             (m.vertices.len()
                 + m.indices.len()
+                + m.chunk_rows.len()
                 + m.props.len()
                 + m.state.len()
                 + m.symbol.as_ref().map_or(0, |s| s.states.len())) as u64
@@ -3459,7 +3392,6 @@ impl Scene {
                 ceiling: bytes(c.max_prop_words.max(c.prop_words)),
             },
             tables: (u64::from(c.placements) * TILE_WORDS as u64
-                + u64::from(c.chunks) * CHUNK_WORDS as u64
                 + u64::from(c.candidates) * (CANDIDATE_WORDS + VISIBLE_WORDS) as u64
                 + u64::from(self.row_capacity) * (NODE_CULL_WORDS + ARGS_WORDS) as u64)
                 * 4

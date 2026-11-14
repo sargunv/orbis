@@ -45,8 +45,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::driver::SubmitLimits;
 
 use super::{
-    CANDIDATE_WORDS, CULL_BATCH, HIDDEN, NODE_CULL_WORDS, NodeDraw, NodeEntry, NodeMeshes,
-    PlacementTarget, Route, Scene, Stream, Table, UNKNOWN, Untested, VISIBLE_WORDS,
+    CANDIDATE_WORDS, CHUNK_WORDS, CULL_BATCH, HIDDEN, NODE_CULL_WORDS, NodeDraw, NodeEntry,
+    NodeMeshes, PlacementTarget, Route, Scene, Stream, Table, UNKNOWN, Untested, VISIBLE_WORDS,
 };
 
 /// A candidate row that holds no candidate: a hole a run left in an
@@ -301,22 +301,28 @@ struct RunPlan<'a> {
     drape_slot: Option<u32>,
     /// Which of the mesh's chunks it holds in the placement.
     route: Route,
-    /// The mesh's chunk slots (the first names the run in its run row) and
-    /// chunks.
-    slots: &'a [u32],
+    /// Where the mesh's chunk rows start (the first names the run in its
+    /// run row), and its chunks.
+    rows: u32,
     chunks: &'a [Chunk],
 }
 
 impl RunPlan<'_> {
-    /// Its chunks: slot, index count, sort key.
+    /// Its chunks: row, index count, sort key.
     fn chunks(&self) -> impl Iterator<Item = (u32, u32, Option<f32>)> + '_ {
-        (self.slots.iter().zip(self.chunks))
+        (self.chunks.iter().enumerate())
             .filter(|(_, c)| self.route.keeps(c.owner))
-            .map(|(&slot, c)| (slot, c.index_count, c.sort_key))
+            .map(|(k, c)| {
+                (
+                    self.rows + (k * CHUNK_WORDS) as u32,
+                    c.index_count,
+                    c.sort_key,
+                )
+            })
     }
 
     fn first(&self) -> u32 {
-        self.slots[0]
+        self.rows
     }
 }
 
@@ -383,7 +389,7 @@ impl Scene {
             let tile = self.tiles[entry.tile.0 as usize]
                 .as_ref()
                 .expect("meshes have tiles");
-            if entry.chunk_slots.is_empty() {
+            if entry.chunks.is_empty() {
                 continue;
             }
             vertex_words = vertex_words.max(entry.vertices.len() as u32);
@@ -398,7 +404,7 @@ impl Scene {
                     placement: placement.slot,
                     drape_slot: placement.row.drape_slot,
                     route,
-                    slots: &entry.chunk_slots,
+                    rows: entry.chunk_rows.start,
                     chunks: &entry.chunks,
                 };
                 if run.chunks().next().is_some() {
@@ -1544,7 +1550,7 @@ mod tests {
             placement: 0,
             drape_slot: None,
             route: Route::ALL,
-            slots: Vec::leak((0..chunks).map(|c| serial as u32 * 100 + c).collect()),
+            rows: serial as u32 * 100 * CHUNK_WORDS as u32,
             chunks: Vec::leak(vec![chunk; chunks as usize]),
         }
     }
