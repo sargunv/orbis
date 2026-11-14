@@ -2719,10 +2719,19 @@ impl Renderer {
         }
         let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame, self.settling);
         // Nodes that draw in stretches of one block's slots record them.
+        // The drape's recorded draws take each slot's stretches as its
+        // pass draws ([`Renderer::slot_commands`]): they, the nodes they
+        // left out and the slots' bundles stay.
         let segments = self.scene.segments_revision();
         if segments != self.segments_drawn {
             self.segments_drawn = segments;
-            self.invalidate_bundle(gpu);
+            self.drop_bundles(gpu);
+            let terrain_on = self.terrain.as_ref().is_some_and(terrain::Terrain::active);
+            for node in &self.nodes {
+                if !(terrain_on && node.terrain_layer.is_some()) {
+                    node.left_out.set([false; 2]);
+                }
+            }
         }
         // The symbol draws bind the placement target, which the placements
         // write whole each frame: it is made again for the symbol nodes'
@@ -2782,6 +2791,7 @@ impl Renderer {
             self.record_drape(gpu, frame, stack);
         }
         let drape = self.slot_commands(&slots);
+        let drape = self.slot_bundles(gpu, drape);
         let encoding = clock();
         let mut drape_passes = 0;
 
@@ -3250,7 +3260,7 @@ impl Renderer {
     fn terrain_passes(
         &mut self,
         gpu: &mut dyn Gpu,
-        drape: &FxHashMap<(u32, u32), Vec<RenderCommand>>,
+        drape: &FxHashMap<(u32, u32), Option<RenderBundleId>>,
         passes: &mut Vec<Pass>,
     ) -> terrain::TerrainDrawn {
         let terrain = self.terrain.as_mut().expect("terrain is on");
@@ -3714,6 +3724,7 @@ impl Renderer {
             commands,
             splices,
             groups,
+            slots: FxHashMap::default(),
         });
     }
 
@@ -3758,6 +3769,53 @@ impl Renderer {
             }
         }
         by_slot
+    }
+
+    /// Each redrawn slot's bundle of its commands (`by_slot`, from
+    /// [`slot_commands`](Self::slot_commands)), `None` where they draw
+    /// nothing: the one its stack's [recorded](Recorded) draws keep for
+    /// the slot while it draws the same commands, else one recorded anew.
+    /// A slot redraws whole as its tile's footprint or the drape's zoom
+    /// step changes, its content unchanged: a pass replaying a bundle
+    /// costs the CPU two calls, where issuing its draws cost one a
+    /// command, every draped node's state set again a slot.
+    fn slot_bundles(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        by_slot: FxHashMap<(u32, u32), Vec<RenderCommand>>,
+    ) -> FxHashMap<(u32, u32), Option<RenderBundleId>> {
+        let Some(level) = &mut self.drape else {
+            return FxHashMap::default();
+        };
+        let desc = RenderBundleDesc {
+            label: "drape slot",
+            color_formats: &[DRAPE_FORMAT],
+            depth_format: None,
+            sample_count: 1,
+        };
+        let mut bundles = FxHashMap::default();
+        for ((stack, slot), commands) in by_slot {
+            let Some(Some(recorded)) = level.recorded.get_mut(stack as usize) else {
+                continue;
+            };
+            let kept = recorded.slots.get(&slot).filter(|k| k.0 == commands);
+            let bundle = match kept {
+                Some(&(_, bundle)) => Some(bundle),
+                // Set once, state no draw follows is gone.
+                None if commands.is_empty() => {
+                    recorded.slots.remove(&slot).map(|(_, b)| b).release(gpu);
+                    None
+                }
+                None => {
+                    let bundle = gpu.create_render_bundle(&desc, &commands);
+                    let old = recorded.slots.insert(slot, (commands, bundle));
+                    old.map(|(_, b)| b).release(gpu);
+                    Some(bundle)
+                }
+            };
+            bundles.insert((stack, slot), bundle);
+        }
+        bundles
     }
 
     /// Indexed stream `id`'s draws of everything it holds: in segments, or
@@ -4158,19 +4216,54 @@ fn drape_stacks(inputs: &[StackInput]) -> DrapeStacks {
     }
 }
 
-/// A bundle's `commands` without the index buffer bindings that bind what
-/// is bound already: each indexed draw binds its own (the compacted
-/// indices, or symbols' [`QUAD_INDICES`]), and runs of one kind need it
-/// bound once.
-fn bound_once(mut commands: Vec<RenderCommand>) -> Vec<RenderCommand> {
-    let mut bound = None;
-    commands.retain(|c| match c {
-        &RenderCommand::SetIndexBuffer { buffer, offset } => {
-            bound.replace((buffer, offset)) != Some((buffer, offset))
+/// `commands` with each state set once: a pipeline, bind group or index
+/// buffer set only where it changes what is set and a draw follows before
+/// it is set again. Each node's draws set its pipeline, its groups and
+/// its index buffer (the compacted indices, or symbols'
+/// [`QUAD_INDICES`]), and each stretch its block's group, which nodes of
+/// one kind and stretches of one block share; a node with nothing to draw
+/// in a drape slot sets its state for no draw. Each call costs the CPU,
+/// the web's a call into the browser.
+fn bound_once(commands: Vec<RenderCommand>) -> Vec<RenderCommand> {
+    /// What a state command sets: the pipeline, a group's index, or the
+    /// index buffer.
+    fn slot(command: &RenderCommand) -> Option<u32> {
+        match command {
+            RenderCommand::SetPipeline(_) => Some(u32::MAX),
+            RenderCommand::SetIndexBuffer { .. } => Some(u32::MAX - 1),
+            RenderCommand::SetBindGroup { index, .. } => Some(*index),
+            _ => None,
         }
-        _ => true,
-    });
-    commands
+    }
+    let mut out = Vec::with_capacity(commands.len());
+    // What the commands kept leave set, and what is to be set before the
+    // next draw.
+    let mut set: Vec<RenderCommand> = Vec::new();
+    let mut pending: Vec<RenderCommand> = Vec::new();
+    for command in commands {
+        if let Some(at) = slot(&command) {
+            match pending.iter_mut().find(|c| slot(c) == Some(at)) {
+                Some(waiting) => *waiting = command,
+                None => pending.push(command),
+            }
+            continue;
+        }
+        for command in pending.drain(..) {
+            let at = slot(&command);
+            match set.iter_mut().find(|c| slot(c) == at) {
+                Some(was) if *was == command => continue,
+                Some(was) => *was = command.clone(),
+                None => set.push(command.clone()),
+            }
+            out.push(command);
+        }
+        // Bundles leave nothing set after them.
+        if matches!(command, RenderCommand::ExecuteBundles(_)) {
+            set.clear();
+        }
+        out.push(command);
+    }
+    out
 }
 
 /// Whether `node`'s pipelines compile ahead of the other nodes' of a
@@ -4249,11 +4342,16 @@ struct Recorded {
     splices: Vec<(usize, u32)>,
     /// The node groups the commands bind.
     groups: Vec<BindGroupId>,
+    /// By tile slot, the commands its pass last drew and their bundle
+    /// ([`Renderer::slot_bundles`]): what they bind lives as long as
+    /// these draws.
+    slots: FxHashMap<u32, (Vec<RenderCommand>, RenderBundleId)>,
 }
 
 impl release::Release for Recorded {
     fn release(self, gpu: &mut dyn Gpu) {
-        self.groups.release(gpu);
+        let bundles: Vec<RenderBundleId> = self.slots.into_values().map(|(_, b)| b).collect();
+        (self.groups, bundles).release(gpu);
     }
 }
 
@@ -4634,5 +4732,104 @@ mod tests {
         for (name, inputs, expected) in cases {
             assert_eq!(drape_stacks(&inputs), expected, "{name}");
         }
+    }
+
+    /// Commands bound once draw each draw with the state the commands
+    /// gave it, setting nothing that is set already or that no draw uses.
+    #[test]
+    fn bound_once_draws_alike_with_each_state_set_once() {
+        use RenderCommand::*;
+        let pipeline = |n| SetPipeline(RenderPipelineId(n));
+        let group = |index, n| SetBindGroup {
+            index,
+            group: BindGroupId(n),
+        };
+        let indices = SetIndexBuffer {
+            buffer: BufferId(1),
+            offset: 0,
+        };
+        let draw = |n| DrawIndexed {
+            indices: n..n + 3,
+            base_vertex: 0,
+            instances: 0..1,
+        };
+        // Each draw with the state set before it.
+        let drawn = |commands: &[RenderCommand]| {
+            let mut set: Vec<RenderCommand> = Vec::new();
+            let mut draws = Vec::new();
+            for c in commands {
+                match c {
+                    DrawIndexed { .. } => draws.push((set.clone(), c.clone())),
+                    ExecuteBundles(_) => set.clear(),
+                    c => {
+                        let same = |s: &RenderCommand| {
+                            std::mem::discriminant(s) == std::mem::discriminant(c)
+                                && match (s, c) {
+                                    (
+                                        SetBindGroup { index: a, .. },
+                                        SetBindGroup { index: b, .. },
+                                    ) => a == b,
+                                    _ => true,
+                                }
+                        };
+                        set.retain(|s| !same(s));
+                        set.push(c.clone());
+                        set.sort_by_key(|s| format!("{s:?}"));
+                    }
+                }
+            }
+            draws
+        };
+        let commands = vec![
+            // A node with nothing to draw.
+            pipeline(1),
+            group(1, 10),
+            indices.clone(),
+            // A node drawing two stretches of one block.
+            pipeline(1),
+            group(1, 11),
+            indices.clone(),
+            group(0, 5),
+            draw(0),
+            group(0, 5),
+            draw(3),
+            // One of another kind, the same block.
+            pipeline(2),
+            group(1, 12),
+            indices.clone(),
+            group(0, 5),
+            draw(6),
+            ExecuteBundles(vec![RenderBundleId(1)]),
+            // Its state again, after a bundle left none.
+            pipeline(2),
+            group(1, 12),
+            indices.clone(),
+            group(0, 5),
+            draw(9),
+            // State no draw follows.
+            pipeline(3),
+        ];
+        let once = bound_once(commands.clone());
+        assert_eq!(drawn(&once), drawn(&commands));
+        assert_eq!(
+            once,
+            vec![
+                pipeline(1),
+                group(1, 11),
+                indices.clone(),
+                group(0, 5),
+                draw(0),
+                draw(3),
+                pipeline(2),
+                group(1, 12),
+                draw(6),
+                ExecuteBundles(vec![RenderBundleId(1)]),
+                pipeline(2),
+                group(1, 12),
+                indices,
+                group(0, 5),
+                draw(9),
+            ]
+        );
     }
 }
