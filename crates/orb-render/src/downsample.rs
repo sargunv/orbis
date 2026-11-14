@@ -303,7 +303,7 @@ impl Downsampler {
         let pipelines = self
             .pipelines
             .filter(|p| p.all().iter().all(|&p| gpu.pipeline_ready(p)))?;
-        if regions.is_empty() {
+        if regions.is_empty() || chain.groups.is_empty() {
             return Some((Vec::new(), 0));
         }
         let count = regions.len() as u32;
@@ -330,48 +330,53 @@ impl Downsampler {
                 let mut layers: Vec<u32> = regions.iter().map(|r| r[0]).collect();
                 layers.sort_unstable();
                 layers.dedup();
+                // One layer with a level for each drawn one: each layer's
+                // level draws into it and is copied out before the next
+                // draws, as the passes run in order, so a submission drawing
+                // many layers' levels (a load over new terrain redraws every
+                // drape slot) holds one layer's chain of scratch, not one
+                // per layer.
+                let [width, height] = chain.size.map(|side| (side >> 1).max(1));
+                let scratch = gpu.create_texture(&TextureDesc {
+                    label: "drawn mip levels",
+                    width,
+                    height,
+                    array_layers: 1,
+                    dimension: TextureViewDimension::D2Array,
+                    format: TextureFormat::Rgba8Unorm,
+                    usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+                    sample_count: 1,
+                    mip_levels: chain.groups.len() as u32,
+                });
+                transient.textures.push(scratch);
                 let mut passes = Vec::new();
-                let mut draws = 0;
                 for (level, &group) in (1..).zip(&chain.groups) {
-                    // A layer of the level's size for each layer drawn, as
-                    // the quads land where they do in the level.
+                    let target = gpu.create_layer_view(scratch, 0, level - 1);
+                    transient.textures.push(target);
                     let [width, height] = chain.size.map(|side| (side >> level).max(1));
-                    let scratch = gpu.create_texture(&TextureDesc {
-                        label: "drawn mip level",
-                        width,
-                        height,
-                        array_layers: layers.len() as u32,
-                        dimension: TextureViewDimension::D2Array,
-                        format: TextureFormat::Rgba8Unorm,
-                        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
-                        sample_count: 1,
-                        mip_levels: 1,
-                    });
-                    transient.textures.push(scratch);
-                    let mut copies = Vec::new();
-                    for (i, &layer) in (0..).zip(&layers) {
-                        let target = gpu.create_layer_view(scratch, i, 0);
-                        transient.textures.push(target);
+                    for &layer in &layers {
                         passes.push(drawn_pass(label, mip, group, target, regions, layer));
-                        draws += 1;
-                        // A region is square; a layer needn't be.
-                        copies.extend(regions.iter().filter(|r| r[0] == layer).map(|r| {
-                            let [x, y] = [r[1] >> level, r[2] >> level];
-                            let side = (r[3] >> level).max(1);
-                            TextureCopy {
-                                from: [x, y, i],
-                                to: [x, y, layer],
-                                size: [side.min(width - x), side.min(height - y), 1],
-                            }
-                        }));
+                        // The quads land where they do in the level; a
+                        // region is square, a layer needn't be.
+                        let copies = (regions.iter().filter(|r| r[0] == layer))
+                            .map(|r| {
+                                let [x, y] = [r[1] >> level, r[2] >> level];
+                                let side = (r[3] >> level).max(1);
+                                TextureCopy {
+                                    from: [x, y, 0],
+                                    to: [x, y, layer],
+                                    size: [side.min(width - x), side.min(height - y), 1],
+                                }
+                            })
+                            .collect();
+                        passes.push(Pass::CopyTextureLevel {
+                            source: (scratch, level - 1),
+                            destination: (chain.texture, level),
+                            copies,
+                        });
                     }
-                    passes.push(Pass::CopyTextureLevel {
-                        source: scratch,
-                        destination: chain.texture,
-                        level,
-                        copies,
-                    });
                 }
+                let draws = (chain.groups.len() * layers.len()) as u32;
                 Some((passes, draws))
             }
         }

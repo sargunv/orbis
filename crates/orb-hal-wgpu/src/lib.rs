@@ -2223,9 +2223,8 @@ impl Gpu for WgpuGpu {
                     }
                 }
                 Pass::CopyTextureLevel {
-                    source,
-                    destination,
-                    level,
+                    source: (source, source_level),
+                    destination: (destination, level),
                     copies,
                 } => {
                     let source = self.texture(*source);
@@ -2240,6 +2239,7 @@ impl Gpu for WgpuGpu {
                         });
                         encoder.copy_texture_to_texture(
                             wgpu::TexelCopyTextureInfo {
+                                mip_level: *source_level,
                                 origin: at(copy.from),
                                 ..source.as_image_copy()
                             },

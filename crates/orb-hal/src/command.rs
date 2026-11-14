@@ -14,13 +14,12 @@ pub enum Pass {
         destination: TextureId,
         copies: Vec<TextureCopy>,
     },
-    /// Copies boxes of `source`'s first mip level into `destination`'s
-    /// level `level`, another texture of its format: each box in texels of
-    /// those levels.
+    /// Copies boxes of one mip level of `source` into one of
+    /// `destination`, another texture of its format, each given as the
+    /// texture and the level: each box in texels of those levels.
     CopyTextureLevel {
-        source: TextureId,
-        destination: TextureId,
-        level: u32,
+        source: (TextureId, u32),
+        destination: (TextureId, u32),
         copies: Vec<TextureCopy>,
     },
     /// Copies `size` bytes of `source` from `source_offset` into
