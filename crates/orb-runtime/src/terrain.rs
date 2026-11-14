@@ -775,16 +775,15 @@ impl Terrain {
     /// the budget, into a place left free. Once none is blank, stale or
     /// out of place, each slot holds what a fresh map's does. Slots' sides
     /// follow their tiles' footprints in `view` on a target of its pixel
-    /// ratio ([`slot_shrink`]). On a globe, `globe` places a tile on the
-    /// sphere.
+    /// ratio ([`slot_shrink`]). Each tile comes with its index, and flat: on a
+    /// globe, the map places it on the sphere.
     pub(crate) fn plan(
         &mut self,
         tms: &TileMatrixSet,
         (view, pixel_ratio): (&View, f32),
         (layout, budget): (DrapeLayout, Option<(u64, usize)>),
         content: &dyn Fn(CoveredTile) -> Vec<u64>,
-        globe: &mut dyn FnMut(TileIndex) -> Option<orb_render::TerrainGlobe>,
-    ) -> (Vec<TerrainTile>, Vec<Redraw>, bool) {
+    ) -> (Vec<(TileIndex, TerrainTile)>, Vec<Redraw>, bool) {
         self.plans += 1;
         if layout.generation != self.generation {
             self.generation = layout.generation;
@@ -1006,15 +1005,19 @@ impl Terrain {
                     scale,
                 }
             });
-            out.push(TerrainTile {
-                origin: [origin.x as f32, origin.y as f32],
-                scale: (tms.tile_span(tile.index.z) / f64::from(orb_render::TERRAIN_EXTENT)) as f32,
-                dem,
-                slot: slot.index,
-                within: in_slot,
-                globe: globe(tile.index),
-                latitudes: orb_render::tile_latitudes(tile.index),
-            });
+            out.push((
+                tile.index,
+                TerrainTile {
+                    origin: [origin.x as f32, origin.y as f32],
+                    scale: (tms.tile_span(tile.index.z) / f64::from(orb_render::TERRAIN_EXTENT))
+                        as f32,
+                    dem,
+                    slot: slot.index,
+                    within: in_slot,
+                    globe: None,
+                    latitudes: orb_render::tile_latitudes(tile.index),
+                },
+            ));
         }
         (out, redraw, deferred)
     }
@@ -2160,13 +2163,7 @@ mod tests {
         let budget = Some((1, usize::MAX));
         let plan = |terrain: &mut Terrain| {
             terrain.release_slots();
-            terrain.plan(
-                &tms,
-                (&view, 1.0),
-                (layout, budget),
-                &|_| vec![1],
-                &mut |_| None,
-            )
+            terrain.plan(&tms, (&view, 1.0), (layout, budget), &|_| vec![1])
         };
         terrain.tiles = vec![covered(parent)];
         let (_, redraw, deferred) = plan(&mut terrain);
@@ -2178,10 +2175,10 @@ mod tests {
             assert_eq!((redraw.len(), deferred), (1, frame < 3), "frame {frame}");
             // The others show their quarter of the parent's slot.
             let standing = (tiles.iter())
-                .filter(|t| t.within.1 == 0.5)
+                .filter(|(_, t)| t.within.1 == 0.5)
                 .collect::<Vec<_>>();
             assert_eq!(standing.len(), 3 - frame, "frame {frame}");
-            assert!(standing.iter().all(|t| t.slot == parent_slot));
+            assert!(standing.iter().all(|(_, t)| t.slot == parent_slot));
         }
         assert!(terrain.retired.is_empty());
         // The tiles out of place move one a frame.
@@ -2228,13 +2225,7 @@ mod tests {
             .collect();
         let plan = |terrain: &mut Terrain, budget| {
             terrain.release_slots();
-            terrain.plan(
-                &tms,
-                (&view, 1.0),
-                (layout, budget),
-                &|_| vec![1],
-                &mut |_| None,
-            )
+            terrain.plan(&tms, (&view, 1.0), (layout, budget), &|_| vec![1])
         };
         // Without a budget (a still map), every slot whole in one frame.
         let mut still = terrain_with(&[]);
@@ -2248,7 +2239,7 @@ mod tests {
         let (tiles, first, deferred) = plan(&mut terrain, Some((u64::MAX, 1)));
         assert_eq!(tiles.len(), 4);
         assert!(
-            tiles.iter().all(|t| t.within == ([0.0; 2], 1.0)),
+            tiles.iter().all(|(_, t)| t.within == ([0.0; 2], 1.0)),
             "every tile shows its own slot"
         );
         assert_eq!((first.len(), deferred), (4, true));
@@ -2301,13 +2292,7 @@ mod tests {
         };
         let plan = |terrain: &mut Terrain, layout, budget| {
             terrain.release_slots();
-            terrain.plan(
-                &tms,
-                (&view, 1.0),
-                (layout, budget),
-                &|_| vec![1],
-                &mut |_| None,
-            )
+            terrain.plan(&tms, (&view, 1.0), (layout, budget), &|_| vec![1])
         };
         let mut terrain = terrain_with(&[]);
         terrain.tiles = (0..4)
@@ -2328,7 +2313,7 @@ mod tests {
             let (tiles, redraw, deferred) = plan(&mut terrain, stale, Some((u64::MAX, 1)));
             assert_eq!((redraw.len(), deferred), (1, frame < 3), "frame {frame}");
             assert!(
-                tiles.iter().all(|t| t.within == ([0.0; 2], 1.0)),
+                tiles.iter().all(|(_, t)| t.within == ([0.0; 2], 1.0)),
                 "every tile shows its own slot"
             );
             redrawn.extend(redraw.iter().map(|r| (r.slot, r.shrink)));

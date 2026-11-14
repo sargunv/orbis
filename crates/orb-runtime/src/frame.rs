@@ -657,21 +657,35 @@ impl Map {
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
-        (view, pixel_ratio): (&View, f32),
+        footprint: (&View, f32),
     ) -> Option<DrapePlan> {
-        let time = self.shader_time();
-        // A still map redraws every stale slot in its one frame.
-        let texels = (self.mode == RenderMode::Continuous).then_some(self.frame_budget.drape());
         // A refusal keeps the map awake for the next frame that plans the
         // drape, or that finds no terrain to plan it for.
         self.drape_refused = false;
-        let Some(style) = &mut self.style else {
-            return None;
-        };
-        let terrain = style.terrain.as_mut()?;
-        if !renderer.terrain_on() {
+        let terrain = self.style.as_ref().is_some_and(|s| s.terrain.is_some());
+        if !terrain || !renderer.terrain_on() {
             return None;
         }
+        let (plan, indices, mut tiles) = self.plan_drape_on_terrain(gpu, renderer, footprint)?;
+        let at = (footprint.0, &plan.surface);
+        self.place_terrain_on_globe(gpu, renderer, at, (&indices, &mut tiles));
+        renderer.set_terrain_tiles(gpu, &tiles);
+        Some(plan)
+    }
+
+    /// [`plan_drape`](Self::plan_drape) once the style's terrain is on,
+    /// with the terrain's tiles, flat, and their indices: the DEM module's.
+    fn plan_drape_on_terrain(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        (view, pixel_ratio): (&View, f32),
+    ) -> Option<(DrapePlan, Vec<TileIndex>, Vec<orb_render::TerrainTile>)> {
+        let time = self.shader_time();
+        // A still map redraws every stale slot in its one frame.
+        let texels = (self.mode == RenderMode::Continuous).then_some(self.frame_budget.drape());
+        let style = self.style.as_mut().expect("checked");
+        let terrain = style.terrain.as_mut().expect("checked");
         let worker = Arc::clone(&style.worker);
         let plan = worker.plan();
         terrain.release_slots();
@@ -808,21 +822,11 @@ impl Map {
                 })
                 .collect()
         };
-        let globe_warps = &mut self.globe_warps;
-        let mut globe = |tile: TileIndex| {
-            let target = view.globe()?.target;
-            let (warp, anchor) = globe_warps.warp(gpu, renderer, &surface, tile)?;
-            Some(orb_render::TerrainGlobe {
-                warp,
-                origin: (anchor - target).as_vec3().to_array(),
-                poles: orb_crs::sphere::poles(&surface, tile),
-            })
-        };
         let terrain = style.terrain.as_mut().expect("checked above");
         let slots = (layout, texels);
         let footprint = (view, pixel_ratio);
-        let (tiles, redraw, deferred) =
-            terrain.plan(&surface, footprint, slots, &content, &mut globe);
+        let (tiles, redraw, deferred) = terrain.plan(&surface, footprint, slots, &content);
+        let (indices, tiles): (Vec<TileIndex>, Vec<_>) = tiles.into_iter().unzip();
         let slots: Vec<(u32, u8, &[u8])> = (redraw.iter())
             .map(|r| (r.slot, r.shrink, &r.stacks[..]))
             .collect();
@@ -830,11 +834,10 @@ impl Map {
             self.drape_full(gpu, renderer, full);
             return None;
         }
-        renderer.set_terrain_tiles(gpu, &tiles);
         let reaches = (redraw.iter())
             .map(|r| crate::terrain::Reach::of(&surface, r.tile, (zoom, sphere, reach_px)))
             .collect();
-        Some(DrapePlan {
+        let plan = DrapePlan {
             surface,
             layout,
             redraw,
@@ -843,7 +846,33 @@ impl Map {
             zoom,
             sphere,
             reach_px,
-        })
+        };
+        Some((plan, indices, tiles))
+    }
+
+    /// Places the terrain's tiles on the globe, if the view is of one.
+    /// It's the globe module's work, so it stays out of the DEM module's
+    /// planning: only maps on the globe load that module.
+    fn place_terrain_on_globe(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        (view, surface): (&View, &TileMatrixSet),
+        (indices, tiles): (&[TileIndex], &mut [orb_render::TerrainTile]),
+    ) {
+        let Some(target) = view.globe().map(|g| g.target) else {
+            return;
+        };
+        for (&tile, terrain) in indices.iter().zip(tiles) {
+            terrain.globe =
+                self.globe_warps
+                    .warp(gpu, renderer, surface, tile)
+                    .map(|(warp, anchor)| orb_render::TerrainGlobe {
+                        warp,
+                        origin: (anchor - target).as_vec3().to_array(),
+                        poles: orb_crs::sphere::poles(surface, tile),
+                    });
+        }
     }
 
     /// Turns the terrain flat for a frame whose drape the pages can't

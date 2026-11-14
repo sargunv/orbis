@@ -140,6 +140,7 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_runtime::map::Map>::heights_layers",
             // The drape, once the style's terrain resolved.
             "orb_runtime::frame::DrapePlan",
+            "orb_runtime::map::Map>::plan_drape_on_terrain",
             "orb_render::Renderer>::terrain",
             "orb_render::Renderer>::set_terrain_tiles",
             "orb_render::Renderer>::request_terrain",
