@@ -105,8 +105,9 @@ pub(crate) fn inline_services() -> Services {
     }
 }
 
-/// A clock whose time never passes.
-struct StillClock;
+/// A clock whose time never passes, so that what a frame does never
+/// depends on how long the machine took over it.
+pub(crate) struct StillClock;
 
 impl orb_host::Clock for StillClock {
     fn now(&self) -> f64 {

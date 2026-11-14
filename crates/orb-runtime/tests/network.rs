@@ -173,7 +173,7 @@ fn offscreen(network: &Arc<Network>, style: &str, camera: CameraState) -> Offscr
         Arc::new(orb_host::jobs::Inline),
     );
     let services = Services {
-        clock: Arc::new(orb_host_native::NativeClock::default()),
+        clock: Arc::new(common::StillClock),
         image_decode: Arc::new(common::NativeImageDecode),
         images: Default::default(),
         jobs,
