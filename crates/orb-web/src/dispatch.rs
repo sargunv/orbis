@@ -16,11 +16,12 @@
 //! ancestor stands in, rather than take down a worker each time it is
 //! loaded.
 //!
-//! Tile loads take turns across the workers ([`Turns`], [`orb_host::tile_fetches`] at
-//! once): a load goes to its worker in its turn, which passes on once
-//! the worker says its fetch ended ([`JobReply::Fetched`]), so the
-//! map's order, which it sets again each frame, holds across them all and
-//! the browser's network queue stays short.
+//! Tile loads take turns across the workers ([`Turns`], the map's
+//! `tileFetches` at once, [`orb_host::TILE_FETCHES`] by default): a load
+//! goes to its worker in its turn, which passes on once the worker says
+//! its fetch ended ([`JobReply::Fetched`]), so the map's order, which it
+//! sets again each frame, holds across them all and the browser's network
+//! queue stays short.
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::collections::VecDeque;
@@ -110,9 +111,15 @@ fn load_key(request: &TileRequest) -> LoadKey {
 const QUARANTINE: u8 = 2;
 
 impl WorkerJobs {
-    /// Jobs on `workers` job workers, reached through `post`; glyph ranges
-    /// come from `fetch`.
-    pub(crate) fn new(workers: u32, post: Post, fetch: Arc<dyn Fetch>) -> Arc<Self> {
+    /// Jobs on `workers` job workers, reached through `post`, with
+    /// `fetches` tile fetches in flight at once; glyph ranges come from
+    /// `fetch`.
+    pub(crate) fn new(
+        workers: u32,
+        fetches: usize,
+        post: Post,
+        fetch: Arc<dyn Fetch>,
+    ) -> Arc<Self> {
         let workers = workers.max(1);
         Arc::new_cyclic(|me| Self {
             workers,
@@ -122,7 +129,7 @@ impl WorkerJobs {
                 lost: vec![false; workers as usize],
                 ..State::default()
             }),
-            turns: Turns::new(orb_host::tile_fetches()),
+            turns: Turns::new(fetches.max(1)),
             me: me.clone(),
         })
     }

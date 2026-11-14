@@ -38,6 +38,7 @@ export interface CoreOptions {
   stableLabels?: boolean;
   tileLod?: TileLod;
   missingTiles?: "parent" | "empty";
+  tileFetches?: number;
 }
 
 export interface HostCallbacks {

@@ -258,6 +258,11 @@ export interface MapOptions {
    * raster-dem tiles draw their ancestor either way, and other failures
    * (server errors, the network) do too, retried later. */
   missingTiles?: "parent" | "empty";
+  /** How many tile fetches the map keeps in flight at once, across its job
+   * workers: the rest wait their turn in the view's order, nearest its
+   * focus first, where a load the view leaves can be dropped before it
+   * starts. 16 by default. */
+  tileFetches?: number;
   /** How many job workers lay out tiles; by default
    * `clamp(hardwareConcurrency − 2, 1, 4)`. */
   jobWorkers?: number;

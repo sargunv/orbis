@@ -54,7 +54,12 @@ fn jobs(workers: u32) -> (Arc<WorkerJobs>, Posted) {
         }
     };
     (
-        WorkerJobs::new(workers, Box::new(post), Arc::new(NoFetch)),
+        WorkerJobs::new(
+            workers,
+            orb_host::TILE_FETCHES,
+            Box::new(post),
+            Arc::new(NoFetch),
+        ),
         posted,
     )
 }

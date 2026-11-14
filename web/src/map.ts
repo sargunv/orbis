@@ -1052,6 +1052,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
     stableLabels: options.stableLabels,
     tileLod: options.tileLod,
     missingTiles: options.missingTiles,
+    tileFetches: options.tileFetches,
   };
   const frame = document.createElement("div");
   Object.assign(frame.style, {

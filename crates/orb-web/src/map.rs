@@ -479,8 +479,10 @@ fn map_options(options: &JsValue) -> orb_runtime::MapOptions {
 /// `crossSourceCollisions`, `localIdeographFontFamily` (`false` draws the
 /// style's glyphs), `antialias` and `terrainSkirts`; and Orbis's
 /// `previews`, an array of preview names or `"all"`, `stableLabels`,
-/// `tileLod` (as [`OrbisMap::set_tile_lod`] takes it) and `missingTiles`,
-/// `"parent"` or `"empty"` ([`orb_runtime::MissingTiles`]).
+/// `tileLod` (as [`OrbisMap::set_tile_lod`] takes it), `missingTiles`,
+/// `"parent"` or `"empty"` ([`orb_runtime::MissingTiles`]), and
+/// `tileFetches`, the tile fetches in flight at once across the job
+/// workers ([`orb_host::TILE_FETCHES`] by default).
 #[wasm_bindgen(js_name = createMap)]
 #[allow(clippy::too_many_arguments)]
 pub async fn create_map(
@@ -495,7 +497,9 @@ pub async fn create_map(
     let size = (canvas.width(), canvas.height());
 
     let id = NEXT_MAP.with(|next| next.replace(next.get() + 1));
-    let worker_jobs = WorkerJobs::posting(id, job_workers, post);
+    let fetches = crate::js::get(&options, "tileFetches").as_f64();
+    let fetches = fetches.map_or(orb_host::TILE_FETCHES, |n| n as usize);
+    let worker_jobs = WorkerJobs::posting(id, job_workers, fetches, post);
     let jobs: Arc<dyn Jobs> = worker_jobs.clone();
     let lane: Arc<dyn orb_runtime::PlacementLane> = WorkerPlacement::new(id, place);
     WAKES.with(|wakes| wakes.borrow_mut().insert(id, on_wake));

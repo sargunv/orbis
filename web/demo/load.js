@@ -6,7 +6,8 @@
 // the page cross-origin isolated) or mln-rs's browser build (`mlnrs`, its
 // module at `?mlnrs=<url>`: `scripts/mlnrs-map.js`, which has no `tour`),
 // timed from this script's start to the engine's first `idle`. `?nonce=`
-// compiles Orbis's pipelines cold (`cold.js`). The title becomes `done {json}` with `performance.now()` at the script's
+// compiles Orbis's pipelines cold (`cold.js`); `?fetches=` sets Orbis's
+// `tileFetches`. The title becomes `done {json}` with `performance.now()` at the script's
 // start, the map's creation and idle
 // (and `performance.timeOrigin`, to place them against the harness's
 // request times), or `error <message>`. `window.tour()` then flies the map
@@ -39,11 +40,13 @@ const engines = {
     const { createMap } = await import("orbis");
     const busted = bustShaderCaches(params);
     const backend = params.get("backend") ?? undefined;
+    const fetches = Number(params.get("fetches")) || undefined;
     const map = await createMap({
       container,
       style,
       camera: { center: [lon, lat], zoom, bearing, pitch },
       ...(backend && { backend }),
+      ...(fetches && { tileFetches: fetches }),
     });
     // GPU bytes the map allocated, by its own count, and what WebGL 2's
     // CPU driver keeps in wasm memory (memory.mjs).

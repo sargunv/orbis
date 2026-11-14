@@ -45,8 +45,14 @@ pub(crate) fn forget(map: u32) {
 }
 
 impl WorkerJobs {
-    /// Map `map`'s jobs on `workers` job workers, reached through `post`.
-    pub(crate) fn posting(map: u32, workers: u32, post: js_sys::Function) -> Arc<Self> {
+    /// Map `map`'s jobs on `workers` job workers, reached through `post`,
+    /// with `fetches` tile fetches in flight at once.
+    pub(crate) fn posting(
+        map: u32,
+        workers: u32,
+        fetches: usize,
+        post: js_sys::Function,
+    ) -> Arc<Self> {
         POSTS.with(|posts| posts.borrow_mut().insert(map, post));
         let post = move |to: &[u32], message: &[u8]| {
             let message = bytes(message);
@@ -58,7 +64,7 @@ impl WorkerJobs {
                 }
             });
         };
-        Self::new(workers, Box::new(post), crate::regions::service())
+        Self::new(workers, fetches, Box::new(post), crate::regions::service())
     }
 
     /// Whether a job worker's reply carries a tile's data beside its

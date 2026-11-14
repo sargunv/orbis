@@ -59,7 +59,10 @@ pub trait Fetch: Send + Sync {
 /// Tile fetches a map keeps in flight at once, by default: they take
 /// turns in the map's fetch order, so that loads given up wait where
 /// they can be dropped and loads wait in the view's order rather than
-/// the network's. MapLibre Native keeps 20.
+/// the network's. MapLibre Native keeps 20. More hold up the view where
+/// many tiles load at once, even over HTTP/2: a globe wheel-zoomed in
+/// fetches more, aborts more and fills the view's centre later after
+/// each move with 64 in flight than with 16 (`pnpm session --fetches`).
 pub const TILE_FETCHES: usize = 16;
 
 /// [`TILE_FETCHES`], or what `ORB_FETCHES` sets: a stand-in for a host

@@ -9,8 +9,8 @@
 //   pnpm session [--session=manhattan|paris|alps|rotate|globe|nepal] [--browser=chromium|firefox|webkit]
 //     [--engines=orbis,gljs] [--runs=n] [--style=key|url] [--size=WxH]
 //     [--ratio=r] [--start=ms] [--input=ms] [--warm] [--driver] [--headed]
-//     [--worst=n] [--backend=webgpu|webgl2] [--pkgs=a,b] [--deep]
-//     [--terrain=0|1] [--gpu] [--dump=prefix]
+//     [--worst=n] [--backend=webgpu|webgl2] [--pkgs=a,b] [--fetches=a,b]
+//     [--latency=ms] [--deep] [--terrain=0|1] [--gpu] [--dump=prefix]
 //
 // Sessions: `manhattan` opens Liberty over Midtown at z13 and wheel-zooms
 // in to about z16 as the buildings load, tilts to 70, turns and drags
@@ -39,7 +39,11 @@
 // zoom). `--backend` draws Orbis with that
 // backend. `--pkgs` runs Orbis on each of these builds of web/pkg (whole
 // copies of it, each in its place alone) in turn, run by run, for A/B
-// runs in one session; GL JS runs once a run.
+// runs in one session; GL JS runs once a run. `--fetches` runs Orbis with
+// each of these `tileFetches` in turn, run by run, the same way (one
+// build, so a cap is measured alone). `--latency` (Chromium) adds that
+// many ms to every request's answer through DevTools' network
+// conditions, the job workers' tile fetches too: a phone's network.
 // In Chromium the report has the GPU process's main thread over the
 // moves (`gpuProcess`: busy time, tasks over 50 ms, the longest), and with
 // `--deep` (GPU service tracing) what its tasks and its slow ones did, its
@@ -114,6 +118,8 @@ const wheelScale = browserName === "firefox" ? ratio : 1;
 const dump = args.dump;
 const deep = !!args.deep;
 const pkgs = args.pkgs ? args.pkgs.split(",").map((p) => resolve(p)) : [null];
+const fetchCaps = args.fetches ? args.fetches.split(",").map(Number) : [null];
+const latency = Number(args.latency ?? 0);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const alps = JSON.parse(
@@ -519,7 +525,7 @@ async function launch() {
 }
 
 /** One session in `engine` on a fresh browser: the run's report. */
-async function run(server, engine) {
+async function run(server, engine, fetches) {
   engineNow = engine;
   const browser = await launch();
   try {
@@ -548,7 +554,18 @@ async function run(server, engine) {
         ...(args.terrain && { terrain: args.terrain }),
         ...(engine === "orbis" && args.backend && { backend: args.backend }),
         ...(nonce && { nonce }),
+        ...(engine === "orbis" && fetches && { fetches }),
       });
+    if (latency && browserName === "chromium") {
+      const network = await context.newCDPSession(page);
+      await network.send("Network.enable");
+      await network.send("Network.emulateNetworkConditions", {
+        offline: false,
+        latency,
+        downloadThroughput: -1,
+        uploadThroughput: -1,
+      });
+    }
     // WebGPU's calls on the page timed and tallied, for a map drawn there:
     // what each frame spent in the browser's WebGPU, by call.
     await page.addInitScript(() => {
@@ -1169,8 +1186,11 @@ async function serve(pkg) {
   }
 }
 
+const variants = pkgs.flatMap((pkg) =>
+  fetchCaps.map((fetches) => [pkg, fetches]),
+);
 for (let r = 0; r < runs; r++) {
-  for (const [k, pkg] of pkgs.entries()) {
+  for (const [k, [pkg, fetches]] of variants.entries()) {
     const server = await serve(pkg);
     try {
       // The engines' order turns each run, so neither always goes first;
@@ -1179,8 +1199,12 @@ for (let r = 0; r < runs; r++) {
         (e) => e === "orbis" || k === 0,
       );
       for (const engine of these) {
-        const report = await run(server, engine);
-        console.log(JSON.stringify({ run: r, ...(pkg && { pkg }), ...report }));
+        const report = await run(server, engine, fetches);
+        const variant = engine === "orbis" && {
+          ...(pkg && { pkg }),
+          ...(fetches && { fetches }),
+        };
+        console.log(JSON.stringify({ run: r, ...variant, ...report }));
       }
     } finally {
       server.close();
