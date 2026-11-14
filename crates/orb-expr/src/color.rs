@@ -553,7 +553,7 @@ mod tests {
 
     #[test]
     fn wraps_huge_hue_angles_before_converting_them() {
-        assert_eq!(rgba("oklch(0.6 0.1 1e306turn)"), rgba("oklch(0.6 0.1 0)"),);
+        assert_eq!(rgba("oklch(0.6 0.1 1e306turn)"), rgba("oklch(0.6 0.1 0)"));
     }
 
     #[test]

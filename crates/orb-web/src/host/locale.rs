@@ -11,10 +11,20 @@ use wasm_bindgen::{JsCast, JsValue};
 
 pub(crate) struct BrowserLocale;
 
+/// `number-format`'s options, as the cache's key: the locale, currency and
+/// unit, and the fraction digits.
+type FormatKey = ([Option<String>; 3], [Option<f64>; 2]);
+
+// The last of each `Intl` object made: an expression asks for one per
+// feature, and making one costs a hundred times what using it does (about
+// 20 µs against 0.2 µs in V8).
 thread_local! {
-    /// The last collator's locale and sensitivity, and its `compare`: a
-    /// filter compares every feature with one collator.
+    /// The last requested locale and what it resolved to.
+    static RESOLVED: RefCell<Option<(Option<String>, String)>> = const { RefCell::new(None) };
+    /// The last collator's locale and sensitivity, and its `compare`.
     static COLLATOR: RefCell<Option<(String, &'static str, Function)>> = const { RefCell::new(None) };
+    /// The last number format's options, and its `format`.
+    static FORMAT: RefCell<Option<(FormatKey, Function)>> = const { RefCell::new(None) };
 }
 
 /// `new Intl[class](locale ?? [], options)`, or the message it throws.
@@ -51,11 +61,20 @@ fn method(instance: &JsValue, name: &str) -> Option<Function> {
 
 impl orb_expr::HostLocale for BrowserLocale {
     fn resolved_locale(&self, requested: Option<&str>) -> String {
-        construct("Collator", requested, &[])
-            .ok()
-            .and_then(|c| method(&c, "resolvedOptions")?.call0(&c).ok())
-            .and_then(|o| Reflect::get(&o, &"locale".into()).ok()?.as_string())
-            .unwrap_or_else(|| "en-US".into())
+        RESOLVED.with_borrow_mut(|cached| {
+            if let Some((r, resolved)) = cached
+                && r.as_deref() == requested
+            {
+                return resolved.clone();
+            }
+            let resolved = construct("Collator", requested, &[])
+                .ok()
+                .and_then(|c| method(&c, "resolvedOptions")?.call0(&c).ok())
+                .and_then(|o| Reflect::get(&o, &"locale".into()).ok()?.as_string())
+                .unwrap_or_else(|| "en-US".into());
+            *cached = Some((requested.map(str::to_owned), resolved.clone()));
+            resolved
+        })
     }
 
     fn compare(&self, lhs: &str, rhs: &str, c: &Collator) -> Ordering {
@@ -93,30 +112,44 @@ impl orb_expr::HostLocale for BrowserLocale {
     }
 
     fn format_number(&self, number: f64, o: &NumberFormat<'_>) -> Result<String, String> {
-        let style = if o.currency.is_some() {
-            "currency"
-        } else if o.unit.is_some() {
-            "unit"
-        } else {
-            "decimal"
-        };
-        let format = construct(
-            "NumberFormat",
-            o.locale,
-            &[
-                ("style", style.into()),
-                ("currency", o.currency.into()),
-                ("unit", o.unit.into()),
-                ("minimumFractionDigits", o.min_fraction_digits.into()),
-                ("maximumFractionDigits", o.max_fraction_digits.into()),
-            ],
-        )?;
-        method(&format, "format")
-            .and_then(|f| {
-                f.call1(&JsValue::UNDEFINED, &number.into())
-                    .ok()?
-                    .as_string()
-            })
+        let strings = [o.locale, o.currency, o.unit];
+        let digits = [o.min_fraction_digits, o.max_fraction_digits];
+        let format = FORMAT.with_borrow_mut(|cached| {
+            if let Some(((s, d), format)) = cached
+                && s.iter().map(Option::as_deref).eq(strings)
+                && *d == digits
+            {
+                return Ok(format.clone());
+            }
+            let style = if o.currency.is_some() {
+                "currency"
+            } else if o.unit.is_some() {
+                "unit"
+            } else {
+                "decimal"
+            };
+            let format = construct(
+                "NumberFormat",
+                o.locale,
+                &[
+                    ("style", style.into()),
+                    ("currency", o.currency.into()),
+                    ("unit", o.unit.into()),
+                    ("minimumFractionDigits", o.min_fraction_digits.into()),
+                    ("maximumFractionDigits", o.max_fraction_digits.into()),
+                ],
+            )?;
+            let format = method(&format, "format").ok_or_else(String::new)?;
+            *cached = Some((
+                (strings.map(|s| s.map(str::to_owned)), digits),
+                format.clone(),
+            ));
+            Ok::<_, String>(format)
+        })?;
+        format
+            .call1(&JsValue::UNDEFINED, &number.into())
+            .ok()
+            .and_then(|s| s.as_string())
             .ok_or_else(String::new)
     }
 }
