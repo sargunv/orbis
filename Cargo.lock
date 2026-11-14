@@ -237,7 +237,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
  "wl-clipboard-rs",
  "x11rb",
 ]
@@ -1140,7 +1140,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2253,7 +2253,7 @@ dependencies = [
 [[package]]
 name = "naga"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#96a40ec3d92b942ba475fe059d3a9baec88d7957"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#bb385db540091b0da98b9006f12df63955fe97f6"
 dependencies = [
  "arrayvec",
  "bit-set",
@@ -2279,7 +2279,7 @@ dependencies = [
 [[package]]
 name = "naga-types"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#96a40ec3d92b942ba475fe059d3a9baec88d7957"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#bb385db540091b0da98b9006f12df63955fe97f6"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
@@ -3132,7 +3132,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3664,7 +3664,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3721,7 +3721,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4180,7 +4180,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.6",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4840,7 +4840,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 [[package]]
 name = "wgpu"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#96a40ec3d92b942ba475fe059d3a9baec88d7957"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#bb385db540091b0da98b9006f12df63955fe97f6"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.2",
@@ -4869,7 +4869,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#96a40ec3d92b942ba475fe059d3a9baec88d7957"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#bb385db540091b0da98b9006f12df63955fe97f6"
 dependencies = [
  "arrayvec",
  "bit-set",
@@ -4903,7 +4903,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-apple"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#96a40ec3d92b942ba475fe059d3a9baec88d7957"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#bb385db540091b0da98b9006f12df63955fe97f6"
 dependencies = [
  "wgpu-hal",
 ]
@@ -4911,7 +4911,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-emscripten"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#96a40ec3d92b942ba475fe059d3a9baec88d7957"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#bb385db540091b0da98b9006f12df63955fe97f6"
 dependencies = [
  "wgpu-hal",
 ]
@@ -4919,7 +4919,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-wasm"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#96a40ec3d92b942ba475fe059d3a9baec88d7957"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#bb385db540091b0da98b9006f12df63955fe97f6"
 dependencies = [
  "wgpu-hal",
 ]
@@ -4927,7 +4927,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-windows-linux-android"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#96a40ec3d92b942ba475fe059d3a9baec88d7957"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#bb385db540091b0da98b9006f12df63955fe97f6"
 dependencies = [
  "wgpu-hal",
 ]
@@ -4935,7 +4935,7 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#96a40ec3d92b942ba475fe059d3a9baec88d7957"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#bb385db540091b0da98b9006f12df63955fe97f6"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -4990,7 +4990,7 @@ dependencies = [
 [[package]]
 name = "wgpu-naga-bridge"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#96a40ec3d92b942ba475fe059d3a9baec88d7957"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#bb385db540091b0da98b9006f12df63955fe97f6"
 dependencies = [
  "naga",
  "wgpu-types",
@@ -4999,7 +4999,7 @@ dependencies = [
 [[package]]
 name = "wgpu-types"
 version = "30.0.1"
-source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#96a40ec3d92b942ba475fe059d3a9baec88d7957"
+source = "git+https://github.com/sargunv/wgpu?branch=dx12-render-passes#bb385db540091b0da98b9006f12df63955fe97f6"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
@@ -5037,7 +5037,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -167,7 +167,12 @@ orb-wire-derive = { path = "crates/orb-wire-derive" }
 # passthrough GLSL that names its bindings in comment lines (GLSL ES 3.00
 # can't), with naga's translation behind wgpu-hal's `gles-naga` feature:
 # core-gl.wasm compiles orb-shaders' build-time GLSL and leaves naga's
-# WGSL front end, validator and GLSL writer out (#140).
+# WGSL front end, validator and GLSL writer out (#140). And GLES detaching
+# a depth-stencil renderbuffer as a renderbuffer when a pass starts:
+# Android's emulated GLES kept its stencil half through a texture detach,
+# so the depth-only pass after it was incomplete (#202). And a GLES pipeline
+# layout taking up to 32 texture units across its stages, each stage still
+# at most 16: the scene's tables on WebGL 2 are a texture each.
 # Every crate of wgpu's workspace comes from the fork, since its path
 # dependencies resolve there. #35 tracks sending it upstream.
 naga = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }

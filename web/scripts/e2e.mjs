@@ -116,8 +116,9 @@
 // - `android`: the map app in Chrome on this worktree's Android emulator
 //   (`scripts/android-serial`, booted on demand; `--android=physical` the
 //   phone assigned to it): the Tokyo extract, the Alps terrain style and
-//   the Globe, offline, on WebGPU and WebGL 2, each reaching idle, or
-//   failing with what the map was doing.
+//   the Globe, offline, on WebGPU and WebGL 2, each reaching idle with no
+//   call GL rejected (the emulator's Chrome logs them), or failing with
+//   what the map was doing.
 //
 //   pnpm e2e [--browsers=chromium,firefox,webkit] [--only=scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,compare,gestures,readback,boot,split,regions,android,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
@@ -3973,25 +3974,25 @@ async function android(_browser, server) {
           [],
           `${entry} on ${backend}`,
         );
-        // No draw samples the texture it draws into, whatever the levels:
-        // WebGL 2's drawn mip levels did, and left the drape's coarser
-        // levels blank. Its incomplete framebuffers are still open.
-        assert.deepEqual(
-          rejected.filter((m) => /Source and destination textures/.test(m)),
-          [],
-          `${entry} on ${backend}: draws into the texture they sample`,
-        );
-        console.log(
-          `android: ${entry} on ${drawn.backend}${backend === "auto" ? " (picked)" : ""} idle in ${((Date.now() - started) / 1000).toFixed(1)} s, ${drawn.memory} MiB of GPU memory`,
-        );
-        // What else GL rejected, each kind once with its count.
+        // GL rejects no call. WebGL 2's drawn mip levels sampled the
+        // texture they drew into, which left the drape's coarser levels
+        // blank; and a depth-only pass after a depth-stencil one kept the
+        // stencil half attached (wgpu's framebuffer reset detached it as a
+        // texture, which the emulator's GL ignores for a renderbuffer), so
+        // the terrain's label depth was never drawn.
         const kinds = new Map();
         for (const m of rejected) {
           const kind = m.replace(/^\[[^\]]*\]\s*/, "");
           kinds.set(kind, (kinds.get(kind) ?? 0) + 1);
         }
-        for (const [kind, n] of kinds)
-          console.log(`  GL rejected ${n}×: ${kind}`);
+        assert.deepEqual(
+          [...kinds].map(([kind, n]) => `${n}× ${kind}`),
+          [],
+          `${entry} on ${backend}: GL rejected calls`,
+        );
+        console.log(
+          `android: ${entry} on ${drawn.backend}${backend === "auto" ? " (picked)" : ""} idle in ${((Date.now() - started) / 1000).toFixed(1)} s, ${drawn.memory} MiB of GPU memory`,
+        );
       } finally {
         await close();
       }
