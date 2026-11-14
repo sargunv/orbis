@@ -139,6 +139,10 @@ pub(crate) struct Redraw {
 /// ([`shown_px`]).
 const FOOTPRINT_CELLS: usize = 8;
 
+/// Halvings more of a slot's side that a tile with nothing to show draws
+/// at past the frame's drape budget ([`Terrain::plan`]).
+const COARSE: u8 = 3;
+
 /// How many times terrain tile `tile`'s drape slots halve their page's
 /// side in `view` on a target of `pixel_ratio` physical pixels a logical
 /// one: as many as leave √2 texels a logical pixel, or a texel a physical
@@ -757,7 +761,9 @@ impl Terrain {
     /// the zoom crosses the drape's steps or how many tiles a cover
     /// splits. Blank tiles go first: a tile the cover split shows its part
     /// of its ancestor's slot, retired, until drawn; one with no such
-    /// ancestor (new ground, or a merge) is drawn whatever the budget.
+    /// ancestor (new ground, or a merge) is drawn whatever the budget, but
+    /// past it at [`COARSE`] halvings more of its side, then whole as a
+    /// stale one.
     /// Then stale ones, the longest stale first, each drawn as it was
     /// until a frame redraws it. Of those alike, the ones that show
     /// largest go first, then those nearest the view's centre. Each tile
@@ -860,19 +866,27 @@ impl Terrain {
         let (mut blocked, mut moved) = (None, false);
         // The slots the frame redraws.
         let mut slots = 0;
-        for want in wants {
+        for mut want in wants {
             let tile = self.tiles[want.place as usize];
             let forced = matches!(want.need, Need::Blank(None));
-            if !forced && texels.is_some_and(|t| spent >= t) {
-                deferred = true;
-                continue;
-            }
             // Each slot a frame redraws is a pass a stack, every draped
             // layer's state set again, so a continuous map's frame redraws
             // few: what else is due waits for a frame to come.
-            if !forced && slots >= budget.map_or(usize::MAX, |b| b.1) {
+            let over =
+                texels.is_some_and(|t| spent >= t) || slots >= budget.map_or(usize::MAX, |b| b.1);
+            if !forced && over {
                 deferred = true;
                 continue;
+            }
+            // A tile with nothing to show draws whatever the budget, but
+            // past it coarse, at an eighth of its side: new ground's every
+            // slot drawn whole in one frame took one GPU submission of
+            // 300-700 ms on a phone (#203). Its slots are then stale, as
+            // its side differs from the one it shows at, and redraw whole
+            // within the frames' budgets.
+            if forced && over {
+                want.shrink = (want.shrink + COARSE).min(orb_render::MAX_SHRINK);
+                deferred = true;
             }
             let (index, stacks) = match want.need {
                 Need::Stale(stacks) => (self.slots[&tile].index, stacks),
@@ -2168,6 +2182,87 @@ mod tests {
         }
         let (_, redraw, deferred) = plan(&mut terrain);
         assert_eq!((redraw.len(), deferred), (0, false));
+    }
+
+    /// New ground draws every tile of its cover in its first frame, but
+    /// those past the frame's budget at an eighth of their side, so that
+    /// no frame's drape costs more than its budget and one slot; then the
+    /// coarse ones redraw whole within the budget, one a frame here, and
+    /// end as a frame without a budget draws them.
+    #[test]
+    fn new_ground_draws_coarse_past_the_budget_then_whole() {
+        let tms = tms();
+        let mercator = *tms.projection();
+        let camera =
+            orb_camera::CameraState::new(orb_crs::Geodetic::new(7.75, 46.02), 11.5, &mercator);
+        let viewport = orb_camera::Viewport {
+            width: 1024.0,
+            height: 768.0,
+        };
+        let view = View::new(&camera, viewport, &orb_crs::Surface::plane(mercator));
+        let layout = DrapeLayout {
+            stacks: [1, 0],
+            side: 8,
+            tile_slots: 8,
+            generation: 1,
+        };
+        let covered = |col, row| CoveredTile {
+            index: TileIndex::new(12, col, row),
+            wrap: 0,
+        };
+        let cover: Vec<CoveredTile> = (0..4)
+            .map(|i| covered(2134 + i % 2, 1454 + i / 2))
+            .collect();
+        let plan = |terrain: &mut Terrain, budget| {
+            terrain.release_slots();
+            terrain.plan(
+                &tms,
+                (&view, 1.0),
+                (layout, budget),
+                &|_| vec![1],
+                &mut |_| None,
+            )
+        };
+        // Without a budget (a still map), every slot whole in one frame.
+        let mut still = terrain_with(&[]);
+        still.tiles = cover.clone();
+        let (_, whole, deferred) = plan(&mut still, None);
+        assert_eq!((whole.len(), deferred), (4, false));
+        let whole: Vec<(u32, u8)> = whole.iter().map(|r| (r.slot, r.shrink)).collect();
+        // A slot a frame.
+        let mut terrain = terrain_with(&[]);
+        terrain.tiles = cover;
+        let (tiles, first, deferred) = plan(&mut terrain, Some((u64::MAX, 1)));
+        assert_eq!(tiles.len(), 4);
+        assert!(
+            tiles.iter().all(|t| t.within == ([0.0; 2], 1.0)),
+            "every tile shows its own slot"
+        );
+        assert_eq!((first.len(), deferred), (4, true));
+        let coarse = first.iter().filter(|r| r.shrink > whole[0].1).count();
+        assert_eq!(
+            coarse, 3,
+            "the first slot whole, the rest coarse: {first:?}"
+        );
+        for r in first.iter().filter(|r| r.shrink > whole[0].1) {
+            assert_eq!(r.shrink, (whole[0].1 + COARSE).min(orb_render::MAX_SHRINK));
+        }
+        for frame in 0..3 {
+            let (_, redraw, deferred) = plan(&mut terrain, Some((u64::MAX, 1)));
+            assert_eq!((redraw.len(), deferred), (1, frame < 2), "frame {frame}");
+            assert_eq!(redraw[0].stacks, vec![0]);
+        }
+        let (_, redraw, deferred) = plan(&mut terrain, Some((u64::MAX, 1)));
+        assert_eq!((redraw.len(), deferred), (0, false));
+        let mut held: Vec<(u32, u8)> = terrain
+            .slots
+            .values()
+            .map(|s| (s.index, s.shrink))
+            .collect();
+        held.sort_unstable();
+        let mut whole = whole;
+        whole.sort_unstable();
+        assert_eq!(held, whole);
     }
 
     /// Heights the app writes over resident DEM tiles cull the cover as a

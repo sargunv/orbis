@@ -1239,11 +1239,14 @@ impl Terrain {
             .collect()
     }
 
-    /// Makes every drape slot blank, as a new atlas does: the map draws
-    /// them all again (draped layers whose pipelines arrived since).
+    /// Makes every drape slot blank from the next frame's plan, as a new
+    /// atlas does: the map draws them all again (draped layers whose
+    /// pipelines arrived since). The slots this frame redraws still draw:
+    /// it comes between the plan and the passes when pipelines arrive, and
+    /// a slot the plan moved to a texture of another side holds nothing
+    /// there until drawn, which showed as a hole in the ground for a frame.
     pub(crate) fn redraw_all(&mut self) {
         self.layout_state.generation += 1;
-        self.pending.clear();
     }
 
     /// Makes the pipeline terrain layers of `kind` draw with, unless it is
@@ -1335,6 +1338,7 @@ impl Terrain {
             // draws them all again once terrain can.
             if !self.pending.is_empty() {
                 self.redraw_all();
+                self.pending.clear();
             }
             return drawn;
         }
