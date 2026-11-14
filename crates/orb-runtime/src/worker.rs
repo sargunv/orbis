@@ -160,10 +160,11 @@ pub enum Built {
     /// URLs (glyph PBF ranges, word data) to fetch and add with
     /// `TileWorker::add_resource`; then build again.
     Fetch(Vec<String>),
-    /// The bidirectional algorithm, for labels that read right to left:
-    /// load it into this context ([`Modules::BIDI`](crate::modules::Modules::BIDI)),
-    /// then build again.
-    Bidi,
+    /// The bidirectional algorithm, for labels that read right to left,
+    /// and any URLs to fetch beside it: load it into this context
+    /// ([`Modules::BIDI`](crate::modules::Modules::BIDI)), add them, then
+    /// build again.
+    Bidi(Vec<String>),
 }
 
 impl TileWorker {
@@ -725,8 +726,8 @@ impl TileWorker {
                 build.warnings.splice(0..0, warnings);
                 Ok(Built::Tile(build))
             }
-            Err(tile::Missing::Fetch(urls)) => Ok(Built::Fetch(urls)),
-            Err(tile::Missing::Bidi) => Ok(Built::Bidi),
+            Err(tile::Missing { urls, bidi: false }) => Ok(Built::Fetch(urls)),
+            Err(tile::Missing { urls, bidi: true }) => Ok(Built::Bidi(urls)),
         }
     }
 
@@ -923,7 +924,7 @@ impl Built {
         match self {
             Self::Tile(build) => build,
             Self::Fetch(urls) => panic!("the tile needs resources: {urls:?}"),
-            Self::Bidi => panic!("the tile needs the bidirectional algorithm"),
+            Self::Bidi(_) => panic!("the tile needs the bidirectional algorithm"),
         }
     }
 }
@@ -1816,15 +1817,25 @@ pub(crate) mod tests {
         assert!(!gets.iter().any(|u| u.contains("/glyphs/")), "{gets:?}");
     }
 
-    /// A tile whose labels read right to left lays them out only once its
-    /// job host has loaded the bidirectional algorithm, and then as a host
-    /// that had it all along does; plain labels never ask for it.
+    /// A tile whose labels read right to left loads the bidirectional
+    /// algorithm and its glyphs at once, lays the labels out only once
+    /// both are in, and then as a host that had the algorithm all along
+    /// does; plain labels never ask for it.
     #[test]
     fn right_to_left_labels_wait_for_bidi() {
         type Asked = Vec<(
             crate::modules::Modules,
             Box<dyn FnOnce(Result<(), String>) + Send>,
         )>;
+        struct Run {
+            tile: Vec<u8>,
+            /// The modules asked for before any load answered.
+            modules: Vec<crate::modules::Modules>,
+            /// Whether glyphs were fetched before any load answered.
+            glyphs: bool,
+            /// Laid out with its glyphs in but before its module.
+            early: bool,
+        }
         let laid_out = |style: &str, loader: bool| {
             let fetch = Arc::new(AssetFetch::default());
             let host = crate::JobHost::new(fetch.clone(), Arc::new(orb_host::jobs::Inline));
@@ -1842,23 +1853,35 @@ pub(crate) mod tests {
                 None,
                 Box::new(move |r| tx.send(r).unwrap()),
             );
-            let waited = rx.try_iter().next().is_none() && fetch.held.lock().unwrap().is_empty();
-            for (modules, done) in std::mem::take(&mut *asked.lock().unwrap()) {
-                assert_eq!(modules, crate::modules::Modules::BIDI);
+            let asked = std::mem::take(&mut *asked.lock().unwrap());
+            let modules = asked.iter().map(|(modules, _)| *modules).collect();
+            let glyphs = !fetch.held.lock().unwrap().is_empty();
+            fetch.release();
+            let before = rx.try_iter().next();
+            let early = before.is_some();
+            for (_, done) in asked {
                 done(Ok(()));
             }
-            fetch.release();
-            let Some(Ok(crate::Loaded::Tile(tile))) = rx.try_iter().next() else {
+            let Some(Ok(crate::Loaded::Tile(tile))) = before.or_else(|| rx.try_iter().next())
+            else {
                 panic!("laid out")
             };
-            (orb_wire::encode(&TileResult::from(tile)), waited)
+            Run {
+                tile: orb_wire::encode(&TileResult::from(tile)),
+                modules,
+                glyphs,
+                early,
+            }
         };
         let hebrew = SYMBOLS.replace(r#""{name_en}""#, r#""שלום""#);
-        let (with_loader, waited) = laid_out(&hebrew, true);
-        assert!(waited, "the labels wait for bidi before their glyphs");
-        assert_eq!(with_loader, laid_out(&hebrew, false).0);
-        let (_, waited) = laid_out(SYMBOLS, true);
-        assert!(!waited, "plain labels ask for glyphs at once");
+        let run = laid_out(&hebrew, true);
+        assert_eq!(run.modules, [crate::modules::Modules::BIDI]);
+        assert!(run.glyphs, "the glyphs load beside the module");
+        assert!(!run.early, "the labels wait for the module");
+        assert_eq!(run.tile, laid_out(&hebrew, false).tile);
+        let plain = laid_out(SYMBOLS, true);
+        assert!(plain.modules.is_empty(), "plain labels never ask for it");
+        assert!(plain.glyphs);
     }
 
     /// A tile whose bytes arrive after its style was replaced isn't built:

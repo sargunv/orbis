@@ -67,14 +67,15 @@ pub(crate) struct Symbols<'a> {
     pub(crate) bidi: bool,
 }
 
-/// What a tile's labels need before they lay out.
-#[derive(Debug, PartialEq)]
-pub(crate) enum Missing {
+/// What a tile's labels need before they lay out, all of it at once, so
+/// that it loads together.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Missing {
     /// Glyph ranges and word data to fetch, by URL.
-    Fetch(Vec<String>),
+    pub(crate) urls: Vec<String>,
     /// The bidirectional algorithm's module, for labels that read right
     /// to left.
-    Bidi,
+    pub(crate) bidi: bool,
 }
 
 /// Which of a source's nodes to lay out.
@@ -570,7 +571,7 @@ fn build_symbols<'f>(
     };
     let source_def = plan.source_def(source);
     let mut prepared = Vec::new();
-    let mut missing: Vec<String> = Vec::new();
+    let mut missing = Missing::default();
     for node in &plan.nodes {
         if node.source != source
             || node.family != Family::SymbolIcon
@@ -618,27 +619,26 @@ fn build_symbols<'f>(
             images,
             (tile, ancestor),
         );
-        // No label runs the bidirectional algorithm before its module is in.
-        if !symbols.bidi
-            && p.features
-                .iter()
-                .any(|f| f.text.as_ref().is_some_and(orb_text::Label::needs_bidi))
-        {
-            return Err(Missing::Bidi);
-        }
+        // No label runs the bidirectional algorithm before its module is
+        // in; it loads beside the glyphs.
+        missing.bidi = missing.bidi
+            || !symbols.bidi
+                && p.features
+                    .iter()
+                    .any(|f| f.text.as_ref().is_some_and(orb_text::Label::needs_bidi));
         let faces = crate::glyphs::Fonts {
             declared: &plan.style.font_faces,
             fallback: symbols.fallback_fonts,
         };
         for url in symbols.glyphs.missing(&p.requests, template, policy, faces) {
-            if !missing.contains(&url) {
-                missing.push(url);
+            if !missing.urls.contains(&url) {
+                missing.urls.push(url);
             }
         }
         prepared.push((node, labelled, ancestor, features, p));
     }
-    if !missing.is_empty() {
-        return Err(Missing::Fetch(missing));
+    if missing != Missing::default() {
+        return Err(missing);
     }
     let mut built = Vec::with_capacity(prepared.len());
     for (node, layer, ancestor, features, mut p) in prepared {

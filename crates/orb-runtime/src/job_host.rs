@@ -345,7 +345,7 @@ impl GlyphLoads {
             Ok(Built::Tile(build)) => return done(Ok(Loaded::Tile(build))),
             Err(e) => return done(Err(e)),
             Ok(Built::Fetch(urls)) => (urls, false),
-            Ok(Built::Bidi) => (Vec::new(), true),
+            Ok(Built::Bidi(urls)) => (urls, true),
         };
         let style = request.style;
         // Labels never hold up a whole tile's other layers: those go now,
