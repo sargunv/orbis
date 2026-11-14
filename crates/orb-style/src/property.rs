@@ -195,7 +195,7 @@ pub trait Enum: Copy + Sized + 'static {
 macro_rules! v8_enum {
     ($(#[$meta:meta])* $name:ident { $($variant:ident = $text:literal),+ $(,)? }) => {
         $(#[$meta])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, orb_wire::Wire)]
         pub enum $name {
             $($variant),+
         }

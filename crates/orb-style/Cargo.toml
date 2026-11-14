@@ -7,7 +7,7 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
-serde.workspace = true
+orb-wire.workspace = true
 orb-crs.workspace = true
 orb-expr.workspace = true
 rustc-hash.workspace = true

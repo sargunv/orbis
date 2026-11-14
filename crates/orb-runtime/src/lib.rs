@@ -56,7 +56,6 @@ mod tile;
 mod transitions;
 mod turns;
 mod video;
-pub mod wire;
 mod worker;
 
 pub use events::{MapEvent, Progress};

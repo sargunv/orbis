@@ -1,6 +1,6 @@
 //! Which job worker each of the map's requests goes to, and what happens
 //! when one is lost: plain Rust over a [`Post`] of
-//! [`orb_runtime::wire`]'s bytes, so its tests run natively. `jobs`
+//! [`orb_wire`]'s bytes, so its tests run natively. `jobs`
 //! carries the messages between the page and the workers.
 //!
 //! A tile goes to the job worker with the fewest requests in flight (an
@@ -29,11 +29,11 @@ use std::sync::{Arc, Mutex, Weak};
 
 use orb_crs::TileIndex;
 use orb_host::Fetch;
-use orb_runtime::wire;
 use orb_runtime::{
     FetchCounts, GlyphRaster, JobReply, JobRequest, Jobs, RasterDone, SpriteIcons, StyleUpdate,
     TileDone, TileOutcome, TileRequest, TileResult, TileWorker, Turn, Turns,
 };
+use orb_wire as wire;
 
 /// Posts a message, a [`JobRequest`] in [`wire`]'s bytes, to each of the
 /// job workers named.

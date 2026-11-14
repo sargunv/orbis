@@ -381,7 +381,7 @@ impl GlyphCatalog {
 /// A raster job: bitmaps of some glyphs of one unit, a
 /// glyph PBF range or a font stack's local glyphs. The scene asks each
 /// unit's owner worker, once per glyph.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, orb_wire::Wire)]
 pub enum GlyphRaster {
     Pbf {
         url: String,
@@ -403,7 +403,7 @@ pub enum GlyphRaster {
 
 /// One glyph's SDF bitmap, border included; `index` is its position in
 /// the job's code points or texts.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, orb_wire::Wire)]
 pub struct GlyphBitmap {
     pub index: u32,
     pub size: [u32; 2],
@@ -605,7 +605,7 @@ mod tests {
         let a = &bitmaps[0];
         assert_eq!(a.sdf.len() as u32, a.size[0] * a.size[1]);
         assert_eq!(
-            crate::wire::decode::<Vec<GlyphBitmap>>(&crate::wire::encode(&bitmaps)).unwrap(),
+            orb_wire::decode::<Vec<GlyphBitmap>>(&orb_wire::encode(&bitmaps)).unwrap(),
             bitmaps
         );
     }

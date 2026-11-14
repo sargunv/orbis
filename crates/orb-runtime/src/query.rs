@@ -92,7 +92,7 @@ impl<'a> Reader<'a> {
 /// Words, per feature: its length in words, then `min_x, min_y, max_x,
 /// max_y` (i32), its index in the data tile (an overzoom slice's differs),
 /// `has_id, [id], parts, {rings, {points, {x, y}}}`.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, orb_wire::Wire)]
 pub struct HitGeometry {
     /// The layer's data units per tile side.
     extent: u32,
@@ -103,7 +103,7 @@ pub struct HitGeometry {
     clip: i32,
     words: Vec<u32>,
     /// Records by feature index, and whether they hold its parts.
-    #[serde(skip)]
+    #[wire(skip)]
     added: rustc_hash::FxHashMap<(u32, bool), u32>,
 }
 
@@ -209,19 +209,19 @@ impl HitGeometry {
 ///
 /// Records cross between workers as their words, the tile's geometry once
 /// beside them; a malformed one is skipped when picked.
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, orb_wire::Wire)]
 pub struct MeshHits {
     words: Vec<u32>,
     /// Its geometry's index in the tile's ([`link`](Self::link)).
     layer: u32,
-    #[serde(skip)]
+    #[wire(skip)]
     geometry: Arc<HitGeometry>,
     /// Per feature: its record's first word and world bounds, worked out
     /// on first use.
-    #[serde(skip)]
+    #[wire(skip)]
     bounds: OnceLock<Vec<Bounds>>,
     /// Records by feature index, worked out on first use.
-    #[serde(skip)]
+    #[wire(skip)]
     by_feature: OnceLock<HashMap<u32, u32>>,
 }
 
@@ -2555,7 +2555,7 @@ mod tests {
             [vec![vec![[0, 0], [10, 0], [10, 10], [0, 0]]]]
         );
         assert_eq!(hits.header(1), 5.0);
-        let mut copy: MeshHits = crate::wire::decode(&crate::wire::encode(&hits)).unwrap();
+        let mut copy: MeshHits = orb_wire::decode(&orb_wire::encode(&hits)).unwrap();
         copy.link(&[Arc::clone(&hits.geometry)]);
         assert_eq!(copy.decode(), decoded);
         copy.words.truncate(MESH_HEADER + NODE_RECORD + 3);

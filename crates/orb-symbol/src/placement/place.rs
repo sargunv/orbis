@@ -23,7 +23,7 @@ use crate::placement::view::{Camera, TileView};
 
 /// The placement lane's view of one symbol layer's tile: the tables
 /// placement reads, never quads.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, orb_wire::Wire)]
 pub struct PlacementTables {
     pub instances: Vec<SymbolInstance>,
     pub text_placed: Vec<PlacedSymbol>,
@@ -62,7 +62,7 @@ impl PlacementTables {
 }
 
 /// A layer's placement settings, from its evaluated layout and paint.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct LayerParams {
     /// The layer's key.
     pub layer: u32,
@@ -112,7 +112,7 @@ pub struct LayerParams {
 /// How a symbol collides: `text-overlap`, `icon-overlap` (after the
 /// `*-allow-overlap`s), the optional and ignore-placement flags, and
 /// `symbol-avoid-edges`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, orb_wire::Wire)]
 pub struct SymbolFlags {
     pub text_overlap: Overlap,
     pub icon_overlap: Overlap,
@@ -223,7 +223,7 @@ impl LayerParams {
 /// interpolation factor `u_size_t` for composite ones. Equal when the
 /// bits are: frames compare to see whether their inputs changed, and a
 /// NaN size (`["sqrt", -1]`) is an input that stays the same.
-#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, orb_wire::Wire)]
 pub struct ZoomSize {
     pub size: f64,
     pub t: f64,
@@ -236,7 +236,7 @@ impl PartialEq for ZoomSize {
 }
 
 /// One drawn tile of a layer.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct PlacedTile {
     pub bucket: u64,
     pub view: TileView,
@@ -248,14 +248,14 @@ pub struct PlacedTile {
 }
 
 /// One layer of a placement, its drawn tiles in any order.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct LayerFrame {
     pub params: LayerParams,
     pub tiles: Vec<PlacedTile>,
 }
 
 /// What a placement runs against.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct Frame {
     pub camera: Camera,
     /// Symbol layers in style order.
@@ -269,7 +269,7 @@ pub struct Frame {
     pub lng: f64,
     /// The terrain, if the map has one.
     /// Placement workers have their own elevations.
-    #[serde(skip)]
+    #[wire(skip)]
     pub ground: Option<GroundRef>,
     /// Where labels collide.
     pub scope: Scope,
@@ -284,7 +284,7 @@ pub struct Frame {
 }
 
 /// Where a placement collides labels.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, orb_wire::Wire)]
 pub enum Scope {
     /// Against the view, continuing the last placement: fades, variable
     /// anchors and orientations carry over, as in GL JS.
@@ -304,7 +304,7 @@ pub enum Scope {
 }
 
 /// One tile of a tile-scope placement.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct ScopeTile {
     /// Its column and row in the output grid: neighbours differ by one.
     pub col: i64,
@@ -351,7 +351,7 @@ const HIDDEN_WORDS: [u32; 3] = [state::HIDDEN, 0, 0];
 
 /// A bucket's state words, [`state::WORDS`] per placed symbol, and, for
 /// layers drawn by viewport y, the quads of each stream in draw order.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, orb_wire::Wire)]
 pub struct BucketStates {
     pub text: Vec<u32>,
     pub icon: Vec<u32>,
@@ -361,7 +361,7 @@ pub struct BucketStates {
 
 /// A committed placement: the buckets whose state words changed, by world
 /// copy (wrap), and how fades progress.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, orb_wire::Wire)]
 pub struct Committed {
     pub changed: Vec<(u64, i32, BucketStates)>,
     pub commit_time: f64,

@@ -47,7 +47,7 @@ impl TileOutcome {
 }
 
 /// A request to a job host in another worker, as [`crate::wire`] carries it.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, orb_wire::Wire)]
 pub enum JobRequest {
     /// [`Jobs::set_style`].
     Style {
@@ -106,7 +106,7 @@ pub enum JobRequest {
 /// A job host's answer to the request with `id`. Its large parts travel
 /// beside it, transferred: a packed tile ([`pack`]) or a DEM tile's RGBA
 /// pixels as the reply's buffer, an image tile as its bitmap.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, orb_wire::Wire)]
 pub enum JobReply {
     /// The packed tile is the buffer.
     Tile {
@@ -418,7 +418,7 @@ pub fn unpremultiply(pixels: &mut [u8]) {
 
 /// A finished tile, ready to upload: its words laid out once in its
 /// [`Payload`], in core memory or in host-held bytes.
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, orb_wire::Wire)]
 pub struct TileResult {
     pub warnings: Vec<String>,
     /// Images the tile's symbol layers name that the style doesn't have.
@@ -447,17 +447,17 @@ pub struct TileResult {
     /// meshes carry property rows only.
     pub symbols: Vec<ResultSymbols>,
     /// Every stream's words; host bytes are released after upload.
-    #[serde(skip)]
+    #[wire(skip)]
     pub payload: Payload,
     /// An image source's tile.
-    #[serde(skip)]
+    #[wire(skip)]
     pub image: Option<TileImage>,
     /// An image tile drawn on another plane: its warp's grid there
     /// ([`TileRequest::warp`](crate::TileRequest::warp)).
-    #[serde(skip)]
+    #[wire(skip)]
     pub warp_grid: Option<Arc<orb_crs::WarpGrid>>,
     /// A terrain DEM tile's elevations.
-    #[serde(skip)]
+    #[wire(skip)]
     pub dem: Option<Arc<orb_tile::DemGrid>>,
 }
 
@@ -493,7 +493,7 @@ impl ImagePixels {
 }
 
 /// One render node's share of a finished tile.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, orb_wire::Wire)]
 pub struct ResultMesh {
     pub hits: Arc<crate::query::MeshHits>,
     /// The node's key.
@@ -563,7 +563,7 @@ impl Payload {
 }
 
 /// A span of a tile's [`Payload`]: `len` words from word `at`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, orb_wire::Wire)]
 pub struct Stream {
     pub at: u32,
     pub len: u32,
@@ -812,7 +812,7 @@ pub fn pack(build: TileBuild) -> Packed {
     let Payload::Core(words) = std::mem::take(&mut result.payload) else {
         unreachable!("built payloads are in core memory")
     };
-    let header = crate::wire::encode(&result);
+    let header = orb_wire::encode(&result);
     let mut head = Vec::with_capacity((header.len() + 4).next_multiple_of(4));
     head.extend((header.len() as u32).to_le_bytes());
     head.extend(&header);
@@ -832,7 +832,7 @@ pub fn packed_header(packed: &[u8]) -> Result<&[u8], String> {
 /// stays in the packed buffer, `len` bytes registered as `bytes`, and need
 /// not be in core memory.
 pub fn unpack(header: &[u8], bytes: HostBytesId, len: u64) -> Result<TileResult, String> {
-    let mut result: TileResult = crate::wire::decode(header)?;
+    let mut result: TileResult = orb_wire::decode(header)?;
     let base = (4 + header.len()).next_multiple_of(4) as u64;
     let words = (len.checked_sub(base)).and_then(|b| u32::try_from(b / 4).ok());
     let Some(words) = words.filter(|&w| result.holds_together(w)) else {
@@ -961,7 +961,7 @@ pub(crate) mod tests {
         let mut result = unpack(header, HostBytesId(0), len).unwrap();
         result.payload = Payload::None;
         result.meshes.swap(0, 1);
-        let header = crate::wire::encode(&result);
+        let header = orb_wire::encode(&result);
         let len = ((4 + header.len()).next_multiple_of(4) + packed.words.len() * 4) as u64;
         assert!(
             unpack(&header, HostBytesId(0), len).is_err(),

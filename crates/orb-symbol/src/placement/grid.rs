@@ -2,7 +2,7 @@
 //! collision queries.
 
 /// `text-overlap`, `icon-overlap` (GL JS `OverlapMode`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, orb_wire::Wire)]
 pub enum Overlap {
     #[default]
     Never,

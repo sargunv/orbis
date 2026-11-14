@@ -42,7 +42,7 @@ pub struct WarpMesh {
 /// A tile's grid on the target plane ([`Warp::grid`]): what its mesh
 /// takes of the projections, so that [`Warp::mesh_on`] maps only the
 /// points refined edges add.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct WarpGrid {
     /// Cells per side.
     cells: u32,
@@ -57,7 +57,7 @@ pub struct WarpGrid {
 
 /// A tile on the target plane (or, as `Series<DVec3>`, on a sphere) as
 /// quadratic patches over an even grid of its window.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct Series<V = DVec2> {
     /// The window's centre's position on the target; patches are relative
     /// to it.
@@ -307,7 +307,7 @@ impl Series<DVec2> {
 /// Lagrange polynomials in parameters `s` (right) and `t` (down), each in
 /// `[-1, 1]`. Neighbouring patches share their edges' three nodes, so they
 /// meet exactly.
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, orb_wire::Wire)]
 pub struct Patch<V = DVec2> {
     pub points: [V; 9],
 }

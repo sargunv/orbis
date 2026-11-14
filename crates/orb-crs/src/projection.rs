@@ -138,7 +138,7 @@ impl Params {
 
 /// A projection descriptor: a `type` naming a projection kind or an EPSG
 /// code (`"EPSG:2193"`), with the kind's parameters by their PROJ names.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, orb_wire::Wire)]
 pub struct Descriptor {
     pub kind: String,
     pub params: Vec<(String, f64)>,

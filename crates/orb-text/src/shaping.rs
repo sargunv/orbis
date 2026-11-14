@@ -71,7 +71,7 @@ impl Justify {
 }
 
 /// The direction lines run.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, orb_wire::Wire)]
 pub enum WritingMode {
     #[default]
     Horizontal,

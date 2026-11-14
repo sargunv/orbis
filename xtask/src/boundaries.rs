@@ -75,7 +75,7 @@ const SCENE_SIDE: &[&str] = &[
 /// job side keeps apart within the crate.
 const JOB_MODULES: &[&str] = &[
     "features", "geojson", "glyphs", "job_host", "line", "loader", "style", "symbol", "tile",
-    "stages", "wire", "worker",
+    "stages", "worker",
 ];
 
 /// Crates that don't build for wasm32.

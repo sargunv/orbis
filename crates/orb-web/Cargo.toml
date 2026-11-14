@@ -29,6 +29,7 @@ orb-expr.workspace = true
 orb-hal.workspace = true
 orb-hal-wgpu.workspace = true
 orb-host.workspace = true
+orb-wire.workspace = true
 # `mbtiles://` sources, in their own module (`cargo xtask web`).
 orb-runtime = { workspace = true, features = ["sqlite"] }
 orb-symbol.workspace = true

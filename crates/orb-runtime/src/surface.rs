@@ -22,8 +22,7 @@ pub(crate) struct Surface {
 
 /// What job workers need of the surface: the plane GeoJSON tiles in, and
 /// the tile matrix sets of sources not in `WebMercatorQuad`.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(into = "SurfaceText", try_from = "SurfaceText")]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SurfaceTiles {
     /// The surface's one-tile set; `None` for Web Mercator.
     pub plane: Option<TileMatrixSet>,
@@ -33,7 +32,7 @@ pub struct SurfaceTiles {
 
 /// [`SurfaceTiles`] between workers: the plane's projection and extent,
 /// and the sources' tile matrix sets by their definitions.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(orb_wire::Wire)]
 struct SurfaceText {
     plane: Option<(Descriptor, [f64; 4])>,
     sources: Vec<(String, TileMatrixSetDefinition)>,
@@ -81,6 +80,16 @@ impl TryFrom<SurfaceText> for SurfaceTiles {
                 })
                 .collect::<Result<_, String>>()?,
         })
+    }
+}
+
+/// Between workers as [`SurfaceText`].
+impl orb_wire::Wire for SurfaceTiles {
+    fn put(&self, out: &mut Vec<u8>) {
+        SurfaceText::from(self.clone()).put(out);
+    }
+    fn take(input: &mut &[u8]) -> Option<Self> {
+        SurfaceText::take(input)?.try_into().ok()
     }
 }
 
@@ -291,8 +300,7 @@ mod tests {
         assert_eq!(surface.plane().as_ref(), Some(surface.tms()));
         assert_eq!(Surface::default().plane(), None);
         // The job workers' share crosses as postcard.
-        let tiles: SurfaceTiles =
-            crate::wire::decode(&crate::wire::encode(&surface.tiles())).unwrap();
+        let tiles: SurfaceTiles = orb_wire::decode(&orb_wire::encode(&surface.tiles())).unwrap();
         let tile = orb_crs::TileIndex::new(6, 31, 33);
         let linz = tiles.source("linz", false).unwrap();
         assert_eq!(linz.tile_bounds(tile), nztm.tile_bounds(tile));

@@ -13,7 +13,7 @@ use orb_tile::{TileFrame, Value};
 use crate::features::{write_string, write_value};
 
 /// What a cluster query asks of a clustered source.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub enum ClusterQuery {
     /// The cluster's members one zoom in, as GeoJSON features.
     Children(u64),
@@ -25,7 +25,7 @@ pub enum ClusterQuery {
 
 /// A cluster query, sent to a worker with any of the source's tiles: the
 /// worker that loads it has the source's data.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct ClusterRequest {
     pub tile: crate::TileRequest,
     pub query: ClusterQuery,

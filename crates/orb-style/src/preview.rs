@@ -127,9 +127,7 @@ impl fmt::Display for Preview {
 }
 
 /// The previews a map enables: none by default.
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, orb_wire::Wire)]
 pub struct Previews(u32);
 
 impl Previews {

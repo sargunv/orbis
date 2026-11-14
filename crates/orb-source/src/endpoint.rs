@@ -14,7 +14,7 @@ const VECTOR_TILE_PX: f64 = 512.0;
 pub use orb_style::HOST_TILES;
 
 /// Where a tile's bytes are.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, orb_wire::Wire)]
 pub enum TileLocation {
     Url(String),
     /// The archive URL without the `pmtiles://` protocol prefix.
@@ -26,7 +26,7 @@ pub enum TileLocation {
 }
 
 /// What the app hands in for a tile of a source it feeds.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, orb_wire::Wire)]
 pub enum HostTile {
     /// The tile encoded as `encoding` says (MVT or MLT), or as the
     /// source's tiles are.

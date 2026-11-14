@@ -12,7 +12,7 @@ mbtiles = ["dep:orb-sqlite"]
 
 [dependencies]
 rustc-hash.workspace = true
-serde.workspace = true
+orb-wire.workspace = true
 miniz_oxide.workspace = true
 orb-crs.workspace = true
 orb-expr.workspace = true

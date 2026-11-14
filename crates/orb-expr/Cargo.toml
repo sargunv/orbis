@@ -11,7 +11,7 @@ version.workspace = true
 conformance = []
 
 [dependencies]
-serde.workspace = true
+orb-wire.workspace = true
 orb-tile.workspace = true
 rustc-hash.workspace = true
 

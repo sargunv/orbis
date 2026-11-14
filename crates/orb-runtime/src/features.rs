@@ -8,7 +8,7 @@ use orb_tile::{GeometryType, Layer, ValueRef};
 use crate::worker::{TileRequest, TileWorker};
 
 /// Which features of a tile a query wants.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub enum FeatureSelect {
     /// These features of a source layer, by index, each with the style
     /// layer that drew it, whose `paint` and `layout` the answer gives as
@@ -29,7 +29,7 @@ pub enum FeatureSelect {
 }
 
 /// A feature a rendered query answers, and what drew it.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct Drawn {
     /// The feature's index in its source layer.
     pub feature: u32,
@@ -40,7 +40,7 @@ pub struct Drawn {
 }
 
 /// The camera a rendered query's layers are evaluated at.
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, orb_wire::Wire)]
 pub struct QueryCamera {
     pub zoom: f64,
     pub pitch: f64,
@@ -49,7 +49,7 @@ pub struct QueryCamera {
 
 /// A query to a tile's owner worker: the tile, as it was loaded, and what
 /// to read from it.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct FeatureRequest {
     /// The tile's load request (`nodes` and `rows_only` unused).
     pub tile: TileRequest,
@@ -61,7 +61,7 @@ pub struct FeatureRequest {
 }
 
 /// One feature read from a tile.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, orb_wire::Wire)]
 pub struct TileFeature {
     /// The source layer's name.
     pub layer: String,

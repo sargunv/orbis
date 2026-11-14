@@ -10,7 +10,7 @@ pub struct Sprite {
 }
 
 /// A declared font file.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, orb_wire::Wire)]
 pub struct FontFace {
     pub url: String,
     /// The inclusive code point ranges it may draw (all, without a

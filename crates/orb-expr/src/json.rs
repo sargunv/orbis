@@ -455,16 +455,12 @@ impl Parser<'_> {
 }
 
 /// A document crosses between workers as its text.
-impl serde::Serialize for Json {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_string())
+impl orb_wire::Wire for Json {
+    fn put(&self, out: &mut Vec<u8>) {
+        orb_wire::put_str(&self.to_string(), out);
     }
-}
-
-impl<'de> serde::Deserialize<'de> for Json {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        parse(&text).map_err(serde::de::Error::custom)
+    fn take(input: &mut &[u8]) -> Option<Self> {
+        parse(orb_wire::take_str(input)?).ok()
     }
 }
 

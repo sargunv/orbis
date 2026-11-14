@@ -415,18 +415,13 @@ impl fmt::Display for Value<'_> {
 }
 
 /// A value crosses between workers as its JSON text.
-impl serde::Serialize for Value<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_json_string())
+impl orb_wire::Wire for Value<'static> {
+    fn put(&self, out: &mut Vec<u8>) {
+        orb_wire::put_str(&self.to_json_string(), out);
     }
-}
-
-impl<'de> serde::Deserialize<'de> for Value<'static> {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        crate::json::parse(&text)
-            .map(|json| Value::from_json(&json))
-            .map_err(serde::de::Error::custom)
+    fn take(input: &mut &[u8]) -> Option<Self> {
+        let json = crate::json::parse(orb_wire::take_str(input)?).ok()?;
+        Some(Value::from_json(&json))
     }
 }
 

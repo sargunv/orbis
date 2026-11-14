@@ -16,8 +16,7 @@ sqlite = ["dep:orb-sqlite", "dep:miniz_oxide", "orb-source/mbtiles"]
 
 [dependencies]
 rustc-hash.workspace = true
-postcard.workspace = true
-serde.workspace = true
+orb-wire.workspace = true
 bytemuck.workspace = true
 glam.workspace = true
 orb-camera.workspace = true

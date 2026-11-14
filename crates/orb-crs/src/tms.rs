@@ -6,9 +6,7 @@ use crate::{Descriptor, Projection, WorldRect};
 
 /// A tile in a tile matrix set: zoom (the matrix identifier), column (left
 /// to right) and row (top to bottom).
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, orb_wire::Wire)]
 pub struct TileIndex {
     pub z: u8,
     pub col: u32,
@@ -116,7 +114,7 @@ impl Matrix {
 
 /// One matrix of a tile matrix set definition, as an OGC document writes
 /// it.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct TileMatrix {
     pub id: String,
     pub scale_denominator: f64,
@@ -135,7 +133,7 @@ pub struct TileMatrix {
 }
 
 /// A tile matrix set as an OGC 2D-TMS document defines it.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct TileMatrixSetDefinition {
     pub id: String,
     /// The CRS URI or `EPSG:n` code.

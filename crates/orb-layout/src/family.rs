@@ -77,7 +77,7 @@ pub fn pack_color(color: [f32; 4]) -> u32 {
 
 /// Deferred image identity, resolved only on the scene side. Generated
 /// textures cannot collide with sprite names. Dash values are f32 bits.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, orb_wire::Wire)]
 pub enum ImageKey {
     Name(String),
     Dash { array: Vec<u32>, round: bool },

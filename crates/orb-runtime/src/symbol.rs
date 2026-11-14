@@ -20,7 +20,7 @@ use orb_tile::{Layer, ValueRef};
 /// Sprite metadata: what icon layout needs of every image, by name
 /// (namespaced as the sprites expose them), at the pixel ratio the map
 /// draws.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, orb_wire::Wire)]
 pub struct SpriteIcons {
     /// The device pixel ratio images are drawn at.
     pub pixel_ratio: f64,
@@ -945,7 +945,7 @@ pub(crate) const SYMBOL_TABLES: usize = 14;
 
 /// The scalars of a layer's bucket ([`orb_symbol::SymbolBucket`] without
 /// its tables).
-#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, orb_wire::Wire)]
 pub struct SymbolMeta {
     pub text_size: SizeKind,
     pub icon_size: SizeKind,
@@ -959,7 +959,7 @@ pub struct SymbolMeta {
 /// A symbol layer's share of a finished tile: its bucket's tables as word
 /// streams, the glyph keys its quads name by tile-local glyph id, and its
 /// images by tile-local index.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, orb_wire::Wire)]
 pub struct ResultSymbols {
     /// The layer's key.
     pub layer: u32,

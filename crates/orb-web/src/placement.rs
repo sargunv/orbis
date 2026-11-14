@@ -5,7 +5,7 @@
 //! messages through unread. The map's [`WorkerPlacement`] posts a bucket's
 //! tables once and a frame per placement; the [`PlacementWorker`] answers
 //! each frame, in order, with its commit. Payloads are
-//! [`orb_runtime::wire`]'s bytes, in transferred
+//! [`orb_wire`]'s bytes, in transferred
 //! buffers.
 //!
 //! Messages, map to placement worker: `{ingest, buffer}` (a
@@ -22,8 +22,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use js_sys::{Array, Object, Uint8Array};
-use orb_runtime::{InlinePlacement, PlaceDone, PlacementLane, TerrainElevation, wire};
+use orb_runtime::{InlinePlacement, PlaceDone, PlacementLane, TerrainElevation};
 use orb_symbol::{Frame, GroundRef, PlacementTables};
+use orb_wire as wire;
 use wasm_bindgen::prelude::*;
 
 use crate::js;

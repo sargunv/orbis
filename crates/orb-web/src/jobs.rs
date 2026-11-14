@@ -3,7 +3,7 @@
 //!
 //! The page's JS owns the transport, one `MessagePort` per job worker, and
 //! passes messages through unread. The page's [`WorkerJobs`] posts each
-//! request as a [`JobRequest`] in [`orb_runtime::wire`]'s bytes; a job
+//! request as a [`JobRequest`] in [`orb_wire`]'s bytes; a job
 //! worker's [`JobWorker`] answers each one with an id as
 //! `{message, buffer?, image?}`: a [`JobReply`], with a packed tile ([`pack`])
 //! or a DEM tile's pixels as the transferred `buffer` and an image tile as
@@ -17,11 +17,11 @@ use std::sync::Arc;
 
 use js_sys::ArrayBuffer;
 use orb_hal::Gpu as _;
-use orb_runtime::wire;
 use orb_runtime::{
     DemUnpack, ImageKind, ImagePixels, JobHost, JobReply, JobRequest, Loaded, TileBuild, TileImage,
     TileResult, pack, packed_header, unpack,
 };
+use orb_wire as wire;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
@@ -226,7 +226,7 @@ impl JobWorker {
     }
 
     /// Handles a request from the page: a [`JobRequest`] in
-    /// [`orb_runtime::wire`]'s bytes. Returns a promise of the reply to
+    /// [`orb_wire`]'s bytes. Returns a promise of the reply to
     /// post back, transferring its `buffer` and `image`, or nothing.
     pub fn receive(
         &mut self,

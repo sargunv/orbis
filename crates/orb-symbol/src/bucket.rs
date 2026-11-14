@@ -61,7 +61,7 @@ pub mod justification {
 
 /// One possible placement of a feature's label and icon at one anchor (GL
 /// JS `SymbolInstance`). Placement shows or hides it as a whole.
-#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable, orb_wire::Wire)]
 #[repr(C)]
 pub struct SymbolInstance {
     /// Identity across tiles and zooms, for cross-tile matching.
@@ -99,7 +99,7 @@ pub struct SymbolInstance {
 
 /// One drawn variant of a label or icon: a run of quads around an anchor,
 /// possibly along a line (GL JS `PlacedSymbol`).
-#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable, orb_wire::Wire)]
 #[repr(C)]
 pub struct PlacedSymbol {
     pub anchor: [i16; 2],
@@ -173,7 +173,7 @@ pub struct SymbolStream {
 }
 
 /// One `text-variable-anchor` candidate of an instance.
-#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable, orb_wire::Wire)]
 #[repr(C)]
 pub struct AnchorOffset {
     /// GL JS `TextAnchorEnum`: 1 center, 2 left, 3 right, 4 top, 5 bottom,
@@ -200,7 +200,7 @@ impl AnchorOffset {
 }
 
 /// Instances sharing a `symbol-sort-key`, in key order.
-#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable, orb_wire::Wire)]
 #[repr(C)]
 pub struct SortKeyRange {
     pub sort_key: f64,
@@ -210,7 +210,7 @@ pub struct SortKeyRange {
 
 /// A size property as the renderer evaluates it per frame (GL JS
 /// `SizeData`, without the expression the scene side already has).
-#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, orb_wire::Wire)]
 pub enum SizeKind {
     /// Constant; every feature has the same size.
     #[default]
@@ -226,7 +226,7 @@ pub enum SizeKind {
 }
 
 /// Style-sheet problems layout ran into, for the runtime to report.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, orb_wire::Wire)]
 pub struct Warnings {
     /// Icons of one layer mix SDF and non-SDF images.
     pub(crate) mixed_sdf_icons: bool,

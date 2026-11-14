@@ -1532,9 +1532,6 @@ name = "glam"
 version = "0.34.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54af5066834d6c2d404eb26ea036a15b15d9ff80db510b9a73ff95ab07f30831"
-dependencies = [
- "serde_core",
-]
 
 [[package]]
 name = "glifo"
@@ -2774,8 +2771,8 @@ name = "orb-crs"
 version = "0.0.0"
 dependencies = [
  "glam",
+ "orb-wire",
  "rustc-hash 2.1.3",
- "serde",
  "serde_json",
 ]
 
@@ -2802,8 +2799,8 @@ name = "orb-expr"
 version = "0.0.0"
 dependencies = [
  "orb-tile",
+ "orb-wire",
  "rustc-hash 2.1.3",
- "serde",
  "wasm-bindgen-test",
 ]
 
@@ -2911,8 +2908,8 @@ dependencies = [
  "earcut",
  "glam",
  "orb-tile",
+ "orb-wire",
  "rustc-hash 2.1.3",
- "serde",
 ]
 
 [[package]]
@@ -2955,12 +2952,11 @@ dependencies = [
  "orb-symbol",
  "orb-text",
  "orb-tile",
+ "orb-wire",
  "png",
  "pollster",
- "postcard",
  "rusqlite",
  "rustc-hash 2.1.3",
- "serde",
  "serde_json",
 ]
 
@@ -2991,9 +2987,9 @@ dependencies = [
  "orb-expr",
  "orb-sqlite",
  "orb-style",
+ "orb-wire",
  "rusqlite",
  "rustc-hash 2.1.3",
- "serde",
 ]
 
 [[package]]
@@ -3010,8 +3006,8 @@ dependencies = [
  "orb-crs",
  "orb-expr",
  "orb-tile",
+ "orb-wire",
  "rustc-hash 2.1.3",
- "serde",
 ]
 
 [[package]]
@@ -3024,8 +3020,8 @@ dependencies = [
  "orb-crs",
  "orb-text",
  "orb-tile",
+ "orb-wire",
  "rustc-hash 2.1.3",
- "serde",
  "serde_json",
  "wasm-bindgen-test",
 ]
@@ -3038,8 +3034,8 @@ dependencies = [
  "icu_provider",
  "icu_segmenter",
  "miniz_oxide 0.9.1",
+ "orb-wire",
  "rustc-hash 2.1.3",
- "serde",
  "serde_json",
  "skrifa 0.49.0",
  "unicode-bidi",
@@ -3075,11 +3071,29 @@ dependencies = [
  "orb-symbol",
  "orb-text",
  "orb-tile",
+ "orb-wire",
  "rustc-hash 2.1.3",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
  "wgpu",
+]
+
+[[package]]
+name = "orb-wire"
+version = "0.0.0"
+dependencies = [
+ "glam",
+ "orb-wire-derive",
+]
+
+[[package]]
+name = "orb-wire-derive"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

@@ -5,7 +5,7 @@ use orb_text::{Anchor, Shaping};
 
 /// How an icon's content box follows the text on one axis
 /// (`textFitWidth`, `textFitHeight` in sprite metadata).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, orb_wire::Wire)]
 pub enum TextFit {
     #[default]
     StretchOrShrink,
@@ -15,7 +15,7 @@ pub enum TextFit {
 
 /// A sprite image as layout sees it (GL JS `StyleImage` and
 /// `ImagePosition`), without its pixels or atlas position.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct IconImage {
     /// Size in image pixels.
     pub size: [u32; 2],

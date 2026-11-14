@@ -912,7 +912,7 @@ impl Built {
 /// A style revision for the jobs: the order of its layer and source keys,
 /// the layers and sources new or changed in it as v8 JSON, and the global
 /// state its properties resolve.
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, orb_wire::Wire)]
 pub struct StyleUpdate {
     pub revision: u64,
     pub layers: Vec<u32>,
@@ -951,7 +951,7 @@ pub(crate) struct MapFonts {
 }
 
 /// A tile for a job to load and lay out.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct TileRequest {
     /// Which style to lay out with, as given to [`Jobs::set_style`](crate::Jobs::set_style).
     pub style: u64,
@@ -1001,7 +1001,7 @@ pub struct TileRequest {
 /// GL JS's unpack vector of a DEM encoding: metres are
 /// `r·x + g·y + b·z − w` over the 0–255 channels. Requests compare it
 /// bit for bit.
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, orb_wire::Wire)]
 pub struct DemUnpack(pub [f64; 4]);
 
 impl PartialEq for DemUnpack {
@@ -1293,7 +1293,7 @@ pub(crate) mod tests {
             ..TileWorker::new(style).unwrap()
         };
         let there = TileWorker {
-            surface: crate::wire::decode(&crate::wire::encode(&surface)).unwrap(),
+            surface: orb_wire::decode(&orb_wire::encode(&surface)).unwrap(),
             ..TileWorker::new(style).unwrap()
         };
         let mercator = TileMatrixSet::web_mercator();
@@ -1307,7 +1307,7 @@ pub(crate) mod tests {
                 id: 7,
                 warp_grid: grid.clone(),
             };
-            let back: JobReply = crate::wire::decode(&crate::wire::encode(&reply)).unwrap();
+            let back: JobReply = orb_wire::decode(&orb_wire::encode(&reply)).unwrap();
             assert!(matches!(back, JobReply::Image { warp_grid, .. } if warp_grid == grid));
         }
     }
@@ -1354,9 +1354,9 @@ pub(crate) mod tests {
                 sources: vec![("geo".into(), TileMatrixSet::by_id("NZTM2000Quad").unwrap())],
             },
         };
-        let bytes = crate::wire::encode(&update);
-        let parsed: StyleUpdate = crate::wire::decode(&bytes).unwrap();
-        assert_eq!(crate::wire::encode(&parsed), bytes);
+        let bytes = orb_wire::encode(&update);
+        let parsed: StyleUpdate = orb_wire::decode(&bytes).unwrap();
+        assert_eq!(orb_wire::encode(&parsed), bytes);
         assert_eq!(parsed.surface.plane, update.surface.plane);
         let tile = TileIndex::new(4, 7, 9);
         assert_eq!(
@@ -1978,7 +1978,7 @@ pub(crate) mod tests {
         );
         icons.add("dot", [8, 8], &orb_layout::ImageMetadata::default());
         assert_eq!(
-            crate::wire::decode::<SpriteIcons>(&crate::wire::encode(&icons)).unwrap(),
+            orb_wire::decode::<SpriteIcons>(&orb_wire::encode(&icons)).unwrap(),
             icons
         );
     }

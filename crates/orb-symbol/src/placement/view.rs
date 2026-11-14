@@ -8,7 +8,7 @@ pub type Mat4 = [f64; 16];
 
 /// The camera placement runs against (GL JS's transform, in the parts
 /// placement reads).
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, orb_wire::Wire)]
 pub struct Camera {
     /// Viewport size, logical pixels.
     pub width: f64,
@@ -26,9 +26,7 @@ pub struct Camera {
 
 /// A tile's identity across placements: its zoom, column, row and world
 /// copy.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, orb_wire::Wire)]
 pub struct TileId {
     pub z: u8,
     pub x: u32,
@@ -54,7 +52,7 @@ impl TileId {
 }
 
 /// One tile as drawn this frame.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct TileView {
     pub id: TileId,
     /// Tile units ([`EXTENT`] per side) and metres up → clip space, on a
@@ -66,7 +64,7 @@ pub struct TileView {
 
 /// A tile on a low-zoom surface: its patches on the sphere
 /// (`orb_crs::sphere`) or a low-zoom plane, and that surface's camera.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct TileGlobe {
     pub series: std::sync::Arc<orb_crs::Series<glam::DVec3>>,
     /// The camera target's ECEF position, which camera-relative globe space
