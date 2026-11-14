@@ -9,8 +9,12 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::base::{Failure, boundary, put, sized};
-use crate::handles::{self, Object};
+#[cfg(target_os = "macos")]
+use crate::base::put;
+use crate::base::{Failure, boundary, sized};
+use crate::handles;
+#[cfg(target_os = "macos")]
+use crate::handles::Object;
 use crate::session::SessionHandle;
 use crate::sys::*;
 
@@ -211,13 +215,13 @@ pub unsafe extern "C" fn mln_apple_frame_pacer_create(
                     start_timer(Arc::downgrade(&pacer), tick)?;
                 }
                 *pacer.clock.lock().unwrap() = link;
-                return put(
+                put(
                     out_pacer,
                     mln_frame_pacer(handles::insert(Object::Pacer(pacer))),
                     "out_pacer",
-                );
+                )
             }
-            #[allow(unreachable_code)]
+            #[cfg(not(target_os = "macos"))]
             {
                 let _ = interval;
                 Err(Failure::unsupported(

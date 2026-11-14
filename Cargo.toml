@@ -194,6 +194,11 @@ geo = { git = "https://github.com/sargunv/geo", branch = "unpin-earcut-0.33.1" }
 # corpora stay borrowed after one validation, as before (#35 tracks sending
 # it upstream).
 mlt-core = { git = "https://github.com/sargunv/maplibre-tile-spec", branch = "lossy-utf8" }
+# fsst-rs 0.6.0 (through mlt-core) with its hash table entry aligned to 8
+# bytes: where u64 aligns to 4 (i686, armv7, the 32-bit Android ABIs) the
+# entry was 12 bytes and its size assertion failed the build (#35 tracks
+# sending it upstream).
+fsst-rs = { git = "https://github.com/sargunv/fsst", branch = "align-table-entry" }
 
 # Several agents build at once on one disk: line tables keep backtraces
 # readable at a fraction of full debug info, and dependencies carry none.

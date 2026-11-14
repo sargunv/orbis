@@ -35,12 +35,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         _ => return Err("android: usage: cargo xtask android [--run [--leakcheck]]".into()),
     };
     let root = root();
-    let sdk = PathBuf::from(
-        std::env::var_os("ANDROID_HOME")
-            .or_else(|| std::env::var_os("ANDROID_SDK_ROOT"))
-            .ok_or("android: set ANDROID_HOME (`mise x -- cargo xtask android`)")?,
-    );
-    let bin = ndk_bin(&sdk)?;
+    let bin = ndk_bin()?;
     let clang = bin.join(format!("{TARGET}{API}-clang"));
 
     // liborbis.so, with the NDK's clang for C dependencies and the link.
@@ -158,8 +153,71 @@ fn write_index(data: &Path, out: &Path) -> Result<(), String> {
     std::fs::write(out.join(INDEX), index).map_err(|e| e.to_string())
 }
 
-/// The newest NDK's LLVM tools.
-fn ndk_bin(sdk: &Path) -> Result<PathBuf, String> {
+/// The 32-bit Android ABIs (armeabi-v7a, x86) as Rust targets, each with
+/// its NDK clang's prefix.
+const THIRTY_TWO_BIT: [(&str, &str); 2] = [
+    ("armv7-linux-androideabi", "armv7a-linux-androideabi"),
+    ("i686-linux-android", "i686-linux-android"),
+];
+
+/// Clippy over orb-ffi for the 32-bit Android ABIs, which hosts such as
+/// maplibre-compose ship: there `usize` is 32 bits and `u64` aligns to 4 on
+/// both, so a dependency's layout assertion or a cast that holds on 64-bit
+/// fails here first. Its C dependencies (ring) build with the NDK's clang.
+/// Skipped, with a note, for a target that isn't installed or without an
+/// NDK.
+pub(crate) fn clippy_32bit() -> Result<(), String> {
+    let bin = match ndk_bin() {
+        Ok(bin) => bin,
+        Err(e) => {
+            eprintln!("check: {e}, so no 32-bit Android clippy");
+            return Ok(());
+        }
+    };
+    for (target, clang) in THIRTY_TWO_BIT {
+        if !crate::target_installed(target) {
+            eprintln!(
+                "check: no {target} target (`rustup target add {target}`), so no clippy for it"
+            );
+            continue;
+        }
+        let target_env = target.replace('-', "_");
+        crate::run(
+            Command::new(env!("CARGO"))
+                .env(
+                    format!("CC_{target_env}"),
+                    bin.join(format!("{clang}{API}-clang")),
+                )
+                .env(format!("AR_{target_env}"), bin.join("llvm-ar"))
+                .args([
+                    "clippy",
+                    "--quiet",
+                    "--target",
+                    target,
+                    "-p",
+                    "orb-ffi",
+                    "--all-targets",
+                    "--",
+                    "-D",
+                    "warnings",
+                    // Clippy flags `thread_local!`s that are already
+                    // `const` on Android targets, whose thread locals are
+                    // emulated.
+                    "-A",
+                    "clippy::missing_const_for_thread_local",
+                ]),
+        )?;
+    }
+    Ok(())
+}
+
+/// The newest NDK's LLVM tools, from `ANDROID_HOME`'s SDK.
+fn ndk_bin() -> Result<PathBuf, String> {
+    let sdk = PathBuf::from(
+        std::env::var_os("ANDROID_HOME")
+            .or_else(|| std::env::var_os("ANDROID_SDK_ROOT"))
+            .ok_or("android: set ANDROID_HOME (`mise x --` provides it)")?,
+    );
     let mut versions: Vec<PathBuf> = std::fs::read_dir(sdk.join("ndk"))
         .map_err(|e| format!("{}: no NDK ({e})", sdk.display()))?
         .filter_map(|e| e.ok().map(|e| e.path()))

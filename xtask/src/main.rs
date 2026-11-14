@@ -28,11 +28,12 @@ const HELP: &str = "\
 cargo xtask <task>
 
   check [--affected [--base <rev>]]  formatting (dprint), clippy (native,
-               wasm32, and orb-hal-wgpu for Windows when its Rust target is
-               installed), tests and boundary rules; --affected scopes them
-               to the packages changed since <rev>'s merge base with HEAD
-               (default origin/main), the working tree and untracked files,
-               and every package depending on those
+               wasm32, orb-hal-wgpu for Windows and orb-ffi for 32-bit
+               Android (armv7, i686, with ANDROID_HOME's NDK) where those
+               Rust targets are installed), tests and boundary rules;
+               --affected scopes them to the packages changed since <rev>'s
+               merge base with HEAD (default origin/main), the working tree
+               and untracked files, and every package depending on those
   clippy [--fix]  clippy over the workspace, native and wasm32 (WebGL 2 too), denying
                warnings; --fix applies its suggestions
   android [--run [--leakcheck]]  the Android app: orb-android as
@@ -323,6 +324,9 @@ fn checks(selection: &affected::Selection) -> Result<(), String> {
     if selection.contains("orb-hal-wgpu") {
         windows_clippy()?;
     }
+    if selection.contains("orb-ffi") {
+        android::clippy_32bit()?;
+    }
     cargo(&test)?;
     cpu_driver_tests(selection)?;
     if selection.contains("orb-ffi") {
@@ -359,15 +363,7 @@ fn cpu_driver_tests(selection: &affected::Selection) -> Result<(), String> {
 /// note, without the Rust target.
 fn windows_clippy() -> Result<(), String> {
     const TARGET: &str = "x86_64-pc-windows-msvc";
-    let installed = Command::new("rustup")
-        .args(["target", "list", "--installed"])
-        .output()
-        .is_ok_and(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .any(|l| l == TARGET)
-        });
-    if !installed {
+    if !target_installed(TARGET) {
         eprintln!("check: no {TARGET} target (`rustup target add {TARGET}`), so no Windows clippy");
         return Ok(());
     }
@@ -383,6 +379,18 @@ fn windows_clippy() -> Result<(), String> {
         "-D",
         "warnings",
     ])
+}
+
+/// Whether rustup has the Rust standard library for `target`.
+pub(crate) fn target_installed(target: &str) -> bool {
+    Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output()
+        .is_ok_and(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| l == target)
+        })
 }
 
 /// A binary's file name on this platform (`orbis.exe` on Windows).
