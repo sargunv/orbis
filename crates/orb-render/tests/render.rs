@@ -1542,6 +1542,89 @@ fn overlapping_fills_draw_in_tile_order_whatever_block_they_landed_in() {
     }
 }
 
+/// Where one layer's image tiles overlap, as a stand-in parent does under
+/// its child's edge, the tile order says which is on top, whichever
+/// arrived first, though each tile's mesh would fill a block of the pools
+/// alone: what draws from lists keeps to one block, whose lists hold the
+/// tiles in their order.
+#[test]
+fn overlapping_image_tiles_draw_in_tile_order_whatever_order_they_arrived_in() {
+    use orb_render::{ImageBuild, PageKind, Pixels, RasterPaint, RenderNode, TileKey};
+    let colors = [[0, 255, 0, 255], RED];
+    let draw = |arrivals: [usize; 2]| {
+        let capacity = SceneCapacity {
+            vertex_words: 1,
+            index_words: 1,
+            max_vertex_words: 1 << 12,
+            max_index_words: 1 << 12,
+            ..Harness::SMALL
+        };
+        let mut h = Harness::with(4, 2, 8, capacity, None);
+        let source = 5;
+        let node = RenderNode {
+            family: Family::Raster,
+            source: Some(source),
+        };
+        assert!(h.renderer.remap_nodes(&mut h.gpu, &[node], &[None]));
+        // Half opaque: the tile on top shows more.
+        h.renderer.set_paint(
+            &mut h.gpu,
+            0,
+            &NodePaint::Raster(RasterPaint {
+                opacity: 0.5,
+                hue_rotate: 0.0,
+                brightness_min: 0.0,
+                brightness_max: 1.0,
+                saturation: 0.0,
+                contrast: 0.0,
+                nearest: true,
+                mipmapped: false,
+                fade_duration: 0.0,
+            }),
+        );
+        let row = TileRow {
+            extent: 8192.0,
+            scale: 2.0 / 8192.0,
+            bound: ClipRect::EVERYWHERE,
+            clips: [
+                ClipRect::new([0, 0], [8192, 8192]),
+                ClipRect::EMPTY,
+                ClipRect::EMPTY,
+                ClipRect::EMPTY,
+            ],
+            ..full_view_tile(0.0)
+        };
+        let mut tiles = [None; 2];
+        for i in arrivals {
+            let pixels = colors[i].repeat(4);
+            let build = ImageBuild {
+                key: TileKey {
+                    source,
+                    tile: orb_crs::TileIndex::new(1, i as u32, 0),
+                },
+                kind: PageKind::Raster,
+                size: [2, 2],
+                pixels: Pixels::Core(&pixels),
+                mesh: None,
+                patches: None,
+                fade_from: None,
+                unpack: None,
+                area: None,
+            };
+            let tile = h.renderer.upload_image(&mut h.gpu, &build).unwrap();
+            h.renderer.place(tile, 8192, &[row]).unwrap();
+            tiles[i] = Some(tile);
+        }
+        // Tile 0, then tile 1: the red one on top.
+        h.renderer
+            .set_tile_order(source, &tiles.map(Option::unwrap));
+        pixel(&h.render(), 32, 32)
+    };
+    let ordered = draw([0, 1]);
+    assert!(ordered[0] > ordered[1], "red on top: {ordered:?}");
+    assert_eq!(draw([1, 0]), ordered, "arrived in reverse");
+}
+
 #[test]
 fn heatmap_composites_in_layer_order_and_hides_without_recording() {
     let mut h = Harness::new();

@@ -1009,18 +1009,19 @@ impl NodeEntry {
 /// made when no block there has room for what comes, freed once empty, or
 /// at rest once its meshes move out ([`Scene::repack`]).
 ///
-/// But for the one that holds what draws as points (circles, heatmaps and
-/// symbols, and the tiles that have any): a node draws a list per block,
-/// so where its tiles' draws overlap (a symbol or circle past its tile's
-/// edge, sort keys merged across tiles) one list must hold them all for
-/// the tile order and sort keys to decide what is on top, rather than the
-/// order the tiles arrived in. That block moves into larger buffers as it
-/// fills, and smaller as it empties, copying what it holds. An indexed
-/// node's slots instead draw in stretches of one block's in its tiles'
-/// order ([`Segment`]).
+/// But for the one that holds what draws from lists (circles, heatmaps,
+/// symbols and image tiles, and the tiles that have any): a node draws a
+/// list per block, so where its tiles' draws overlap (a symbol or circle
+/// past its tile's edge, sort keys merged across tiles, a stand-in parent
+/// image under its child's edge) one list must hold them all for the tile
+/// order and sort keys to decide what is on top, rather than the order the
+/// tiles arrived in. That block moves into larger buffers as it fills, and
+/// smaller as it empties, copying what it holds: an image tile's mesh is a
+/// quad. An indexed node's slots instead draw in stretches of one block's
+/// in its tiles' order ([`Segment`]).
 #[derive(Debug)]
 struct Block {
-    /// It holds what draws as points ([`Scene::overlaps`]).
+    /// It holds what draws from lists ([`Scene::overlaps`]).
     points: bool,
     vertices: Arena,
     indices: Arena,
@@ -1588,7 +1589,7 @@ impl Scene {
 
     /// Makes a block of `words` vertex and index words in the first free
     /// slot, its rows empty: they draw once its meshes arrive; the one for
-    /// what draws as `points`, or another. Returns its slot.
+    /// what draws from lists (`points`), or another. Returns its slot.
     fn add_block(&mut self, gpu: &mut dyn Gpu, words: [u32; 2], points: bool) -> u32 {
         let before = gpu.counters();
         let slot = match self.blocks.iter().position(Option::is_none) {
@@ -2471,17 +2472,18 @@ impl Scene {
         inserted
     }
 
-    /// Whether render `node` draws as points, its tiles' draws overlapping
-    /// one another's: its meshes go to the block for them ([`Block`]).
+    /// Whether render `node` draws from a list, which its tiles' draws,
+    /// overlapping one another's, take their order from: points and image
+    /// tiles. Its meshes go to the block for them ([`Block`]).
     pub(crate) fn overlaps(&self, node: u32) -> bool {
-        self.nodes[node as usize].cull.draw == NodeDraw::Points
+        self.nodes[node as usize].cull.draw != NodeDraw::Indexed
     }
 
     /// Takes `lens` words of each pool (vertices, indices, property rows),
     /// all of them or none: the vertices and indices in one block, `block`
-    /// if given, else for what draws as `points` the block for them, grown
-    /// to hold them, else the first other with room for both, else a new
-    /// one. The property rows grow to hold theirs. `Err` only past the
+    /// if given, else for what draws from lists (`points`) the block for
+    /// them, grown to hold them, else the first other with room for both,
+    /// else a new one. The property rows grow to hold theirs. `Err` only past the
     /// device's limits.
     pub(crate) fn alloc_words(
         &mut self,
@@ -2518,7 +2520,7 @@ impl Scene {
         Ok((block, [vertices, indices, props]))
     }
 
-    /// The block for what draws as points ([`Block`]), made or moved into
+    /// The block for what draws from lists ([`Block`]), made or moved into
     /// larger buffers to hold `need` more vertex and index words: the
     /// smallest doublings that do, to the device's limit. `None` past it.
     fn points_block(&mut self, gpu: &mut dyn Gpu, need: [u32; 2]) -> Option<u32> {
@@ -2575,7 +2577,7 @@ impl Scene {
     /// blocks: blocks are made as uploads need them and go only once
     /// empty, so a view that moved on leaves its tiles scattered over
     /// blocks made for more, five times the words they use after a flight.
-    /// The block for what draws as points moves on its own, as it must
+    /// The block for what draws from lists moves on its own, as it must
     /// stay one ([`Block`]). Only blocks whose every held word a mesh
     /// draws move (none of a tile's reserved words still being written),
     /// and only where that gives back at least a first block's words. The
@@ -2659,9 +2661,10 @@ impl Scene {
     }
 
     /// Moves every mesh of blocks `from` into one new block of just their
-    /// words, for what draws as `points` or not, and frees `from`. The
-    /// words move in one submission of GPU copies, ranges that lie end to
-    /// end in one copy, and the meshes keep their order in each row.
+    /// words, for what draws from lists (`points`) or not, and frees
+    /// `from`. The words move in one submission of GPU copies, ranges that
+    /// lie end to end in one copy, and the meshes keep their order in each
+    /// row.
     fn move_blocks(&mut self, gpu: &mut dyn Gpu, from: &[usize], points: bool) {
         let drawn: Vec<[Vec<Range<u32>>; 2]> = (from.iter())
             .map(|&slot| self.drawn_words(slot).expect("checked"))
@@ -3213,7 +3216,7 @@ impl Scene {
     }
 
     /// Halves the property rows, the chunk table or a pool of the block
-    /// for what draws as points while what it holds all lies in its lowest
+    /// for what draws from lists while what it holds all lies in its lowest
     /// quarter, down to its first size: a view that emptied gives back
     /// what it grew them to, and each keeps room to grow fourfold before
     /// it doubles again. At most one a call, copying what it keeps:
