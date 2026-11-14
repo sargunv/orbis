@@ -16672,6 +16672,1330 @@
     }
   }
 },
+  "interpolate-oklab/linear-color": {
+  "expression": [
+    "interpolate-oklab",
+    [
+      "linear"
+    ],
+    [
+      "get",
+      "x"
+    ],
+    1,
+    "red",
+    11,
+    [
+      "get",
+      "color"
+    ]
+  ],
+  "inputs": [
+    [
+      {},
+      {
+        "properties": {
+          "x": 0,
+          "color": "blue"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 6,
+          "color": "blue"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 11,
+          "color": "blue"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 11,
+          "color": "oops blue"
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": false,
+      "isZoomConstant": true,
+      "type": "color"
+    },
+    "outputs": [
+      [
+        1,
+        0,
+        0,
+        1
+      ],
+      [
+        0.550441,
+        0.32562,
+        0.6365,
+        1
+      ],
+      [
+        0,
+        0,
+        1,
+        1
+      ],
+      {
+        "error": "layers[0].paint.some-property[6]: Could not parse color from value 'oops blue'"
+      }
+    ]
+  }
+},
+  "interpolate-oklab/linear-color-array": {
+  "propertySpec": {
+    "type": "colorArray",
+    "property-type": "data-driven",
+    "expression": {
+      "interpolated": true,
+      "parameters": [
+        "feature"
+      ]
+    }
+  },
+  "expression": [
+    "interpolate-oklab",
+    [
+      "linear"
+    ],
+    [
+      "get",
+      "x"
+    ],
+    0,
+    [
+      "literal",
+      [
+        "white",
+        "black"
+      ]
+    ],
+    10,
+    [
+      "get",
+      "colors"
+    ]
+  ],
+  "inputs": [
+    [
+      {},
+      {
+        "properties": {
+          "x": 0,
+          "colors": [
+            "black",
+            "white"
+          ]
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 5,
+          "colors": [
+            "black",
+            "white"
+          ]
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 10,
+          "colors": [
+            "black",
+            "white"
+          ]
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": -1234,
+          "colors": [
+            "black",
+            "white"
+          ]
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 1234,
+          "colors": [
+            "black",
+            "white"
+          ]
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "abcd",
+          "colors": [
+            "black",
+            "white"
+          ]
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": false,
+      "isZoomConstant": true,
+      "type": "colorArray"
+    },
+    "outputs": [
+      {
+        "values": [
+          {
+            "r": 1,
+            "g": 1,
+            "b": 1,
+            "a": 1
+          },
+          {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 1
+          }
+        ]
+      },
+      {
+        "values": [
+          {
+            "r": 0.388572,
+            "g": 0.388572,
+            "b": 0.388572,
+            "a": 1
+          },
+          {
+            "r": 0.388572,
+            "g": 0.388572,
+            "b": 0.388572,
+            "a": 1
+          }
+        ]
+      },
+      {
+        "values": [
+          {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 1
+          },
+          {
+            "r": 1,
+            "g": 1,
+            "b": 1,
+            "a": 1
+          }
+        ]
+      },
+      {
+        "values": [
+          {
+            "r": 1,
+            "g": 1,
+            "b": 1,
+            "a": 1
+          },
+          {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 1
+          }
+        ]
+      },
+      {
+        "values": [
+          {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 1
+          },
+          {
+            "r": 1,
+            "g": 1,
+            "b": 1,
+            "a": 1
+          }
+        ]
+      },
+      {
+        "error": "layers[0].paint.some-property[2]: Expected value to be of type number, but found string instead."
+      }
+    ]
+  }
+},
+  "interpolate-oklab/outside-srgb": {
+  "expression": [
+    "interpolate-oklab",
+    [
+      "linear"
+    ],
+    [
+      "get",
+      "t"
+    ],
+    0,
+    [
+      "get",
+      "from"
+    ],
+    1,
+    [
+      "get",
+      "to"
+    ]
+  ],
+  "inputs": [
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.2,
+          "from": "#11aa11",
+          "to": "#2233ff"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.45,
+          "from": "#11aa11",
+          "to": "#2233ff"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.75,
+          "from": "#11aa11",
+          "to": "#2233ff"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.45,
+          "from": "#00ff00",
+          "to": "#0000ff"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.9,
+          "from": "#ffff00",
+          "to": "#0000ff"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.5,
+          "from": "oklab(0.7 -0.3 0.3)",
+          "to": "oklab(0.4 0.1 -0.3)"
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": false,
+      "isZoomConstant": true,
+      "type": "color"
+    },
+    "outputs": [
+      [
+        0,
+        0.616795,
+        0.404118,
+        1
+      ],
+      [
+        0,
+        0.540051,
+        0.619027,
+        1
+      ],
+      [
+        0,
+        0.408913,
+        0.833161,
+        1
+      ],
+      [
+        0,
+        0.701827,
+        0.715202,
+        1
+      ],
+      [
+        0,
+        0.289172,
+        0.965156,
+        1
+      ],
+      [
+        0.232896,
+        0.538576,
+        0.629525,
+        1
+      ]
+    ]
+  }
+},
+  "interpolate-oklab/premultiplied-alpha": {
+  "expression": [
+    "interpolate-oklab",
+    [
+      "linear"
+    ],
+    [
+      "get",
+      "t"
+    ],
+    0,
+    [
+      "get",
+      "from"
+    ],
+    1,
+    [
+      "get",
+      "to"
+    ]
+  ],
+  "inputs": [
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.5,
+          "from": "oklab(0.7 0.1 0.05 / 0.2)",
+          "to": "oklab(0.55 -0.05 -0.1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.4,
+          "from": "oklab(0.9 -0.02 0.06)",
+          "to": "oklab(0.4 0.08 -0.1 / 0.5)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.5,
+          "from": "transparent",
+          "to": "oklab(0.7 -0.1 0.05)"
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": false,
+      "isZoomConstant": true,
+      "type": "color"
+    },
+    "outputs": [
+      [
+        0.200665,
+        0.291582,
+        0.391546,
+        0.6
+      ],
+      [
+        0.594713,
+        0.565657,
+        0.525844,
+        0.8
+      ],
+      [
+        0.193221,
+        0.350317,
+        0.245964,
+        0.5
+      ]
+    ]
+  }
+},
+  "interpolate-oklab/uninterpolable-output/number": {
+  "expression": [
+    "interpolate-oklab",
+    [
+      "linear"
+    ],
+    [
+      "get",
+      "x"
+    ],
+    0,
+    100,
+    10,
+    [
+      "get",
+      "b"
+    ]
+  ],
+  "inputs": [
+    [
+      {},
+      {
+        "properties": {
+          "x": 0,
+          "b": 200
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 5,
+          "b": 200
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 10,
+          "b": 200
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": -1234,
+          "b": 200
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 1234,
+          "b": 200
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "abcd",
+          "b": 200
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "error",
+      "errors": [
+        {
+          "key": "[4]",
+          "error": "Expected color but found number instead."
+        }
+      ]
+    }
+  }
+},
+  "interpolate-oklch/linear-color": {
+  "expression": [
+    "interpolate-oklch",
+    [
+      "linear"
+    ],
+    [
+      "get",
+      "x"
+    ],
+    1,
+    "red",
+    11,
+    [
+      "get",
+      "color"
+    ]
+  ],
+  "inputs": [
+    [
+      {},
+      {
+        "properties": {
+          "x": 0,
+          "color": "blue"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 5,
+          "color": "blue"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 11,
+          "color": "blue"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 11,
+          "color": "oops blue"
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": false,
+      "isZoomConstant": true,
+      "type": "color"
+    },
+    "outputs": [
+      [
+        1,
+        0,
+        0,
+        1
+      ],
+      [
+        0.812071,
+        0,
+        0.65573,
+        1
+      ],
+      [
+        0,
+        0,
+        1,
+        1
+      ],
+      {
+        "error": "layers[0].paint.some-property[6]: Could not parse color from value 'oops blue'"
+      }
+    ]
+  }
+},
+  "interpolate-oklch/linear-color-array": {
+  "propertySpec": {
+    "type": "colorArray",
+    "property-type": "data-driven",
+    "expression": {
+      "interpolated": true,
+      "parameters": [
+        "feature"
+      ]
+    }
+  },
+  "expression": [
+    "interpolate-oklch",
+    [
+      "linear"
+    ],
+    [
+      "get",
+      "x"
+    ],
+    0,
+    [
+      "literal",
+      [
+        "white",
+        "black"
+      ]
+    ],
+    10,
+    [
+      "get",
+      "colors"
+    ]
+  ],
+  "inputs": [
+    [
+      {},
+      {
+        "properties": {
+          "x": 0,
+          "colors": [
+            "black",
+            "white"
+          ]
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 5,
+          "colors": [
+            "black",
+            "white"
+          ]
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 10,
+          "colors": [
+            "black",
+            "white"
+          ]
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": -1234,
+          "colors": [
+            "black",
+            "white"
+          ]
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 1234,
+          "colors": [
+            "black",
+            "white"
+          ]
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "abcd",
+          "colors": [
+            "black",
+            "white"
+          ]
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": false,
+      "isZoomConstant": true,
+      "type": "colorArray"
+    },
+    "outputs": [
+      {
+        "values": [
+          {
+            "r": 1,
+            "g": 1,
+            "b": 1,
+            "a": 1
+          },
+          {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 1
+          }
+        ]
+      },
+      {
+        "values": [
+          {
+            "r": 0.388572,
+            "g": 0.388572,
+            "b": 0.388572,
+            "a": 1
+          },
+          {
+            "r": 0.388572,
+            "g": 0.388572,
+            "b": 0.388572,
+            "a": 1
+          }
+        ]
+      },
+      {
+        "values": [
+          {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 1
+          },
+          {
+            "r": 1,
+            "g": 1,
+            "b": 1,
+            "a": 1
+          }
+        ]
+      },
+      {
+        "values": [
+          {
+            "r": 1,
+            "g": 1,
+            "b": 1,
+            "a": 1
+          },
+          {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 1
+          }
+        ]
+      },
+      {
+        "values": [
+          {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 1
+          },
+          {
+            "r": 1,
+            "g": 1,
+            "b": 1,
+            "a": 1
+          }
+        ]
+      },
+      {
+        "error": "layers[0].paint.some-property[2]: Expected value to be of type number, but found string instead."
+      }
+    ]
+  }
+},
+  "interpolate-oklch/missing-hue": {
+  "expression": [
+    "interpolate-oklch",
+    [
+      "linear"
+    ],
+    [
+      "get",
+      "t"
+    ],
+    0,
+    [
+      "get",
+      "from"
+    ],
+    1,
+    [
+      "get",
+      "to"
+    ]
+  ],
+  "inputs": [
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.5,
+          "from": "#808080",
+          "to": "oklch(0.6 0.15 250)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.3,
+          "from": "oklch(0.6 0.15 250)",
+          "to": "white"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.5,
+          "from": "black",
+          "to": "white"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.5,
+          "from": "transparent",
+          "to": "oklch(0.7 0.1 150)"
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": false,
+      "isZoomConstant": true,
+      "type": "color"
+    },
+    "outputs": [
+      [
+        0.365422,
+        0.516648,
+        0.673155,
+        1
+      ],
+      [
+        0.439499,
+        0.664262,
+        0.894195,
+        1
+      ],
+      [
+        0.388572,
+        0.388572,
+        0.388572,
+        1
+      ],
+      [
+        0.218129,
+        0.345293,
+        0.245365,
+        0.5
+      ]
+    ]
+  }
+},
+  "interpolate-oklch/outside-srgb": {
+  "expression": [
+    "interpolate-oklch",
+    [
+      "linear"
+    ],
+    [
+      "get",
+      "t"
+    ],
+    0,
+    [
+      "get",
+      "from"
+    ],
+    1,
+    [
+      "get",
+      "to"
+    ]
+  ],
+  "inputs": [
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.2,
+          "from": "#11aa11",
+          "to": "#2233ff"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.45,
+          "from": "#11aa11",
+          "to": "#2233ff"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.75,
+          "from": "#11aa11",
+          "to": "#2233ff"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.5,
+          "from": "red",
+          "to": "blue"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.5,
+          "from": "oklch(0.7 0.1 30 / 0.2)",
+          "to": "oklch(0.5 0.15 250)"
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": false,
+      "isZoomConstant": true,
+      "type": "color"
+    },
+    "outputs": [
+      [
+        0,
+        0.6663,
+        0.401568,
+        1
+      ],
+      [
+        0,
+        0.610393,
+        0.679731,
+        1
+      ],
+      [
+        0,
+        0.444121,
+        0.930316,
+        1
+      ],
+      [
+        0.729906,
+        0,
+        0.760082,
+        1
+      ],
+      [
+        0.340181,
+        0.183684,
+        0.371756,
+        0.6
+      ]
+    ]
+  }
+},
+  "interpolate-oklch/premultiplied-alpha": {
+  "expression": [
+    "interpolate-oklch",
+    [
+      "linear"
+    ],
+    [
+      "get",
+      "t"
+    ],
+    0,
+    [
+      "get",
+      "from"
+    ],
+    1,
+    [
+      "get",
+      "to"
+    ]
+  ],
+  "inputs": [
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.5,
+          "from": "oklch(0.7 0.1 30 / 0.2)",
+          "to": "oklch(0.5 0.1 250)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.4,
+          "from": "oklch(0.9 0.05 100)",
+          "to": "oklch(0.4 0.12 300 / 0.5)"
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": false,
+      "isZoomConstant": true,
+      "type": "color"
+    },
+    "outputs": [
+      [
+        0.315825,
+        0.208495,
+        0.340319,
+        0.6
+      ],
+      [
+        0.693458,
+        0.52439,
+        0.477671,
+        0.8
+      ]
+    ]
+  }
+},
+  "interpolate-oklch/shorter-hue": {
+  "expression": [
+    "interpolate-oklch",
+    [
+      "linear"
+    ],
+    [
+      "get",
+      "t"
+    ],
+    0,
+    [
+      "get",
+      "from"
+    ],
+    1,
+    [
+      "get",
+      "to"
+    ]
+  ],
+  "inputs": [
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.5,
+          "from": "oklch(0.6 0.15 350)",
+          "to": "oklch(0.7 0.12 20)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.25,
+          "from": "oklch(0.7 0.12 20)",
+          "to": "oklch(0.6 0.15 350)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "t": 0.5,
+          "from": "oklch(0.6 0.15 10)",
+          "to": "oklch(0.6 0.15 185)"
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": false,
+      "isZoomConstant": true,
+      "type": "color"
+    },
+    "outputs": [
+      [
+        0.822271,
+        0.409867,
+        0.517731,
+        1
+      ],
+      [
+        0.850889,
+        0.45163,
+        0.505772,
+        1
+      ],
+      [
+        0.604632,
+        0.508857,
+        0,
+        1
+      ]
+    ]
+  }
+},
+  "interpolate-oklch/uninterpolable-output/number": {
+  "expression": [
+    "interpolate-oklch",
+    [
+      "linear"
+    ],
+    [
+      "get",
+      "x"
+    ],
+    0,
+    100,
+    10,
+    [
+      "get",
+      "b"
+    ]
+  ],
+  "inputs": [
+    [
+      {},
+      {
+        "properties": {
+          "x": 0,
+          "b": 200
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 5,
+          "b": 200
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 10,
+          "b": 200
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": -1234,
+          "b": 200
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": 1234,
+          "b": 200
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "abcd",
+          "b": 200
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "error",
+      "errors": [
+        {
+          "key": "[4]",
+          "error": "Expected color but found number instead."
+        }
+      ]
+    }
+  }
+},
   "interpolate/cubic-bezier": {
   "expression": [
     "number",
@@ -21113,6 +22437,266 @@
     ]
   }
 },
+  "legacy/exponential/color-oklab": {
+  "expression": {
+    "type": "exponential",
+    "property": "p",
+    "stops": [
+      [
+        0,
+        "red"
+      ],
+      [
+        1,
+        "blue"
+      ]
+    ],
+    "colorSpace": "oklab"
+  },
+  "propertySpec": {
+    "type": "color",
+    "property-type": "data-driven",
+    "expression": {
+      "interpolated": true,
+      "parameters": [
+        "zoom",
+        "feature"
+      ]
+    }
+  },
+  "inputs": [
+    [
+      {},
+      {
+        "properties": {}
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "p": -1
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "p": 0
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "p": 0.5
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "p": 1
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "p": 2
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "p": "0"
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": false,
+      "isZoomConstant": true,
+      "type": "color"
+    },
+    "outputs": [
+      {
+        "error": "layers[0].paint.some-property[2]: Expected value to be of type number, but found null instead."
+      },
+      [
+        1,
+        0,
+        0,
+        1
+      ],
+      [
+        1,
+        0,
+        0,
+        1
+      ],
+      [
+        0.550441,
+        0.32562,
+        0.6365,
+        1
+      ],
+      [
+        0,
+        0,
+        1,
+        1
+      ],
+      [
+        0,
+        0,
+        1,
+        1
+      ],
+      {
+        "error": "layers[0].paint.some-property[2]: Expected value to be of type number, but found string instead."
+      }
+    ]
+  }
+},
+  "legacy/exponential/color-oklch": {
+  "expression": {
+    "type": "exponential",
+    "property": "p",
+    "stops": [
+      [
+        0,
+        "black"
+      ],
+      [
+        1,
+        "white"
+      ]
+    ],
+    "colorSpace": "oklch"
+  },
+  "propertySpec": {
+    "type": "color",
+    "property-type": "data-driven",
+    "expression": {
+      "interpolated": true,
+      "parameters": [
+        "zoom",
+        "feature"
+      ]
+    }
+  },
+  "inputs": [
+    [
+      {},
+      {
+        "properties": {}
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "p": -1
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "p": 0
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "p": 0.5
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "p": 1
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "p": 2
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "p": "0"
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": false,
+      "isZoomConstant": true,
+      "type": "color"
+    },
+    "outputs": [
+      {
+        "error": "layers[0].paint.some-property[2]: Expected value to be of type number, but found null instead."
+      },
+      [
+        0,
+        0,
+        0,
+        1
+      ],
+      [
+        0,
+        0,
+        0,
+        1
+      ],
+      [
+        0.388572,
+        0.388572,
+        0.388572,
+        1
+      ],
+      [
+        1,
+        1,
+        1,
+        1
+      ],
+      [
+        1,
+        1,
+        1,
+        1
+      ],
+      {
+        "error": "layers[0].paint.some-property[2]: Expected value to be of type number, but found string instead."
+      }
+    ]
+  }
+},
   "legacy/exponential/composite": {
   "expression": {
     "type": "exponential",
@@ -21248,6 +22832,222 @@
       {
         "error": "layers[0].paint.some-property[4][2]: Expected value to be of type number, but found string instead."
       }
+    ]
+  }
+},
+  "legacy/exponential/composite-color-oklab": {
+  "expression": {
+    "type": "exponential",
+    "property": "p",
+    "colorSpace": "oklab",
+    "stops": [
+      [
+        {
+          "zoom": 0,
+          "value": 0
+        },
+        "red"
+      ],
+      [
+        {
+          "zoom": 0,
+          "value": 10
+        },
+        "blue"
+      ],
+      [
+        {
+          "zoom": 10,
+          "value": 0
+        },
+        "blue"
+      ],
+      [
+        {
+          "zoom": 10,
+          "value": 10
+        },
+        "blue"
+      ]
+    ]
+  },
+  "propertySpec": {
+    "type": "color",
+    "property-type": "data-driven",
+    "expression": {
+      "interpolated": true,
+      "parameters": [
+        "zoom",
+        "feature"
+      ]
+    }
+  },
+  "inputs": [
+    [
+      {
+        "zoom": 0
+      },
+      {
+        "properties": {
+          "p": 5
+        }
+      }
+    ],
+    [
+      {
+        "zoom": 5
+      },
+      {
+        "properties": {
+          "p": 0
+        }
+      }
+    ],
+    [
+      {
+        "zoom": 10
+      },
+      {
+        "properties": {
+          "p": 10
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": false,
+      "isZoomConstant": false,
+      "type": "color"
+    },
+    "outputs": [
+      [
+        0.550441,
+        0.32562,
+        0.6365,
+        1
+      ],
+      [
+        0.550441,
+        0.32562,
+        0.6365,
+        1
+      ],
+      [
+        0,
+        0,
+        1,
+        1
+      ]
+    ]
+  }
+},
+  "legacy/exponential/composite-color-oklch": {
+  "expression": {
+    "type": "exponential",
+    "property": "p",
+    "colorSpace": "oklch",
+    "stops": [
+      [
+        {
+          "zoom": 0,
+          "value": 0
+        },
+        "black"
+      ],
+      [
+        {
+          "zoom": 0,
+          "value": 10
+        },
+        "white"
+      ],
+      [
+        {
+          "zoom": 10,
+          "value": 0
+        },
+        "white"
+      ],
+      [
+        {
+          "zoom": 10,
+          "value": 10
+        },
+        "white"
+      ]
+    ]
+  },
+  "propertySpec": {
+    "type": "color",
+    "property-type": "data-driven",
+    "expression": {
+      "interpolated": true,
+      "parameters": [
+        "zoom",
+        "feature"
+      ]
+    }
+  },
+  "inputs": [
+    [
+      {
+        "zoom": 0
+      },
+      {
+        "properties": {
+          "p": 5
+        }
+      }
+    ],
+    [
+      {
+        "zoom": 5
+      },
+      {
+        "properties": {
+          "p": 0
+        }
+      }
+    ],
+    [
+      {
+        "zoom": 10
+      },
+      {
+        "properties": {
+          "p": 10
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": false,
+      "isZoomConstant": false,
+      "type": "color"
+    },
+    "outputs": [
+      [
+        0.388572,
+        0.388572,
+        0.388572,
+        1
+      ],
+      [
+        0.388572,
+        0.388572,
+        0.388572,
+        1
+      ],
+      [
+        1,
+        1,
+        1,
+        1
+      ]
     ]
   }
 },
@@ -31644,6 +33444,1533 @@
         0,
         1
       ]
+    ]
+  }
+},
+  "to-color/oklab": {
+  "expression": [
+    "to-color",
+    [
+      "get",
+      "x"
+    ]
+  ],
+  "inputs": [
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(70% 0.086603 0.05)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.5 -0.093969 -0.034202)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(62.8% 0.225 0.126)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(96.8% -0.071 0.199)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.1 0.1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(60% 25% 25%)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 -25% 25%)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "OKLAB(60% 0.1 0.1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(  0.6   0.1  0.1  /  0.5  )"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.1 0.1/0.5)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6\t0.1\n0.1 /\t50%)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(6e-1 1E-1 +1e-1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(+.6 .1 .1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.45 0.05 -0.06 / 25%)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.8 -0.04 0.02 / 0.75)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.1 0.1 / 1.5)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.1 0.1 / -1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.1 0.1 / none)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.1 0.1 / 0)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(none 0.1 0.1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0 0.1 0.1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(-0.1 0.1 0.1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 none none)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 none 0.1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.1 none)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(none none none / none)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(1.2 0.1 0)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(120% 0.1 0)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0 0)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.7 -0.229813 0.192836)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.3 0.216506 0.125)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.7 -0.3 0.3)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.4 0.1 -0.3)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 -100% 100%)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.15 -0.15 / 0.6)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0 1e110)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 -1e300 -1e300)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6, 0.1, 0.1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.1 0.1 0.5)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.1 0.1 /)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.1 0.1deg)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6deg 0.1 0.1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 none% 0.1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab (0.6 0.1 0.1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.1 0.1))"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(1. 0.1 0.1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.1 0.1 / 50% 1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 1e999 0.1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.1 0.1"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab()"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.1 0.1 / 0.5 / 0.5)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 --0.1 0.1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(0.6 0.1 9e)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklab(a b c)"
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": false,
+      "isZoomConstant": true,
+      "type": "color"
+    },
+    "outputs": [
+      [
+        0.836736,
+        0.526625,
+        0.475198,
+        1
+      ],
+      [
+        0,
+        0.453038,
+        0.476873,
+        1
+      ],
+      [
+        1,
+        0,
+        0,
+        1
+      ],
+      [
+        1,
+        0.999561,
+        0,
+        1
+      ],
+      [
+        0.76466,
+        0.376467,
+        0.181543,
+        1
+      ],
+      [
+        0.76466,
+        0.376467,
+        0.181543,
+        1
+      ],
+      [
+        0.348346,
+        0.572927,
+        0.198555,
+        1
+      ],
+      [
+        0.76466,
+        0.376467,
+        0.181543,
+        1
+      ],
+      [
+        0.38233,
+        0.188233,
+        0.0907717,
+        0.5
+      ],
+      [
+        0.38233,
+        0.188233,
+        0.0907717,
+        0.5
+      ],
+      [
+        0.38233,
+        0.188233,
+        0.0907717,
+        0.5
+      ],
+      [
+        0.76466,
+        0.376467,
+        0.181543,
+        1
+      ],
+      [
+        0.76466,
+        0.376467,
+        0.181543,
+        1
+      ],
+      [
+        0.0965094,
+        0.0710915,
+        0.115465,
+        0.25
+      ],
+      [
+        0.495849,
+        0.584178,
+        0.519255,
+        0.75
+      ],
+      [
+        0.76466,
+        0.376467,
+        0.181543,
+        1
+      ],
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0.00443053,
+        0.00769075,
+        0,
+        1
+      ],
+      [
+        0.00443053,
+        0.00769075,
+        0,
+        1
+      ],
+      [
+        0.00443053,
+        0.00769075,
+        0,
+        1
+      ],
+      [
+        0.502109,
+        0.502109,
+        0.502109,
+        1
+      ],
+      [
+        0.593718,
+        0.490827,
+        0.190116,
+        1
+      ],
+      [
+        0.692324,
+        0.39884,
+        0.492791,
+        1
+      ],
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        1,
+        0.891362,
+        0.989415,
+        1
+      ],
+      [
+        1,
+        0.891362,
+        0.989415,
+        1
+      ],
+      [
+        0.502109,
+        0.502109,
+        0.502109,
+        1
+      ],
+      [
+        0,
+        0.771585,
+        0,
+        1
+      ],
+      [
+        0.509169,
+        0,
+        0,
+        1
+      ],
+      [
+        0,
+        0.791169,
+        0,
+        1
+      ],
+      [
+        0.346025,
+        0,
+        0.884697,
+        1
+      ],
+      [
+        0,
+        0.683598,
+        0,
+        1
+      ],
+      [
+        0.409144,
+        0.177653,
+        0.500383,
+        0.6
+      ],
+      [
+        0,
+        1,
+        0,
+        1
+      ],
+      [
+        0,
+        0,
+        1,
+        1
+      ],
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab(0.6, 0.1, 0.1)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab(0.6 0.1)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab(0.6 0.1 0.1 0.5)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab(0.6 0.1 0.1 /)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab(0.6 0.1 0.1deg)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab(0.6deg 0.1 0.1)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab(0.6 none% 0.1)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab (0.6 0.1 0.1)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab(0.6 0.1 0.1))'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab(1. 0.1 0.1)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab(0.6 0.1 0.1 / 50% 1)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab(0.6 1e999 0.1)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab(0.6 0.1 0.1'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab()'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab(0.6 0.1 0.1 / 0.5 / 0.5)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab(0.6 --0.1 0.1)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab(0.6 0.1 9e)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklab(a b c)'"
+      }
+    ]
+  }
+},
+  "to-color/oklch": {
+  "expression": [
+    "to-color",
+    [
+      "get",
+      "x"
+    ]
+  ],
+  "inputs": [
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(70% 0.1 30)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.5 0.1 200)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(50% 25% 120deg)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 90deg)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 100grad)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 1.5707963267948966rad)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 0.25turn)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 450)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 -270deg)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(60% 25% 90)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "OKLCH(60% 0.1 90DEG)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(  0.6   0.1  90  /  0.5  )"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 90/0.5)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6\t0.1\n90 /\t50%)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(6e-1 1E-1 9e1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(+.6 .1 +90)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.45 0.08 315 / 25%)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.8 0.05 160 / 0.75)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 90 / 1.5)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 90 / -1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 90 / none)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 90 / 0)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(none 0.1 90)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 none 90)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 none)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(none none none / none)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(1.2 0.1 30)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(120% 0.1 30)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(-0.1 0.1 30)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 -0.1 30)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0 30)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.7 0.3 140)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.9 0.3 300)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.5 0.4 264)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.96 0.1 200)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.3 0.25 30)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.85 0.4 100)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 100% 330 / 0.6)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 1e110 90)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 1e104 30)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6, 0.1, 90)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 90 0.5)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 90 /)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 90%)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6deg 0.1 90)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 90 deg)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 90grads)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch (0.6 0.1 90)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 90))"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(1. 0.1 90)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 90 / 50% 1)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 1e999)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 nonedeg)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 90"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch()"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 90 / 0.5 / 0.5)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 --90)"
+        }
+      }
+    ],
+    [
+      {},
+      {
+        "properties": {
+          "x": "oklch(0.6 0.1 9e)"
+        }
+      }
+    ]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": false,
+      "isZoomConstant": true,
+      "type": "color"
+    },
+    "outputs": [
+      [
+        0.836736,
+        0.526626,
+        0.475198,
+        1
+      ],
+      [
+        0,
+        0.453038,
+        0.476873,
+        1
+      ],
+      [
+        0.36122,
+        0.420355,
+        0.128558,
+        1
+      ],
+      [
+        0.593718,
+        0.490827,
+        0.190116,
+        1
+      ],
+      [
+        0.593718,
+        0.490827,
+        0.190116,
+        1
+      ],
+      [
+        0.593718,
+        0.490827,
+        0.190116,
+        1
+      ],
+      [
+        0.593718,
+        0.490827,
+        0.190116,
+        1
+      ],
+      [
+        0.593718,
+        0.490827,
+        0.190116,
+        1
+      ],
+      [
+        0.593718,
+        0.490827,
+        0.190116,
+        1
+      ],
+      [
+        0.593718,
+        0.490827,
+        0.190116,
+        1
+      ],
+      [
+        0.593718,
+        0.490827,
+        0.190116,
+        1
+      ],
+      [
+        0.296859,
+        0.245413,
+        0.095058,
+        0.5
+      ],
+      [
+        0.296859,
+        0.245413,
+        0.095058,
+        0.5
+      ],
+      [
+        0.296859,
+        0.245413,
+        0.095058,
+        0.5
+      ],
+      [
+        0.593718,
+        0.490827,
+        0.190116,
+        1
+      ],
+      [
+        0.593718,
+        0.490827,
+        0.190116,
+        1
+      ],
+      [
+        0.0999638,
+        0.0696122,
+        0.113477,
+        0.25
+      ],
+      [
+        0.478585,
+        0.588707,
+        0.525818,
+        0.75
+      ],
+      [
+        0.593718,
+        0.490827,
+        0.190116,
+        1
+      ],
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0.00932582,
+        0,
+        1
+      ],
+      [
+        0.502109,
+        0.502109,
+        0.502109,
+        1
+      ],
+      [
+        0.692324,
+        0.39884,
+        0.492791,
+        1
+      ],
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        1,
+        0.903276,
+        0.843808,
+        1
+      ],
+      [
+        1,
+        0.903276,
+        0.843808,
+        1
+      ],
+      [
+        0.00378755,
+        0.00010024,
+        0,
+        1
+      ],
+      [
+        0.502109,
+        0.502109,
+        0.502109,
+        1
+      ],
+      [
+        0.502109,
+        0.502109,
+        0.502109,
+        1
+      ],
+      [
+        0,
+        0.771585,
+        0,
+        1
+      ],
+      [
+        1,
+        0.625509,
+        1,
+        1
+      ],
+      [
+        0.0830442,
+        0,
+        1,
+        1
+      ],
+      [
+        0.608143,
+        1,
+        1,
+        1
+      ],
+      [
+        0.509169,
+        0,
+        0,
+        1
+      ],
+      [
+        1,
+        0.76221,
+        0,
+        1
+      ],
+      [
+        0.561865,
+        0,
+        0.552985,
+        0.6
+      ],
+      [
+        0,
+        1,
+        0,
+        1
+      ],
+      [
+        1,
+        1,
+        0,
+        1
+      ],
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(0.6, 0.1, 90)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(0.6 0.1)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(0.6 0.1 90 0.5)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(0.6 0.1 90 /)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(0.6 0.1 90%)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(0.6deg 0.1 90)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(0.6 0.1 90 deg)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(0.6 0.1 90grads)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch (0.6 0.1 90)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(0.6 0.1 90))'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(1. 0.1 90)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(0.6 0.1 90 / 50% 1)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(0.6 0.1 1e999)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(0.6 0.1 nonedeg)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(0.6 0.1 90'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch()'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(0.6 0.1 90 / 0.5 / 0.5)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(0.6 0.1 --90)'"
+      },
+      {
+        "error": "layers[0].paint.some-property: Could not parse color from value 'oklch(0.6 0.1 9e)'"
+      }
     ]
   }
 },

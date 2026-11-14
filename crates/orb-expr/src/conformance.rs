@@ -444,5 +444,5 @@ fn style_spec_expression_fixtures() {
         fixtures.len(),
         failures.join("\n")
     );
-    assert_eq!(fixtures.len(), 583);
+    assert_eq!(fixtures.len(), 601);
 }

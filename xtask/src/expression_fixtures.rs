@@ -5,9 +5,10 @@ use std::io::Read;
 use flate2::read::GzDecoder;
 use tar::Archive;
 
-// The version in the pinned GL JS package-lock.json, rather than style-spec's
-// moving default branch. Keep SOURCE.md and the count assertion in sync.
-const COMMIT: &str = "c25cc5da789337fca2df8d0eaaeeecd5eea7f634";
+// A fixed style-spec commit, which may run ahead of the version the pinned GL
+// JS locks to cover what the spec newly approves. Keep SOURCE.md and the count
+// assertion in sync.
+const COMMIT: &str = "5d212533ee7456c1006b3c8d44e1f9e1d83b796c";
 const TESTS: &str = "test/integration/expression/tests/";
 pub(crate) fn bundle() -> Result<(), String> {
     let url = format!("https://codeload.github.com/maplibre/maplibre-style-spec/tar.gz/{COMMIT}");
@@ -39,9 +40,9 @@ pub(crate) fn bundle() -> Result<(), String> {
             tests.insert(name.to_owned(), json);
         }
     }
-    if tests.len() != 583 {
+    if tests.len() != 601 {
         return Err(format!(
-            "expected 583 expression fixtures, found {}",
+            "expected 601 expression fixtures, found {}",
             tests.len()
         ));
     }

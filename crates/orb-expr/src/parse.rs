@@ -68,6 +68,8 @@ const OPERATORS: &[&str] = &[
     "interpolate",
     "interpolate-hcl",
     "interpolate-lab",
+    "interpolate-oklab",
+    "interpolate-oklch",
     "is-supported-script",
     "join",
     "length",
@@ -624,9 +626,8 @@ impl<'l> Parser<'l> {
             "case" => self.parse_case(items, span, key, expected),
             "coalesce" => self.parse_coalesce(items, span, key, expected),
             "step" => self.parse_step(items, span, key, expected),
-            "interpolate" | "interpolate-hcl" | "interpolate-lab" => {
-                self.parse_interpolate(items, span, key, expected)
-            }
+            "interpolate" | "interpolate-hcl" | "interpolate-lab" | "interpolate-oklch"
+            | "interpolate-oklab" => self.parse_interpolate(items, span, key, expected),
             "let" | "var" | "semiliteral" | "global-state" | "index-of" | "slice" | "collator"
             | "number-format" | "format" | "image" | "within" | "distance" => {
                 self.parse_extra(op, items, span, key, expected)
@@ -1061,6 +1062,8 @@ impl<'l> Parser<'l> {
         let color_space = match items[0].as_str() {
             Some("interpolate-lab") => ColorSpace::Lab,
             Some("interpolate-hcl") => ColorSpace::Hcl,
+            Some("interpolate-oklch") => ColorSpace::Oklch,
+            Some("interpolate-oklab") => ColorSpace::Oklab,
             _ => ColorSpace::Rgb,
         };
         let mut output_type =

@@ -214,6 +214,8 @@ pub(crate) enum ColorSpace {
     Rgb,
     Lab,
     Hcl,
+    Oklch,
+    Oklab,
 }
 
 #[derive(Clone, Debug, PartialEq)]

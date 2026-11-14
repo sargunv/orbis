@@ -414,7 +414,7 @@ struct Function<'a> {
     property: Option<&'a Json>,
     base: Option<f64>,
     default: Option<&'a Json>,
-    /// `interpolate`, `interpolate-hcl` or `interpolate-lab`.
+    /// `interpolate` or one of its colour-space variants.
     interpolate: &'static str,
     stops: Option<Vec<(&'a Json, &'a Json)>>,
 }
@@ -478,12 +478,14 @@ impl<'a> Function<'a> {
                 Some("rgb") => "interpolate",
                 Some("hcl") => "interpolate-hcl",
                 Some("lab") => "interpolate-lab",
+                Some("oklch") => "interpolate-oklch",
+                Some("oklab") => "interpolate-oklab",
                 _ => {
                     error(
                         errors,
                         ".colorSpace",
                         c.span,
-                        format!("expected one of [rgb, lab, hcl], {c} found"),
+                        format!("expected one of [rgb, lab, hcl, oklch, oklab], {c} found"),
                     );
                     "interpolate"
                 }
@@ -783,7 +785,7 @@ fn fallback(
 
 /// `convertPropertyFunction`. A `nested` function is one zoom level of a
 /// zoom-and-property function, whose parameters GL JS rebuilds without
-/// `base` or `colorSpace`.
+/// `base`.
 fn property_function(
     f: &Function<'_>,
     spec: &PropertySpec,
@@ -792,11 +794,7 @@ fn property_function(
     stops: Vec<(Json, Json)>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Json> {
-    let (base, interpolate) = if nested {
-        (None, "interpolate")
-    } else {
-        (f.base, f.interpolate)
-    };
+    let base = if nested { None } else { f.base };
     let property = f.property.cloned().unwrap_or_else(|| b.string(""));
     let get = b.array(vec![b.string("get"), property]);
     let with_default = |curve: Json| match f.default {
@@ -843,7 +841,7 @@ fn property_function(
         }
         FunctionType::Exponential => {
             let mut expr = vec![
-                b.string(interpolate),
+                b.string(f.interpolate),
                 interpolation(b, base),
                 b.array(vec![b.string("number"), get.clone()]),
             ];

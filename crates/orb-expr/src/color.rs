@@ -57,7 +57,8 @@ impl Color {
 
     /// Parses a CSS colour: a keyword (including `transparent`), hex with 3,
     /// 4, 6 or 8 digits, `rgb()`/`rgba()` or `hsl()`/`hsla()` in comma or
-    /// space syntax. `None` if the string is not a colour.
+    /// space syntax, or `oklch()`/`oklab()`, clipped to sRGB. `None` if the
+    /// string is not a colour.
     pub fn parse(input: &str) -> Option<Self> {
         let [r, g, b, a] = parse_css(input)?;
         Some(Self::new(r, g, b, a))
@@ -119,7 +120,105 @@ fn parse_css(input: &str) -> Option<[f64; 4]> {
     {
         return parse_hsl(args);
     }
+    if let Some(args) = input.strip_prefix("oklch(") {
+        let [l, c, h, a] = parse_ok(args, [1.0, 0.4, 0.0])?;
+        return Some(crate::color_spaces::oklch_to_rgb([
+            clamp(l, 0.0, 1.0),
+            c.max(0.0),
+            h % 360.0,
+            clamp(a, 0.0, 1.0),
+        ]));
+    }
+    if let Some(args) = input.strip_prefix("oklab(") {
+        let [l, a, b, alpha] = parse_ok(args, [1.0, 0.4, 0.4])?;
+        return Some(crate::color_spaces::oklab_to_rgb([
+            clamp(l, 0.0, 1.0),
+            a,
+            b,
+            clamp(alpha, 0.0, 1.0),
+        ]));
+    }
     None
+}
+
+/// CSS's `<number>`, `[+-]?(\d+(\.\d+)?|\.\d+)(e[+-]?\d+)?`, and the
+/// rest of `s`.
+fn css_number(s: &str) -> Option<(&str, &str)> {
+    let b = s.as_bytes();
+    let digits = |i: usize| {
+        i + b[i.min(b.len())..]
+            .iter()
+            .take_while(|c| c.is_ascii_digit())
+            .count()
+    };
+    let mut i = usize::from(matches!(b.first(), Some(b'+' | b'-')));
+    let whole = digits(i);
+    i = if b.get(whole) == Some(&b'.') && digits(whole + 1) > whole + 1 {
+        digits(whole + 1)
+    } else if whole > i {
+        whole
+    } else {
+        return None;
+    };
+    if b.get(i) == Some(&b'e') {
+        let sign = i + 1 + usize::from(matches!(b.get(i + 1), Some(b'+' | b'-')));
+        if digits(sign) > sign {
+            i = digits(sign);
+        }
+    }
+    Some(s.split_at(i))
+}
+
+/// One `oklch()`/`oklab()` argument and the rest of `s`: `none` (zero) or
+/// a number, as a fraction of `percent` with `%`, or for a hue (`percent`
+/// zero) in degrees, wrapped within one turn of its unit first so that no
+/// finite angle overflows.
+fn ok_argument(s: &str, percent: f64) -> Option<(f64, &str)> {
+    if let Some(rest) = s.strip_prefix("none") {
+        return Some((0.0, rest));
+    }
+    let (n, rest) = css_number(s)?;
+    let n = number(n);
+    if percent == 0.0 {
+        for (unit, degrees) in [
+            ("deg", 1.0),
+            ("grad", 0.9),
+            ("rad", 180.0 / std::f64::consts::PI),
+            ("turn", 360.0),
+        ] {
+            if let Some(rest) = rest.strip_prefix(unit) {
+                return Some(((n % (360.0 / degrees)) * degrees, rest));
+            }
+        }
+        Some((n, rest))
+    } else if let Some(rest) = rest.strip_prefix('%') {
+        Some((n / 100.0 * percent, rest))
+    } else {
+        Some((n, rest))
+    }
+}
+
+/// The arguments of `oklch()` or `oklab()`: three separated by whitespace,
+/// then an optional alpha after `/`. `percents` gives each one's 100%, or
+/// zero for a hue. `None` unless all four are finite.
+fn parse_ok(s: &str, percents: [f64; 3]) -> Option<[f64; 4]> {
+    let mut rest = s.trim_start_matches(is_regex_space);
+    let mut v = [0.0, 0.0, 0.0, 1.0];
+    for (i, percent) in percents.into_iter().enumerate() {
+        let (n, tail) = ok_argument(rest, percent)?;
+        v[i] = n;
+        let trimmed = tail.trim_start_matches(is_regex_space);
+        if i < 2 && trimmed.len() == tail.len() {
+            return None;
+        }
+        rest = trimmed;
+    }
+    if let Some(tail) = rest.strip_prefix('/') {
+        let (n, tail) = ok_argument(tail.trim_start_matches(is_regex_space), 1.0)?;
+        v[3] = n;
+        rest = tail.trim_start_matches(is_regex_space);
+    }
+    (rest == ")" && v.iter().all(|n| n.is_finite())).then_some(v)
 }
 
 fn parse_hex(hex: &str) -> Option<[f64; 4]> {
@@ -450,6 +549,11 @@ mod tests {
             rgba("hsl(480deg 100% 50% / .5)"),
             Some([0.0, 1.0, 0.0, 0.5])
         );
+    }
+
+    #[test]
+    fn wraps_huge_hue_angles_before_converting_them() {
+        assert_eq!(rgba("oklch(0.6 0.1 1e306turn)"), rgba("oklch(0.6 0.1 0)"),);
     }
 
     #[test]

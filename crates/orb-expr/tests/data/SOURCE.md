@@ -4,11 +4,10 @@ The complete `test/integration/expression/tests/**/test.json` suite from
 [maplibre-style-spec](https://github.com/maplibre/maplibre-style-spec), bundled
 by fixture path into `expression-fixtures.json` with no filtering or changes.
 
-- Version: 26.5.1
-- Commit: c25cc5da789337fca2df8d0eaaeeecd5eea7f634 (tag v26.5.1)
-- Version source: `package-lock.json` of GL JS commit
-  2b68611a4e2d4f7f076f6c6ebf758e2d53f91471 (pinned in `xtask/src/fixtures.rs`).
-- Fixtures: **583**.
+- Commit: 5d212533ee7456c1006b3c8d44e1f9e1d83b796c (main after v26.7.0, with
+  `oklab()` and `interpolate-oklab`), ahead of the version the pinned GL JS
+  locks, so that the suite covers what the spec approves as soon as it does.
+- Fixtures: **601**.
 - License: upstream `LICENSE.txt`, copied as `LICENSE-style-spec.txt`.
 - Regenerate: `cargo xtask fixtures expressions`.
 
