@@ -46,7 +46,7 @@ pub use elevation::{ElevationCurve, ElevationOp};
 pub use eval::{EvalError, interpolation_factor};
 pub use filter::{Filter, FilterGroups};
 pub use ir::Interpolation;
-pub use locale::Collator;
+pub use locale::{Collator, HostLocale, NumberFormat, set_host_locale};
 pub use property::{Kind, PropertyExpression, PropertySpec, PropertyType, ZoomCurve};
 pub use scale::{CameraScale, Scale};
 pub use tile::{Bound, FeatureData};

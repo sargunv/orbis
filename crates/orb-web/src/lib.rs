@@ -38,12 +38,14 @@ pub use map::{FrameGpu, FrameMemory, FrameStats, FrameTimes, OrbisMap, create_ma
 #[cfg(target_arch = "wasm32")]
 pub use placement::PlacementWorker;
 
-/// Panics say why on the console in a build with `panic-messages`
-/// (`cargo xtask web --panics`), in every instance: the map's and its
-/// workers'.
-#[cfg(all(target_arch = "wasm32", feature = "panic-messages"))]
+/// Every instance's start, the map's and its workers': locale expressions
+/// ask the browser's `Intl`, and in a build with `panic-messages` (`cargo
+/// xtask web --panics`) panics say why on the console.
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
-fn panic_messages() {
+fn start() {
+    orb_expr::set_host_locale(Box::new(host::BrowserLocale));
+    #[cfg(feature = "panic-messages")]
     std::panic::set_hook(Box::new(|info| {
         web_sys::console::error_1(&format!("orbis panicked: {info}").into());
     }));

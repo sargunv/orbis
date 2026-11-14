@@ -2,7 +2,10 @@
 
 #![forbid(unsafe_code)]
 
+mod locale;
 mod storage;
+
+pub(crate) use locale::BrowserLocale;
 
 pub(crate) use storage::OpfsStorage;
 
