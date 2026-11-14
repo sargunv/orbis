@@ -2599,7 +2599,7 @@ impl Renderer {
                 bytemuck::cast_slice(&self.node_words[nodes.start * stride..nodes.end * stride]),
             );
         }
-        let generation = self.terrain.as_ref().map(|t| t.layout().generation);
+        let layout = self.terrain.as_ref().map(terrain::Terrain::layout);
         let requested = gpu.counters().pipelines_requested;
         let mut stats = self.record(gpu, frame, target, clear, clock);
         debug_assert_eq!(
@@ -2607,10 +2607,10 @@ impl Renderer {
             requested,
             "a frame asked for a pipeline"
         );
-        // Drape slots blanked during the frame (pipelines a slot waited for
-        // arrived, or terrain couldn't draw yet) draw again from the next:
-        // this one shows them without what they lacked.
-        stats.waited |= self.terrain.as_ref().map(|t| t.layout().generation) != generation;
+        // Drape slots made stale (pipelines a slot waited for arrived) or
+        // blank (terrain couldn't draw yet) during the frame draw again
+        // from the next: this one shows them without what they lacked.
+        stats.waited |= self.terrain.as_ref().map(terrain::Terrain::layout) != layout;
         stats.draws += u32::from(self.atmosphere.enabled);
         self.end_surface_warps();
         stats

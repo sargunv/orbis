@@ -260,6 +260,8 @@ pub(crate) struct Terrain {
     /// they cover shows their part of them ([`plan`](Self::plan)).
     retired: FxHashMap<CoveredTile, Slot>,
     generation: u64,
+    /// The layout's [`revision`](DrapeLayout::revision) the slots are of.
+    drape_revision: u64,
     /// Drape plans made.
     plans: u64,
     elevation: Arc<TerrainElevation>,
@@ -312,6 +314,7 @@ impl Terrain {
             slots: FxHashMap::default(),
             retired: FxHashMap::default(),
             generation: 0,
+            drape_revision: 0,
             plans: 0,
             elevation: Arc::new(TerrainElevation::empty(tms.clone(), exaggeration)),
             wanted: Vec::new(),
@@ -787,6 +790,14 @@ impl Terrain {
             self.generation = layout.generation;
             self.slots.clear();
             self.retired.clear();
+        }
+        // Every slot stale: each redraws whole, the longest stale first,
+        // showing what it holds until then.
+        if layout.revision != self.drape_revision {
+            self.drape_revision = layout.revision;
+            for slot in self.slots.values_mut() {
+                slot.content.clear();
+            }
         }
         debug_assert!(self.tiles.len() <= layout.tile_slots as usize);
         let places: FxHashMap<CoveredTile, u32> = self.tiles.iter().copied().zip(0..).collect();
@@ -2137,6 +2148,7 @@ mod tests {
             side: 8,
             tile_slots: 6,
             generation: 1,
+            revision: 0,
         };
         let mut terrain = terrain_with(&[]);
         let covered = |index| CoveredTile { index, wrap: 0 };
@@ -2205,6 +2217,7 @@ mod tests {
             side: 8,
             tile_slots: 8,
             generation: 1,
+            revision: 0,
         };
         let covered = |col, row| CoveredTile {
             index: TileIndex::new(12, col, row),
@@ -2263,6 +2276,67 @@ mod tests {
         let mut whole = whole;
         whole.sort_unstable();
         assert_eq!(held, whole);
+    }
+
+    /// Slots made stale all at once (draped layers whose pipelines
+    /// arrived) keep showing what they hold, and redraw whole within the
+    /// frames' budgets, one a frame here: none blank, none coarse.
+    #[test]
+    fn stale_slots_show_what_they_hold_until_the_budget_redraws_them() {
+        let tms = tms();
+        let mercator = *tms.projection();
+        let camera =
+            orb_camera::CameraState::new(orb_crs::Geodetic::new(7.75, 46.02), 11.5, &mercator);
+        let viewport = orb_camera::Viewport {
+            width: 1024.0,
+            height: 768.0,
+        };
+        let view = View::new(&camera, viewport, &orb_crs::Surface::plane(mercator));
+        let layout = DrapeLayout {
+            stacks: [1, 0],
+            side: 8,
+            tile_slots: 8,
+            generation: 1,
+            revision: 0,
+        };
+        let plan = |terrain: &mut Terrain, layout, budget| {
+            terrain.release_slots();
+            terrain.plan(
+                &tms,
+                (&view, 1.0),
+                (layout, budget),
+                &|_| vec![1],
+                &mut |_| None,
+            )
+        };
+        let mut terrain = terrain_with(&[]);
+        terrain.tiles = (0..4)
+            .map(|i| CoveredTile {
+                index: TileIndex::new(12, 2134 + i % 2, 1454 + i / 2),
+                wrap: 0,
+            })
+            .collect();
+        let (_, whole, _) = plan(&mut terrain, layout, None);
+        let mut whole: Vec<(u32, u8)> = whole.iter().map(|r| (r.slot, r.shrink)).collect();
+        whole.sort_unstable();
+        let stale = DrapeLayout {
+            revision: 1,
+            ..layout
+        };
+        let mut redrawn = Vec::new();
+        for frame in 0..4 {
+            let (tiles, redraw, deferred) = plan(&mut terrain, stale, Some((u64::MAX, 1)));
+            assert_eq!((redraw.len(), deferred), (1, frame < 3), "frame {frame}");
+            assert!(
+                tiles.iter().all(|t| t.within == ([0.0; 2], 1.0)),
+                "every tile shows its own slot"
+            );
+            redrawn.extend(redraw.iter().map(|r| (r.slot, r.shrink)));
+        }
+        redrawn.sort_unstable();
+        assert_eq!(redrawn, whole);
+        let (_, redraw, deferred) = plan(&mut terrain, stale, Some((u64::MAX, 1)));
+        assert_eq!((redraw.len(), deferred), (0, false));
     }
 
     /// Heights the app writes over resident DEM tiles cull the cover as a

@@ -289,6 +289,10 @@ pub struct DrapeLayout {
     /// Changes when every slot is blank (other stacks): every slot must
     /// be redrawn.
     pub generation: u64,
+    /// Changes when every slot is stale: each shows what it holds until
+    /// redrawn (draped layers that drew without pipelines since arrived,
+    /// or that drew nothing until now).
+    pub revision: u64,
 }
 
 impl DrapeLayout {
@@ -679,6 +683,7 @@ impl Terrain {
                 side: grid_side(gpu),
                 tile_slots: 0,
                 generation: 0,
+                revision: 0,
             },
             dem: None,
             bound: None,
@@ -840,6 +845,7 @@ impl Terrain {
             side: grid_side(gpu),
             tile_slots: room,
             generation: state.generation + u64::from(made),
+            revision: state.revision,
         };
         Ok(made)
     }
@@ -1243,14 +1249,16 @@ impl Terrain {
             .collect()
     }
 
-    /// Makes every drape slot blank from the next frame's plan, as a new
-    /// atlas does: the map draws them all again (draped layers whose
-    /// pipelines arrived since). The slots this frame redraws still draw:
-    /// it comes between the plan and the passes when pipelines arrive, and
-    /// a slot the plan moved to a texture of another side holds nothing
-    /// there until drawn, which showed as a hole in the ground for a frame.
+    /// Makes every drape slot stale from the next frame's plan (draped
+    /// layers whose pipelines arrived since, or that drew nothing until
+    /// now): each shows what it holds until a frame redraws it, within the
+    /// frames' budgets. Blanking them instead would draw the whole cover
+    /// again in one frame, coarse past its budget, each time a pipeline
+    /// lands. The slots this frame redraws still draw: it comes between
+    /// the plan and the passes when pipelines arrive, and a slot the plan
+    /// moved to a texture of another side holds nothing there until drawn.
     pub(crate) fn redraw_all(&mut self) {
-        self.layout_state.generation += 1;
+        self.layout_state.revision += 1;
     }
 
     /// Makes the pipeline terrain layers of `kind` draw with, unless it is
@@ -1339,10 +1347,11 @@ impl Terrain {
         self.drawn = None;
         let mut drawn = TerrainDrawn::default();
         if !self.ready(gpu) || !downsampler.ready(gpu) {
-            // The map placed this frame's drape for these slots only: it
-            // draws them all again once terrain can.
+            // The map placed this frame's drape for these slots only, which
+            // hold nothing now: every slot is blank, drawn again once
+            // terrain can.
             if !self.pending.is_empty() {
-                self.redraw_all();
+                self.layout_state.generation += 1;
                 self.pending.clear();
             }
             return drawn;
