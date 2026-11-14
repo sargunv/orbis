@@ -1,12 +1,12 @@
 //! Tile fetches taking turns: at most a limit of them at once, and the
 //! waiting ones started lowest rank first. A load's rank is its map's
-//! fetch order ([`fetch_rank`](crate::frame::fetch_rank)), which the map
+//! fetch order ([`fetch_order`](crate::frame::fetch_order)), which the map
 //! sets again every frame for the loads still waiting
 //! ([`Turns::reorder`]), so that the view the camera is at loads first
 //! whichever frame or source asked. A load given up before its turn never
 //! starts; one given up in its turn is aborted. A load beside the view
-//! ([`YIELDING`]) runs in a turn no load ranked before it waits for: one
-//! that waits takes its turn, and the load beside the view is aborted, so
+//! ([`YIELDING`]) runs in a turn no load of the view waits for: one that
+//! waits takes its turn, and the load beside the view is aborted, so
 //! loading on beside the view never holds up the view. Natively each
 //! map's job host holds its turns; in a browser the page holds them for
 //! every job worker, so that one order holds across them all.
@@ -20,8 +20,7 @@ use orb_host::Abort;
 pub type LoadKey = (u64, u32, TileIndex);
 
 /// Ranks from here on are loads beside the view, which load on after the
-/// view leaves them: each yields its turn to a waiting load ranked before
-/// it.
+/// view leaves them: each yields its turn to a waiting load of the view.
 pub const YIELDING: u64 = crate::frame::Tier::Beside.first_rank();
 
 /// Tile fetches started, aborted once started, and completed, since a
@@ -139,8 +138,8 @@ impl Drop for Turn {
 }
 
 /// Starts the lowest ranked waiting fetches while turns are free, or held
-/// by loads beside the view ranked after them, unless another call
-/// already does.
+/// by loads beside the view when a load of the view waits, unless another
+/// call already does.
 fn start_waiting(turns: &Arc<Mutex<State>>) {
     let mut state = turns.lock().expect("turns poisoned");
     if state.starting {
@@ -155,8 +154,10 @@ fn start_waiting(turns: &Arc<Mutex<State>>) {
             break;
         };
         if state.running.len() >= state.limit {
+            // Only a load of the view takes a turn back: one beside it
+            // waits rather than end a fetch as unsure of use as its own.
             let yielding = (state.running.iter().enumerate())
-                .filter(|(_, r)| r.rank >= YIELDING && r.rank > rank)
+                .filter(|(_, r)| rank < YIELDING && r.rank >= YIELDING && r.key.is_some())
                 .max_by_key(|(_, r)| r.rank)
                 .map(|(i, _)| i);
             let Some(yielding) = yielding else {
@@ -229,7 +230,7 @@ impl Turns {
 
     /// Ranks the loads again, waiting and running: each that `rank` ranks
     /// takes that rank; others keep theirs. A running load ranked beside
-    /// the view now yields its turn to a load waiting before it.
+    /// the view now yields its turn to a load of the view that waits.
     pub fn reorder(&self, rank: &dyn Fn(LoadKey) -> Option<u64>) {
         let mut state = self.0.lock().expect("turns poisoned");
         let State {
@@ -359,6 +360,22 @@ mod tests {
         queue(&turns, &started, 3, 4);
         assert_eq!(cols(&started), [0, 1, 2]);
         assert_eq!(turns.counts().aborted, 1);
+    }
+
+    /// A load beside the view keeps its turn from another beside it,
+    /// however near the view's focus: neither is the view's.
+    #[test]
+    fn loads_beside_the_view_keep_their_turns_from_each_other() {
+        let turns = Turns::new(1);
+        let started = Arc::default();
+        queue(&turns, &started, 0, 1);
+        turns.reorder(&|(_, _, t)| (t.col == 0).then_some(YIELDING + 5));
+        queue(&turns, &started, 1, YIELDING + 1);
+        assert_eq!(cols(&started), [0]);
+        assert_eq!(turns.counts().aborted, 0);
+        // The view's load takes it; the other beside the view waits on.
+        queue(&turns, &started, 2, 2);
+        assert_eq!(cols(&started), [0, 2]);
     }
 
     /// A load given up in its turn is aborted, its turn goes to the next,
