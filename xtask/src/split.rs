@@ -36,12 +36,19 @@
 //! build carries [`PAIR`], a hash of its modules: one from another build
 //! (a stale copy, a cache) would write other functions into the table, so
 //! the loader takes only its own.
+//!
+//! Data moves only as a custom section, `orbis.data.<module>`, which
+//! orb-web writes for read-only data only a module's code reads (the bidi
+//! tables) and the split moves into that module; its loader hands the
+//! bytes to core.wasm as the module comes in, before its code can run. Data
+//! in core.wasm's memory stays: no scan of what code reads can be sure a
+//! module alone reads it.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::glue::leb128;
+use crate::glue::{leb128, read_leb128};
 
 use wasmparser::{ElementItems, ExternalKind, Operator, Parser, Payload, TypeRef};
 
@@ -322,6 +329,10 @@ const PLACEHOLDERS: &str = "placeholder";
 /// The custom section every module of a build carries, core.wasm too:
 /// the FNV-1a 64 hash of its feature modules' bytes, in hex.
 const PAIR: &str = "orbis.pair";
+/// The custom section a module's data comes in, then the module's name:
+/// core.wasm carries it as orb-web builds it, and the split moves it into
+/// the module, whose loader hands it over (web/src/builds.ts).
+const DATA: &str = "orbis.data.";
 
 /// What the split moved: per module, its functions and their code bytes.
 pub(crate) struct Split {
@@ -685,6 +696,16 @@ pub(crate) fn split(
             )?;
         }
     }
+    // A module's data, which only its code reads, goes with it (orb-web's
+    // `setModuleData`).
+    for (module, path) in MODULES.iter().zip(&paths) {
+        let name = format!("{DATA}{}", module.name);
+        if path.exists()
+            && let Some(data) = take_section(primary, &name)?
+        {
+            append_section(path, &name, &data)?;
+        }
+    }
     // A build's modules know each other by the hash of theirs.
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for path in paths.iter().filter(|p| p.exists()) {
@@ -718,6 +739,36 @@ pub(crate) fn split(
         ));
     }
     Ok((split, paths))
+}
+
+/// Takes custom section `name` out of the module at `path`, if it has
+/// one: its payload.
+fn take_section(path: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
+    let wasm = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut kept = wasm[..8].to_vec();
+    let mut taken = None;
+    let mut at = 8;
+    while at < wasm.len() {
+        let (size, start) = read_leb128(&wasm, at + 1)?;
+        let end = start + size;
+        let section = wasm.get(at..end).ok_or("a section runs past the module")?;
+        // A custom section's body starts with its name; its data follows.
+        let data = if wasm[at] == 0 {
+            let (len, from) = read_leb128(&wasm, start)?;
+            (wasm.get(from..from + len) == Some(name.as_bytes())).then_some(from + len)
+        } else {
+            None
+        };
+        match data {
+            Some(data) => taken = Some(wasm[data..end].to_vec()),
+            None => kept.extend_from_slice(section),
+        }
+        at = end;
+    }
+    if taken.is_some() {
+        std::fs::write(path, kept).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(taken)
 }
 
 /// Appends a custom section `name` holding `payload` to the module at `path`.

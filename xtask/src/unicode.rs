@@ -841,7 +841,7 @@ pub(crate) fn generate() -> Result<(), String> {
     writeln!(out, "/// `Bidi_Mirroring_Glyph` pairs.").unwrap();
     writeln!(
         out,
-        "#[rustfmt::skip]\npub(crate) static MIRROR: super::Pairs = pairs!["
+        "#[rustfmt::skip]\npub(crate) const MIRROR: &[(u32, u32)] = &["
     )
     .unwrap();
     write_rows(
@@ -859,7 +859,7 @@ pub(crate) fn generate() -> Result<(), String> {
     .unwrap();
     writeln!(
         out,
-        "#[rustfmt::skip]\npub(crate) static BIDI_CLASS: super::Classes = classes!["
+        "#[rustfmt::skip]\npub(crate) const BIDI_CLASS: &[(u32, u32, u8)] = &["
     )
     .unwrap();
     write_rows(

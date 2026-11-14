@@ -54,3 +54,28 @@ fn start() {
         web_sys::console::error_1(&format!("orbis panicked: {info}").into());
     }));
 }
+
+/// orb-text's bidi tables ([`orb_text::unicode::BIDI_DATA`]) in a custom
+/// section rather than the module's memory: the split moves the section
+/// into the bidi module (xtask's `split.rs`), and `web/src/builds.ts`
+/// hands it back ([`set_module_data`]) as that module comes in. Maps whose
+/// labels never read right to left neither fetch nor hold them.
+#[cfg(target_arch = "wasm32")]
+#[unsafe(link_section = "orbis.data.bidi")]
+#[allow(
+    dead_code,
+    reason = "rustc writes the section whether or not code reads the static, which none does"
+)]
+static BIDI_DATA: [u8; orb_text::unicode::BIDI_DATA.len()] = orb_text::unicode::BIDI_DATA;
+
+/// Gives this module's memory feature module `name`'s data: its custom
+/// section `orbis.data.<name>`, which `web/src/builds.ts` hands over
+/// before the module's code can run, from the module or, in a build left
+/// whole, from core.wasm.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen(js_name = setModuleData)]
+pub fn set_module_data(name: &str, data: &[u8]) {
+    if name == "bidi" {
+        orb_text::unicode::set_bidi_data(data);
+    }
+}

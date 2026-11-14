@@ -27,30 +27,6 @@ macro_rules! pairs {
     }};
 }
 
-/// Runs of code points with a value (a `Bidi_Class`): the runs packed as
-/// [`Pairs`], their values a byte apiece.
-pub(crate) struct Classes {
-    runs: Pairs,
-    values: &'static [u8],
-}
-
-/// The runs given, packed at compile time ([`Classes`]).
-macro_rules! classes {
-    ($($runs:tt)*) => {{
-        const RUNS: &[(u32, u32, u8)] = &[$($runs)*];
-        const SPANS: [(u32, u32); RUNS.len()] = super::spans(RUNS);
-        const PACKED: [u8; super::packed_len(&SPANS)] = super::pack(&SPANS);
-        const VALUES: [u8; RUNS.len()] = super::values(RUNS);
-        super::Classes {
-            runs: super::Pairs {
-                packed: &PACKED,
-                unpacked: std::sync::OnceLock::new(),
-            },
-            values: &VALUES,
-        }
-    }};
-}
-
 #[rustfmt::skip]
 mod tables;
 
@@ -130,39 +106,112 @@ const fn values<const N: usize>(runs: &[(u32, u32, u8)]) -> [u8; N] {
     out
 }
 
-impl Pairs {
-    fn get(&self) -> &[(u32, u32)] {
-        self.unpacked.get_or_init(|| {
-            let mut bytes = self.packed.iter();
-            let mut varint = || {
-                let mut value = 0u64;
-                let mut shift = 0;
-                for &byte in bytes.by_ref() {
-                    value |= u64::from(byte & 0x7f) << shift;
-                    if byte < 0x80 {
-                        return Some(value);
-                    }
-                    shift += 7;
-                }
-                None
-            };
-            let mut pairs = Vec::new();
-            let mut first = 0u32;
-            while let (Some(a), Some(b)) = (varint(), varint()) {
-                first += a as u32;
-                let d = (b >> 1) as i64 ^ -((b & 1) as i64);
-                pairs.push((first, (i64::from(first) + d) as u32));
-            }
-            pairs
-        })
+const fn concat<const N: usize>(parts: &[&[u8]]) -> [u8; N] {
+    let mut out = [0; N];
+    let mut at = 0;
+    let mut p = 0;
+    while p < parts.len() {
+        let mut i = 0;
+        while i < parts[p].len() {
+            out[at] = parts[p][i];
+            at += 1;
+            i += 1;
+        }
+        p += 1;
+    }
+    assert!(at == N, "the parts fill the array");
+    out
+}
+
+const MIRROR_LEN: usize = packed_len(MIRROR);
+const BIDI_SPANS: [(u32, u32); BIDI_CLASS.len()] = spans(BIDI_CLASS);
+const BIDI_SPANS_LEN: usize = packed_len(&BIDI_SPANS);
+const BIDI_DATA_LEN: usize = MIRROR_LEN + BIDI_SPANS_LEN + BIDI_CLASS.len();
+
+/// The bidirectional algorithm's tables, packed: `Bidi_Mirroring_Glyph`'s
+/// pairs and `Bidi_Class`'s runs as [`Pairs`] pack them, then each run's
+/// class, a byte apiece. Native builds read them from here. Only the bidi
+/// module's code reads them, so a web build leaves them out of its
+/// memory: orb-web carries them in that module, and hands them over
+/// ([`set_bidi_data`]) as the module comes in.
+pub const BIDI_DATA: [u8; BIDI_DATA_LEN] = concat(&[
+    &pack::<MIRROR_LEN>(MIRROR),
+    &pack::<BIDI_SPANS_LEN>(&BIDI_SPANS),
+    &values::<{ BIDI_CLASS.len() }>(BIDI_CLASS),
+]);
+
+/// [`BIDI_DATA`], unpacked.
+struct Bidi {
+    mirror: Vec<(u32, u32)>,
+    runs: Vec<(u32, u32)>,
+    classes: Box<[u8]>,
+}
+
+static BIDI: OnceLock<Bidi> = OnceLock::new();
+
+impl Bidi {
+    fn unpack(data: &[u8]) -> Self {
+        assert_eq!(data.len(), BIDI_DATA_LEN, "this build's bidi data");
+        let (mirror, rest) = data.split_at(MIRROR_LEN);
+        let (runs, classes) = rest.split_at(BIDI_SPANS_LEN);
+        Self {
+            mirror: unpack(mirror),
+            runs: unpack(runs),
+            classes: classes.into(),
+        }
     }
 }
 
+/// Gives this wasm module's memory the bidirectional algorithm's tables,
+/// [`BIDI_DATA`]: orb-web's `setModuleData`, as the bidi module comes in.
+/// Native builds have them anyway. Only the first call counts.
+pub fn set_bidi_data(data: &[u8]) {
+    BIDI.get_or_init(|| Bidi::unpack(data));
+}
+
+fn bidi() -> &'static Bidi {
+    #[cfg(not(target_arch = "wasm32"))]
+    return BIDI.get_or_init(|| Bidi::unpack(&BIDI_DATA));
+    #[cfg(target_arch = "wasm32")]
+    BIDI.get()
+        .expect("the bidi module's data comes in before its code runs")
+}
+
+impl Pairs {
+    fn get(&self) -> &[(u32, u32)] {
+        self.unpacked.get_or_init(|| unpack(self.packed))
+    }
+}
+
+/// Packed pairs ([`Pairs`]), unpacked.
+fn unpack(packed: &[u8]) -> Vec<(u32, u32)> {
+    let mut bytes = packed.iter();
+    let mut varint = || {
+        let mut value = 0u64;
+        let mut shift = 0;
+        for &byte in bytes.by_ref() {
+            value |= u64::from(byte & 0x7f) << shift;
+            if byte < 0x80 {
+                return Some(value);
+            }
+            shift += 7;
+        }
+        None
+    };
+    let mut pairs = Vec::new();
+    let mut first = 0u32;
+    while let (Some(a), Some(b)) = (varint(), varint()) {
+        first += a as u32;
+        let d = (b >> 1) as i64 ^ -((b & 1) as i64);
+        pairs.push((first, (i64::from(first) + d) as u32));
+    }
+    pairs
+}
+
 /// The index of the range of `ranges` that holds `c`, if one does.
-fn find(ranges: &Pairs, c: char) -> Option<usize> {
+fn find(ranges: &[(u32, u32)], c: char) -> Option<usize> {
     let cp = c as u32;
     ranges
-        .get()
         .binary_search_by(|&(start, end)| {
             if end < cp {
                 std::cmp::Ordering::Less
@@ -176,13 +225,14 @@ fn find(ranges: &Pairs, c: char) -> Option<usize> {
 }
 
 fn contains(ranges: &Pairs, c: char) -> bool {
-    find(ranges, c).is_some()
+    find(ranges.get(), c).is_some()
 }
 
 /// The `Bidi_Class` of `c`, by its index in `bidi`'s `BIDI_CLASSES`;
 /// `None` for `L`.
 pub(crate) fn bidi_class(c: char) -> Option<u8> {
-    find(&BIDI_CLASS.runs, c).map(|i| BIDI_CLASS.values[i])
+    let bidi = bidi();
+    find(&bidi.runs, c).map(|i| bidi.classes[i])
 }
 
 /// JavaScript's `\s`.
@@ -287,7 +337,7 @@ pub(crate) fn is_bidi_control(c: char) -> bool {
 /// The `Bidi_Mirroring_Glyph` of `c`.
 pub(crate) fn mirror(c: char) -> Option<char> {
     let cp = c as u32;
-    let mirror = MIRROR.get();
+    let mirror = &bidi().mirror;
     mirror
         .binary_search_by_key(&cp, |&(from, _)| from)
         .ok()

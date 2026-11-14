@@ -101,6 +101,17 @@ const PLACEHOLDERS = "placeholder.";
  * build: a module takes only its own build's instance. */
 const PAIR = "orbis.pair";
 
+/** The custom section a feature module's data comes in, then its name:
+ * read-only data only its code reads, which the build's memory gets as
+ * the module comes in (orb-web's `setModuleData`). */
+const DATA = "orbis.data.";
+
+/** Hands `glue`'s instance module `name`'s data, if `module` carries it. */
+const handData = (glue: Bindings, module: WebAssembly.Module, name: string) => {
+  for (const data of WebAssembly.Module.customSections(module, DATA + name))
+    glue.setModuleData(name, new Uint8Array(data));
+};
+
 /** The build `module` names, if it names one. */
 const pair = (module: WebAssembly.Module) => {
   const [section] = WebAssembly.Module.customSections(module, PAIR);
@@ -134,6 +145,7 @@ interface Held {
     exports: WebAssembly.Exports;
     split: Set<string>;
     pair: string | undefined;
+    glue: Bindings;
   };
   /** Its modules, compiled, and those linked into its instance. */
   modules: Map<ModuleName, WebAssembly.Module>;
@@ -179,8 +191,10 @@ export function instantiate(
   }
   const made = new WebAssembly.Instance(module, imports);
   const own = builds[build.backend];
-  own.instance = { exports: made.exports, split, pair: pair(module) };
+  own.instance = { exports: made.exports, split, pair: pair(module), glue };
   glue.__wbg_finalize_init(made, module);
+  // A whole build carries its modules' data itself.
+  for (const name of MODULE_NAMES) handData(glue, module, name);
   // What runs outside a map's gate, whatever its style (offline regions'
   // extracts, read in every context), loads its modules through this.
   glue.setModuleLoader((name: string) =>
@@ -210,6 +224,8 @@ function link(build: Held, name: ModuleName): void {
       modules.delete(name);
       throw new Error(`core-${name}.wasm is another build's`);
     }
+    // Its data first: nothing can call its code before it's in.
+    handData(instance.glue, module, name);
     new WebAssembly.Instance(module, { primary: instance.exports });
   }
   linked.add(name);

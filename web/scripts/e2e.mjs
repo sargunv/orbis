@@ -2759,9 +2759,12 @@ async function split(browser, server) {
       };
       await page.evaluate(() => {
         const { map, edit } = globalThis.orbis;
+        // In the view, where its label draws: tiles of zoom 14 place it
+        // closely enough.
+        const coordinates = map.camera.current.center;
         map.on("tilerequest", ({ source, z, x, y }) => {
           if (source !== "app") return;
-          const point = { type: "Point", coordinates: [139.76, 35.68] };
+          const point = { type: "Point", coordinates };
           const shapes = { type: "Feature", properties: {}, geometry: point };
           void map.setHostTile("app", { z, x, y }, { shapes });
         });
@@ -2770,7 +2773,7 @@ async function split(browser, server) {
             .addSource("app", {
               type: "vector",
               tiles: ["orbis-host:"],
-              maxzoom: 0,
+              maxzoom: 14,
             })
             .addLayer({
               id: "app",
@@ -2794,11 +2797,30 @@ async function split(browser, server) {
             type: "symbol",
             source: "app",
             "source-layer": "shapes",
-            layout: { "text-field": "שלום" },
+            layout: {
+              "text-field": "שלום",
+              "text-font": ["Noto Sans Regular"],
+            },
           }),
         ),
       );
       await settles("bidi");
+      // And the label draws: the algorithm ran, with its tables.
+      const labels = () =>
+        page.evaluate(
+          async () =>
+            (
+              await globalThis.orbis.map.queryRenderedFeatures(undefined, {
+                layers: ["rtl"],
+              })
+            ).length,
+        );
+      for (
+        const until = Date.now() + 10_000;
+        Date.now() < until && !(await labels());
+        await page.waitForTimeout(100)
+      );
+      assert.ok(await labels(), `${entry}: drew the label read right to left`);
       await page.evaluate(() =>
         globalThis.orbis.map.setStyle({
           version: 8,
