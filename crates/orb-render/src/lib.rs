@@ -3824,8 +3824,16 @@ impl Renderer {
             };
             let kept = (recorded.slots.get_mut(&slot)).filter(|k| k.0 == commands);
             let drawn = match kept {
-                // Set once, state no draw follows is gone.
-                _ if commands.is_empty() => Vec::new(),
+                // Set once, state no draw follows is gone: the slot draws
+                // nothing, and what it drew before goes.
+                _ if commands.is_empty() => {
+                    recorded
+                        .slots
+                        .remove(&slot)
+                        .and_then(|(_, b)| b)
+                        .release(gpu);
+                    Vec::new()
+                }
                 Some((commands, bundle)) => {
                     let bundle =
                         *bundle.get_or_insert_with(|| gpu.create_render_bundle(&desc, commands));
