@@ -363,7 +363,12 @@ impl Map {
         // but for vector tiles beside the view, which the cache keeps:
         // image tiles take the least recently used one's room in their
         // pages ([`crate::arrival`]), so loading them on fetches as many.
-        let unwanted = pyramid.unwanted_loads(vector);
+        // The world wraps every `columns` tiles, wherever the plane wraps.
+        let columns = |z: u8| {
+            let period = tms.projection().wrap_period()?;
+            Some((period / tms.tile_span(z)).round() as u32)
+        };
+        let unwanted = pyramid.unwanted_loads(vector.then_some(&columns));
         style.draws[index] = Some(update.draw);
         let id = style.id;
         for tile in unwanted {

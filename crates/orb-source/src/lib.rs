@@ -105,14 +105,13 @@ fn z_order(tile: TileIndex) -> u64 {
 }
 
 /// Whether `tile` is one of `cover`'s or beside one at its zoom, across
-/// the antimeridian too.
-fn beside(cover: &FxHashSet<TileIndex>, tile: TileIndex) -> bool {
-    let n = 1u32.checked_shl(u32::from(tile.z)).unwrap_or(0);
+/// the antimeridian too where the world is `columns` tiles wide.
+fn beside(cover: &FxHashSet<TileIndex>, tile: TileIndex, columns: Option<u32>) -> bool {
     (-1i64..=1).any(|dc| {
         let col = i64::from(tile.col) + dc;
-        let col = match n {
-            0 => col,
-            n => col.rem_euclid(i64::from(n)),
+        let col = match columns {
+            Some(n) if n > 0 => col.rem_euclid(i64::from(n)),
+            _ => col,
         };
         (-1i64..=1).any(|dr| {
             let row = i64::from(tile.row) + dr;
@@ -463,17 +462,20 @@ impl<T> TilePyramid<T> {
     /// Wanted loads the last update didn't use, given up, each once:
     /// nothing draws them or waits for them now, so their loads may be
     /// cancelled, as GL JS aborts the requests of tiles it drops. With
-    /// `beside_loads_on`, a tile beside one of the cover's at its zoom
-    /// loads on, as MapLibre Native keeps it: a view turned back and forth
-    /// brings its corners back before their loads would come again, for a
-    /// caller that keeps what such a load brings. One a later update wants
-    /// again loads on until its result comes back; a cancelled one is then
-    /// forgotten ([`forget_loading`](Self::forget_loading)) and requested
-    /// anew.
-    pub fn unwanted_loads(&mut self, beside_loads_on: bool) -> Vec<TileIndex> {
+    /// `beside`, a tile beside one of the cover's at its zoom loads on, as
+    /// MapLibre Native keeps it: a view turned back and forth brings its
+    /// corners back before their loads would come again, for a caller that
+    /// keeps what such a load brings. `beside` gives the world's width in
+    /// columns at a zoom, for neighbours across the antimeridian (`None`
+    /// on a plane that doesn't wrap). One a later update wants again loads
+    /// on until its result comes back; a cancelled one is then forgotten
+    /// ([`forget_loading`](Self::forget_loading)) and requested anew.
+    pub fn unwanted_loads(&mut self, beside: Option<&dyn Fn(u8) -> Option<u32>>) -> Vec<TileIndex> {
         let frame = self.frame;
         let cover = std::mem::take(&mut self.cover);
-        let near = |tile| beside_loads_on && beside(&cover, tile);
+        let near = |tile: TileIndex| {
+            beside.is_some_and(|columns| self::beside(&cover, tile, columns(tile.z)))
+        };
         let given_up = self.give_up(|tile, e| e.last_used != frame && !near(tile));
         self.cover = cover;
         given_up
@@ -1402,14 +1404,19 @@ mod tests {
         let mut p: TilePyramid<()> = TilePyramid::new(0, 14, 8);
         let (here, there) = (cover(&[(3, 1, 2)]), cover(&[(3, 6, 6)]));
         p.update(&here);
-        assert!(p.unwanted_loads(true).is_empty());
+        assert!(p.unwanted_loads(Some(&quad)).is_empty());
         p.update(&there);
-        assert_eq!(p.unwanted_loads(true), [t(3, 1, 2)]);
-        assert!(p.unwanted_loads(true).is_empty());
+        assert_eq!(p.unwanted_loads(Some(&quad)), [t(3, 1, 2)]);
+        assert!(p.unwanted_loads(Some(&quad)).is_empty());
         // Back before the cancelled load answers: nothing asks twice.
         assert!(p.update(&here).request.is_empty());
         p.forget_loading(t(3, 1, 2));
         assert_eq!(p.update(&here).request, [t(3, 1, 2)]);
+    }
+
+    /// The columns of a world one tile wide at zoom 0.
+    fn quad(z: u8) -> Option<u32> {
+        Some(1 << z)
     }
 
     /// A load the view left beside one of its tiles, across the
@@ -1427,7 +1434,7 @@ mod tests {
             (3, 4, 6),
         ]));
         p.update(&cover(&[(3, 0, 2), (3, 2, 2)]));
-        let mut given_up = p.unwanted_loads(true);
+        let mut given_up = p.unwanted_loads(Some(&quad));
         given_up.sort();
         assert_eq!(given_up, [t(3, 0, 4), t(3, 4, 6)]);
         assert!(
@@ -1436,9 +1443,27 @@ mod tests {
         );
         assert_eq!((p.loading(), p.loading_for_view()), (7, 4));
         assert_eq!(p.awaited(near[0]), Awaited::Wanted);
-        let mut given_up = p.unwanted_loads(false);
+        let mut given_up = p.unwanted_loads(None);
         given_up.sort();
         assert_eq!(given_up, [t(3, 1, 3), t(3, 2, 3), t(3, 7, 2)]);
+    }
+
+    /// Across the antimeridian, a tile's neighbour is where its world
+    /// wraps: past the last of WorldCRS84Quad's two columns a zoom-0 tile
+    /// holds, not a quadtree's one; on a plane that doesn't wrap, nowhere.
+    #[test]
+    fn loads_beside_the_view_wrap_where_the_world_does() {
+        let crs84 = |z: u8| Some(2u32 << z);
+        let left = |beside: Option<&dyn Fn(u8) -> Option<u32>>| {
+            let mut p: TilePyramid<()> = TilePyramid::new(0, 14, 8);
+            p.update(&cover(&[(3, 7, 2), (3, 15, 2)]));
+            p.update(&cover(&[(3, 0, 2)]));
+            let mut given_up = p.unwanted_loads(beside);
+            given_up.sort();
+            given_up
+        };
+        assert_eq!(left(Some(&crs84)), [t(3, 7, 2)]);
+        assert_eq!(left(Some(&|_| None)), [t(3, 7, 2), t(3, 15, 2)]);
     }
 
     /// A given-up load's answer finds it given up, unless a plan wanted
@@ -1450,7 +1475,7 @@ mod tests {
         p.update(&here);
         assert_eq!(p.awaited(t(3, 1, 2)), Awaited::Wanted);
         p.update(&there);
-        p.unwanted_loads(false);
+        p.unwanted_loads(None);
         assert_eq!(p.awaited(t(3, 1, 2)), Awaited::GivenUp);
         assert_eq!(p.loading(), 2, "given up, still in flight");
         p.update(&here);

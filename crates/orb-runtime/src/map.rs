@@ -3203,7 +3203,7 @@ impl Map {
             });
         }
         report.tiles_loading += terrain.pyramid.loading() as u32;
-        for tile in terrain.pyramid.unwanted_loads(false) {
+        for tile in terrain.pyramid.unwanted_loads(None) {
             self.services.jobs.cancel(style.id, terrain.key, tile);
         }
         self.counts.loads += loads.len() as u32;
