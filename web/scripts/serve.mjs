@@ -318,6 +318,27 @@ export async function openAndroid(server, { physical = false } = {}) {
       `echo '${flags.join(" ")}' > /data/local/tmp/chrome-command-line`,
     );
     adb("shell", "am", "force-stop", "com.android.chrome");
+    // An emulator just booted reports so before its package manager knows
+    // Chrome's activity, and starting it then fails ("does not exist").
+    for (let i = 0; ; i++) {
+      let found = "";
+      try {
+        found = adb(
+          "shell",
+          "cmd",
+          "package",
+          "resolve-activity",
+          "--brief",
+          "-n",
+          "com.android.chrome/com.google.android.apps.chrome.Main",
+        );
+      } catch {
+        // The package service isn't up yet.
+      }
+      if (found.includes("com.google.android.apps.chrome.Main")) break;
+      if (i > 120) throw new Error(`Chrome never appeared on ${serial}`);
+      await new Promise((r) => setTimeout(r, 500));
+    }
   }
   // A phone's Chrome comes to the front without a new tab, so runs leave
   // none behind (each run's own tab closes with it); the emulator's, just
