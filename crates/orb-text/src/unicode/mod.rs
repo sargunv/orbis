@@ -123,59 +123,24 @@ const fn concat<const N: usize>(parts: &[&[u8]]) -> [u8; N] {
     out
 }
 
-const MIRROR_LEN: usize = packed_len(MIRROR);
+pub(crate) const MIRROR_LEN: usize = packed_len(MIRROR);
 const BIDI_SPANS: [(u32, u32); BIDI_CLASS.len()] = spans(BIDI_CLASS);
-const BIDI_SPANS_LEN: usize = packed_len(&BIDI_SPANS);
+pub(crate) const BIDI_SPANS_LEN: usize = packed_len(&BIDI_SPANS);
 const BIDI_DATA_LEN: usize = MIRROR_LEN + BIDI_SPANS_LEN + BIDI_CLASS.len();
 
 /// The bidirectional algorithm's tables, packed: `Bidi_Mirroring_Glyph`'s
 /// pairs and `Bidi_Class`'s runs as [`Pairs`] pack them, then each run's
 /// class, a byte apiece. Native builds read them from here. Only the bidi
-/// module's code reads them, so a web build leaves them out of its
-/// memory: orb-web carries them in that module, and hands them over
-/// ([`set_bidi_data`]) as the module comes in.
+/// module's code reads them (its private `tables`), so a web build leaves
+/// them out of its memory: orb-web carries them in that module, and hands
+/// them over ([`set_bidi_data`]) as the module comes in.
 pub const BIDI_DATA: [u8; BIDI_DATA_LEN] = concat(&[
     &pack::<MIRROR_LEN>(MIRROR),
     &pack::<BIDI_SPANS_LEN>(&BIDI_SPANS),
     &values::<{ BIDI_CLASS.len() }>(BIDI_CLASS),
 ]);
 
-/// [`BIDI_DATA`], unpacked.
-struct Bidi {
-    mirror: Vec<(u32, u32)>,
-    runs: Vec<(u32, u32)>,
-    classes: Box<[u8]>,
-}
-
-static BIDI: OnceLock<Bidi> = OnceLock::new();
-
-impl Bidi {
-    fn unpack(data: &[u8]) -> Self {
-        assert_eq!(data.len(), BIDI_DATA_LEN, "this build's bidi data");
-        let (mirror, rest) = data.split_at(MIRROR_LEN);
-        let (runs, classes) = rest.split_at(BIDI_SPANS_LEN);
-        Self {
-            mirror: unpack(mirror),
-            runs: unpack(runs),
-            classes: classes.into(),
-        }
-    }
-}
-
-/// Gives this wasm module's memory the bidirectional algorithm's tables,
-/// [`BIDI_DATA`]: orb-web's `setModuleData`, as the bidi module comes in.
-/// Native builds have them anyway. Only the first call counts.
-pub fn set_bidi_data(data: &[u8]) {
-    BIDI.get_or_init(|| Bidi::unpack(data));
-}
-
-fn bidi() -> &'static Bidi {
-    #[cfg(not(target_arch = "wasm32"))]
-    return BIDI.get_or_init(|| Bidi::unpack(&BIDI_DATA));
-    #[cfg(target_arch = "wasm32")]
-    BIDI.get()
-        .expect("the bidi module's data comes in before its code runs")
-}
+pub use crate::bidi::set_data as set_bidi_data;
 
 impl Pairs {
     fn get(&self) -> &[(u32, u32)] {
@@ -184,7 +149,7 @@ impl Pairs {
 }
 
 /// Packed pairs ([`Pairs`]), unpacked.
-fn unpack(packed: &[u8]) -> Vec<(u32, u32)> {
+pub(crate) fn unpack(packed: &[u8]) -> Vec<(u32, u32)> {
     let mut bytes = packed.iter();
     let mut varint = || {
         let mut value = 0u64;
@@ -209,7 +174,7 @@ fn unpack(packed: &[u8]) -> Vec<(u32, u32)> {
 }
 
 /// The index of the range of `ranges` that holds `c`, if one does.
-fn find(ranges: &[(u32, u32)], c: char) -> Option<usize> {
+pub(crate) fn find(ranges: &[(u32, u32)], c: char) -> Option<usize> {
     let cp = c as u32;
     ranges
         .binary_search_by(|&(start, end)| {
@@ -226,13 +191,6 @@ fn find(ranges: &[(u32, u32)], c: char) -> Option<usize> {
 
 fn contains(ranges: &Pairs, c: char) -> bool {
     find(ranges.get(), c).is_some()
-}
-
-/// The `Bidi_Class` of `c`, by its index in `bidi`'s `BIDI_CLASSES`;
-/// `None` for `L`.
-pub(crate) fn bidi_class(c: char) -> Option<u8> {
-    let bidi = bidi();
-    find(&bidi.runs, c).map(|i| bidi.classes[i])
 }
 
 /// JavaScript's `\s`.
@@ -332,16 +290,6 @@ pub(crate) fn is_spacing_mark(c: char) -> bool {
 /// A character that steers bidi without being drawn.
 pub(crate) fn is_bidi_control(c: char) -> bool {
     contains(&BIDI_CONTROL, c)
-}
-
-/// The `Bidi_Mirroring_Glyph` of `c`.
-pub(crate) fn mirror(c: char) -> Option<char> {
-    let cp = c as u32;
-    let mirror = &bidi().mirror;
-    mirror
-        .binary_search_by_key(&cp, |&(from, _)| from)
-        .ok()
-        .and_then(|i| char::from_u32(mirror[i].1))
 }
 
 /// Arabic joining type: `R L D C T`, or `U` for anything else.
@@ -465,8 +413,6 @@ mod tests {
         assert!(is_complex_shaping('क') && is_complex_shaping('ก') && !is_complex_shaping('a'));
         assert!(is_written_without_spaces('ก') && !is_written_without_spaces('三'));
         assert!(is_whitespace('\u{3000}') && is_whitespace('\u{FEFF}') && !is_whitespace('\u{85}'));
-        assert_eq!(mirror('('), Some(')'));
-        assert_eq!(mirror('a'), None);
         assert_eq!(
             (joining_type('ب'), joining_type('ا'), joining_type('a')),
             (b'D', b'R', b'U')

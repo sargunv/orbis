@@ -6,6 +6,7 @@
 //! characters at odd levels, and bidi controls dropped once they've acted.
 
 use std::ops::Range;
+use std::sync::OnceLock;
 
 use unicode_bidi::{BidiClass, BidiDataSource, BidiInfo};
 
@@ -22,14 +23,70 @@ const BIDI_CLASSES: [BidiClass; 23] = {
     ]
 };
 
-/// `Bidi_Class` from the UCD the other character tables come from, packed
-/// (`unicode::bidi_class`), rather than `unicode-bidi`'s own table.
+/// The algorithm's tables, [`unicode::BIDI_DATA`] unpacked: private to
+/// this module, all of whose code the web's split moves into
+/// core-bidi.wasm (xtask's `split.rs`), and whose loader hands the module's
+/// copy of the data over ([`set_data`]) before that code can run. So no
+/// code reads them before they are in, whatever calls into this module.
+struct Tables {
+    /// `Bidi_Mirroring_Glyph` pairs.
+    mirror: Vec<(u32, u32)>,
+    /// `Bidi_Class` runs, and each run's index in [`BIDI_CLASSES`].
+    runs: Vec<(u32, u32)>,
+    classes: Box<[u8]>,
+}
+
+static TABLES: OnceLock<Tables> = OnceLock::new();
+
+impl Tables {
+    fn unpack(data: &[u8]) -> Self {
+        assert_eq!(data.len(), unicode::BIDI_DATA.len(), "this build's data");
+        let (mirror, rest) = data.split_at(unicode::MIRROR_LEN);
+        let (runs, classes) = rest.split_at(unicode::BIDI_SPANS_LEN);
+        Self {
+            mirror: unicode::unpack(mirror),
+            runs: unicode::unpack(runs),
+            classes: classes.into(),
+        }
+    }
+}
+
+/// Gives the algorithm its tables, [`unicode::BIDI_DATA`]: on the web,
+/// orb-web's `setModuleData` as core-bidi.wasm comes in, which stays in
+/// core.wasm (`split.rs`'s `except`). Native builds have them anyway. Only
+/// the first call counts.
+pub fn set_data(data: &[u8]) {
+    TABLES.get_or_init(|| Tables::unpack(data));
+}
+
+fn tables() -> &'static Tables {
+    #[cfg(any(test, not(target_arch = "wasm32")))]
+    return TABLES.get_or_init(|| Tables::unpack(&unicode::BIDI_DATA));
+    #[cfg(all(not(test), target_arch = "wasm32"))]
+    TABLES
+        .get()
+        .expect("core-bidi.wasm's data comes in before its code runs")
+}
+
+/// `Bidi_Class` from the UCD the other character tables come from
+/// ([`Tables`]), rather than `unicode-bidi`'s own table.
 struct Classes;
 
 impl BidiDataSource for Classes {
     fn bidi_class(&self, c: char) -> BidiClass {
-        unicode::bidi_class(c).map_or(BidiClass::L, |i| BIDI_CLASSES[usize::from(i)])
+        let tables = tables();
+        unicode::find(&tables.runs, c).map_or(BidiClass::L, |i| {
+            BIDI_CLASSES[usize::from(tables.classes[i])]
+        })
     }
+}
+
+/// The `Bidi_Mirroring_Glyph` of `c`.
+fn mirror(c: char) -> Option<char> {
+    let mirror = &tables().mirror;
+    (mirror.binary_search_by_key(&(c as u32), |&(from, _)| from))
+        .ok()
+        .and_then(|i| char::from_u32(mirror[i].1))
 }
 
 /// A line of a label in visual order.
@@ -100,7 +157,7 @@ fn reorder_line(
             continue;
         }
         let mirrored = (cluster.level % 2 == 1)
-            .then(|| single_char(s).and_then(unicode::mirror))
+            .then(|| single_char(s).and_then(mirror))
             .flatten();
         match mirrored {
             Some(m) => {

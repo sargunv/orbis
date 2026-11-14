@@ -39,10 +39,10 @@
 //!
 //! Data moves only as a custom section, `orbis.data.<module>`, which
 //! orb-web writes for read-only data only a module's code reads (the bidi
-//! tables) and the split moves into that module; its loader hands the
-//! bytes to core.wasm as the module comes in, before its code can run. Data
-//! in core.wasm's memory stays: no scan of what code reads can be sure a
-//! module alone reads it.
+//! tables, private to `orb_text::bidi`) and the split moves into that
+//! module; its loader hands the bytes to core.wasm as the module comes in,
+//! before its code can run. Data in core.wasm's memory stays: no scan of
+//! what code reads can be sure a module alone reads it.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -229,7 +229,12 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_text::bidi::",
             "orb_text::shaping::bidi_lines",
         ],
-        except: &[],
+        // What hands the module's tables over as it comes in, before any
+        // of its code can run.
+        except: &[
+            "orb_text::bidi::set_data",
+            "orb_text::bidi::Tables>::unpack",
+        ],
         needs: &[],
     },
     // Queries, edits, the style's document, images, snapshots and offline
