@@ -32,9 +32,12 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let mut settings = Settings::default();
-    let data = std::path::Path::new(DEMO_DATA)
+    // `ORB_BENCH_DATA` stands in for the demo data where the build tree
+    // isn't, as on a phone the bench was pushed to.
+    let dir = std::env::var("ORB_BENCH_DATA").unwrap_or_else(|_| DEMO_DATA.to_string());
+    let data = std::path::Path::new(&dir)
         .canonicalize()
-        .map_err(|e| format!("{DEMO_DATA}: {e}"))?;
+        .map_err(|e| format!("{dir}: {e}"))?;
     let file = |name: &str| format!("file://{}", data.join(name).display());
     let mut style = file("tokyo-mvt.json");
     let mut about_data = "Tokyo extract (mvt, reduced Liberty)".to_string();
