@@ -41,9 +41,7 @@ zeno = { version = "0.3.3", default-features = false, features = [
   "std",
 ], optional = true }
 wuff = { version = "0.2.9", optional = true }
-unicode-bidi = { version = "0.3.18", default-features = false, features = [
-  "hardcoded-data",
-] }
+unicode-bidi = { version = "0.3.18", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 icu_segmenter = { version = "2.4.0", default-features = false, features = [

@@ -7,10 +7,30 @@
 
 use std::ops::Range;
 
-use unicode_bidi::{BidiClass, BidiInfo, bidi_class};
+use unicode_bidi::{BidiClass, BidiDataSource, BidiInfo};
 
 use crate::segment::graphemes;
 use crate::unicode;
+
+/// `unicode-bidi`'s classes in the order `cargo xtask unicode` numbers
+/// them (`xtask/src/unicode.rs`'s `BIDI_CLASSES`).
+const BIDI_CLASSES: [BidiClass; 23] = {
+    use BidiClass::*;
+    [
+        AL, AN, B, BN, CS, EN, ES, ET, FSI, L, LRE, LRI, LRO, NSM, ON, PDF, PDI, R, RLE, RLI, RLO,
+        S, WS,
+    ]
+};
+
+/// `Bidi_Class` from the UCD the other character tables come from, packed
+/// (`unicode::bidi_class`), rather than `unicode-bidi`'s own table.
+struct Classes;
+
+impl BidiDataSource for Classes {
+    fn bidi_class(&self, c: char) -> BidiClass {
+        unicode::bidi_class(c).map_or(BidiClass::L, |i| BIDI_CLASSES[usize::from(i)])
+    }
+}
 
 /// A line of a label in visual order.
 #[derive(Debug, PartialEq)]
@@ -29,7 +49,7 @@ struct Cluster {
 /// Breaks `text` at `breaks` (byte offsets) and at every paragraph start,
 /// and puts each line into visual order.
 pub(crate) fn reorder_lines(text: &str, breaks: &[usize]) -> Vec<ReorderedLine> {
-    let info = BidiInfo::new(text, None);
+    let info = BidiInfo::new_with_data_source(&Classes, text, None);
     let mut bounds: Vec<usize> = breaks
         .iter()
         .copied()
@@ -109,7 +129,7 @@ fn reset_trailing_neutrals(text: &str, clusters: &mut [Cluster], paragraph_level
     let mut trailing = true;
     for cluster in clusters.iter_mut().rev() {
         let first = text[cluster.range.clone()].chars().next();
-        let class = first.map(bidi_class);
+        let class = first.map(|c| Classes.bidi_class(c));
         if matches!(class, Some(BidiClass::S | BidiClass::B)) {
             cluster.level = paragraph_level;
             trailing = true;

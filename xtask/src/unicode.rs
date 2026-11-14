@@ -16,6 +16,40 @@ const VERSION: &str = "17.0.0";
 const OUT: &str = "crates/orb-text/src/unicode/tables.rs";
 const MAX: usize = 0x11_0000;
 
+/// `Bidi_Class` values in the order orb-text's `BIDI_CLASSES` lists
+/// `unicode-bidi`'s.
+const BIDI_CLASSES: [&str; 23] = [
+    "AL", "AN", "B", "BN", "CS", "EN", "ES", "ET", "FSI", "L", "LRE", "LRI", "LRO", "NSM", "ON",
+    "PDF", "PDI", "R", "RLE", "RLI", "RLO", "S", "WS",
+];
+
+/// `Bidi_Class` long names, which `@missing` lines use.
+const BIDI_ALIASES: [(&str, &str); 23] = [
+    ("AL", "Arabic_Letter"),
+    ("AN", "Arabic_Number"),
+    ("B", "Paragraph_Separator"),
+    ("BN", "Boundary_Neutral"),
+    ("CS", "Common_Separator"),
+    ("EN", "European_Number"),
+    ("ES", "European_Separator"),
+    ("ET", "European_Terminator"),
+    ("FSI", "First_Strong_Isolate"),
+    ("L", "Left_To_Right"),
+    ("LRE", "Left_To_Right_Embedding"),
+    ("LRI", "Left_To_Right_Isolate"),
+    ("LRO", "Left_To_Right_Override"),
+    ("NSM", "Nonspacing_Mark"),
+    ("ON", "Other_Neutral"),
+    ("PDF", "Pop_Directional_Format"),
+    ("PDI", "Pop_Directional_Isolate"),
+    ("R", "Right_To_Left"),
+    ("RLE", "Right_To_Left_Embedding"),
+    ("RLI", "Right_To_Left_Isolate"),
+    ("RLO", "Right_To_Left_Override"),
+    ("S", "Segment_Separator"),
+    ("WS", "White_Space"),
+];
+
 /// A set of code points.
 #[derive(Clone)]
 struct Set(Vec<bool>);
@@ -596,6 +630,39 @@ impl Ucd {
         Ok((forms.into_iter().collect(), ligatures.into_iter().collect()))
     }
 
+    /// Each code point's `Bidi_Class`, `@missing` defaults then explicit
+    /// entries, as runs of one class: each with its index in
+    /// [`BIDI_CLASSES`], leaving out `L`, which every other code point is.
+    fn bidi_classes(&self) -> Result<Vec<(u32, u32, u8)>, String> {
+        let index = |name: &str| {
+            let short = BIDI_ALIASES
+                .iter()
+                .find(|(_, long)| loose(long) == loose(name))
+                .map_or(name, |(short, _)| short);
+            BIDI_CLASSES
+                .iter()
+                .position(|class| *class == short)
+                .map(|i| i as u8)
+                .ok_or_else(|| format!("unknown Bidi_Class {name}"))
+        };
+        let left = index("L")?;
+        let mut classes = vec![left; MAX];
+        for (start, end, value) in self.bidi_missing.0.iter().chain(&self.bidi_class.0) {
+            let class = index(value)?;
+            classes[*start as usize..=*end as usize].fill(class);
+        }
+        let mut runs: Vec<(u32, u32, u8)> = Vec::new();
+        for (cp, &class) in classes.iter().enumerate() {
+            let cp = cp as u32;
+            match runs.last_mut() {
+                Some(run) if run.2 == class && run.1 + 1 == cp => run.1 = cp,
+                _ if class == left => {}
+                _ => runs.push((cp, cp, class)),
+            }
+        }
+        Ok(runs)
+    }
+
     fn mirrors(&self) -> Result<Vec<(u32, u32)>, String> {
         self.bidi_mirroring
             .0
@@ -705,7 +772,7 @@ pub(crate) fn generate() -> Result<(), String> {
         writeln!(out, "/// {doc}").unwrap();
         writeln!(
             out,
-            "#[rustfmt::skip]\npub(crate) static {name}: &[(u32, u32)] = &["
+            "#[rustfmt::skip]\npub(crate) static {name}: super::Pairs = pairs!["
         )
         .unwrap();
         write_rows(
@@ -774,7 +841,7 @@ pub(crate) fn generate() -> Result<(), String> {
     writeln!(out, "/// `Bidi_Mirroring_Glyph` pairs.").unwrap();
     writeln!(
         out,
-        "#[rustfmt::skip]\npub(crate) static MIRROR: &[(u32, u32)] = &["
+        "#[rustfmt::skip]\npub(crate) static MIRROR: super::Pairs = pairs!["
     )
     .unwrap();
     write_rows(
@@ -782,6 +849,24 @@ pub(crate) fn generate() -> Result<(), String> {
         ucd.mirrors()?
             .iter()
             .map(|(a, b)| format!("(0x{a:X}, 0x{b:X})")),
+    );
+    writeln!(out, "];\n").unwrap();
+
+    writeln!(
+        out,
+        "/// `Bidi_Class` runs, by index in `BIDI_CLASSES`; `L` elsewhere."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#[rustfmt::skip]\npub(crate) static BIDI_CLASS: super::Classes = classes!["
+    )
+    .unwrap();
+    write_rows(
+        &mut out,
+        ucd.bidi_classes()?
+            .iter()
+            .map(|(a, b, class)| format!("(0x{a:X}, 0x{b:X}, {class})")),
     );
     writeln!(out, "];").unwrap();
 
