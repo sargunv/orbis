@@ -370,17 +370,28 @@ fn scissor(slots: &[([u32; 2], u32)], px: u32) -> [u32; 4] {
 /// stack's two rows of slots, which it makes as they are
 /// ([`Gpu::allocated_layers`]).
 fn sheet_desc(gpu: &dyn Gpu, stacks: u32, slot_px: u32) -> TextureDesc<'static> {
-    let square = shaped_desc(stacks, slot_px, SHEET_SIDE);
+    // Mip levels are written as storage, or drawn apart and copied in.
+    let levels = match gpu.caps().compute {
+        true => TextureUsages::STORAGE_BINDING,
+        false => TextureUsages::COPY_DST,
+    };
+    let square = shaped_desc(stacks, slot_px, SHEET_SIDE, levels);
     if gpu.allocated_layers(&square) == square.array_layers {
         square
     } else {
-        shaped_desc(stacks, slot_px, 1)
+        shaped_desc(stacks, slot_px, 1, levels)
     }
 }
 
 /// A drape sheet's texture for `stacks` stacks of `slot_px`-texel slots,
-/// `rows` rows of 2 slots a layer.
-fn shaped_desc(stacks: u32, slot_px: u32, rows: u32) -> TextureDesc<'static> {
+/// `rows` rows of 2 slots a layer, its mip levels written as `levels`
+/// takes.
+fn shaped_desc(
+    stacks: u32,
+    slot_px: u32,
+    rows: u32,
+    levels: TextureUsages,
+) -> TextureDesc<'static> {
     TextureDesc {
         label: "drape sheet",
         width: SHEET_SIDE * slot_px,
@@ -388,9 +399,7 @@ fn shaped_desc(stacks: u32, slot_px: u32, rows: u32) -> TextureDesc<'static> {
         array_layers: stacks * (SHEET_SIDE / rows),
         dimension: TextureViewDimension::D2Array,
         format: DRAPE_FORMAT,
-        usage: TextureUsages::RENDER_ATTACHMENT
-            | TextureUsages::TEXTURE_BINDING
-            | TextureUsages::STORAGE_BINDING,
+        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING | levels,
         sample_count: 1,
         mip_levels: slot_px.ilog2() + 1,
     }
@@ -443,7 +452,7 @@ impl Sheet {
             .collect();
         downsampler.make(gpu);
         let slots = ("drape slots", SHEET_SLOTS * stacks);
-        let mips = downsampler.chain(gpu, (texture, &views), slots);
+        let mips = downsampler.chain(gpu, (texture, [desc.width, desc.height], &views), slots);
         let size_uniform = gpu.create_buffer(&BufferDesc {
             label: "drape sheet size",
             size: 16,

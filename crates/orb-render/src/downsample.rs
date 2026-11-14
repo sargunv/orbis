@@ -6,7 +6,10 @@
 //! On a device with compute, one dispatch per level covers every region
 //! (`downsample_compute.wgsl`); without (WebGL 2), each level of each
 //! layer is a render pass drawing its regions' quads
-//! (`downsample_draw.wgsl`). Both write each texel with the same body.
+//! (`downsample_draw.wgsl`) into a scratch texture, copied into the
+//! level: GL rejects a draw that samples the texture it draws into,
+//! whichever levels (Chrome's validating command decoder, on Android). Both
+//! write each texel with the same body.
 
 use orb_hal::*;
 use orb_shaders::{DOWNSAMPLE_SHADER, EXTEND_DRAW_SHADER, EXTEND_SHADER, MIP_DRAW_SHADER};
@@ -93,6 +96,8 @@ impl Release for Regions {
 #[derive(Debug)]
 pub(crate) struct Chain {
     texture: TextureId,
+    /// Its first level's width and height.
+    size: [u32; 2],
     groups: Vec<BindGroupId>,
     pub(crate) regions: Regions,
 }
@@ -225,12 +230,12 @@ impl Downsampler {
         }
     }
 
-    /// The levels of `texture`, whose views per level are `views`, over
-    /// up to `count` regions at once.
+    /// The levels of `texture`, `size` texels at its first level, whose
+    /// views per level are `views`, over up to `count` regions at once.
     pub(crate) fn chain(
         &self,
         gpu: &mut dyn Gpu,
-        (texture, views): (TextureId, &[TextureId]),
+        (texture, size, views): (TextureId, [u32; 2], &[TextureId]),
         (label, count): (&str, u32),
     ) -> Chain {
         let regions = self.regions(gpu, label, count);
@@ -249,6 +254,7 @@ impl Downsampler {
             .collect();
         Chain {
             texture,
+            size,
             groups,
             regions,
         }
@@ -325,14 +331,47 @@ impl Downsampler {
                 layers.sort_unstable();
                 layers.dedup();
                 let mut passes = Vec::new();
+                let mut draws = 0;
                 for (level, &group) in (1..).zip(&chain.groups) {
-                    for &layer in &layers {
-                        let target = gpu.create_layer_view(chain.texture, layer, level);
+                    // A layer of the level's size for each layer drawn, as
+                    // the quads land where they do in the level.
+                    let [width, height] = chain.size.map(|side| (side >> level).max(1));
+                    let scratch = gpu.create_texture(&TextureDesc {
+                        label: "drawn mip level",
+                        width,
+                        height,
+                        array_layers: layers.len() as u32,
+                        dimension: TextureViewDimension::D2Array,
+                        format: TextureFormat::Rgba8Unorm,
+                        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+                        sample_count: 1,
+                        mip_levels: 1,
+                    });
+                    transient.textures.push(scratch);
+                    let mut copies = Vec::new();
+                    for (i, &layer) in (0..).zip(&layers) {
+                        let target = gpu.create_layer_view(scratch, i, 0);
                         transient.textures.push(target);
                         passes.push(drawn_pass(label, mip, group, target, regions, layer));
+                        draws += 1;
+                        // A region is square; a layer needn't be.
+                        copies.extend(regions.iter().filter(|r| r[0] == layer).map(|r| {
+                            let [x, y] = [r[1] >> level, r[2] >> level];
+                            let side = (r[3] >> level).max(1);
+                            TextureCopy {
+                                from: [x, y, i],
+                                to: [x, y, layer],
+                                size: [side.min(width - x), side.min(height - y), 1],
+                            }
+                        }));
                     }
+                    passes.push(Pass::CopyTextureLevel {
+                        source: scratch,
+                        destination: chain.texture,
+                        level,
+                        copies,
+                    });
                 }
-                let draws = passes.len() as u32;
                 Some((passes, draws))
             }
         }

@@ -2159,7 +2159,9 @@ impl Gpu for WgpuGpu {
         // state than the rest outnumbers (a glyph page growing): such a
         // submission's writes go in a command buffer of their own, as the
         // queue's pending writes would.
-        if passes.iter().any(|p| matches!(p, Pass::CopyTexture { .. })) {
+        if (passes.iter())
+            .any(|p| matches!(p, Pass::CopyTexture { .. } | Pass::CopyTextureLevel { .. }))
+        {
             let mut uploads = (self.device).create_command_encoder(&Default::default());
             self.encode_writes(&mut uploads);
             self.queue.submit([uploads.finish()]);
@@ -2217,6 +2219,40 @@ impl Gpu for WgpuGpu {
                                 ..destination.as_image_copy()
                             },
                             size,
+                        );
+                    }
+                }
+                Pass::CopyTextureLevel {
+                    source,
+                    destination,
+                    level,
+                    copies,
+                } => {
+                    let source = self.texture(*source);
+                    let destination = self.texture(*destination);
+                    let texel = u64::from(convert::texel_bytes(source.format()));
+                    for copy in copies {
+                        let at = |[x, y, z]: [u32; 3]| wgpu::Origin3d { x, y, z };
+                        let [width, height, layers] = copy.size;
+                        self.count(|c| {
+                            c.bytes_copied +=
+                                u64::from(width) * u64::from(height) * u64::from(layers) * texel;
+                        });
+                        encoder.copy_texture_to_texture(
+                            wgpu::TexelCopyTextureInfo {
+                                origin: at(copy.from),
+                                ..source.as_image_copy()
+                            },
+                            wgpu::TexelCopyTextureInfo {
+                                mip_level: *level,
+                                origin: at(copy.to),
+                                ..destination.as_image_copy()
+                            },
+                            wgpu::Extent3d {
+                                width,
+                                height,
+                                depth_or_array_layers: layers,
+                            },
                         );
                     }
                 }

@@ -574,10 +574,11 @@ impl Images {
             self.make_prepare(gpu);
         }
         let levels = |border: u32| 32 - (width.max(height) + 2 * border).max(1).leading_zeros();
+        // Mip levels are written as storage, or drawn apart and copied in.
         let written = if gpu.caps().compute {
             TextureUsages::STORAGE_BINDING
         } else {
-            TextureUsages::empty()
+            TextureUsages::COPY_DST
         };
         let textures = match kind {
             PageKind::Raster => vec![PageTexture {
@@ -881,8 +882,12 @@ impl Images {
                     let views: Vec<TextureId> = (0..page.page.mip_levels(0))
                         .map(|level| gpu.create_texture_view(texture, level..level + 1))
                         .collect();
-                    let chain =
-                        downsampler.chain(gpu, (texture, &views), ("image mip regions", capacity));
+                    let size = page.page.size(0);
+                    let chain = downsampler.chain(
+                        gpu,
+                        (texture, size, &views),
+                        ("image mip regions", capacity),
+                    );
                     Mips {
                         texture,
                         views,
