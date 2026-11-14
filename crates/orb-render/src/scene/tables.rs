@@ -985,6 +985,13 @@ impl Tables {
         self.mirrors.tables[table.index()].as_mut()
     }
 
+    /// Forgets the copy of `table` past its first `keep` words, which say
+    /// nothing any more.
+    #[cfg(cpu_driven)]
+    pub(crate) fn truncate_mirror(&mut self, table: Table, keep: u64) {
+        self.mirrors.truncate(table, keep);
+    }
+
     /// Changes with every write to a table the CPU keeps a copy of.
     #[cfg(cpu_driven)]
     pub(crate) fn revision(&self) -> u64 {

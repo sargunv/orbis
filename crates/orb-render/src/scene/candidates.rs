@@ -848,6 +848,14 @@ impl Scene {
         self.segments_dirty = true;
         self.tables
             .write_words(gpu, Table::NodeCull, 0, &self.node_rows);
+        // The rows of blocks dropped since lie past these in the table,
+        // until it shrinks: the GPU's cull runs none of them, and the CPU
+        // driver, which reads the copy whole, mustn't either. It wrote
+        // their stale slots over those the rows' new layout gave others.
+        #[cfg(cpu_driven)]
+        if (self.tables.mirror(Table::NodeCull)).is_some_and(|m| m.len() > self.node_rows.len()) {
+            (self.tables).truncate_mirror(Table::NodeCull, self.node_rows.len() as u64);
+        }
     }
 
     /// The passes that hide the last layout's dropped slots and make its
