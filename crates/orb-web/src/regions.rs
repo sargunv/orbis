@@ -3,6 +3,8 @@
 //! file system, and the page downloads, lists and deletes regions. A page
 //! that changes the regions tells the other contexts on the
 //! `orbis-regions` broadcast channel, and each calls `reloadRegions`.
+//! Each context loads the archive module its regions' extracts are read
+//! and written with through its own loader (`setModuleLoader`).
 
 use rustc_hash::FxHashMap as HashMap;
 use std::cell::RefCell;
@@ -10,11 +12,16 @@ use std::sync::Arc;
 
 use crate::host::{OpfsStorage, WebFetch};
 use orb_host::{Fetch, Storage};
+use orb_runtime::modules::Load;
 use orb_runtime::offline::{self, RegionDefinition, RegionEvent, RegionFetch};
 use wasm_bindgen::prelude::*;
 
 thread_local! {
-    static FETCH: Arc<RegionFetch> = RegionFetch::new(Arc::new(WebFetch), Arc::new(OpfsStorage));
+    static FETCH: Arc<RegionFetch> =
+        RegionFetch::new(Arc::new(WebFetch), Arc::new(OpfsStorage), load());
+    /// Loads a feature module into this context: `loader(name)` answers
+    /// a promise of it in.
+    static LOADER: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
     /// Each download's event callback, by a token its events carry.
     static HANDLERS: RefCell<HashMap<u32, js_sys::Function>> = RefCell::default();
     static NEXT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -23,6 +30,43 @@ thread_local! {
 /// What this context's maps and tile jobs fetch through.
 pub(crate) fn service() -> Arc<dyn Fetch> {
     FETCH.with(|f| f.clone())
+}
+
+/// How this context loads a feature module, by its name (`web/src/
+/// builds.ts`'s `instantiate` sets it): `loader(name)` answers a promise
+/// that resolves once the module is in this context, or `undefined` if
+/// it already is. Loading one twice must be harmless.
+#[wasm_bindgen(js_name = setModuleLoader)]
+pub fn set_module_loader(loader: js_sys::Function) {
+    LOADER.with(|l| *l.borrow_mut() = Some(loader));
+}
+
+/// Loads modules into this context through its loader.
+fn load() -> Load {
+    Arc::new(|modules, done| {
+        let loads: Result<js_sys::Array, JsValue> = LOADER.with(|l| {
+            let loader = l.borrow().clone().ok_or("no module loader")?;
+            modules
+                .names()
+                .map(|name| loader.call1(&JsValue::NULL, &name.into()))
+                .collect()
+        });
+        wasm_bindgen_futures::spawn_local(async move {
+            let loaded = match loads {
+                Ok(loads) => wasm_bindgen_futures::JsFuture::from(js_sys::Promise::all(&loads))
+                    .await
+                    .map(drop),
+                Err(e) => Err(e),
+            };
+            done(loaded.map_err(|e| {
+                web_sys::console::warn_1(&e);
+                match e.dyn_ref::<js_sys::Error>() {
+                    Some(e) => e.message().into(),
+                    None => "a module didn't load".into(),
+                }
+            }));
+        });
+    })
 }
 
 /// Transforms every request this JS context fetches (the page's or a job
@@ -89,6 +133,7 @@ pub async fn download_region(
     let storage: Arc<dyn Storage> = Arc::new(OpfsStorage);
     let (tx, rx) = futures_channel::oneshot::channel();
     offline::download(
+        &load(),
         Arc::new(WebFetch),
         storage,
         RegionDefinition {

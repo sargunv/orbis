@@ -92,6 +92,10 @@
 //   fetched only the modules their styles declare, each once, and the
 //   API's once; then the extract takes GeoJSON the app answers for a
 //   tile it feeds, and a style on Equal Earth, loading their modules.
+// - `regions`: a style of templated tiles, no archive, downloaded as a
+//   region from the Offline areas dialog, then reopened: it draws its
+//   tiles from the region's extract, with no error, though its style never
+//   declares the archive module the extract is read with.
 // - `webgl2`: in a Chromium without WebGPU (#140), the scenario; the Tokyo
 //   extract at two views, pitched
 //   terrain, and the extract on the globe over terrain pitched 79° at
@@ -111,10 +115,10 @@
 //   the Globe, offline, on WebGPU and WebGL 2, each reaching idle, or
 //   failing with what the map was doing.
 //
-//   pnpm e2e [--browsers=chromium,firefox,webkit] [--only=scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,compare,gestures,readback,boot,split,android,offline]
+//   pnpm e2e [--browsers=chromium,firefox,webkit] [--only=scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,compare,gestures,readback,boot,split,regions,android,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -138,7 +142,7 @@ const arg = (name, fallback) =>
     ?.slice(name.length + 3) ?? fallback;
 const only = arg(
   "only",
-  "scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,compare,gestures,readback,boot,split,android",
+  "scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,compare,gestures,readback,boot,split,regions,android",
 ).split(",");
 const browsers = arg("browsers", "chromium,firefox,webkit").split(",");
 const writes = Number(arg("writes", 500));
@@ -2558,6 +2562,83 @@ async function offline(browser, server) {
   await page.close();
 }
 
+async function regions(browser, server) {
+  // A style of templated MVT tiles, no archive: its map never declares
+  // the archive module, which a region's extract still needs read.
+  const dir = join(server.styles, "regions");
+  // A tile with one empty layer.
+  const tile = Buffer.from([
+    0x1a, 0x08, 0x78, 0x02, 0x0a, 0x01, 0x6c, 0x28, 0x80, 0x20,
+  ]);
+  for (const [z, x, y] of [
+    [0, 0, 0],
+    [1, 0, 0],
+    [1, 0, 1],
+    [1, 1, 0],
+    [1, 1, 1],
+  ]) {
+    await mkdir(join(dir, `${z}/${x}`), { recursive: true });
+    await writeFile(join(dir, `${z}/${x}/${y}.pbf`), tile);
+  }
+  const tiles = `${server.url}e2e/styles/regions/`;
+  await writeFile(
+    join(dir, "style.json"),
+    JSON.stringify({
+      version: 8,
+      sources: {
+        v: { type: "vector", tiles: [`${tiles}{z}/{x}/{y}.pbf`], maxzoom: 1 },
+      },
+      layers: [
+        { id: "bg", type: "background", paint: { "background-color": "#def" } },
+        { id: "l", type: "fill", source: "v", "source-layer": "l" },
+      ],
+    }),
+  );
+  const { page, errors } = await open(browser, { width: 800, height: 600 });
+  const idle = async () => {
+    await page.waitForFunction(
+      () =>
+        ["idle", "error"].includes(document.getElementById("app")?.dataset.map),
+      null,
+      { timeout: 60_000 },
+    );
+    return page.evaluate(() => document.getElementById("app").dataset.map);
+  };
+  await page.goto(
+    `${server.url}?style=${encodeURIComponent(`${tiles}style.json`)}#1/0/0`,
+  );
+  assert.equal(await idle(), "idle", errors.join("\n"));
+  await page.click("#menu-button");
+  await page.click("#offline-button");
+  await page.click("#offline .primary");
+  // A download that stops says why on the console, not in the dialog.
+  await page
+    .waitForFunction(
+      () =>
+        /Downloaded|failed/.test(
+          document.querySelector(".offline-status")?.textContent ?? "",
+        ),
+      null,
+      { timeout: 30_000 },
+    )
+    .catch(() => {});
+  const status = await page.textContent(".offline-status");
+  assert.ok(status.startsWith("Downloaded"), `${status}\n${errors.join("\n")}`);
+  // Reopened, every context reads the region, and the tiles come from
+  // its extract.
+  const fetched = [];
+  await page.context().route(`${tiles}*/*/*`, (route) => {
+    fetched.push(route.request().url());
+    return route.abort("internetdisconnected");
+  });
+  await page.reload();
+  assert.equal(await idle(), "idle", errors.join("\n"));
+  assert.deepEqual(fetched, [], "tiles the region holds went to the network");
+  assert.deepEqual(errors, []);
+  await page.close();
+  console.log("regions: a plain style drew from its downloaded region");
+}
+
 async function split(browser, server) {
   // The feature modules each entry's style may declare: the extract is a
   // PMTiles archive, and the Globe's style adds terrain and hillshade, the
@@ -3833,6 +3914,7 @@ const CHECKS = {
   readback,
   boot,
   split,
+  regions,
   offline,
 };
 /** What an empty style shows, on either backend: the page. */

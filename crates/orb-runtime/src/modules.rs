@@ -10,6 +10,12 @@
 //! (`cargo xtask web`'s split); editing one, which only the API starts,
 //! goes with the API's module. Native hosts have every module from the
 //! start.
+//!
+//! Offline regions' extracts are read in every context that fetches and
+//! written by downloads, whatever the style: that code asks its host for
+//! [`Modules::ARCHIVE`] through a [`Load`] before it runs.
+
+use std::sync::Arc;
 
 use orb_style::{Encoding, SourceKind, Style};
 
@@ -104,6 +110,16 @@ impl std::ops::BitOrAssign for Modules {
     fn bitor_assign(&mut self, other: Self) {
         *self = self.union(other);
     }
+}
+
+/// Loads modules into the calling context (the page or a worker), then
+/// calls back with whether they loaded: how code outside a map's gate
+/// asks for the modules it runs.
+pub type Load = Arc<dyn Fn(Modules, Box<dyn FnOnce(Result<(), String>) + Send>) + Send + Sync>;
+
+/// The [`Load`] of a host that has every module from the start.
+pub fn every() -> Load {
+    Arc::new(|_, loaded| loaded(Ok(())))
 }
 
 /// What `url`, a source's TileJSON URL, needs: its archive's reader, and

@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use orb_host::Storage;
 use orb_host_native::{FileStorage, NativeFetch};
+use orb_runtime::modules;
 use orb_runtime::offline::{self, Download, RegionFetch};
 pub use orb_runtime::offline::{RegionDefinition, RegionEvent, RegionInfo};
 
@@ -34,7 +35,7 @@ impl Regions {
         let storage = Arc::new(FileStorage::new(dir));
         Self {
             dir: dir.to_owned(),
-            fetch: RegionFetch::new(network.clone(), storage.clone()),
+            fetch: RegionFetch::new(network.clone(), storage.clone(), modules::every()),
             storage,
             network,
             events: Arc::default(),
@@ -61,7 +62,14 @@ impl Regions {
         });
         let storage: Arc<dyn Storage> = self.storage.clone();
         let download = wait(|done| {
-            offline::download(self.network.clone(), storage, definition, on_event, done)
+            offline::download(
+                &modules::every(),
+                self.network.clone(),
+                storage,
+                definition,
+                on_event,
+                done,
+            )
         })?;
         let id = download.id();
         self.downloads
@@ -74,7 +82,9 @@ impl Regions {
     pub(crate) fn create(&self, definition: RegionDefinition) -> Result<RegionInfo, Error> {
         let storage: Arc<dyn Storage> = self.storage.clone();
         let events: offline::RegionEvents = Arc::new(|_| {});
-        let import = wait(|done| offline::import(storage, definition.clone(), events, done))?;
+        let import = wait(|done| {
+            offline::import(&modules::every(), storage, definition.clone(), events, done)
+        })?;
         Ok(RegionInfo {
             id: import.id(),
             definition,
@@ -163,7 +173,9 @@ impl Regions {
                 }
             });
             let storage: Arc<dyn Storage> = self.storage.clone();
-            let import = wait(|done| offline::import(storage, definition.clone(), events, done))?;
+            let import = wait(|done| {
+                offline::import(&modules::every(), storage, definition.clone(), events, done)
+            })?;
             let id = import.id();
             if let Err(e) = native.copy(native_id, &import) {
                 let _ = wait(|done| offline::delete(&*self.storage, id, done));

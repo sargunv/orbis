@@ -177,6 +177,13 @@ export function instantiate(
   const own = builds[build.backend];
   own.instance = { exports: made.exports, split, pair: pair(module) };
   glue.__wbg_finalize_init(made, module);
+  // What runs outside a map's gate, whatever its style (offline regions'
+  // extracts, read in every context), loads its modules through this.
+  glue.setModuleLoader((name: string) =>
+    isModuleName(name) && split.has(name)
+      ? loadModule(build.backend, name)
+      : undefined,
+  );
   for (const name of own.modules.keys()) {
     // Another build's module stays out: asked for again, it loads again.
     try {

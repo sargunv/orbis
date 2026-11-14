@@ -30,7 +30,9 @@
 //! module, made with core.wasm's exports, writes the real functions into
 //! that table. The runtime never calls into a module it hasn't loaded, so
 //! a placeholder throws: a call is a bug in a module's paths or in the
-//! runtime's gate, and the e2e `split` check finds both. Every module of a
+//! runtime's gate (a map's, or the `modules::Load` that offline regions'
+//! extracts ask through), and the e2e `split` and `regions` checks find
+//! them. Every module of a
 //! build carries [`PAIR`], a hash of its modules: one from another build
 //! (a stale copy, a cache) would write other functions into the table, so
 //! the loader takes only its own.
@@ -473,7 +475,9 @@ fn ungated(
 /// The calls from one feature module into another that it doesn't
 /// declare it needs ([`Module::needs`]): a map that loaded only the first
 /// would call a placeholder. The API's module is exempt: it calls into a
-/// feature's module only for a style that declares the feature.
+/// feature's module only for a style that declares the feature, or once
+/// it has loaded the module itself, as a download loads the archive's
+/// (orb-runtime's `modules::Load`).
 fn undeclared(functions: &Functions, modules: &[Option<usize>]) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     for (i, function) in functions.defined.iter().enumerate() {

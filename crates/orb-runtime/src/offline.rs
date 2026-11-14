@@ -14,10 +14,17 @@
 //!
 //! [`RegionFetch`] answers a map's fetches from complete regions, so a map
 //! of a downloaded area opens with no network, and passes the rest on.
+//!
+//! The extracts are read and written with [`Modules::ARCHIVE`]'s code,
+//! which a map of a style without archives never loads: a download, and a
+//! [`RegionFetch`] whose regions hold extracts, load it first.
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+
+use crate::modules::{Load, Modules};
 
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_expr::json::{self, Json, JsonValue};
@@ -106,56 +113,74 @@ fn region_dir(id: u32) -> String {
 }
 
 /// Starts downloading `definition` through `fetch` (the network, or the
-/// HTTP cache) into `storage` as a new region, and calls `done` with its
-/// id once its id is chosen; `events` follow.
+/// HTTP cache) into `storage` as a new region, once `load` has the archive
+/// module, and calls `done` with its id once its id is chosen; `events`
+/// follow.
 pub fn download(
+    load: &Load,
     fetch: Arc<dyn Fetch>,
     storage: Arc<dyn Storage>,
     definition: RegionDefinition,
     events: RegionEvents,
     done: StorageDone<Download>,
 ) {
-    let listed = storage.clone();
-    listed.list(
-        "regions",
-        Box::new(move |names| {
-            let names = match names {
-                Ok(names) => names,
-                Err(e) => return done(Err(e)),
-            };
-            let id = next_id(&names);
-            let job = Arc::new(Job {
-                id,
-                fetch,
-                storage,
-                definition,
-                events,
-                state: Mutex::new(State::default()),
-                abort: Abort::new(),
-            });
-            let download = Download(job.clone());
-            // The manifest goes first, so an interrupted download is listed
-            // (and can be deleted).
-            let manifest = job.manifest(false);
-            let storage = job.storage.clone();
-            storage.write(
-                &format!("{}/manifest.json", region_dir(id)),
-                manifest.into_bytes(),
-                false,
-                Box::new(move |written| match written {
-                    Ok(()) => {
-                        job.enqueue(Task::Resource {
-                            url: job.definition.style_url.clone(),
-                            range: None,
-                            then: Then::Style,
-                        });
-                        done(Ok(download));
-                    }
-                    Err(e) => done(Err(e)),
-                }),
-            );
+    load(
+        Modules::ARCHIVE,
+        Box::new(move |loaded| match loaded {
+            Ok(()) => start(fetch, storage, definition, events, done),
+            Err(e) => done(Err(e)),
         }),
     );
+    // Within `download`, so the web's split puts it in the API's module.
+    fn start(
+        fetch: Arc<dyn Fetch>,
+        storage: Arc<dyn Storage>,
+        definition: RegionDefinition,
+        events: RegionEvents,
+        done: StorageDone<Download>,
+    ) {
+        let listed = storage.clone();
+        listed.list(
+            "regions",
+            Box::new(move |names| {
+                let names = match names {
+                    Ok(names) => names,
+                    Err(e) => return done(Err(e)),
+                };
+                let id = next_id(&names);
+                let job = Arc::new(Job {
+                    id,
+                    fetch,
+                    storage,
+                    definition,
+                    events,
+                    state: Mutex::new(State::default()),
+                    abort: Abort::new(),
+                });
+                let download = Download(job.clone());
+                // The manifest goes first, so an interrupted download is listed
+                // (and can be deleted).
+                let manifest = job.manifest(false);
+                let storage = job.storage.clone();
+                storage.write(
+                    &format!("{}/manifest.json", region_dir(id)),
+                    manifest.into_bytes(),
+                    false,
+                    Box::new(move |written| match written {
+                        Ok(()) => {
+                            job.enqueue(Task::Resource {
+                                url: job.definition.style_url.clone(),
+                                range: None,
+                                then: Then::Style,
+                            });
+                            done(Ok(download));
+                        }
+                        Err(e) => done(Err(e)),
+                    }),
+                );
+            }),
+        );
+    }
 }
 
 /// A download in progress.
@@ -221,41 +246,58 @@ impl Fetch for NoFetch {
     }
 }
 
-/// Starts region `definition` in `storage`, written by the [`Import`]
-/// `done` gets; `events` get its completion.
+/// Starts region `definition` in `storage`, once `load` has the archive
+/// module, written by the [`Import`] `done` gets; `events` get its
+/// completion.
 pub fn import(
+    load: &Load,
     storage: Arc<dyn Storage>,
     definition: RegionDefinition,
     events: RegionEvents,
     done: StorageDone<Import>,
 ) {
-    let listed = storage.clone();
-    listed.list(
-        "regions",
-        Box::new(move |names| {
-            let id = match names {
-                Ok(names) => next_id(&names),
-                Err(e) => return done(Err(e)),
-            };
-            let job = Arc::new(Job {
-                id,
-                fetch: Arc::new(NoFetch),
-                storage,
-                definition,
-                events,
-                state: Mutex::new(State::default()),
-                abort: Abort::new(),
-            });
-            let manifest = job.manifest(false);
-            let storage = job.storage.clone();
-            storage.write(
-                &format!("{}/manifest.json", region_dir(id)),
-                manifest.into_bytes(),
-                false,
-                Box::new(move |written| done(written.map(|()| Import(job)))),
-            );
+    load(
+        Modules::ARCHIVE,
+        Box::new(move |loaded| match loaded {
+            Ok(()) => start(storage, definition, events, done),
+            Err(e) => done(Err(e)),
         }),
     );
+    // Within `import`, so the web's split puts it in the API's module.
+    fn start(
+        storage: Arc<dyn Storage>,
+        definition: RegionDefinition,
+        events: RegionEvents,
+        done: StorageDone<Import>,
+    ) {
+        let listed = storage.clone();
+        listed.list(
+            "regions",
+            Box::new(move |names| {
+                let id = match names {
+                    Ok(names) => next_id(&names),
+                    Err(e) => return done(Err(e)),
+                };
+                let job = Arc::new(Job {
+                    id,
+                    fetch: Arc::new(NoFetch),
+                    storage,
+                    definition,
+                    events,
+                    state: Mutex::new(State::default()),
+                    abort: Abort::new(),
+                });
+                let manifest = job.manifest(false);
+                let storage = job.storage.clone();
+                storage.write(
+                    &format!("{}/manifest.json", region_dir(id)),
+                    manifest.into_bytes(),
+                    false,
+                    Box::new(move |written| done(written.map(|()| Import(job)))),
+                );
+            }),
+        );
+    }
 }
 
 /// The id after the greatest of the regions `names`.
@@ -1237,11 +1279,16 @@ fn font_stacks(style: &str) -> Vec<Vec<String>> {
 
 /// Answers fetches from the complete regions in `storage` before passing
 /// them to `inner`: resources by URL (and range), templated tiles from the
-/// extracts. Fetches wait for the regions to be read at first.
+/// extracts. Fetches wait for the regions to be read at first, and for
+/// the archive module the extracts are read with, where there are some.
 pub struct RegionFetch {
     inner: Arc<dyn Fetch>,
     storage: Arc<dyn Storage>,
+    load: Load,
     served: Mutex<Served>,
+    /// The latest read of the regions: an earlier one landing after it
+    /// is dropped.
+    reads: AtomicU32,
 }
 
 impl std::fmt::Debug for RegionFetch {
@@ -1280,11 +1327,15 @@ enum Part {
 }
 
 impl RegionFetch {
-    pub fn new(inner: Arc<dyn Fetch>, storage: Arc<dyn Storage>) -> Arc<Self> {
+    /// Serves `storage`'s regions before `inner`, loading the archive
+    /// module through `load` in this context before reading an extract.
+    pub fn new(inner: Arc<dyn Fetch>, storage: Arc<dyn Storage>, load: Load) -> Arc<Self> {
         let this = Arc::new(Self {
             inner,
             storage,
+            load,
             served: Mutex::new(Served::Loading(Vec::new())),
+            reads: AtomicU32::new(0),
         });
         this.reload();
         this
@@ -1294,28 +1345,46 @@ impl RegionFetch {
     /// deleted.
     pub fn reload(self: &Arc<Self>) {
         let this = self.clone();
+        let read = self.reads.fetch_add(1, Ordering::Relaxed) + 1;
         regions(
             self.storage.clone(),
             Box::new(move |found| {
                 // Without readable storage (an insecure page), no regions.
-                let regions = found
-                    .unwrap_or_default()
-                    .into_iter()
+                let found: Vec<_> = (found.unwrap_or_default().into_iter())
                     .filter(|(info, _)| info.complete)
-                    .map(|(info, doc)| served_region(info.id, &doc))
                     .collect();
-                let pending = {
-                    let mut served = this.served.lock().expect("regions poisoned");
-                    match std::mem::replace(&mut *served, Served::Ready(Arc::new(regions))) {
-                        Served::Loading(pending) => pending,
-                        Served::Ready(_) => Vec::new(),
-                    }
-                };
-                for (kind, url, range, abort, done) in pending {
-                    this.serve(kind, &url, range, &abort, done);
+                if !found.iter().any(|(_, doc)| !archives(doc).is_empty()) {
+                    return this.ready(read, &found, true);
                 }
+                let load = this.load.clone();
+                load(
+                    Modules::ARCHIVE,
+                    // Without it, the regions' tiles come from the network.
+                    Box::new(move |loaded| this.ready(read, &found, loaded.is_ok())),
+                );
             }),
         );
+    }
+
+    /// Serves `found`, read by read `read`, unless a later read began;
+    /// their extracts only if the archive module is in.
+    fn ready(&self, read: u32, found: &[(RegionInfo, Json)], extracts: bool) {
+        let regions = (found.iter())
+            .map(|(info, doc)| served_region(info.id, doc, extracts))
+            .collect();
+        let pending = {
+            let mut served = self.served.lock().expect("regions poisoned");
+            if self.reads.load(Ordering::Relaxed) != read {
+                return;
+            }
+            match std::mem::replace(&mut *served, Served::Ready(Arc::new(regions))) {
+                Served::Loading(pending) => pending,
+                Served::Ready(_) => Vec::new(),
+            }
+        };
+        for (kind, url, range, abort, done) in pending {
+            self.serve(kind, &url, range, &abort, done);
+        }
     }
 
     fn serve(
@@ -1458,7 +1527,15 @@ impl Tile {
     }
 }
 
-fn served_region(id: u32, doc: &Json) -> ServedRegion {
+/// A manifest's tile archives.
+fn archives(doc: &Json) -> &[Json] {
+    doc.get("archives")
+        .and_then(Json::as_array)
+        .unwrap_or_default()
+}
+
+/// Region `id` as its manifest `doc` lists it, with its `extracts` or not.
+fn served_region(id: u32, doc: &Json, extracts: bool) -> ServedRegion {
     let dir = region_dir(id);
     let resources = doc
         .get("resources")
@@ -1475,10 +1552,8 @@ fn served_region(id: u32, doc: &Json) -> ServedRegion {
             ))
         })
         .collect();
-    let archives = doc
-        .get("archives")
-        .and_then(Json::as_array)
-        .unwrap_or_default()
+    let archives = if extracts { archives(doc) } else { &[] };
+    let archives = archives
         .iter()
         .enumerate()
         .map(|(i, a)| ServedArchive {
@@ -1646,6 +1721,7 @@ mod tests {
         };
         let events: RegionEvents = Arc::new(move |e| tx.send(e).unwrap());
         download(
+            &crate::modules::every(),
             server.clone(),
             storage.clone(),
             definition.clone(),
@@ -1691,7 +1767,7 @@ mod tests {
             offline: true,
             ..Server::default()
         });
-        let fetch = RegionFetch::new(offline.clone(), storage.clone());
+        let fetch = RegionFetch::new(offline.clone(), storage.clone(), crate::modules::every());
         assert_eq!(
             get(&*fetch, "https://s/style.json").unwrap(),
             STYLE.as_bytes()
