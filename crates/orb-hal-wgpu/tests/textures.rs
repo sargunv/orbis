@@ -207,6 +207,63 @@ fn packed_writes_in_one_submission_all_land() {
     }
 }
 
+/// A submission of thousands of passes, as WebGL 2's frame driver makes
+/// drawing every drape slot's mip levels through scratch: each pass runs,
+/// in order, and the device holds. wgpu's Metal back end lost the device
+/// once one command encoder held more than 4096 command buffers (#204).
+#[test]
+fn thousands_of_passes_in_one_submission_run_in_order() {
+    let mut gpu = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
+    let texture = |gpu: &mut WgpuGpu, label| {
+        gpu.create_texture(&TextureDesc {
+            label,
+            width: 256,
+            height: 1,
+            array_layers: 1,
+            dimension: TextureViewDimension::D2,
+            format: TextureFormat::R8Unorm,
+            usage: TextureUsages::RENDER_ATTACHMENT
+                | TextureUsages::COPY_DST
+                | TextureUsages::COPY_SRC,
+            sample_count: 1,
+            mip_levels: 1,
+        })
+    };
+    let (scratch, kept) = (texture(&mut gpu, "scratch"), texture(&mut gpu, "kept"));
+    // A level drawn into scratch and copied out, 3000 times.
+    let passes: Vec<Pass> = (0..3000u32)
+        .flat_map(|i| {
+            let value = f64::from(i % 255) / 255.0;
+            [
+                Pass::Render(RenderPass {
+                    label: "level",
+                    colors: vec![ColorAttachment {
+                        target: scratch,
+                        resolve: None,
+                        store: StoreOp::Store,
+                        load: LoadOp::Clear([value, 0.0, 0.0, 1.0]),
+                    }],
+                    depth: None,
+                    commands: Vec::new(),
+                }),
+                Pass::CopyTextureLevel {
+                    source: (scratch, 0),
+                    destination: (kept, 0),
+                    copies: vec![TextureCopy {
+                        from: [0; 3],
+                        to: [0; 3],
+                        size: [256, 1, 1],
+                    }],
+                },
+            ]
+        })
+        .collect();
+    gpu.submit(&passes);
+    gpu.end_frame(0);
+    assert!(!gpu.lost(), "{:?}", gpu.lost_reason());
+    assert_eq!(read_layers(&gpu, kept), [(2999 % 255) as u8; 256]);
+}
+
 /// An array copied into a larger one, as a page grows: every layer lands
 /// in its own. On the Adreno 619's GLES (Chrome's WebGL 2), copying from a
 /// layer attached to the read framebuffer copied layer 0 into all of them,

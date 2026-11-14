@@ -55,6 +55,15 @@ const GL_TEXTURE_BYTES: u64 = 1 << 30;
 /// Chrome's GPU process) is rare.
 const CHECKED_TEXTURE_BYTES: u64 = 64 << 20;
 
+/// The passes one command encoder takes: a submission of more goes to the
+/// queue in parts. wgpu-core records each pass in a command buffer of its
+/// own, with another for the barriers before it, and its Metal back end
+/// loses the device rather than hold more than 4096 command buffers made
+/// and not yet submitted, which a frame that redraws every drape slot of
+/// a steep view passes where it draws their mip levels (WebGL 2's frame
+/// driver: 11 render passes and 10 copies a slot, 3000 passes in all).
+const PASSES_PER_ENCODER: usize = 1024;
+
 /// The frame driver a native device's renderers take: `gpu` (the default
 /// where the device has it), or `cpu` and `cpu-tex`
 /// ([`WgpuGpu::force_cpu_driver`]).
@@ -2173,10 +2182,39 @@ impl Gpu for WgpuGpu {
         if groups {
             encoder.pop_debug_group();
         }
+        // The passes in `encoder`, and the debug groups open in it, which
+        // the next encoder reopens.
+        let mut encoded = 0;
+        let mut open: Vec<&str> = Vec::new();
         for (i, pass) in passes.iter().enumerate() {
+            let records = match pass {
+                Pass::PushDebugGroup(_) | Pass::PopDebugGroup => false,
+                Pass::Compute(_) => !joined[i],
+                _ => true,
+            };
+            if records && encoded == PASSES_PER_ENCODER {
+                for _ in &open {
+                    encoder.pop_debug_group();
+                }
+                self.queue.submit([encoder.finish()]);
+                encoder = (self.device).create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: groups.then_some("passes"),
+                });
+                for label in &open {
+                    encoder.push_debug_group(label);
+                }
+                encoded = 0;
+            }
+            encoded += usize::from(records);
             match pass {
-                Pass::PushDebugGroup(label) if groups => encoder.push_debug_group(label),
-                Pass::PopDebugGroup if groups => encoder.pop_debug_group(),
+                Pass::PushDebugGroup(label) if groups => {
+                    open.push(label);
+                    encoder.push_debug_group(label);
+                }
+                Pass::PopDebugGroup if groups => {
+                    open.pop();
+                    encoder.pop_debug_group();
+                }
                 Pass::PushDebugGroup(_) | Pass::PopDebugGroup => {}
                 Pass::CopyTexture {
                     source,
