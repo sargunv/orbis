@@ -7,10 +7,12 @@ use orb_shaders::Shader;
 
 use crate::TargetFormat;
 
-/// The format of the depth the map's passes and the 3D layers' share:
-/// float depth beside a stencil, which terrain layers draw each sample
-/// once by ([`DepthState::once`]), or where the device has none,
-/// WebGPU's depth with a stencil of at least 24 bits (GL JS's own).
+/// The format of the depth the map's passes have while terrain may draw
+/// in them, which the 3D layers' takes then too: float depth beside a
+/// stencil, which terrain layers draw each sample once by
+/// ([`DepthState::once`]), or where the device has none, WebGPU's depth
+/// with a stencil of at least 24 bits (GL JS's own). Without terrain the
+/// 3D layers' depth is `Depth32Float`.
 pub(crate) fn depth_format(caps: &Caps) -> TextureFormat {
     match caps.depth32_stencil8 {
         true => TextureFormat::Depth32FloatStencil8,

@@ -731,7 +731,8 @@ impl Renderer {
         let downsampler = downsample::Downsampler::new(gpu);
         let heatmaps = heatmap::Heatmaps::new(draw_layout, node_layout);
         let composites = offscreen::Composites::new(gpu, target);
-        // 3D layers draw into RGBA8.
+        // 3D layers draw into RGBA8, over a depth with a stencil while
+        // the map's passes have one.
         let extrusions = extrusion::Extrusions::new(
             draw_layout,
             node_layout,
@@ -1479,6 +1480,7 @@ impl Renderer {
         self.kept_target = Some(std::mem::replace(&mut self.target, target));
         std::mem::swap(&mut self.paint, &mut self.paint_kept);
         self.symbols.swap_draws();
+        self.extrusions.set_stencil(target.depth.is_some());
         self.images.retarget(target);
         self.composites.retarget(target);
         self.atmosphere.swap_target();
@@ -2947,6 +2949,12 @@ impl Renderer {
         let extruded = self.nodes.iter().filter(|n| n.extrusion.is_some()).count();
         let shared = usize::from(extruded > 0 && terrain_on && self.splits_at_3d());
         let mut resized = self.extrusions.resize(gpu, size, extruded + shared);
+        if resized {
+            // Their bundles hold the depth's format.
+            for extrusion in self.nodes.iter_mut().filter_map(|n| n.extrusion.as_mut()) {
+                extrusion.forget_bundle(gpu);
+            }
+        }
         if let Some(format) = self.target.depth
             && self.map_depth.is_none_or(|(_, made)| made != size)
         {

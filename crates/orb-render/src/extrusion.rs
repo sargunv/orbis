@@ -17,7 +17,7 @@ pub(crate) struct Extrusions {
     /// whole buildings, and where clip distances are, with them the cut
     /// ones of a placement with one clip rectangle, clipped by its planes
     /// (`planes`); and the cut ones clipped per fragment, which alone
-    /// discard; at one sample and at four.
+    /// discard; per [`column`](Self::column).
     pipelines: Vec<((ExtrusionShape, bool), Pipelines)>,
     /// The device has clip distances: the first pipeline draws the cut
     /// stream too, its buildings of a placement with one clip rectangle,
@@ -41,9 +41,14 @@ pub(crate) struct Extrusions {
     pub(crate) samples: u32,
     /// The targets' format (RGBA8, whatever the map's).
     format: TextureFormat,
-    /// The depth's format ([`depth_format`](crate::pipeline::depth_format)).
-    depth_format: TextureFormat,
-    depth: Option<TextureId>,
+    /// The depth's format with a stencil
+    /// ([`depth_format`](crate::pipeline::depth_format)), which the map's
+    /// passes take while terrain may draw in them, and which the depth the
+    /// 3D layers share with them takes then too ([`set_stencil`](Self::set_stencil)).
+    stencil_format: TextureFormat,
+    stencil: bool,
+    /// That depth, and its format.
+    depth: Option<(TextureId, TextureFormat)>,
     size: [u32; 2],
     single_layer: bool,
 }
@@ -86,13 +91,15 @@ impl Streams {
     }
 }
 
-type Pipelines = [[Option<RenderPipelineId>; 2]; 2];
+/// Whole and cut, each at one sample and at four, over a depth without a
+/// stencil and with one.
+type Pipelines = [[Option<RenderPipelineId>; 4]; 2];
 
 impl Extrusions {
     pub(crate) fn new(
         scene: BindGroupLayoutId,
         node: BindGroupLayoutId,
-        (format, depth_format): (TextureFormat, TextureFormat),
+        (format, stencil_format): (TextureFormat, TextureFormat),
     ) -> Self {
         Self {
             pipelines: Vec::new(),
@@ -103,7 +110,8 @@ impl Extrusions {
             layouts: [scene, node],
             samples: 1,
             format,
-            depth_format,
+            stencil_format,
+            stencil: false,
             depth: None,
             size: [0; 2],
             single_layer: false,
@@ -120,7 +128,7 @@ impl Extrusions {
     /// compile, if every shape's full ones are made. True when that
     /// changed, and bundles recorded with the other draw no more.
     pub(crate) fn settle(&mut self, gpu: &mut dyn Gpu) -> bool {
-        let samples = usize::from(self.samples == 4);
+        let samples = self.column();
         let made = |full: bool| {
             (self.drawing())
                 .filter(move |((_, f), p)| *f == full && p.iter().any(|p| p[samples].is_some()))
@@ -148,7 +156,7 @@ impl Extrusions {
     /// The whole and cut pipelines for `shape` at the current sample count
     /// in the full variant or the plane one.
     fn slot_in(&self, shape: ExtrusionShape, full: bool) -> [Option<RenderPipelineId>; 2] {
-        let samples = usize::from(self.samples == 4);
+        let samples = self.column();
         (self.pipelines.iter())
             .find(|(s, _)| *s == (shape, full))
             .map_or([None; 2], |(_, p)| p.map(|p| p[samples]))
@@ -158,12 +166,12 @@ impl Extrusions {
     /// variant, for the first extrusion node of that shape, or (`warm`)
     /// ahead of any.
     pub(crate) fn make(&mut self, gpu: &mut dyn Gpu, shape: ExtrusionShape, warm: bool) {
-        let samples = usize::from(self.samples == 4);
+        let samples = self.column();
         let key = (shape, self.full);
         let index = match self.pipelines.iter().position(|(s, _)| *s == key) {
             Some(i) => i,
             None => {
-                self.pipelines.push((key, [[None; 2]; 2]));
+                self.pipelines.push((key, [[None; 4]; 2]));
                 if warm {
                     self.warm.push(key);
                 }
@@ -225,7 +233,7 @@ impl Extrusions {
             vertex,
             fragment,
             constants: [&vertex_constants, &fragment_constants],
-            depth: depth_test(self.depth_format),
+            depth: depth_test(self.depth_format()),
             cull_back: true,
             plane: !self.full,
             state: !shape.stateless,
@@ -238,7 +246,7 @@ impl Extrusions {
     /// Whether every shape's pipelines made at the current sample count
     /// in the variant they draw in, and the composites', compiled.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu, composites: &Composites) -> bool {
-        let samples = usize::from(self.samples == 4);
+        let samples = self.column();
         let made: Vec<_> = (self.drawing())
             .filter(|((_, full), _)| *full == self.drawn_full)
             .flat_map(|(_, p)| p.map(|p| p[samples]))
@@ -280,6 +288,26 @@ impl Extrusions {
         }
     }
 
+    /// Gives the depth a stencil, as the map's passes have while terrain
+    /// may draw in them, or none: a stencil's memory, and the 24-bit depth
+    /// where the device has no `depth32float-stencil8`, only for maps
+    /// that need it. The pipelines for either are kept.
+    pub(crate) fn set_stencil(&mut self, stencil: bool) {
+        self.stencil = stencil;
+    }
+
+    fn depth_format(&self) -> TextureFormat {
+        match self.stencil {
+            true => self.stencil_format,
+            false => TextureFormat::Depth32Float,
+        }
+    }
+
+    /// The pipelines' column for the current sample count and depth.
+    fn column(&self) -> usize {
+        usize::from(self.samples == 4) + 2 * usize::from(self.stencil)
+    }
+
     /// The depth 3D passes share, once a resize made it, and how its
     /// passes store it: a single pass's is transient.
     pub(crate) fn depth(&self) -> Option<(TextureId, StoreOp)> {
@@ -288,23 +316,28 @@ impl Extrusions {
         } else {
             StoreOp::Store
         };
-        self.depth.map(|d| (d, store))
+        self.depth.map(|(d, _)| (d, store))
     }
 
     /// Sizes the depth `count` passes share: the extrusion layers', and
-    /// the map's where they split at them.
+    /// the map's where they split at them; whether it was made anew.
     pub(crate) fn resize(&mut self, gpu: &mut dyn Gpu, size: [u32; 2], count: usize) -> bool {
-        if count == 0 || (self.size == size && self.single_layer == (count == 1)) {
+        let format = self.depth_format();
+        if count == 0
+            || (self.size == size
+                && self.single_layer == (count == 1)
+                && self.depth.is_some_and(|(_, made)| made == format))
+        {
             return false;
         }
-        self.depth.take().release(gpu);
-        self.depth = Some(gpu.create_texture(&TextureDesc {
+        self.depth.take().map(|(depth, _)| depth).release(gpu);
+        let depth = gpu.create_texture(&TextureDesc {
             label: "3d depth",
             width: size[0],
             height: size[1],
             array_layers: 1,
             dimension: TextureViewDimension::D2,
-            format: self.depth_format,
+            format,
             usage: TextureUsages::RENDER_ATTACHMENT
                 | if count == 1 {
                     TextureUsages::TRANSIENT_ATTACHMENT
@@ -313,7 +346,8 @@ impl Extrusions {
                 },
             sample_count: self.samples,
             mip_levels: 1,
-        }));
+        });
+        self.depth = Some((depth, format));
         self.size = size;
         self.single_layer = count == 1;
         true
@@ -378,7 +412,7 @@ impl Extrusions {
                 &RenderBundleDesc {
                     label: "3d layer",
                     color_formats: &[self.format],
-                    depth_format: Some(self.depth_format),
+                    depth_format: Some(self.depth_format()),
                     sample_count: self.samples,
                 },
                 &commands,
@@ -395,7 +429,7 @@ impl Extrusions {
             ],
             depth: Some(DepthAttachment {
                 store: self.depth().expect("sized").1,
-                target: self.depth.unwrap(),
+                target: self.depth.expect("sized").0,
                 load: if first {
                     LoadOp::Clear(0.0)
                 } else {
@@ -413,6 +447,6 @@ impl Extrusions {
 impl crate::release::Release for Extrusions {
     fn release(self, gpu: &mut dyn Gpu) {
         let pipelines: Vec<Pipelines> = self.pipelines.into_iter().map(|(_, p)| p).collect();
-        (pipelines, self.depth).release(gpu);
+        (pipelines, self.depth.map(|(depth, _)| depth)).release(gpu);
     }
 }
