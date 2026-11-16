@@ -122,10 +122,10 @@
         {
           "key": "watercolor",
           "name": "Watercolor",
-          "detail": "After Stamen Watercolor: masks blurred, roughened and washed in",
+          "detail": "After Stamen Watercolor: London in translucent washes, roads left as paper",
           "orbisOnly": true,
           "url": "watercolor.json",
-          "swatch": ["#f4d5c2", "#3fb3cf", "#fc9c00"],
+          "swatch": ["#f3e6cc", "#5f9fa8", "#d9a66e"],
           "unsupported": {
             "gljs": "GL JS has no render targets or image processing",
             "native": "MapLibre Native has no render targets or image processing"
