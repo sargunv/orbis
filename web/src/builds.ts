@@ -137,6 +137,7 @@ const writeMemory = (
     let value = 0;
     for (let shift = 0; ; shift += 7) {
       const byte = from[at++];
+      if (byte === undefined) throw new Error(`${MEMORY} ends mid-number`);
       value += (byte & 0x7f) * 2 ** shift;
       if (byte < 0x80) return value;
     }
