@@ -8,6 +8,20 @@
     "openmaptiles": {
       "type": "vector",
       "url": "https://tiles.openfreemap.org/planet"
+    },
+    "marker": {
+      "type": "geojson",
+      "data": {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+          "type": "Point",
+          "coordinates": [
+            139.7005,
+            35.6905
+          ]
+        }
+      }
     }
   },
   "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
@@ -917,6 +931,51 @@
         "text-halo-color": "rgba(255,210,63,0.5)",
         "text-halo-width": 1.6,
         "text-halo-blur": 1.5
+      }
+    },
+    {
+      "id": "marker-glow",
+      "type": "circle",
+      "source": "marker",
+      "paint": {
+        "circle-radius": 16,
+        "circle-color": "#ff2fa8",
+        "circle-blur": 1,
+        "circle-opacity": 0.8
+      }
+    },
+    {
+      "id": "marker",
+      "type": "circle",
+      "source": "marker",
+      "paint": {
+        "circle-radius": 7,
+        "circle-color": "#ffffff",
+        "circle-stroke-color": "#ff2fa8",
+        "circle-stroke-width": 2.5
+      }
+    },
+    {
+      "id": "marker-label",
+      "type": "symbol",
+      "source": "marker",
+      "layout": {
+        "text-field": "Shinjuku Station",
+        "text-font": [
+          "Noto Sans Bold"
+        ],
+        "text-size": 13,
+        "text-anchor": "bottom",
+        "text-offset": [
+          0,
+          -0.9
+        ],
+        "text-allow-overlap": true
+      },
+      "paint": {
+        "text-color": "#ffffff",
+        "text-halo-color": "rgba(255,47,168,0.8)",
+        "text-halo-width": 1.6
       }
     }
   ]

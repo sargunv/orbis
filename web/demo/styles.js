@@ -62,12 +62,14 @@ const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
  * picker tags it. `unsupported` says, by engine, why that engine can't
  * show the entry in the comparison (app/compare.js). `quake` makes the
  * entry's host-fed DEM source ripple from `quake.epicentre` (app/quake.js).
+ * `marker.view` is where a click on the landmark the style marks flies
+ * (app/marker.js).
  *
  * @typedef {{ key: string, name: string, detail?: string, url: string, provider: string,
  *   swatch: [string, string, string], dark?: boolean, orbisOnly?: boolean, basemap?: boolean, camera?: object,
  *   constraints?: object, flight?: object[], formats?: Record<string, string>,
  *   light?: boolean, terrain?: boolean, off?: string[], projection?: object, sky?: object,
- *   quake?: { epicentre: [number, number] },
+ *   quake?: { epicentre: [number, number] }, marker?: { view: object },
  *   restyle?: (style: object) => object,
  *   unsupported?: { gljs?: string, native?: string } }} Scene
  */

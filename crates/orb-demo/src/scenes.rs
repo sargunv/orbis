@@ -67,6 +67,30 @@ pub(crate) struct Scene {
     /// The Earthquake's shock: its host-fed ground ripples from here
     /// (`crate::quake`).
     pub(crate) quake: Option<QuakeScene>,
+    /// Where a click on the landmark the style marks flies.
+    pub(crate) marker: Option<Marker>,
+}
+
+/// A scene's marker: a landmark its style marks in its `marker` layers,
+/// and the view a click on it flies to, as `flyTo` options.
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct Marker {
+    view: Value,
+}
+
+impl Marker {
+    /// The layers a marker draws in.
+    const LAYERS: [&str; 3] = ["marker", "marker-glow", "marker-label"];
+
+    /// Whether a click's hit is on the marker.
+    pub(crate) fn hit(hit: &orb_api::Hit) -> bool {
+        Self::LAYERS.contains(&hit.layer.as_str())
+    }
+
+    /// The flight back to the landmark.
+    pub(crate) fn flight(&self) -> (CameraTarget, FlyOptions) {
+        leg(&self.view)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -148,6 +172,7 @@ impl Catalogue {
             light: false,
             flight: None,
             quake: None,
+            marker: None,
         }
     }
 
@@ -255,30 +280,34 @@ impl Flight {
             .as_array()
             .ok_or_else(|| format!("{name}: no legs"))?
             .iter()
-            .map(|leg| {
-                let number = |key: &str| leg[key].as_f64();
-                let center = leg["center"]
-                    .as_array()
-                    .and_then(|c| Some(Geodetic::new(c.first()?.as_f64()?, c.get(1)?.as_f64()?)));
-                let target = CameraTarget {
-                    center,
-                    zoom: number("zoom"),
-                    bearing: number("bearing"),
-                    pitch: number("pitch"),
-                    ..Default::default()
-                };
-                let fly = FlyOptions {
-                    duration: number("duration"),
-                    ..Default::default()
-                };
-                (target, fly)
-            })
+            .map(leg)
             .collect::<Vec<_>>();
         if legs.is_empty() {
             return Err(format!("{name}: no legs"));
         }
         Ok(Self { legs, next: 0 })
     }
+}
+
+/// One flight's `flyTo` options: center, zoom, bearing, pitch and duration
+/// in milliseconds.
+fn leg(leg: &Value) -> (CameraTarget, FlyOptions) {
+    let number = |key: &str| leg[key].as_f64();
+    let center = leg["center"]
+        .as_array()
+        .and_then(|c| Some(Geodetic::new(c.first()?.as_f64()?, c.get(1)?.as_f64()?)));
+    let target = CameraTarget {
+        center,
+        zoom: number("zoom"),
+        bearing: number("bearing"),
+        pitch: number("pitch"),
+        ..Default::default()
+    };
+    let fly = FlyOptions {
+        duration: number("duration"),
+        ..Default::default()
+    };
+    (target, fly)
 }
 
 /// Protomaps Light as the Globe draws it, from `web/demo/data/globe.json`

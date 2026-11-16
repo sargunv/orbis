@@ -2,21 +2,16 @@
 // source (`restyle: "quake"`), whose heights a worker of the demo's own
 // makes and feeds the map through its elevation port (quake-worker.js),
 // so the page only passes on the tiles the map asks for and clicks. A
-// click moves the epicentre; one on the Matterhorn's marker flies to it.
+// click moves the epicentre, but one on the Matterhorn's marker, which
+// flies to it (app/marker.js).
+
+import { onMarker } from "./marker.js";
 
 /** The source the restyled style feeds terrain and hillshade from. */
 export const QUAKE_SOURCE = "quake";
 
-/** The Matterhorn's marker, its layers' ids, and the view it flies to. */
+/** The Matterhorn, which the quake starts under. */
 const MATTERHORN = [7.6586, 45.9763];
-const MARKER = ["matterhorn", "matterhorn-label"];
-const MATTERHORN_VIEW = {
-  center: MATTERHORN,
-  zoom: 13.2,
-  bearing: -60,
-  pitch: 74,
-  duration: 4000,
-};
 
 /**
  * A marker on the Matterhorn, which the quake starts under, so a viewer
@@ -33,9 +28,9 @@ const marker = {
   },
   layers: [
     {
-      id: MARKER[0],
+      id: "marker",
       type: "circle",
-      source: MARKER[0],
+      source: "marker",
       paint: {
         "circle-radius": 7,
         "circle-color": "#d7263d",
@@ -44,9 +39,9 @@ const marker = {
       },
     },
     {
-      id: MARKER[1],
+      id: "marker-label",
       type: "symbol",
-      source: MARKER[0],
+      source: "marker",
       layout: {
         "text-field": "Matterhorn",
         "text-font": ["Noto Sans Bold"],
@@ -74,7 +69,7 @@ export function quakeStyle(style) {
   const sources = Object.fromEntries(
     Object.entries(style.sources).filter(([, s]) => s.type !== "raster-dem"),
   );
-  sources[MARKER[0]] = marker.source;
+  sources.marker = marker.source;
   sources[QUAKE_SOURCE] = {
     type: "raster-dem",
     tiles: ["orbis-host:"],
@@ -128,12 +123,7 @@ export function attachQuake(map, { active, epicentre }) {
   });
   map.on("click", async ({ point, lngLat }) => {
     if (!active()) return;
-    const hit = await map.hitTest(point);
-    if (MARKER.includes(hit?.layer)) {
-      map.camera.flyTo(MATTERHORN_VIEW);
-      return;
-    }
-    if (!worker || !lngLat) return;
+    if (!worker || !lngLat || (await onMarker(map, point))) return;
     centre = lngLat;
     worker.postMessage({ epicentre: lngLat });
   });

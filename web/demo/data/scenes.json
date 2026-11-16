@@ -71,6 +71,15 @@
           "unsupported": {
             "gljs": "GL JS has no way for an app to feed a raster-dem source heights",
             "native": "MapLibre Native has no way for an app to feed a raster-dem source heights"
+          },
+          "marker": {
+            "view": {
+              "center": [7.6586, 45.9763],
+              "zoom": 13.2,
+              "bearing": -60,
+              "pitch": 74,
+              "duration": 4000
+            }
           }
         },
         {
@@ -128,6 +137,15 @@
           "unsupported": {
             "gljs": "GL JS has no render targets or image processing",
             "native": "MapLibre Native has no render targets or image processing"
+          },
+          "marker": {
+            "view": {
+              "center": [139.7005, 35.6905],
+              "zoom": 15.2,
+              "bearing": -25,
+              "pitch": 60,
+              "duration": 3500
+            }
           }
         },
         {
@@ -140,6 +158,15 @@
           "unsupported": {
             "gljs": "GL JS has no render targets or image processing",
             "native": "MapLibre Native has no render targets or image processing"
+          },
+          "marker": {
+            "view": {
+              "center": [-74.03, 40.695],
+              "zoom": 13.4,
+              "bearing": 29,
+              "pitch": 40,
+              "duration": 3500
+            }
           }
         }
       ]

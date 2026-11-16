@@ -8,14 +8,28 @@
     "openmaptiles": {
       "type": "vector",
       "url": "https://tiles.openfreemap.org/planet"
+    },
+    "marker": {
+      "type": "geojson",
+      "data": {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+          "type": "Point",
+          "coordinates": [
+            -74.0445,
+            40.6892
+          ]
+        }
+      }
     }
   },
   "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
   "center": [
-    -73.982,
-    40.758
+    -74.03,
+    40.695
   ],
-  "zoom": 13.6,
+  "zoom": 12.6,
   "bearing": 29,
   "dev.sargunv.orbis:targets": [
     {
@@ -890,6 +904,40 @@
         "text-color": "#3d362c",
         "text-halo-color": "rgba(243,236,220,0.9)",
         "text-halo-width": 1.4
+      }
+    },
+    {
+      "id": "marker",
+      "type": "circle",
+      "source": "marker",
+      "paint": {
+        "circle-radius": 7,
+        "circle-color": "#d94a3d",
+        "circle-stroke-color": "#fffcf4",
+        "circle-stroke-width": 2.5
+      }
+    },
+    {
+      "id": "marker-label",
+      "type": "symbol",
+      "source": "marker",
+      "layout": {
+        "text-field": "Statue of Liberty",
+        "text-font": [
+          "Noto Sans Bold"
+        ],
+        "text-size": 13,
+        "text-anchor": "bottom",
+        "text-offset": [
+          0,
+          -0.9
+        ],
+        "text-allow-overlap": true
+      },
+      "paint": {
+        "text-color": "#3d362c",
+        "text-halo-color": "rgba(244,236,217,0.95)",
+        "text-halo-width": 1.6
       }
     }
   ]

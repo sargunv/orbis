@@ -22,6 +22,7 @@ import { attribution } from "./app/attribution.js";
 import { comparison, formatPair, parsePair } from "./app/compare.js";
 import { failure } from "./app/failure.js";
 import { hud as createHud } from "./app/hud.js";
+import { attachMarker } from "./app/marker.js";
 import { offline as createOffline } from "./app/offline.js";
 import {
   mapOptions,
@@ -593,6 +594,7 @@ async function load(next, { camera }) {
   }
   map = created;
   rememberBackend(map);
+  attachMarker(map, () => current.scene);
   quake = attachQuake(map, {
     active: () => !!current.scene.quake,
     epicentre: () => current.scene.quake.epicentre,

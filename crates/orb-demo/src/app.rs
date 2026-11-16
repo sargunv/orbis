@@ -264,19 +264,19 @@ impl Demo {
                         quake.shown();
                     }
                 }
-                MapEvent::Click { position } if self.scene.quake.is_some() => {
-                    // The Matterhorn's marker flies back to it; elsewhere
-                    // the shock moves.
-                    if self
-                        .map
-                        .hit_test(position)
-                        .is_some_and(|h| crate::quake::on_marker(&h))
-                    {
-                        let (target, options) = crate::quake::to_matterhorn();
+                MapEvent::Click { position }
+                    if self.scene.marker.is_some()
+                        && (self.map.hit_test(position))
+                            .is_some_and(|h| crate::scenes::Marker::hit(&h)) =>
+                {
+                    // The scene's marker flies back to its landmark.
+                    if let Some(marker) = &self.scene.marker {
+                        let (target, options) = marker.flight();
                         self.map.fly_to(&target, &options);
-                    } else if let (Some(quake), Some(at)) =
-                        (&self.quake, self.map.unproject(position))
-                    {
+                    }
+                }
+                MapEvent::Click { position } if self.scene.quake.is_some() => {
+                    if let (Some(quake), Some(at)) = (&self.quake, self.map.unproject(position)) {
                         quake.epicentre(at);
                     }
                 }
