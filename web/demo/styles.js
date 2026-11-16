@@ -2,12 +2,15 @@ import { opening } from "./app/options.js";
 import { quakeStyle } from "./app/quake.js";
 import alpsFlight from "./data/alps-flight.json";
 import alps from "./data/alps.json?url";
+import chromatic from "./data/chromatic.json?url";
 import arctic from "./data/crs/arctic.json?url";
 import globe from "./data/globe.json";
 import neon from "./data/neon.json?url";
 import osmCarto from "./data/osm-carto.json?url";
 import papercraft from "./data/papercraft.json?url";
 import catalogue from "./data/scenes.json";
+import seaChart from "./data/sea-chart.json?url";
+import shimmer from "./data/shimmer.json?url";
 import mlt from "./data/tokyo-mlt.json?url";
 // The demo's styles: the catalogue the map app's picker shows (the
 // basemaps by provider, and a few entries for features: the globe with
@@ -203,10 +206,13 @@ const RESTYLES = { globe: globeStyle, quake: quakeStyle };
 const LOCAL = {
   "alps.json": alps,
   "alps-flight.json": alpsFlight,
+  "chromatic.json": chromatic,
   "crs/arctic.json": arctic,
   "neon.json": neon,
   "osm-carto.json": osmCarto,
   "papercraft.json": papercraft,
+  "sea-chart.json": seaChart,
+  "shimmer.json": shimmer,
   "watercolor.json": watercolor,
 };
 

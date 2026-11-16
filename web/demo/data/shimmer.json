@@ -1,0 +1,1890 @@
+{
+  "version": 8,
+  "name": "Shimmer",
+  "metadata": {
+    "description": "Venice's lagoon at golden hour, alive: its bed (the open sea, the lagoon, its tidal flats and the channels between them) blurred into a depth that ramps from pale turquoise flats to deep teal channels and a navy sea; caustics where drifting noise crosses its middle, brightest in the shallows; sun glitter where fine moving noise peaks, dense and hot under the sun and thinning to a few points away from it, a few flaring and blooming as a slower noise passes, all along a sun path down the view that blows out at the horizon; foam inside the shores broken by drifting noise; slow swells passing over the water's colour; on warm stone, terracotta roofs in three tones lifting off their warm shadows, sage gardens and pale squares; a warm haze toward the horizon in leaning views."
+  },
+  "sources": {
+    "openmaptiles": {
+      "type": "vector",
+      "url": "https://tiles.openfreemap.org/planet"
+    },
+    "title": {
+      "type": "geojson",
+      "data": {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+          "type": "Point",
+          "coordinates": [
+            12.3262,
+            45.4408
+          ]
+        }
+      }
+    },
+    "marker": {
+      "type": "geojson",
+      "data": {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+          "type": "Point",
+          "coordinates": [
+            12.3397,
+            45.4341
+          ]
+        }
+      }
+    }
+  },
+  "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+  "sky": {
+    "sky-color": "#d68c7a",
+    "horizon-color": "#ffe6bd",
+    "fog-color": "#f8dcbc",
+    "fog-ground-blend": 0.6,
+    "horizon-fog-blend": 0.5,
+    "sky-horizon-blend": 1
+  },
+  "center": [
+    12.346,
+    45.4275
+  ],
+  "zoom": 13.15,
+  "bearing": 92,
+  "pitch": 75,
+  "dev.sargunv.orbis:targets": [
+    {
+      "id": "blank"
+    },
+    {
+      "id": "water"
+    },
+    {
+      "id": "sea"
+    },
+    {
+      "id": "flats"
+    },
+    {
+      "id": "channels"
+    },
+    {
+      "id": "open"
+    },
+    {
+      "id": "depth"
+    },
+    {
+      "id": "half"
+    },
+    {
+      "id": "caustics"
+    },
+    {
+      "id": "column"
+    },
+    {
+      "id": "sun"
+    },
+    {
+      "id": "glints"
+    },
+    {
+      "id": "flares"
+    },
+    {
+      "id": "bloom"
+    },
+    {
+      "id": "glow"
+    },
+    {
+      "id": "lights"
+    },
+    {
+      "id": "surf"
+    },
+    {
+      "id": "bridge-shadow"
+    },
+    {
+      "id": "shadow"
+    },
+    {
+      "id": "roofs"
+    },
+    {
+      "id": "roof-shadow"
+    },
+    {
+      "id": "ground"
+    },
+    {
+      "id": "haze"
+    },
+    {
+      "id": "burst"
+    }
+  ],
+  "layers": [
+    {
+      "id": "draw-water",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "water",
+      "dev.sargunv.orbis:destination-target": "water",
+      "paint": {
+        "fill-color": "#fff"
+      }
+    },
+    {
+      "id": "draw-canals",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "waterway",
+      "dev.sargunv.orbis:destination-target": "water",
+      "filter": [
+        "in",
+        [
+          "get",
+          "class"
+        ],
+        [
+          "literal",
+          [
+            "canal",
+            "river"
+          ]
+        ]
+      ],
+      "minzoom": 13,
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#fff",
+        "line-width": [
+          "interpolate",
+          [
+            "exponential",
+            1.5
+          ],
+          [
+            "zoom"
+          ],
+          13,
+          0.6,
+          16,
+          3,
+          18,
+          8
+        ]
+      }
+    },
+    {
+      "id": "draw-sea",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "water",
+      "dev.sargunv.orbis:destination-target": "sea",
+      "filter": [
+        "in",
+        [
+          "get",
+          "class"
+        ],
+        [
+          "literal",
+          [
+            "ocean",
+            "lake"
+          ]
+        ]
+      ],
+      "paint": {
+        "fill-color": "#fff",
+        "fill-opacity": [
+          "match",
+          [
+            "get",
+            "class"
+          ],
+          "ocean",
+          1,
+          0.62
+        ],
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "draw-flats",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "landcover",
+      "dev.sargunv.orbis:destination-target": "flats",
+      "filter": [
+        "in",
+        [
+          "get",
+          "class"
+        ],
+        [
+          "literal",
+          [
+            "wetland"
+          ]
+        ]
+      ],
+      "paint": {
+        "fill-color": "#fff",
+        "fill-opacity": 0.82,
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "draw-channels",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "water",
+      "dev.sargunv.orbis:destination-target": "channels",
+      "filter": [
+        "in",
+        [
+          "get",
+          "class"
+        ],
+        [
+          "literal",
+          [
+            "river"
+          ]
+        ]
+      ],
+      "paint": {
+        "fill-color": "#fff",
+        "fill-opacity": 0.85
+      }
+    },
+    {
+      "id": "open-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "channels",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "erode",
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            12,
+            2,
+            16,
+            4
+          ]
+        },
+        {
+          "type": "combine",
+          "target": "sea",
+          "mode": "max"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "open"
+    },
+    {
+      "id": "depth-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "open",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "combine",
+          "target": "flats",
+          "mode": "subtract"
+        },
+        {
+          "type": "noise",
+          "size": 70,
+          "amount": 0.1
+        },
+        {
+          "type": "blur",
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            10,
+            5,
+            13,
+            9,
+            16,
+            16
+          ]
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "depth"
+    },
+    {
+      "id": "draw-half",
+      "type": "background",
+      "dev.sargunv.orbis:destination-target": "half",
+      "paint": {
+        "background-color": "#fff",
+        "background-opacity": 0.5
+      }
+    },
+    {
+      "id": "caustic-lines",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "half",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "noise",
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            10,
+            10,
+            16,
+            24
+          ],
+          "amount": 0.5,
+          "speed": 14
+        },
+        {
+          "type": "bands",
+          "count": 2,
+          "width": 0.045
+        },
+        {
+          "type": "combine",
+          "target": "water",
+          "mode": "multiply"
+        },
+        {
+          "type": "combine",
+          "target": "depth",
+          "mode": "subtract"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "caustics"
+    },
+    {
+      "id": "sun-column",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "blank",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "gradient",
+          "angle": 90
+        },
+        {
+          "type": "ramp",
+          "stops": [
+            [
+              0.3,
+              "rgba(255,255,255,0.0)"
+            ],
+            [
+              0.38,
+              "rgba(255,255,255,0.36)"
+            ],
+            [
+              0.44,
+              "rgba(255,255,255,0.78)"
+            ],
+            [
+              0.5,
+              "rgba(255,255,255,1.0)"
+            ],
+            [
+              0.56,
+              "rgba(255,255,255,0.78)"
+            ],
+            [
+              0.62,
+              "rgba(255,255,255,0.36)"
+            ],
+            [
+              0.7,
+              "rgba(255,255,255,0.0)"
+            ]
+          ]
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "column"
+    },
+    {
+      "id": "sun-path",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "blank",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "gradient",
+          "angle": 180
+        },
+        {
+          "type": "ramp",
+          "stops": [
+            [
+              0,
+              "rgba(255,255,255,0.35)"
+            ],
+            [
+              0.5,
+              "rgba(255,255,255,0.6)"
+            ],
+            [
+              0.85,
+              "rgba(255,255,255,0.9)"
+            ],
+            [
+              1,
+              "rgba(255,255,255,1)"
+            ]
+          ]
+        },
+        {
+          "type": "combine",
+          "target": "column",
+          "mode": "multiply"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "sun"
+    },
+    {
+      "id": "glints-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "sun",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "ramp",
+          "stops": [
+            [
+              0,
+              "rgba(255,255,255,0.3)"
+            ],
+            [
+              0.35,
+              "rgba(255,255,255,0.54)"
+            ],
+            [
+              0.7,
+              "rgba(255,255,255,0.68)"
+            ],
+            [
+              1,
+              "rgba(255,255,255,0.78)"
+            ]
+          ]
+        },
+        {
+          "type": "noise",
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            13,
+            3,
+            16,
+            3.4
+          ],
+          "amount": 0.6,
+          "speed": 34
+        },
+        {
+          "type": "threshold",
+          "cutoff": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            13,
+            234,
+            16,
+            245
+          ]
+        },
+        {
+          "type": "combine",
+          "target": "water",
+          "mode": "multiply"
+        },
+        {
+          "type": "opacity",
+          "value": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            12.4,
+            0,
+            13,
+            1
+          ]
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "glints"
+    },
+    {
+      "id": "flare-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "half",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "noise",
+          "size": 16,
+          "amount": 0.9,
+          "speed": 10
+        },
+        {
+          "type": "ramp",
+          "stops": [
+            [
+              0.45,
+              "rgba(255,255,255,0)"
+            ],
+            [
+              0.8,
+              "rgba(255,255,255,1)"
+            ]
+          ]
+        },
+        {
+          "type": "combine",
+          "target": "glints",
+          "mode": "multiply"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "flares"
+    },
+    {
+      "id": "lights-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "glints",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "opacity",
+          "value": 0.7
+        },
+        {
+          "type": "combine",
+          "target": "flares",
+          "mode": "max"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "lights"
+    },
+    {
+      "id": "bloom-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "lights",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "blur",
+          "size": 1.8
+        },
+        {
+          "type": "ramp",
+          "stops": [
+            [
+              0.025,
+              "rgba(255,255,255,0)"
+            ],
+            [
+              0.1,
+              "rgba(255,255,255,1)"
+            ]
+          ]
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "bloom"
+    },
+    {
+      "id": "foam-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "water",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "high-pass",
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            11,
+            1.2,
+            16,
+            2.5
+          ]
+        },
+        {
+          "type": "noise",
+          "size": 6,
+          "amount": 0.2,
+          "speed": 10
+        },
+        {
+          "type": "threshold",
+          "cutoff": 80
+        },
+        {
+          "type": "combine",
+          "target": "open",
+          "mode": "multiply"
+        },
+        {
+          "type": "opacity",
+          "value": 0.75
+        },
+        {
+          "type": "combine",
+          "target": "lights",
+          "mode": "max"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "surf"
+    },
+    {
+      "id": "glow-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "depth",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "ramp",
+          "stops": [
+            [
+              0,
+              "rgba(255,255,255,0)"
+            ],
+            [
+              0.03,
+              "rgba(255,255,255,0.1)"
+            ],
+            [
+              0.7,
+              "rgba(255,255,255,1)"
+            ]
+          ]
+        },
+        {
+          "type": "combine",
+          "target": "sun",
+          "mode": "multiply"
+        },
+        {
+          "type": "opacity",
+          "value": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            11,
+            0.3,
+            13,
+            0.5
+          ]
+        },
+        {
+          "type": "combine",
+          "target": "bloom",
+          "mode": "over"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "glow"
+    },
+    {
+      "id": "draw-roofs",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "building",
+      "dev.sargunv.orbis:destination-target": "roofs",
+      "minzoom": 13,
+      "paint": {
+        "fill-color": "#fff",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "roof-shadow-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "roofs",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "offset",
+          "translate": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            13,
+            [
+              "literal",
+              [
+                1,
+                1.4
+              ]
+            ],
+            16,
+            [
+              "literal",
+              [
+                2.2,
+                3
+              ]
+            ]
+          ]
+        },
+        {
+          "type": "blur",
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            13,
+            0.8,
+            16,
+            1.6
+          ]
+        },
+        {
+          "type": "combine",
+          "target": "roofs",
+          "mode": "subtract"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "roof-shadow"
+    },
+    {
+      "id": "draw-bridges",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "dev.sargunv.orbis:destination-target": "bridge-shadow",
+      "filter": [
+        "all",
+        [
+          "all",
+          [
+            "==",
+            [
+              "geometry-type"
+            ],
+            "LineString"
+          ],
+          [
+            "in",
+            [
+              "get",
+              "class"
+            ],
+            [
+              "literal",
+              [
+                "motorway",
+                "trunk",
+                "primary",
+                "secondary",
+                "rail",
+                "transit"
+              ]
+            ]
+          ]
+        ],
+        [
+          "==",
+          [
+            "get",
+            "brunnel"
+          ],
+          "bridge"
+        ]
+      ],
+      "minzoom": 11,
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#fff",
+        "line-width": [
+          "interpolate",
+          [
+            "exponential",
+            1.5
+          ],
+          [
+            "zoom"
+          ],
+          11,
+          1.6,
+          14,
+          4,
+          16,
+          10
+        ],
+        "line-translate": [
+          2,
+          3
+        ],
+        "line-blur": 1.5
+      }
+    },
+    {
+      "id": "land-shadow",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "water",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "offset",
+          "translate": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            11,
+            [
+              "literal",
+              [
+                1.5,
+                2
+              ]
+            ],
+            16,
+            [
+              "literal",
+              [
+                3,
+                4.5
+              ]
+            ]
+          ]
+        },
+        {
+          "type": "invert"
+        },
+        {
+          "type": "blur",
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            11,
+            2,
+            16,
+            4
+          ]
+        },
+        {
+          "type": "combine",
+          "target": "bridge-shadow",
+          "mode": "max"
+        },
+        {
+          "type": "combine",
+          "target": "open",
+          "mode": "multiply"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "shadow"
+    },
+    {
+      "id": "draw-ground",
+      "type": "background",
+      "dev.sargunv.orbis:destination-target": "ground",
+      "paint": {
+        "background-color": "#fff"
+      }
+    },
+    {
+      "id": "haze-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "blank",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "gradient",
+          "angle": 180
+        },
+        {
+          "type": "ramp",
+          "stops": [
+            [
+              0.4,
+              "rgba(255,255,255,0)"
+            ],
+            [
+              0.65,
+              "rgba(255,255,255,0.3)"
+            ],
+            [
+              0.8,
+              "rgba(255,255,255,0.7)"
+            ],
+            [
+              0.9,
+              "rgba(255,255,255,0.92)"
+            ]
+          ]
+        },
+        {
+          "type": "combine",
+          "target": "ground",
+          "mode": "multiply"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "haze"
+    },
+    {
+      "id": "burst-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "blank",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "gradient",
+          "angle": 180
+        },
+        {
+          "type": "ramp",
+          "stops": [
+            [
+              0.66,
+              "rgba(255,255,255,0)"
+            ],
+            [
+              0.8,
+              "rgba(255,255,255,0.25)"
+            ],
+            [
+              0.87,
+              "rgba(255,255,255,0.75)"
+            ],
+            [
+              0.9,
+              "rgba(255,255,255,1)"
+            ]
+          ]
+        },
+        {
+          "type": "combine",
+          "target": "column",
+          "mode": "multiply"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "burst"
+    },
+    {
+      "id": "land",
+      "type": "background",
+      "paint": {
+        "background-color": "#f0e2cb"
+      }
+    },
+    {
+      "id": "urban",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "landuse",
+      "filter": [
+        "in",
+        [
+          "get",
+          "class"
+        ],
+        [
+          "literal",
+          [
+            "residential",
+            "industrial",
+            "commercial",
+            "retail"
+          ]
+        ]
+      ],
+      "paint": {
+        "fill-color": "#e9d4b8",
+        "fill-opacity": [
+          "interpolate",
+          [
+            "exponential",
+            1
+          ],
+          [
+            "zoom"
+          ],
+          10,
+          0.8,
+          14,
+          0.4
+        ]
+      }
+    },
+    {
+      "id": "marsh",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "landcover",
+      "filter": [
+        "in",
+        [
+          "get",
+          "class"
+        ],
+        [
+          "literal",
+          [
+            "wetland"
+          ]
+        ]
+      ],
+      "paint": {
+        "fill-color": "#d3d3ab",
+        "fill-opacity": 0.8
+      }
+    },
+    {
+      "id": "gardens",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "park",
+      "paint": {
+        "fill-color": "#cad2a9"
+      }
+    },
+    {
+      "id": "green",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "landcover",
+      "filter": [
+        "in",
+        [
+          "get",
+          "class"
+        ],
+        [
+          "literal",
+          [
+            "wood",
+            "grass"
+          ]
+        ]
+      ],
+      "paint": {
+        "fill-color": "#cad2a9",
+        "fill-opacity": 0.8
+      }
+    },
+    {
+      "id": "squares",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "filter": [
+        "==",
+        [
+          "geometry-type"
+        ],
+        "Polygon"
+      ],
+      "paint": {
+        "fill-color": "#f9f2e6"
+      }
+    },
+    {
+      "id": "water-depth",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "depth",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "noise",
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            10,
+            110,
+            16,
+            160
+          ],
+          "amount": 0.035,
+          "speed": 6
+        },
+        {
+          "type": "ramp",
+          "stops": [
+            [
+              0.04,
+              "#a8e2d4"
+            ],
+            [
+              0.2,
+              "#6ccac0"
+            ],
+            [
+              0.45,
+              "#33929f"
+            ],
+            [
+              0.7,
+              "#1e6a88"
+            ],
+            [
+              0.92,
+              "#174f72"
+            ]
+          ]
+        },
+        {
+          "type": "combine",
+          "target": "water",
+          "mode": "multiply"
+        }
+      ]
+    },
+    {
+      "id": "water-caustics",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "caustics",
+      "paint": {
+        "fill-color": "#e6fff8",
+        "fill-opacity": [
+          "interpolate",
+          [
+            "exponential",
+            1
+          ],
+          [
+            "zoom"
+          ],
+          11,
+          0.06,
+          13,
+          0.3,
+          16,
+          0.5
+        ],
+        "fill-layer-blend": "screen"
+      }
+    },
+    {
+      "id": "water-shadow",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "shadow",
+      "paint": {
+        "fill-color": "#0b3044",
+        "fill-opacity": 0.4,
+        "fill-layer-blend": "multiply"
+      }
+    },
+    {
+      "id": "sun-glow",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "glow",
+      "paint": {
+        "fill-color": "#e0a855",
+        "fill-opacity": 1,
+        "fill-layer-blend": "plus-lighter"
+      }
+    },
+    {
+      "id": "water-lights",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "surf",
+      "paint": {
+        "fill-color": "#fff6e0",
+        "fill-opacity": 1
+      }
+    },
+    {
+      "id": "roads",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "filter": [
+        "all",
+        [
+          "==",
+          [
+            "geometry-type"
+          ],
+          "LineString"
+        ],
+        [
+          "in",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "literal",
+            [
+              "motorway",
+              "trunk",
+              "primary",
+              "secondary",
+              "tertiary",
+              "minor"
+            ]
+          ]
+        ]
+      ],
+      "minzoom": 12,
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#fbf7ef",
+        "line-width": [
+          "interpolate",
+          [
+            "exponential",
+            1.5
+          ],
+          [
+            "zoom"
+          ],
+          12,
+          0.4,
+          15,
+          1.6,
+          18,
+          8
+        ]
+      }
+    },
+    {
+      "id": "causeway",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "filter": [
+        "all",
+        [
+          "all",
+          [
+            "==",
+            [
+              "geometry-type"
+            ],
+            "LineString"
+          ],
+          [
+            "in",
+            [
+              "get",
+              "class"
+            ],
+            [
+              "literal",
+              [
+                "motorway",
+                "trunk",
+                "primary",
+                "secondary",
+                "rail",
+                "transit"
+              ]
+            ]
+          ]
+        ],
+        [
+          "==",
+          [
+            "get",
+            "brunnel"
+          ],
+          "bridge"
+        ]
+      ],
+      "minzoom": 11,
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#f6eddc",
+        "line-width": [
+          "interpolate",
+          [
+            "exponential",
+            1.5
+          ],
+          [
+            "zoom"
+          ],
+          11,
+          1.2,
+          14,
+          3,
+          16,
+          8
+        ]
+      }
+    },
+    {
+      "id": "bridges",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "filter": [
+        "all",
+        [
+          "all",
+          [
+            "==",
+            [
+              "geometry-type"
+            ],
+            "LineString"
+          ],
+          [
+            "in",
+            [
+              "get",
+              "class"
+            ],
+            [
+              "literal",
+              [
+                "path",
+                "minor",
+                "service"
+              ]
+            ]
+          ]
+        ],
+        [
+          "==",
+          [
+            "get",
+            "brunnel"
+          ],
+          "bridge"
+        ]
+      ],
+      "minzoom": 14,
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#fbf7ef",
+        "line-width": [
+          "interpolate",
+          [
+            "exponential",
+            1.5
+          ],
+          [
+            "zoom"
+          ],
+          12,
+          0.6,
+          15,
+          2,
+          18,
+          9
+        ]
+      }
+    },
+    {
+      "id": "roof-shadows",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "roof-shadow",
+      "paint": {
+        "fill-color": "#8a4f2e",
+        "fill-opacity": [
+          "interpolate",
+          [
+            "exponential",
+            1
+          ],
+          [
+            "zoom"
+          ],
+          13,
+          0,
+          14,
+          0.5,
+          16,
+          0.6
+        ],
+        "fill-layer-blend": "multiply"
+      }
+    },
+    {
+      "id": "roofs",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "building",
+      "minzoom": 12.5,
+      "paint": {
+        "fill-color": [
+          "match",
+          [
+            "%",
+            [
+              "+",
+              [
+                "floor",
+                [
+                  "/",
+                  [
+                    "to-number",
+                    [
+                      "id"
+                    ],
+                    0
+                  ],
+                  10
+                ]
+              ],
+              [
+                "round",
+                [
+                  "to-number",
+                  [
+                    "get",
+                    "render_height"
+                  ],
+                  0
+                ]
+              ]
+            ],
+            3
+          ],
+          0,
+          "#ebc6a9",
+          1,
+          "#e1b395",
+          "#f1d5bd"
+        ],
+        "fill-outline-color": "#cf9f80",
+        "fill-opacity": [
+          "interpolate",
+          [
+            "exponential",
+            1
+          ],
+          [
+            "zoom"
+          ],
+          12.5,
+          0,
+          13,
+          0.7,
+          14,
+          0.95
+        ]
+      }
+    },
+    {
+      "id": "haze",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "haze",
+      "paint": {
+        "fill-color": "#f7d9b4",
+        "fill-opacity": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "pitch"
+          ],
+          50,
+          0,
+          72,
+          0.85
+        ]
+      }
+    },
+    {
+      "id": "sunburst",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "burst",
+      "paint": {
+        "fill-color": "#fff1d0",
+        "fill-opacity": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "pitch"
+          ],
+          70,
+          0,
+          74,
+          1
+        ],
+        "fill-layer-blend": "plus-lighter"
+      }
+    },
+    {
+      "id": "vignette",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "blank",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "gradient",
+          "kind": "radial"
+        },
+        {
+          "type": "ramp",
+          "stops": [
+            [
+              0.55,
+              "rgba(60,34,14,0)"
+            ],
+            [
+              1,
+              "rgba(60,34,14,0.22)"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "water-names",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "water_name",
+      "filter": [
+        "any",
+        [
+          "in",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "literal",
+            [
+              "ocean",
+              "sea",
+              "bay"
+            ]
+          ]
+        ],
+        [
+          "in",
+          [
+            "get",
+            "name:latin"
+          ],
+          [
+            "literal",
+            [
+              "Laguna Veneta",
+              "Laguna di Venezia"
+            ]
+          ]
+        ]
+      ],
+      "layout": {
+        "text-field": [
+          "get",
+          "name:latin"
+        ],
+        "text-font": [
+          "Noto Sans Italic"
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "exponential",
+            1
+          ],
+          [
+            "zoom"
+          ],
+          10,
+          12,
+          15,
+          15
+        ],
+        "text-letter-spacing": 0.35,
+        "text-max-width": 40,
+        "text-padding": 24
+      },
+      "paint": {
+        "text-color": "#eaf7f6",
+        "text-halo-color": "rgba(15,68,98,0.55)",
+        "text-halo-width": 1.4,
+        "text-halo-blur": 1
+      }
+    },
+    {
+      "id": "canal-names",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "waterway",
+      "filter": [
+        "in",
+        [
+          "get",
+          "name:latin"
+        ],
+        [
+          "literal",
+          [
+            "Canal Grande",
+            "Canale della Giudecca",
+            "Bacino San Marco",
+            "Canale di Cannaregio"
+          ]
+        ]
+      ],
+      "minzoom": 14,
+      "layout": {
+        "symbol-placement": "line",
+        "text-field": [
+          "get",
+          "name:latin"
+        ],
+        "text-font": [
+          "Noto Sans Italic"
+        ],
+        "text-size": 12,
+        "text-letter-spacing": 0.25,
+        "symbol-spacing": 600
+      },
+      "paint": {
+        "text-color": "#eaf7f6",
+        "text-halo-color": "rgba(15,68,98,0.55)",
+        "text-halo-width": 1.2
+      }
+    },
+    {
+      "id": "island-names",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "place",
+      "filter": [
+        "any",
+        [
+          "all",
+          [
+            "in",
+            [
+              "get",
+              "class"
+            ],
+            [
+              "literal",
+              [
+                "island"
+              ]
+            ]
+          ],
+          [
+            "any",
+            [
+              "in",
+              [
+                "get",
+                "name:latin"
+              ],
+              [
+                "literal",
+                [
+                  "Murano",
+                  "Burano",
+                  "Torcello",
+                  "Giudecca",
+                  "Lido",
+                  "Sant'Erasmo",
+                  "San Michele",
+                  "San Giorgio Maggiore",
+                  "Pellestrina",
+                  "Mazzorbo",
+                  "Certosa",
+                  "Vignole"
+                ]
+              ]
+            ],
+            [
+              ">=",
+              [
+                "zoom"
+              ],
+              14.5
+            ]
+          ]
+        ],
+        [
+          "==",
+          [
+            "get",
+            "name:latin"
+          ],
+          "Lido"
+        ]
+      ],
+      "layout": {
+        "text-field": [
+          "get",
+          "name:latin"
+        ],
+        "text-font": [
+          "Noto Sans Bold"
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "exponential",
+            1
+          ],
+          [
+            "zoom"
+          ],
+          10,
+          10,
+          15,
+          13
+        ],
+        "text-letter-spacing": 0.2,
+        "text-transform": "uppercase",
+        "text-max-width": 20,
+        "text-padding": 6
+      },
+      "paint": {
+        "text-color": "#5a4636",
+        "text-halo-color": "rgba(241,230,210,0.9)",
+        "text-halo-width": 1.5
+      }
+    },
+    {
+      "id": "city-name",
+      "type": "symbol",
+      "source": "title",
+      "paint": {
+        "text-color": "#4a3426",
+        "text-halo-color": "rgba(246,236,218,0.85)",
+        "text-halo-width": 2,
+        "text-halo-blur": 1
+      },
+      "layout": {
+        "text-field": "VENEZIA",
+        "text-font": [
+          "Noto Sans Bold"
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "exponential",
+            1
+          ],
+          [
+            "zoom"
+          ],
+          10,
+          15,
+          14,
+          22,
+          16,
+          26
+        ],
+        "text-letter-spacing": 0.5,
+        "text-padding": 8
+      }
+    },
+    {
+      "id": "marker",
+      "type": "circle",
+      "source": "marker",
+      "paint": {
+        "circle-radius": 7,
+        "circle-color": "#c2462e",
+        "circle-stroke-color": "#fff8ea",
+        "circle-stroke-width": 2.5
+      }
+    },
+    {
+      "id": "marker-label",
+      "type": "symbol",
+      "source": "marker",
+      "layout": {
+        "text-field": "Piazza San Marco",
+        "text-font": [
+          "Noto Sans Bold"
+        ],
+        "text-size": 13,
+        "text-anchor": "bottom",
+        "text-offset": [
+          0,
+          -0.9
+        ],
+        "text-allow-overlap": true
+      },
+      "paint": {
+        "text-color": "#4a3526",
+        "text-halo-color": "rgba(255,248,234,0.95)",
+        "text-halo-width": 1.6
+      }
+    }
+  ]
+}
