@@ -156,10 +156,10 @@
         {
           "key": "papercraft",
           "name": "Papercraft",
-          "detail": "New York cut from paper, every sheet casting a shadow",
+          "detail": "New York cut from layered paper, the harbour stepping down in sheets",
           "orbisOnly": true,
           "url": "papercraft.json",
-          "swatch": ["#f4ecd9", "#2a6aa0", "#7fb85c"],
+          "swatch": ["#f3ebd8", "#2f6f86", "#a9b78c"],
           "unsupported": {
             "gljs": "GL JS has no render targets or image processing",
             "native": "MapLibre Native has no render targets or image processing"
