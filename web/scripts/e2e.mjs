@@ -2044,6 +2044,43 @@ async function recovery(browser, server) {
   }
 
   if (webgpu) {
+    // A pipeline the WebGPU driver fails to make, as a phone's Vulkan
+    // driver failed line labels' placement (VK_ERROR_UNKNOWN): the map
+    // starts again on WebGL 2, which places labels without it, and loads.
+    const { page, errors } = await open(browser, { width: 600, height: 400 });
+    await page.addInitScript(() => {
+      const make = GPUDevice.prototype.createComputePipelineAsync;
+      GPUDevice.prototype.createComputePipelineAsync = function (desc) {
+        if (desc.label === "symbol placement with lines")
+          return Promise.reject(
+            new DOMException(
+              "CreateComputePipelines failed with VK_ERROR_UNKNOWN",
+              "OperationError",
+            ),
+          );
+        return make.call(this, desc);
+      };
+    });
+    await page.goto(`${server.url}?style=tokyo#15/35.6830/139.7520`);
+    await page.waitForFunction(() => app.map?.backend === "webgl2", null, {
+      timeout: 30_000,
+    });
+    await idle(page);
+    assert.ok(
+      errors.some((e) =>
+        /WebGL 2\. WebGPU: the GPU driver failed making pipeline symbol placement with lines/.test(
+          e,
+        ),
+      ),
+      JSON.stringify(errors),
+    );
+    await page.close();
+    console.log(
+      "recovery: a pipeline WebGPU's driver fails starts the map again on WebGL 2",
+    );
+  }
+
+  if (webgpu) {
     // WebGPU lost, and no adapter after: the map starts again on WebGL 2
     // in a new canvas, at its camera, and takes input there.
     const { page, errors } = await open(browser, { width: 600, height: 400 });

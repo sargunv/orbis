@@ -203,6 +203,8 @@ export class Engine {
   /** When the device was made, and the losses in the current run. */
   #deviceAt = performance.now();
   #losses = 0;
+  /** A pipeline failed, and the map was handed to WebGL 2. */
+  #pipelineFailed = false;
   #removed = false;
   /** Why the map stopped: every call fails with it. */
   #stopped: string | undefined;
@@ -788,6 +790,19 @@ export class Engine {
     }
     const stats = plain(frame) as unknown as FrameStats;
     frame.free();
+    // A pipeline WebGPU's driver can't make, it can't make on another
+    // device either: WebGL 2 draws without it.
+    if (
+      !this.#pipelineFailed &&
+      this.backend === "webgpu" &&
+      !this.#host.forced
+    ) {
+      const failed = this.#core.failedPipeline();
+      if (failed !== undefined) {
+        this.#pipelineFailed = true;
+        this.#gone(`the GPU driver failed making ${failed}`, performance.now());
+      }
+    }
     // A style waits for the modules its features need.
     const bits = this.#core.modulesWanted();
     if (bits) {
@@ -862,10 +877,10 @@ export class Engine {
 
   /** The GPU is lost for good: WebGPU picked by `auto` hands the map to
    * the page to start again on WebGL 2; anything else stops it. */
-  #gone(why: string): void {
+  #gone(why: string, at = this.#lostAt ?? 0): void {
     if (this.#removed) return;
     if (this.backend === "webgpu" && !this.#host.forced)
-      this.#send({ fallback: { why, lostAt: this.#lostAt ?? 0 } });
+      this.#send({ fallback: { why, lostAt: at } });
     else this.end(`the map stopped: ${why}`);
   }
 

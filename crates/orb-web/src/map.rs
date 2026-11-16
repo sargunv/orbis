@@ -1208,6 +1208,13 @@ impl OrbisMap {
         wake(self.id);
     }
 
+    /// The pipeline the driver failed to make, if one failed: what draws
+    /// with it stays missing on this device, and on another of its kind.
+    #[wasm_bindgen(js_name = failedPipeline)]
+    pub fn failed_pipeline(&self) -> Option<String> {
+        self.canvas.gpu_ref().hung().map(str::to_owned)
+    }
+
     /// Traps while borrowed, as a bug in a frame would: the map stops and
     /// says so. To exercise that.
     pub fn trap(&mut self) {
