@@ -51,11 +51,14 @@ fn pattern_position(tile: Tile, pos: vec2<f32>, image: ImageRect, scale: f32) ->
     return (tile_pixel_ratio(tile) * pos + offset) / size;
 }
 
+// Where in the padded image `uv` falls rounds to 1/1024 texel, so adding
+// its whole-texel corner is exact in f32 and the sampler's filter weights
+// don't depend on where the atlas packed the image (symbols' `atlas_uv`).
 fn pattern_sample(image: ImageRect, uv: vec2<f32>, padding: f32) -> vec4<f32> {
     let size = vec2<f32>(textureDimensions(image_texture));
     let tl = vec2<f32>(image.origin) - padding;
     let br = vec2<f32>(image.origin + image.size) + padding;
-    var texel = mix(tl, br, uv);
+    var texel = tl + round(uv * (br - tl) * 1024.0) / 1024.0;
     // Clamp to the padded subimage's texel centres, just as a standalone
     // GL JS tile atlas clamps its outer edge. Neighbouring images must not
     // contribute when line AA reaches the padding boundary.
