@@ -5,8 +5,12 @@
 //
 // A pass samples its input through a kernel: a copy, one axis of a
 // Gaussian blur, a square convolution, one axis of a dilation or erosion,
-// a move, or a move of each colour channel apart. The blur's second axis may weigh the pass's original against
-// the blur (`sharpen`, `high-pass`). Then it applies its pointwise
+// a move, or a move of each colour channel apart. The blur's second axis
+// may weigh the blur's input against the blur (`sharpen`, `high-pass`). A
+// blur too wide for its taps runs on the image halved: a move by nothing
+// halves it (a texel at its size between four), and a blur of no taps
+// brings it back, weighing it as the second axis would. Then it applies
+// its pointwise
 // operations in order (`pointwise`), which may read one colour ramp and
 // one other target.
 

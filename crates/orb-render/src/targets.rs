@@ -13,10 +13,12 @@
 //!
 //! A process runs its operations as passes over textures of the view's
 //! size ([`Step`]): a kernel (a copy, one axis of a Gaussian blur, a
-//! convolution), then pointwise operations. Its passes read its source
-//! target, take turns in up to three scratch textures shared by every
-//! process, and end in its output, which composites into its destination
-//! target or, with none, into the map in its layer's place.
+//! convolution), then pointwise operations; a blur too wide for its taps
+//! runs on the image halved until it fits, and comes back. Its passes read
+//! its source target, take turns in scratch textures shared by every
+//! process (up to three of each size), and end in its output, which
+//! composites into its destination target or, with none, into the map in
+//! its layer's place.
 //!
 //! What reads a target runs after whatever writes it ([`Targets::order`]):
 //! processes reading it, and the fills drawn through it, which composite
@@ -158,6 +160,12 @@ pub const MAX_STOPS: usize = 8;
 /// Linear taps a side a blur pass takes at most (`weights` holds the
 /// centre and a pair for each).
 const MAX_TAPS: usize = 31;
+/// The widest Gaussian, standard deviation in texels, a blur pass takes
+/// at its textures' size: its taps reach three of them, every texel on
+/// the way. A wider blur runs on the image halved until it fits.
+const MAX_SIGMA: f32 = (2 * MAX_TAPS) as f32 / 3.0;
+/// Halvings a blur takes at most: past them, its taps reach no further.
+const MAX_HALVINGS: u32 = 6;
 /// Texels a side a dilation or erosion pass reaches at most.
 const MAX_REACH: f32 = 64.0;
 /// Vectors of four each pointwise operation takes in the uniform.
@@ -177,10 +185,19 @@ enum Kernel {
     BlurX {
         size: f32,
     },
-    /// The same along y, weighed against the input of the pass before
-    /// (`combine` 1 sharpen by `amount`, 2 high-pass; 0 the blur alone).
+    /// The same along y, weighed against the blur's input (`combine` 1
+    /// sharpen by `amount`, 2 high-pass; 0 the blur alone).
     BlurY {
         size: f32,
+        combine: u32,
+        amount: f32,
+    },
+    /// The input at half its size: each texel the mean of the four it
+    /// covers, which a wide blur runs on.
+    Halve,
+    /// A blur run on a halved image brought back to the view's size,
+    /// weighed against the blur's input as [`Kernel::BlurY`] is.
+    Restore {
         combine: u32,
         amount: f32,
     },
@@ -214,6 +231,8 @@ impl Kernel {
             Kernel::Morph { .. } => 6,
             Kernel::Offset { .. } => 7,
             Kernel::Split { .. } => 8,
+            Kernel::Halve => 9,
+            Kernel::Restore { combine, .. } => 10 + combine,
         }
     }
 }
@@ -266,6 +285,11 @@ struct Step {
     ramp: Vec<(f32, [f32; 4])>,
     /// The target its `Combine`s read.
     other: Option<u32>,
+    /// How many times its output is halved from the view's size.
+    halved: u32,
+    /// It starts a blur: what a sharpen or high-pass weighs the blur
+    /// against is its input.
+    opens: bool,
 }
 
 impl Step {
@@ -275,24 +299,44 @@ impl Step {
             pointwise: Vec::new(),
             ramp: Vec::new(),
             other: None,
+            halved: 0,
+            opens: false,
         }
     }
 
-    /// Whether it reads the input of the pass before it as well.
+    fn halved(self, halved: u32) -> Self {
+        Self { halved, ..self }
+    }
+
+    fn opening(self) -> Self {
+        Self {
+            opens: true,
+            ..self
+        }
+    }
+
+    /// Whether it reads the input of the blur it ends as well.
     fn reads_original(&self) -> bool {
-        matches!(self.kernel, Kernel::BlurY { combine, .. } if combine != 0)
+        matches!(self.kernel, Kernel::BlurY { combine, .. } | Kernel::Restore { combine, .. }
+            if combine != 0)
     }
 
     /// What its bindings and its place among the passes come of: steps of
     /// one shape differ only in their uniform.
-    fn shape(&self) -> (u32, usize, Option<u32>) {
-        (self.kernel.kind(), self.pointwise.len(), self.other)
+    fn shape(&self) -> (u32, usize, Option<u32>, u32) {
+        (
+            self.kernel.kind(),
+            self.pointwise.len(),
+            self.other,
+            self.halved,
+        )
     }
 
-    /// Whether `op` can join its pointwise operations: room left, and no
-    /// second ramp or other target.
+    /// Whether `op` can join its pointwise operations: at the view's size,
+    /// room left, and no second ramp or other target.
     fn takes(&self, op: &ProcessOp) -> bool {
-        self.pointwise.len() < MAX_POINTWISE
+        self.halved == 0
+            && self.pointwise.len() < MAX_POINTWISE
             && match op {
                 ProcessOp::Ramp { .. } => self.ramp.is_empty(),
                 ProcessOp::Combine { target, .. } => self.other.is_none_or(|o| o == *target),
@@ -306,20 +350,42 @@ fn premultiply([r, g, b, a]: [f32; 4]) -> [f32; 4] {
     [r * a, g * a, b * a, a]
 }
 
-/// A process's operations as passes: each blur, dilation and erosion two,
-/// pointwise operations on the pass before them, and a copy where nothing
-/// else passes.
+/// A process's operations as passes: each blur, dilation and erosion two
+/// (a blur wider than [`MAX_SIGMA`] its halvings, two at the smaller size
+/// and one back), pointwise operations on the pass before them, and a copy
+/// where nothing else passes.
 fn steps(ops: &[ProcessOp]) -> Vec<Step> {
     let mut steps: Vec<Step> = Vec::new();
     let blur = |steps: &mut Vec<Step>, size: f32, combine: u32, amount: f32| {
-        if size > 0.0 {
-            steps.push(Step::of(Kernel::BlurX { size }));
+        if size <= 0.0 {
+            return;
+        }
+        let halvings = halvings(size);
+        if halvings == 0 {
+            steps.push(Step::of(Kernel::BlurX { size }).opening());
             steps.push(Step::of(Kernel::BlurY {
                 size,
                 combine,
                 amount,
             }));
+            return;
         }
+        // Halved, then blurred at that size, then brought back: what the
+        // halving and the return blur by themselves is taken from the
+        // blur at the smaller size, so that the whole is the Gaussian.
+        for h in 1..=halvings {
+            let halve = Step::of(Kernel::Halve).halved(h);
+            steps.push(if h == 1 { halve.opening() } else { halve });
+        }
+        let size = small_sigma(size, halvings);
+        let small = |kernel| Step::of(kernel).halved(halvings);
+        steps.push(small(Kernel::BlurX { size }));
+        steps.push(small(Kernel::BlurY {
+            size,
+            combine: 0,
+            amount: 0.0,
+        }));
+        steps.push(Step::of(Kernel::Restore { combine, amount }));
     };
     for op in ops {
         let pointwise = match *op {
@@ -402,30 +468,34 @@ fn steps(ops: &[ProcessOp]) -> Vec<Step> {
 enum Texture {
     /// The process's source target.
     Source,
-    Scratch(usize),
+    /// A scratch texture: how many times it is halved from the view's
+    /// size, and which of those.
+    Scratch(u32, usize),
     /// The process's output.
     Output,
 }
 
-/// Each step's input, the original it weighs against, and its output:
-/// scratch textures in turn, none a pass reads, the last step into the
-/// output.
+/// Each step's input, the original it weighs against (the input of the
+/// blur it ends), and its output: scratch textures of its size in turn,
+/// none a pass reads, the last step into the output.
 fn wiring(steps: &[Step]) -> Vec<(Texture, Option<Texture>, Texture)> {
     let mut current = Texture::Source;
-    let mut previous = Texture::Source;
+    let mut opened = Texture::Source;
     let mut wires = Vec::with_capacity(steps.len());
     for (i, step) in steps.iter().enumerate() {
-        let original = step.reads_original().then_some(previous);
+        if step.opens {
+            opened = current;
+        }
+        let original = step.reads_original().then_some(opened);
         let output = if i + 1 == steps.len() {
             Texture::Output
         } else {
             (0..3)
-                .map(Texture::Scratch)
+                .map(|s| Texture::Scratch(step.halved, s))
                 .find(|t| *t != current && Some(*t) != original)
                 .expect("three scratch textures suffice")
         };
         wires.push((current, original, output));
-        previous = current;
         current = output;
     }
     wires
@@ -470,7 +540,8 @@ struct Made {
     drawn: Vec<Option<Target>>,
     /// By process.
     outputs: Vec<TextureId>,
-    scratch: Vec<TextureId>,
+    /// By how many times each is halved and its index among those.
+    scratch: Vec<((u32, usize), TextureId)>,
     /// By process, by step.
     passes: Vec<Vec<Pass_>>,
     /// By process, its output's composite into its destination where that
@@ -764,11 +835,12 @@ impl Targets {
         if !self.any() {
             return true;
         }
-        let color = |gpu: &mut dyn Gpu, label| {
+        let color = |gpu: &mut dyn Gpu, label, halved| {
+            let [width, height] = halved_size(size, halved);
             gpu.create_texture(&TextureDesc {
                 label,
-                width: size[0],
-                height: size[1],
+                width,
+                height,
                 array_layers: 1,
                 dimension: TextureViewDimension::D2,
                 format: TextureFormat::Rgba8Unorm,
@@ -800,18 +872,19 @@ impl Targets {
                 })
             });
         let wirings: Vec<_> = self.steps.iter().map(|s| wiring(s)).collect();
-        let scratch_count = (wirings.iter().flatten())
+        let mut wanted: Vec<(u32, usize)> = (wirings.iter().flatten())
             .filter_map(|&(_, _, out)| match out {
-                Texture::Scratch(i) => Some(i + 1),
+                Texture::Scratch(halved, i) => Some((halved, i)),
                 _ => None,
             })
-            .max()
-            .unwrap_or(0);
-        let scratch = (0..scratch_count)
-            .map(|_| color(gpu, "image process scratch"))
+            .collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+        let scratch = (wanted.into_iter())
+            .map(|(halved, i)| ((halved, i), color(gpu, "image process scratch", halved)))
             .collect();
         let outputs = (0..self.plan.processes.len())
-            .map(|_| color(gpu, "image process output"))
+            .map(|_| color(gpu, "image process output", 0))
             .collect();
         self.made = Made {
             size,
@@ -827,7 +900,10 @@ impl Targets {
             let source = self.texture(self.plan.processes[p].source);
             let resolve = |t: Texture| match t {
                 Texture::Source => source.unwrap_or(blank),
-                Texture::Scratch(i) => self.made.scratch[i],
+                Texture::Scratch(halved, i) => {
+                    let at = self.made.scratch.iter().find(|(k, _)| *k == (halved, i));
+                    at.expect("made above").1
+                }
                 Texture::Output => self.made.outputs[p],
             };
             let passes = (wires.iter().zip(&self.steps[p]))
@@ -1028,16 +1104,40 @@ fn clear(texture: TextureId) -> orb_hal::Pass {
     orb_hal::Pass::Render(clear_pass(texture))
 }
 
+/// The size of a texture of the view's `size` halved `halved` times.
+fn halved_size(size: [u32; 2], halved: u32) -> [u32; 2] {
+    size.map(|s| s.div_ceil(1 << halved).max(1))
+}
+
+/// How many times a blur of standard deviation `sigma` texels halves the
+/// image first, for the Gaussian to fit its taps at the smaller size:
+/// none for one that fits at the view's.
+fn halvings(sigma: f32) -> u32 {
+    (0..MAX_HALVINGS)
+        .find(|&h| sigma <= MAX_SIGMA * (1 << h) as f32)
+        .unwrap_or(MAX_HALVINGS)
+}
+
+/// The standard deviation, in texels of the image halved `halvings`
+/// times, of the blur there that with the halvings and the return makes a
+/// Gaussian of `sigma` texels at the view's size. Each halving means two
+/// texels, as a box of that many at its size (variance (4ʰ - 1) / 12 over
+/// them all); the return interpolates between texels `2ʰ` apart, as a tent
+/// that wide (variance 4ʰ / 6), on average over where pixels fall.
+fn small_sigma(sigma: f32, halvings: u32) -> f32 {
+    let scale = (1u32 << halvings) as f32;
+    let added = (scale * scale - 1.0) / 12.0 + scale * scale / 6.0;
+    (sigma * sigma - added).max(0.0).sqrt() / scale
+}
+
 /// A Gaussian of standard deviation `sigma` texels as linear taps: the
 /// centre weight, then each tap's (offset, weight), offsets in texels,
-/// sampling every `stride` texels where the kernel is wider than the taps
-/// reach.
+/// cut off where the taps reach no further ([`MAX_SIGMA`]).
 fn gaussian(sigma: f32) -> (f32, Vec<[f32; 2]>) {
     let radius = (sigma * 3.0).ceil().max(1.0);
-    let stride = (radius / (2 * MAX_TAPS) as f32).ceil().max(1.0);
-    let n = (radius / stride).ceil() as usize;
+    let n = (radius as usize).min(2 * MAX_TAPS);
     let w = |i: usize| {
-        let x = i as f32 * stride;
+        let x = i as f32;
         (-x * x / (2.0 * sigma * sigma)).exp()
     };
     let total = w(0) + 2.0 * (1..=n).map(w).sum::<f32>();
@@ -1045,7 +1145,12 @@ fn gaussian(sigma: f32) -> (f32, Vec<[f32; 2]>) {
         .step_by(2)
         .map(|i| {
             let (a, b) = (w(i), if i < n { w(i + 1) } else { 0.0 });
-            let offset = (i as f32 * a + (i + 1) as f32 * b) / (a + b) * stride;
+            // A tap too far out to weigh anything stays where it is.
+            let offset = if a + b > 0.0 {
+                (i as f32 * a + (i + 1) as f32 * b) / (a + b)
+            } else {
+                i as f32
+            };
             [offset, (a + b) / total]
         })
         .collect();
@@ -1055,9 +1160,18 @@ fn gaussian(sigma: f32) -> (f32, Vec<[f32; 2]>) {
 /// A pass's uniform for `frame`, over textures of `size` pixels.
 fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2]) -> [f32; WORDS] {
     let mut words = [0.0f32; WORDS];
-    let texel = [1.0 / size[0].max(1) as f32, 1.0 / size[1].max(1) as f32];
+    // A pass at a halved size samples texels of that size; one at the
+    // view's (all that take pointwise operations) has its pixels.
+    let size = halved_size(size, step.halved);
+    let texel = [1.0 / size[0] as f32, 1.0 / size[1] as f32];
     let (kernel, step_uv, weights): ([f32; 4], [f32; 2], Vec<f32>) = match &step.kernel {
         Kernel::Copy => ([0.0; 4], [0.0; 2], Vec::new()),
+        // Sampled between the four texels each covers: a move by nothing.
+        Kernel::Halve => ([4.0, 0.0, 0.0, 0.0], [0.0; 2], Vec::new()),
+        // Sampled between the halved texels: a blur of no taps.
+        &Kernel::Restore { combine, amount } => {
+            ([1.0, 0.0, combine as f32, amount], [0.0; 2], vec![1.0])
+        }
         Kernel::BlurX { size } | Kernel::BlurY { size, .. } => {
             let (centre, taps) = gaussian(*size);
             let (combine, amount) = match step.kernel {
@@ -1264,7 +1378,8 @@ impl Release for Made {
     fn release(self, gpu: &mut dyn Gpu) {
         (self.bundles, self.composites, self.solids, self.passes).release(gpu);
         self.depth.release(gpu);
-        (self.drawn, self.outputs, self.scratch).release(gpu);
+        let scratch: Vec<TextureId> = self.scratch.into_iter().map(|(_, t)| t).collect();
+        (self.drawn, self.outputs, scratch).release(gpu);
     }
 }
 
@@ -1330,18 +1445,44 @@ mod tests {
         assert_eq!(
             wiring(&passes),
             [
-                (Texture::Source, None, Texture::Scratch(0)),
-                (Texture::Scratch(0), None, Texture::Scratch(1)),
-                (Texture::Scratch(1), None, Texture::Scratch(0)),
-                (Texture::Scratch(0), None, Texture::Scratch(1)),
+                (Texture::Source, None, Texture::Scratch(0, 0)),
+                (Texture::Scratch(0, 0), None, Texture::Scratch(0, 1)),
+                (Texture::Scratch(0, 1), None, Texture::Scratch(0, 0)),
+                (Texture::Scratch(0, 0), None, Texture::Scratch(0, 1)),
                 (
-                    Texture::Scratch(1),
-                    Some(Texture::Scratch(0)),
+                    Texture::Scratch(0, 1),
+                    Some(Texture::Scratch(0, 0)),
                     Texture::Output
                 ),
             ]
         );
         assert_eq!(steps(&[]), [Step::of(Kernel::Copy)]);
+        // A wide sharpen blurs the image halved, and weighs what comes
+        // back against the image it halved; what follows applies on that
+        // pass, at the view's size.
+        let wide = steps(&[
+            ProcessOp::Sharpen {
+                size: 30.0,
+                amount: 1.0,
+            },
+            ProcessOp::Invert,
+        ]);
+        let kernels: Vec<_> = wide.iter().map(|s| (s.kernel.kind(), s.halved)).collect();
+        assert_eq!(kernels, [(9, 1), (1, 1), (2, 1), (11, 0)]);
+        assert_eq!(wide[3].pointwise, [Pointwise::Invert]);
+        assert_eq!(
+            wiring(&wide),
+            [
+                (Texture::Source, None, Texture::Scratch(1, 0)),
+                (Texture::Scratch(1, 0), None, Texture::Scratch(1, 1)),
+                (Texture::Scratch(1, 1), None, Texture::Scratch(1, 0)),
+                (
+                    Texture::Scratch(1, 0),
+                    Some(Texture::Source),
+                    Texture::Output
+                ),
+            ]
+        );
         // A split samples its input as a kernel; what follows applies on
         // its pass.
         let split = steps(&[
@@ -1364,7 +1505,16 @@ mod tests {
 
     #[test]
     fn gaussians_sum_to_one() {
-        for sigma in [0.3, 1.0, 5.0, 20.0, 100.0] {
+        // A wider blur runs halved, its Gaussian within the taps' reach
+        // there.
+        for sigma in [21.0, 40.0, 64.0, 300.0] {
+            let small = small_sigma(sigma, halvings(sigma));
+            assert!(
+                small <= MAX_SIGMA && small > MAX_SIGMA / 2.5,
+                "{sigma}: {small} halved"
+            );
+        }
+        for sigma in [0.01, 0.3, 1.0, 5.0, 20.0, MAX_SIGMA] {
             let (centre, taps) = gaussian(sigma);
             assert!(taps.len() <= MAX_TAPS, "{sigma}: {} taps", taps.len());
             let sum = centre + 2.0 * taps.iter().map(|t| t[1]).sum::<f32>();

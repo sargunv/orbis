@@ -514,3 +514,60 @@ fn moving_noise_keeps_the_map_drawing() {
     let (b, _) = frame(&mut still, &mut target, 5000.0);
     assert_eq!(a, b, "still noise changed with time");
 }
+
+/// The complementary error function, to seven places (Abramowitz and
+/// Stegun 7.1.26).
+fn erfc(x: f64) -> f64 {
+    let t = 1.0 / (1.0 + 0.327_591_1 * x.abs());
+    let poly = t
+        * (0.254_829_592
+            + t * (-0.284_496_736
+                + t * (1.421_413_741 + t * (-1.453_152_027 + t * 1.061_405_429))));
+    let erfc = poly * (-x * x).exp();
+    if x < 0.0 { 2.0 - erfc } else { erfc }
+}
+
+/// A blur of a straight hard edge is the Gaussian's profile across it, as
+/// smooth at every width: a wide one shows no steps or ripples. A wide
+/// high-pass keeps what the blur lacks, inside the edge.
+#[test]
+fn blurs_are_smooth_at_every_width() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let at = (Geodetic::new(0.0, 0.0), 6.0);
+    // White over the view's left half, the edge down its middle.
+    let mut draw = |ops: &str| {
+        let style = processed_triangle(ops).replace(
+            "[[[-1, -1], [1, -1], [0, 1], [-1, -1]]]",
+            "[[[-30, -30], [0, -30], [0, 30], [-30, 30], [-30, -30]]]",
+        );
+        draw(&runtime, &mut target, &style, at.0, at.1)
+    };
+    // The most the middle row strays from `coverage` at each pixel's
+    // distance right of the edge, at its centre, and where.
+    let stray = |image: &[u8], coverage: &dyn Fn(f64) -> f64| {
+        (0..WIDTH)
+            .map(|x| {
+                let d = f64::from(x) + 0.5 - f64::from(WIDTH) / 2.0;
+                let expected = (coverage(d) * 255.0).round() as u8;
+                (channel(image, x, HEIGHT / 2, 1).abs_diff(expected), x)
+            })
+            .max()
+            .unwrap_or_default()
+    };
+    for sigma in [8.0, 24.0, 40.0, 64.0] {
+        let image = draw(&format!(r#"{{"type": "blur", "size": {sigma}}}"#));
+        let (most, x) = stray(&image, &|d| 0.5 * erfc(d / (sigma * 2f64.sqrt())));
+        assert!(most <= 3, "a blur of {sigma} is {most} off at x = {x}");
+    }
+    let sigma = 40.0;
+    let image = draw(&format!(r#"{{"type": "high-pass", "size": {sigma}}}"#));
+    let (most, x) = stray(&image, &|d| {
+        if d < 0.0 {
+            1.0 - 0.5 * erfc(d / (sigma * 2f64.sqrt()))
+        } else {
+            0.0
+        }
+    });
+    assert!(most <= 3, "a high-pass of {sigma} is {most} off at x = {x}");
+}
