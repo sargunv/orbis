@@ -134,7 +134,7 @@
         {
           "key": "neon",
           "name": "Neon",
-          "detail": "Tokyo at night: glowing roads, a coastline traced in light",
+          "detail": "Tokyo at night through a CRT: glowing roads, lens fringes, scanlines",
           "orbisOnly": true,
           "url": "neon.json",
           "dark": true,
@@ -212,27 +212,6 @@
               "zoom": 13.15,
               "bearing": 92,
               "pitch": 75
-            }
-          }
-        },
-        {
-          "key": "chromatic",
-          "name": "Chromatic",
-          "detail": "Miami on a CRT at sunset: a striped sun, a neon grid, lens fringes",
-          "orbisOnly": true,
-          "url": "chromatic.json",
-          "dark": true,
-          "swatch": ["#08060f", "#170b3c", "#ff2e97"],
-          "unsupported": {
-            "gljs": "GL JS has no render targets or image processing",
-            "native": "MapLibre Native has no render targets or image processing"
-          },
-          "marker": {
-            "view": {
-              "center": [-80.16, 25.782],
-              "zoom": 14.7,
-              "bearing": 72,
-              "pitch": 81
             }
           }
         }

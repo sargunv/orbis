@@ -2,7 +2,7 @@
   "version": 8,
   "name": "Neon",
   "metadata": {
-    "description": "Tokyo at night in neon: OpenFreeMap's roads and railways drawn into a render target in their own colours, blurred twice into a wide glow and a tight halo beneath white-hot cores; the coastline traced in light, the water's dilation less its erosion; the buildings' edges found by a Laplacian convolution and ramped to violet; under a haze and film grain."
+    "description": "Tokyo at night in neon: OpenFreeMap's roads and railways drawn into a render target in their own colours, blurred twice into a wide glow and a tight halo beneath white-hot cores; the coastline traced in light, the water's dilation less its erosion; the buildings' edges found by a Laplacian convolution and ramped to violet; split through a lens so each colour channel drifts apart toward the edges; under film grain, scanlines and a vignette."
   },
   "sources": {
     "openmaptiles": {
@@ -45,6 +45,9 @@
       "id": "lights"
     },
     {
+      "id": "fringe"
+    },
+    {
       "id": "water"
     },
     {
@@ -64,6 +67,12 @@
     },
     {
       "id": "film"
+    },
+    {
+      "id": "blank"
+    },
+    {
+      "id": "scan"
     }
   ],
   "layers": [
@@ -597,9 +606,33 @@
       }
     },
     {
-      "id": "glow-wide",
+      "id": "lens",
       "type": "dev.sargunv.orbis.image-process",
       "dev.sargunv.orbis:source-target": "lights",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "split",
+          "red": [
+            -3,
+            0.6
+          ],
+          "green": [
+            0,
+            0
+          ],
+          "blue": [
+            3,
+            -0.6
+          ],
+          "radial": true
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "fringe"
+    },
+    {
+      "id": "glow-wide",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "fringe",
       "dev.sargunv.orbis:operations": [
         {
           "type": "blur",
@@ -627,7 +660,7 @@
     {
       "id": "glow-tight",
       "type": "dev.sargunv.orbis.image-process",
-      "dev.sargunv.orbis:source-target": "lights",
+      "dev.sargunv.orbis:source-target": "fringe",
       "dev.sargunv.orbis:operations": [
         {
           "type": "blur",
@@ -651,7 +684,7 @@
     {
       "id": "lights-sharp",
       "type": "dev.sargunv.orbis.image-process",
-      "dev.sargunv.orbis:source-target": "lights",
+      "dev.sargunv.orbis:source-target": "fringe",
       "dev.sargunv.orbis:operations": []
     },
     {
@@ -799,6 +832,30 @@
       }
     },
     {
+      "id": "scanlines",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "blank",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "gradient"
+        },
+        {
+          "type": "bands",
+          "count": 256,
+          "width": 0.45
+        },
+        {
+          "type": "color",
+          "value": "#000000"
+        },
+        {
+          "type": "opacity",
+          "value": 0.15
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "scan"
+    },
+    {
       "id": "place-names",
       "type": "symbol",
       "source": "openmaptiles",
@@ -932,6 +989,39 @@
         "text-halo-width": 1.6,
         "text-halo-blur": 1.5
       }
+    },
+    {
+      "id": "screen",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "blank",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "gradient",
+          "kind": "radial"
+        },
+        {
+          "type": "ramp",
+          "stops": [
+            [
+              0,
+              "rgba(0,0,0,0)"
+            ],
+            [
+              0.55,
+              "rgba(0,0,0,0)"
+            ],
+            [
+              1,
+              "rgba(6,0,20,0.8)"
+            ]
+          ]
+        },
+        {
+          "type": "combine",
+          "target": "scan",
+          "mode": "over"
+        }
+      ]
     },
     {
       "id": "marker-glow",

@@ -2,7 +2,6 @@ import { opening } from "./app/options.js";
 import { quakeStyle } from "./app/quake.js";
 import alpsFlight from "./data/alps-flight.json";
 import alps from "./data/alps.json?url";
-import chromatic from "./data/chromatic.json?url";
 import arctic from "./data/crs/arctic.json?url";
 import globe from "./data/globe.json";
 import neon from "./data/neon.json?url";
@@ -206,7 +205,6 @@ const RESTYLES = { globe: globeStyle, quake: quakeStyle };
 const LOCAL = {
   "alps.json": alps,
   "alps-flight.json": alpsFlight,
-  "chromatic.json": chromatic,
   "crs/arctic.json": arctic,
   "neon.json": neon,
   "osm-carto.json": osmCarto,
