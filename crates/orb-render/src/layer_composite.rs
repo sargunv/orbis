@@ -81,6 +81,11 @@ pub(crate) struct Run {
     /// The render target whose coverage it composites through (a fill
     /// drawn through a target).
     pub(crate) mask: Option<TextureId>,
+    /// The colour it composites in place of a source, premultiplied: a
+    /// fill in a colour alone drawn through a target, below opacity 1 or
+    /// in a blend mode, which covers the whole mask as one drawn at
+    /// opacity 1 normally does.
+    pub(crate) color: Option<[f32; 4]>,
 }
 
 #[derive(Debug)]
@@ -151,6 +156,7 @@ impl LayerComposites {
             blend,
             source,
             mask,
+            color,
         } in runs
         {
             let layer = source
@@ -169,8 +175,12 @@ impl LayerComposites {
                     )
                 }
             };
-            let composite =
-                composites.composite_through(gpu, (texture, backdrop, mask), mode, opacity);
+            let composite = match (color, mask) {
+                (Some(color), Some(mask)) => {
+                    composites.colour_through(gpu, (backdrop, mask), blend, opacity, color)
+                }
+                _ => composites.composite_through(gpu, (texture, backdrop, mask), mode, opacity),
+            };
             self.groups.push(Group {
                 nodes,
                 blend,
@@ -186,6 +196,13 @@ impl LayerComposites {
     pub(crate) fn set_opacity(&mut self, gpu: &mut dyn Gpu, node: usize, opacity: f32) {
         if let Some(group) = self.groups.iter_mut().find(|g| g.nodes.contains(&node)) {
             Composites::set_opacity(gpu, &mut group.composite, opacity);
+        }
+    }
+
+    /// Writes the colour of a group that composites one, if it changed.
+    pub(crate) fn set_color(&mut self, gpu: &mut dyn Gpu, node: usize, color: [f32; 4]) {
+        if let Some(group) = self.groups.iter_mut().find(|g| g.nodes.contains(&node)) {
+            Composites::set_color(gpu, &mut group.composite, color);
         }
     }
 

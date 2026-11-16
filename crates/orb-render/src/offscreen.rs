@@ -224,6 +224,8 @@ pub(crate) struct Composite {
     mode: Mode,
     /// It composites through a mask.
     masked: bool,
+    /// It blends its colour rather than its source.
+    colored: bool,
     opacity: f32,
     /// A solid composite's colour, premultiplied.
     color: [f32; 4],
@@ -336,13 +338,13 @@ impl Composites {
         mode: Mode,
         opacity: f32,
     ) -> Composite {
-        let masked = mask.is_some();
+        let flags = (mode, mask.is_some(), false);
         let uniform = gpu.create_buffer(&BufferDesc {
             label: "composite",
             size: 32,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
-        write_uniform(gpu, uniform, (mode, masked), opacity, [0.0; 4]);
+        write_uniform(gpu, uniform, flags, opacity, [0.0; 4]);
         use TextureViewDimension::D2;
         let group = gpu.create_bind_group(&BindGroupDesc {
             label: "composite",
@@ -356,7 +358,8 @@ impl Composites {
             ],
         });
         Composite {
-            masked,
+            masked: flags.1,
+            colored: false,
             mode,
             opacity,
             color: [0.0; 4],
@@ -365,13 +368,39 @@ impl Composites {
         }
     }
 
+    /// A composite of `color`, premultiplied, at `opacity` through the
+    /// coverage of `mask`: a fill in a colour drawn through a render
+    /// target, below opacity 1 or in a blend mode, then against
+    /// `backdrop`. As [`Mode::Solid`] it covers every pixel the mask does,
+    /// the sky included, which the fill's own draws, on the map's plane,
+    /// don't.
+    pub(crate) fn colour_through(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        (backdrop, mask): (Option<TextureId>, TextureId),
+        blend: Blend,
+        opacity: f32,
+        color: [f32; 4],
+    ) -> Composite {
+        let mode = match blend {
+            Blend::Normal => Mode::Solid,
+            blend => Mode::Blend(blend),
+        };
+        let sources = (self.blank, backdrop, Some(mask));
+        let mut composite = self.composite_through(gpu, sources, mode, opacity);
+        composite.colored = true;
+        composite.color = color;
+        write_uniform(gpu, composite.uniform, composite.flags(), opacity, color);
+        composite
+    }
+
     /// Writes a composite's opacity, if it changed; its draw stays
     /// recorded.
     pub(crate) fn set_opacity(gpu: &mut dyn Gpu, composite: &mut Composite, opacity: f32) {
         if composite.opacity != opacity {
             composite.opacity = opacity;
             let c = &*composite;
-            write_uniform(gpu, c.uniform, (c.mode, c.masked), opacity, c.color);
+            write_uniform(gpu, c.uniform, c.flags(), opacity, c.color);
         }
     }
 
@@ -380,7 +409,7 @@ impl Composites {
         if composite.color != color {
             composite.color = color;
             let c = &*composite;
-            write_uniform(gpu, c.uniform, (c.mode, c.masked), c.opacity, color);
+            write_uniform(gpu, c.uniform, c.flags(), c.opacity, color);
         }
     }
 
@@ -422,12 +451,25 @@ impl Composites {
     }
 }
 
+impl Composite {
+    /// Its mode, and whether it composites through a mask and blends its
+    /// colour.
+    fn flags(&self) -> (Mode, bool, bool) {
+        (self.mode, self.masked, self.colored)
+    }
+
+    /// Its colour, premultiplied: a solid composite's.
+    pub(crate) fn color(&self) -> [f32; 4] {
+        self.color
+    }
+}
+
 /// Writes a composite's uniform: its opacity, `composite.wgsl`'s mode and a
-/// solid one's colour.
+/// solid or coloured one's colour.
 fn write_uniform(
     gpu: &mut dyn Gpu,
     uniform: BufferId,
-    (mode, masked): (Mode, bool),
+    (mode, masked, colored): (Mode, bool, bool),
     opacity: f32,
     color: [f32; 4],
 ) {
@@ -436,7 +478,7 @@ fn write_uniform(
         opacity,
         mode.number(),
         f32::from(u8::from(masked)),
-        0.0,
+        f32::from(u8::from(colored)),
         r,
         g,
         b,

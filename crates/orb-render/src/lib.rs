@@ -1990,6 +1990,8 @@ impl Renderer {
         };
         if self.targets.set_color(gpu, node as usize, color) {
             self.invalidate_bundle(gpu);
+        } else if let Some(color) = color {
+            self.layers.set_color(gpu, node as usize, color);
         }
         let entry = &mut self.nodes[node as usize];
         let mut words = paint.uniform_words(node);
@@ -2202,11 +2204,11 @@ impl Renderer {
     /// pass. Only paint chooses it, so neither a camera move nor showing
     /// or hiding a layer records the bundles again.
     /// The composite of fill `i` in its colour through its render target,
-    /// where it draws a colour alone, normally blended: blended otherwise,
-    /// it draws apart and blends in the map's pass.
+    /// where it draws a colour alone, normally blended at layer opacity 1:
+    /// otherwise its layer composites it, at its opacity, in its mode.
     fn solid_through(&self, i: usize) -> Option<&offscreen::Composite> {
-        let blend = (self.nodes[i].composite).map_or(Blend::Normal, |(_, _, blend)| blend);
-        self.targets.solid(i).filter(|_| blend == Blend::Normal)
+        let grouped = composite_group(self.nodes[i].composite).is_some();
+        self.targets.solid(i).filter(|_| !grouped)
     }
 
     fn solid_beneath(&self) -> Option<usize> {
@@ -3159,11 +3161,15 @@ impl Renderer {
                 continue;
             }
             let mask = (self.targets.mask_of(i)).and_then(|t| self.targets.texture(t));
+            // One in a colour alone blends that colour through the target,
+            // drawing nothing of its own: its draws lie on the map's plane,
+            // short of the sky the target may cover.
+            let color = self.targets.solid(i).map(offscreen::Composite::color);
             let (key, opacity, blend, source) = match node.terrain_layer.filter(|_| terrain_on) {
                 _ if mask.is_some() => {
                     let (opacity, blend) = (node.composite)
                         .map_or((1.0, Blend::Normal), |(_, opacity, blend)| (opacity, blend));
-                    (Key::Mask(i), opacity, blend, None)
+                    (Key::Mask(i), opacity, blend, color.map(|_| blank))
                 }
                 Some(l) => {
                     let layer = &self.terrain_layers[usize::from(l)];
@@ -3192,6 +3198,7 @@ impl Renderer {
                         blend,
                         source,
                         mask,
+                        color,
                     },
                 )),
             }

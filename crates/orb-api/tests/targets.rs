@@ -694,3 +694,69 @@ fn blurs_are_smooth_at_every_width() {
     });
     assert!(most <= 3, "a high-pass of {sigma} is {most} off at x = {x}");
 }
+
+/// A fill drawn through a target in a colour covers what the target
+/// covers in any blend mode and at any layer opacity, the sky too: steeply
+/// tilted, through a target covering the whole view, it blends with the
+/// sky above the horizon as with the ground below it.
+#[test]
+fn a_blended_fill_through_a_target_covers_the_sky() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let style = |through: &str| {
+        format!(
+            r##"{{"version": 8, "center": [0, 0], "zoom": 6, "pitch": 75,
+              "sky": {{"sky-color": "#203060", "horizon-color": "#203060",
+                "fog-color": "#203060", "sky-horizon-blend": 0, "horizon-fog-blend": 0,
+                "fog-ground-blend": 1}},
+              "dev.sargunv.orbis:targets": [{{"id": "blank"}}, {{"id": "glow"}}],
+              "sources": {{}},
+              "layers": [
+                {{"id": "ground", "type": "background", "paint": {{"background-color": "#204020"}}}},
+                {{"id": "cover", "type": "dev.sargunv.orbis.image-process",
+                  "dev.sargunv.orbis:source-target": "blank",
+                  "dev.sargunv.orbis:operations": [{{"type": "invert"}}],
+                  "dev.sargunv.orbis:destination-target": "glow"}}{through}
+              ]}}"##
+        )
+    };
+    let mut draw = |style: String| {
+        let mut map = Map::new(&runtime, options());
+        map.set_style_json(&style).unwrap();
+        common::settle(&mut map, &mut target);
+        target.read_pixels().unwrap()
+    };
+    let plain = draw(style(""));
+    let (sky, ground) = ((WIDTH / 2, 2), (WIDTH / 2, HEIGHT - 2));
+    let pixel = |image: &[u8], (x, y): (u32, u32)| [0, 1, 2].map(|c| channel(image, x, y, c));
+    assert_ne!(pixel(&plain, sky), pixel(&plain, ground), "no sky shows");
+    let colour = [0x40, 0x60, 0x80].map(f64::from);
+    // What each mode makes of a channel over one beneath it, both 0–255.
+    type Mix = fn(f64, f64) -> f64;
+    let modes: [(&str, Mix); 3] = [
+        ("normal", |_, s| s),
+        ("plus-lighter", |b, s| (b + s).min(255.0)),
+        ("multiply", |b, s| b * s / 255.0),
+    ];
+    for (blend, mix) in modes {
+        for opacity in [1.0, 0.5] {
+            let image = draw(style(&format!(
+                r##", {{"id": "through", "type": "fill", "dev.sargunv.orbis:source-target": "glow",
+                    "paint": {{"fill-color": "#406080", "fill-layer-blend": "{blend}",
+                      "fill-layer-opacity": {opacity}}}}}"##
+            )));
+            for at in [sky, ground] {
+                let beneath = pixel(&plain, at);
+                let expected = [0, 1, 2].map(|c| {
+                    let b = f64::from(beneath[c]);
+                    (b + (mix(b, colour[c]) - b) * opacity).round() as u8
+                });
+                let drawn = pixel(&image, at);
+                assert!(
+                    largest_difference(&drawn, &expected) <= 2,
+                    "{blend} at {opacity}, at {at:?} over {beneath:?}: {drawn:?}, not {expected:?}"
+                );
+            }
+        }
+    }
+}

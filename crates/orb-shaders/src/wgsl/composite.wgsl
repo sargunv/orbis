@@ -16,7 +16,9 @@
 
 // x: the opacity; y: the mode (`Mode` in orb-render: 0 over, 1–6 the blend
 // modes, 7 ramp, 8 mask, 9 solid, 10 sampled); z: 1 where a blend mode
-// blends through the mask; `color`: solid's colour, premultiplied.
+// blends through the mask; w: 1 where it blends `color` rather than the
+// source (a fill in a colour drawn through a target); `color`: solid's
+// colour, premultiplied.
 struct Composite {
     params: vec4<f32>,
     color: vec4<f32>,
@@ -71,7 +73,11 @@ fn fs_over(in: CompositeOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_replace(in: CompositeOut) -> @location(0) vec4<f32> {
     let texel = vec2<i32>(in.position.xy);
-    var s = textureLoad(source, texel, 0) * composite.params.x;
+    var s = composite.color;
+    if composite.params.w < 0.5 {
+        s = textureLoad(source, texel, 0);
+    }
+    s *= composite.params.x;
     if composite.params.z > 0.5 {
         s *= textureSample(mask, linear, in.uv).a;
     }
