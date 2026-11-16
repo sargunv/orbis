@@ -38,8 +38,37 @@ const BIN: f64 = 40.0;
 const REACH: f64 = 400_000.0;
 const BINS: usize = (REACH / BIN) as usize + 2;
 
-/// The Alps style with its Mapterhorn sources made one the app feeds, as
-/// `quakeStyle` in `web/demo/app/quake.js` makes it.
+/// The Matterhorn, which the quake starts under, and its marker's layers,
+/// as `web/demo/app/quake.js` has them.
+const MATTERHORN: [f64; 2] = [7.6586, 45.9763];
+const MARKER: [&str; 2] = ["matterhorn", "matterhorn-label"];
+
+/// Whether a click's hit is on the Matterhorn's marker.
+pub(crate) fn on_marker(hit: &orb_api::Hit) -> bool {
+    MARKER.contains(&hit.layer.as_str())
+}
+
+/// The flight to the Matterhorn that its marker's click starts, as the web
+/// demo's `MATTERHORN_VIEW`: the Alps flight's view of it.
+pub(crate) fn to_matterhorn() -> (orb_api::CameraTarget, orb_api::FlyOptions) {
+    let [lon, lat] = MATTERHORN;
+    let target = orb_api::CameraTarget {
+        center: Some(Geodetic::new(lon, lat)),
+        zoom: Some(13.2),
+        bearing: Some(-60.0),
+        pitch: Some(74.0),
+        ..Default::default()
+    };
+    let fly = orb_api::FlyOptions {
+        duration: Some(4000.0),
+        ..Default::default()
+    };
+    (target, fly)
+}
+
+/// The Alps style with its Mapterhorn sources made one the app feeds, and
+/// a marker on the Matterhorn to click back to, as `quakeStyle` in
+/// `web/demo/app/quake.js` makes it.
 pub(crate) fn style(style: &Value) -> Value {
     let mut style = style.clone();
     let dem: Vec<String> = (style["sources"].as_object().into_iter().flatten())
@@ -59,6 +88,14 @@ pub(crate) fn style(style: &Value) -> Value {
                 "attribution": "<a href=\"https://mapterhorn.com/attribution\">© Mapterhorn</a>",
             }),
         );
+        sources.insert(
+            MARKER[0].into(),
+            json!({
+                "type": "geojson",
+                "data": {"type": "Feature", "properties": {},
+                         "geometry": {"type": "Point", "coordinates": MATTERHORN}},
+            }),
+        );
     }
     for layer in style["layers"].as_array_mut().into_iter().flatten() {
         if layer["source"]
@@ -67,6 +104,22 @@ pub(crate) fn style(style: &Value) -> Value {
         {
             layer["source"] = SOURCE.into();
         }
+    }
+    if let Some(layers) = style["layers"].as_array_mut() {
+        layers.extend([
+            json!({
+                "id": MARKER[0], "type": "circle", "source": MARKER[0],
+                "paint": {"circle-radius": 7, "circle-color": "#d7263d",
+                          "circle-stroke-color": "#ffffff", "circle-stroke-width": 2.5},
+            }),
+            json!({
+                "id": MARKER[1], "type": "symbol", "source": MARKER[0],
+                "layout": {"text-field": "Matterhorn", "text-font": ["Noto Sans Bold"],
+                           "text-size": 13, "text-anchor": "bottom", "text-offset": [0, -0.9]},
+                "paint": {"text-color": "#7a1020", "text-halo-color": "#ffffff",
+                          "text-halo-width": 1.5},
+            }),
+        ]);
     }
     style["terrain"] = json!({"source": SOURCE, "exaggeration": 1.6});
     style
