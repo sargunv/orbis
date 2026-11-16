@@ -176,6 +176,9 @@ pub struct WgpuGpu {
     /// A compile that ran past the watchdog's limit, or failed: the device
     /// is lost.
     hung: Option<String>,
+    /// Pipelines the driver failed to make, where the device lives on (the
+    /// web's): settled, what draws or dispatches with them does nothing.
+    failed: rustc_hash::FxHashSet<PipelineId>,
     /// Each pipeline compiled, how long it took, in the order they
     /// finished.
     compiled: Vec<(String, std::time::Duration)>,
@@ -543,6 +546,7 @@ impl WgpuGpu {
             background_pending: Default::default(),
             made: 0,
             hung: None,
+            failed: Default::default(),
             compiled: Vec::new(),
             render_bundles: Slots::default(),
             timing: None,
@@ -991,6 +995,15 @@ impl WgpuGpu {
         self.compiler.inject_hang();
     }
 
+    /// Makes later compiles of pipelines labelled one of `labels` fail, as
+    /// a driver that can't make them does on the web, where the device
+    /// lives on: fault injection for tests of maps drawing without them.
+    /// Needs compile threads.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn inject_failed_compile(&self, labels: &[&str]) {
+        self.compiler.inject_failure(labels);
+    }
+
     /// Makes later compiles of pipelines labelled one of `labels` take
     /// `by` longer, as on a device compiling cold: fault injection for
     /// tests of what waits for them. Needs compile threads.
@@ -1044,12 +1057,24 @@ impl WgpuGpu {
             let built = match done.built {
                 Ok(built) => built,
                 // A pipeline the driver can't make goes the way of a hung
-                // compile: the device is lost, and recovery demotes it.
+                // compile: natively the device is lost, and recovery
+                // demotes it. On the web the device lives on, and the map
+                // with it, drawing without the pipeline: it is settled,
+                // so nothing waits for it.
                 Err(e) => {
                     self.hung
                         .get_or_insert_with(|| format!("pipeline {}: {e}", done.label));
                     #[cfg(not(target_arch = "wasm32"))]
-                    self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
+                    if !self.compiler.fails_on_purpose(&done.label) {
+                        self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    let live = match done.id {
+                        PipelineId::Render(id) => self.render_pipelines.contains(id.0),
+                        PipelineId::Compute(id) => self.compute_pipelines.contains(id.0),
+                    };
+                    if live {
+                        self.failed.insert(done.id);
+                    }
                     continue;
                 }
             };
@@ -1439,23 +1464,40 @@ impl WgpuGpu {
         }));
     }
 
-    /// Encodes a command bundles may hold.
+    /// Checks that `id`, a pipeline without its compiled one, is one the
+    /// driver failed to make, rather than one used before it compiled.
+    fn check_failed(&self, id: PipelineId) {
+        assert!(
+            self.failed.contains(&id),
+            "a pipeline used before it compiled"
+        );
+    }
+
+    /// Encodes a command bundles may hold. `skip`, the encoder's: the
+    /// pipeline set last failed, so its draws are left out until another
+    /// is set.
     fn encode_render<'p>(
         &'p self,
         pass: &mut impl wgpu::util::RenderEncoder<'p>,
         command: &'p RenderCommand,
+        skip: &mut bool,
     ) {
         match command {
             RenderCommand::SetPipeline(id) => {
-                pass.set_pipeline(
-                    self.render_pipelines[id.0]
-                        .as_ref()
-                        .expect("a pipeline used before it compiled"),
-                );
+                match &self.render_pipelines[id.0] {
+                    Some(pipeline) => pass.set_pipeline(pipeline),
+                    None => self.check_failed((*id).into()),
+                }
+                *skip = self.render_pipelines[id.0].is_none();
                 if let Some(zeros) = &self.attribute_zero {
                     pass.set_vertex_buffer(0, Some(zeros.slice(..)));
                 }
             }
+            RenderCommand::Draw { .. }
+            | RenderCommand::DrawIndexed { .. }
+            | RenderCommand::DrawIndirect { .. }
+            | RenderCommand::DrawIndexedIndirect { .. }
+                if *skip => {}
             RenderCommand::SetBindGroup { index, group } => {
                 pass.set_bind_group(*index, Some(&self.bind_groups[group.0]), &[])
             }
@@ -1894,6 +1936,7 @@ impl Gpu for WgpuGpu {
     }
 
     fn destroy_pipeline(&mut self, id: PipelineId) {
+        self.failed.remove(&id);
         match id {
             PipelineId::Render(id) => drop(self.render_pipelines.remove(id.0)),
             PipelineId::Compute(id) => drop(self.compute_pipelines.remove(id.0)),
@@ -2060,6 +2103,7 @@ impl Gpu for WgpuGpu {
 
     fn pipeline_ready(&mut self, id: PipelineId) -> bool {
         let ready = |gpu: &Self| match id {
+            _ if gpu.failed.contains(&id) => true,
             PipelineId::Render(id) => gpu.render_pipelines[id.0].is_some(),
             PipelineId::Compute(id) => gpu.compute_pipelines[id.0].is_some(),
         };
@@ -2130,8 +2174,9 @@ impl Gpu for WgpuGpu {
                     sample_count: desc.sample_count,
                     multiview: None,
                 });
+        let mut skip = false;
         for command in commands {
-            self.encode_render(&mut encoder, command);
+            self.encode_render(&mut encoder, command, &mut skip);
         }
         self.count(|c| c.render_commands += commands.len() as u32);
         // wgpu panics when `finish` fails, whatever the error handler, and
@@ -2376,16 +2421,22 @@ impl Gpu for WgpuGpu {
                             }
                         }),
                     });
+                    // Past a pipeline that failed, its dispatches are left
+                    // out until another is set.
+                    let mut skip = false;
                     for command in commands {
                         match command {
-                            ComputeCommand::SetPipeline(id) => pass.set_pipeline(
-                                self.compute_pipelines[id.0]
-                                    .as_ref()
-                                    .expect("a pipeline used before it compiled"),
-                            ),
+                            ComputeCommand::SetPipeline(id) => {
+                                match &self.compute_pipelines[id.0] {
+                                    Some(pipeline) => pass.set_pipeline(pipeline),
+                                    None => self.check_failed((*id).into()),
+                                }
+                                skip = self.compute_pipelines[id.0].is_none();
+                            }
                             ComputeCommand::SetBindGroup { index, group } => {
                                 pass.set_bind_group(*index, &self.bind_groups[group.0], &[]);
                             }
+                            ComputeCommand::Dispatch { .. } if skip => {}
                             ComputeCommand::Dispatch { x, y, z } => {
                                 pass.dispatch_workgroups(*x, *y, *z)
                             }
@@ -2446,6 +2497,7 @@ impl Gpu for WgpuGpu {
                         multiview_mask: None,
                     });
                     self.count(|c| c.render_commands += render.commands.len() as u32);
+                    let mut skip = false;
                     for command in &render.commands {
                         match command {
                             RenderCommand::ExecuteBundles(ids) => pass.execute_bundles(
@@ -2461,7 +2513,7 @@ impl Gpu for WgpuGpu {
                             &RenderCommand::SetStencilReference(reference) => {
                                 pass.set_stencil_reference(reference)
                             }
-                            command => self.encode_render(&mut pass, command),
+                            command => self.encode_render(&mut pass, command, &mut skip),
                         }
                     }
                 }

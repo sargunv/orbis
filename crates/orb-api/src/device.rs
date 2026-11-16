@@ -6,7 +6,8 @@ use crate::Error;
 
 /// A fault tests inject: `hang`, compiles never finish, as in a driver
 /// hung in its compiler; `slow:<label>[,<label>…]:<ms>`, compiles of
-/// pipelines of those labels take that much longer.
+/// pipelines of those labels take that much longer; `fail:<label>[,<label>…]`,
+/// compiles of those fail as on the web, where the device lives on.
 const FAULT: &str = "ORB_FAULT_INJECTION";
 
 /// A device on the default adapter, and which adapter it is: a phrase for
@@ -23,6 +24,9 @@ pub(crate) fn make() -> Result<(WgpuGpu, String), Error> {
     {
         let labels: Vec<&str> = label.split(',').collect();
         gpu.inject_slow_compile(&labels, std::time::Duration::from_millis(ms));
+    }
+    if let Some(labels) = fault.strip_prefix("fail:") {
+        gpu.inject_failed_compile(&labels.split(',').collect::<Vec<_>>());
     }
     if fault == "hang" {
         gpu.inject_compile_hang();

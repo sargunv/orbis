@@ -514,6 +514,9 @@ mod native {
         /// Fault injection: compiles of pipelines of these labels take
         /// this much longer, as on a device compiling cold.
         slow: Mutex<Option<(Vec<String>, Duration)>>,
+        /// Fault injection: compiles of pipelines of these labels fail, as
+        /// a driver that can't make them does.
+        fail: Mutex<Vec<String>>,
         /// Called from a task when a compile finishes.
         compiled: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
         /// The jobs compiling and since when, by task.
@@ -725,6 +728,20 @@ mod native {
             *self.shared.slow.lock().expect("compile watch poisoned") = Some((labels, by));
         }
 
+        /// Makes compiles of pipelines labelled one of `labels` fail
+        /// (fault injection for tests of maps drawing without them).
+        pub(crate) fn inject_failure(&self, labels: &[&str]) {
+            let labels = labels.iter().map(|&l| l.to_owned()).collect();
+            *self.shared.fail.lock().expect("compile watch poisoned") = labels;
+        }
+
+        /// Whether compiles of pipelines labelled `label` fail by fault
+        /// injection.
+        pub(crate) fn fails_on_purpose(&self, label: &str) -> bool {
+            let fail = self.shared.fail.lock().expect("compile watch poisoned");
+            fail.iter().any(|l| l == label)
+        }
+
         /// Moves a queued job to the front.
         pub(crate) fn prioritize(&mut self, id: PipelineId) {
             let mut queue = self.shared.queue.lock().expect("compile queue poisoned");
@@ -918,7 +935,13 @@ mod native {
         if let Some((_, by)) = slow.filter(|(labels, _)| labels.iter().any(|l| l == job.label())) {
             std::thread::sleep(by);
         }
-        let built = job.compile(device, shared.loss.get());
+        let fail = (shared.fail.lock().expect("compile watch poisoned"))
+            .iter()
+            .any(|l| l == job.label());
+        let built = match fail {
+            true => Err("failed by fault injection".to_owned()),
+            false => job.compile(device, shared.loss.get()),
+        };
         let id = job.id();
         let finished = Done {
             id,

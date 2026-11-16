@@ -21,7 +21,7 @@ pub use resource::*;
 ///
 /// Creation is synchronous, except for pipelines: those compile
 /// asynchronously, and commands may name one only once
-/// [`pipeline_ready`](Self::pipeline_ready) says it compiled. Ids are never
+/// [`pipeline_ready`](Self::pipeline_ready) says it settled. Ids are never
 /// reused, and using a destroyed id is a bug that implementations may panic
 /// on.
 pub trait Gpu {
@@ -125,7 +125,10 @@ pub trait Gpu {
     fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> ComputePipelineId;
     /// A pipeline still compiling is dropped when its compile finishes.
     fn destroy_pipeline(&mut self, id: PipelineId);
-    /// Whether a pipeline compiled, so commands may use it.
+    /// Whether a pipeline settled, so commands may use it: it compiled, or
+    /// the driver failed to make it where the device lives on (the web's),
+    /// and what draws or dispatches with it does nothing. Either way
+    /// nothing waits for it any longer.
     fn pipeline_ready(&mut self, id: PipelineId) -> bool;
     /// Takes compiles that finished, and counts pipelines made and still
     /// compiling (background ones aside).

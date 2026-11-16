@@ -82,6 +82,65 @@ fn a_hung_compile_is_reported() {
     assert!(child.status.success(), "{stderr}");
 }
 
+/// The child's role in [`a_failed_pipeline_leaves_its_layer_out`].
+const FAIL_CHILD: &str = "ORB_TEST_FAIL_CHILD";
+
+/// A pipeline the driver fails to make where the device lives on, as on
+/// the web: the map draws without what draws with it, reaching loaded and
+/// idle rather than waiting for it, and names it. In a child process: the
+/// circle's compiles fail from the environment.
+#[test]
+fn a_failed_pipeline_leaves_its_layer_out() {
+    if std::env::var_os(FAIL_CHILD).is_none() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "a_failed_pipeline_leaves_its_layer_out",
+                "--nocapture",
+            ])
+            .env(FAIL_CHILD, "1")
+            .env("ORB_FAULT_INJECTION", "fail:circle")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&child.stderr);
+        assert!(child.status.success(), "{stderr}");
+        return;
+    }
+    let style = r##"{"version":8,"sources":{"box":{"type":"geojson","data":{"type":"Polygon",
+      "coordinates":[[[-10,-10],[10,-10],[10,10],[-10,10],[-10,-10]]]}},
+      "point":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
+      "layers":[{"id":"bg","type":"background","paint":{"background-color":"#ff0000"}},
+      {"id":"box","type":"fill","source":"box","paint":{"fill-color":"#0000ff"}},
+      {"id":"dot","type":"circle","source":"point",
+        "paint":{"circle-radius":10,"circle-color":"#00ff00"}}]}"##;
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(style).unwrap();
+    let started = Instant::now();
+    // As a host draws: only the frames the map asks for.
+    let report = loop {
+        assert!(started.elapsed().as_secs() < 15, "the map never idled");
+        if !map.needs_frame() {
+            std::thread::sleep(Duration::from_millis(5));
+            continue;
+        }
+        if let Some(report) = map.render(&mut target, 0.0).unwrap()
+            && report.idle
+        {
+            break report;
+        }
+    };
+    assert!(report.loaded, "idle but not loaded");
+    assert_eq!(report.frame.nodes_waiting, 0);
+    assert!(!runtime.lost(), "the device was lost");
+    let failed = runtime.stats().hung_compile.expect("the failure is named");
+    assert!(failed.contains("circle"), "{failed}");
+    let pixels = target.read_pixels().unwrap();
+    let i = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;
+    assert_eq!(pixels[i..i + 3], [0, 0, 255], "the box, without the circle");
+}
+
 #[test]
 fn a_lost_device_recovers() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
