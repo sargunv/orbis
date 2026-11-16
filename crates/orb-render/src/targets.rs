@@ -128,10 +128,15 @@ pub enum ProcessOp {
         radial: bool,
     },
     /// Radial, or linear along `angle` degrees clockwise from top to
-    /// bottom.
+    /// bottom, about `center` (pixels right and down of the view's
+    /// centre): 0 to 1 over `extent` pixels (a linear one's length, a
+    /// radial one's radius), or by default over the view, corner to corner
+    /// along the angle or to its corner farthest from the centre.
     Gradient {
         radial: bool,
         angle: f32,
+        center: [f32; 2],
+        extent: Option<f32>,
     },
     /// `width` 0–1.
     Bands {
@@ -256,6 +261,8 @@ enum Pointwise {
     Gradient {
         radial: bool,
         angle: f32,
+        center: [f32; 2],
+        extent: Option<f32>,
     },
     Bands {
         count: f32,
@@ -399,7 +406,17 @@ fn steps(ops: &[ProcessOp]) -> Vec<Step> {
                 amount,
                 speed,
             },
-            ProcessOp::Gradient { radial, angle } => Pointwise::Gradient { radial, angle },
+            ProcessOp::Gradient {
+                radial,
+                angle,
+                center,
+                extent,
+            } => Pointwise::Gradient {
+                radial,
+                angle,
+                center,
+                extent,
+            },
             ProcessOp::Bands { count, width } => Pointwise::Bands { count, width },
             ProcessOp::Threshold { cutoff } => Pointwise::Threshold { cutoff },
             ProcessOp::Invert => Pointwise::Invert,
@@ -1224,7 +1241,6 @@ fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2]) -> [f32; WORDS] {
     words[72] = step.pointwise.len() as f32;
     // The view's pixels from its centre, for gradients across it.
     let half = [size[0] as f32 * 0.5, size[1] as f32 * 0.5];
-    let to_corner = half[0].hypot(half[1]).max(f32::MIN_POSITIVE);
     // Noise is fixed to the map: lattices of the whole zooms around the
     // camera's, each `size` logical pixels a point at its zoom, the finer
     // fading in towards the next zoom; positions camera-relative, with
@@ -1283,22 +1299,28 @@ fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2]) -> [f32; WORDS] {
             Pointwise::Color { color } => ([6.0, 0.0, 0.0, 0.0], color, none),
             Pointwise::Luminance => ([7.0, 0.0, 0.0, 0.0], none, none),
             Pointwise::Ramp => ([8.0, 0.0, 0.0, 0.0], none, none),
-            // A linear gradient's direction over the length that takes it
-            // corner to corner; a radial one's scale to the corners.
-            Pointwise::Gradient { radial, angle } => {
+            // A linear gradient's direction over its length, by default
+            // the view's corner to corner along it; a radial one's scale
+            // over its radius, by default to the view's corner farthest
+            // from its centre.
+            Pointwise::Gradient {
+                radial,
+                angle,
+                center,
+                extent,
+            } => {
                 let (sin, cos) = angle.to_radians().sin_cos();
                 let direction = [-sin, cos];
-                let length = (half[0] * direction[0]).abs() + (half[1] * direction[1]).abs();
-                let per_px = 0.5 / length.max(f32::MIN_POSITIVE);
+                let corners =
+                    2.0 * ((half[0] * direction[0]).abs() + (half[1] * direction[1]).abs());
+                let farthest = (half[0] + center[0].abs()).hypot(half[1] + center[1].abs());
+                let extent = extent.unwrap_or(if radial { farthest } else { corners });
+                let per_px = 1.0 / extent.max(f32::MIN_POSITIVE);
+                let along = if radial { [0.0; 2] } else { direction };
                 (
                     [11.0, f32::from(u8::from(radial)), 0.0, 0.0],
-                    [
-                        direction[0] * per_px,
-                        direction[1] * per_px,
-                        1.0 / to_corner,
-                        0.0,
-                    ],
-                    none,
+                    [along[0] * per_px, along[1] * per_px, per_px, 0.0],
+                    [center[0], center[1], 0.0, 0.0],
                 )
             }
             Pointwise::Bands { count, width } => ([12.0, count, width, 0.0], none, none),
@@ -1493,6 +1515,8 @@ mod tests {
             ProcessOp::Gradient {
                 radial: true,
                 angle: 0.0,
+                center: [0.0; 2],
+                extent: None,
             },
             ProcessOp::Bands {
                 count: 4.0,

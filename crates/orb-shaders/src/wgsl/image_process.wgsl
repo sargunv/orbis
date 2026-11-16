@@ -255,7 +255,8 @@ fn world_at(uv: vec2<f32>) -> vec2<f32> {
 // - moving noise (10): as noise, each octave the mean of two lattices
 //   sliding apart, `b` and `d` their offsets;
 // - gradient (11): `a.y` 1 for radial; `b.xy` a linear one's direction
-//   over its length in pixels, `b.z` a radial one's over the corners';
+//   over its length in pixels, `b.z` a radial one's scale, one over its
+//   radius in pixels; `d.xy` its centre, in pixels from the view's;
 // - bands (12): `a.y` the count, `a.z` the width.
 // `centred` is the pixel's place from the view's centre, in pixels.
 fn pointwise(
@@ -309,8 +310,9 @@ fn pointwise(
             return with_coverage(c, c.a + a.y * mix(coarse, fine, a.z) * 0.70710678);
         }
         case 11u: {
-            let linear = dot(centred, b.xy) + 0.5;
-            let radial = length(centred) * b.z;
+            let p = centred - d.xy;
+            let linear = dot(p, b.xy) + 0.5;
+            let radial = length(p) * b.z;
             return with_coverage(c, select(linear, radial, a.y > 0.5));
         }
         case 12u: {

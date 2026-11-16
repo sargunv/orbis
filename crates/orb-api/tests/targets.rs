@@ -600,6 +600,44 @@ fn ramp_stops_follow_the_zoom() {
     }
 }
 
+/// A gradient may be placed and sized in pixels: a radial one about a
+/// centre off the view's, whole at its radius; a linear one through a
+/// centre, none to whole over its length; and by default a radial one
+/// off centre whole at the view's farthest corner from it.
+#[test]
+fn gradients_are_placed_and_sized_in_pixels() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let at = (Geodetic::new(0.0, 0.0), 6.0);
+    let mut draw = |ops: &str| draw(&runtime, &mut target, &over_nothing(ops), at.0, at.1);
+    let half = [f64::from(WIDTH) / 2.0, f64::from(HEIGHT) / 2.0];
+    // Each pixel against what it should cover, at its centre.
+    let check = |image: &[u8], what: &str, coverage: &dyn Fn(f64, f64) -> f64| {
+        let mut off = Vec::new();
+        for y in (0..HEIGHT).step_by(5) {
+            for x in (0..WIDTH).step_by(5) {
+                let (px, py) = (f64::from(x) + 0.5 - half[0], f64::from(y) + 0.5 - half[1]);
+                let expected = (coverage(px, py).clamp(0.0, 1.0) * 255.0).round() as u8;
+                let found = channel(image, x, y, 1);
+                if found.abs_diff(expected) > 2 {
+                    off.push(format!("({x}, {y}): {found}, not {expected}"));
+                }
+            }
+        }
+        assert!(off.is_empty(), "{what}: {:?}", &off[..off.len().min(8)]);
+    };
+    let radial =
+        draw(r#"{"type": "gradient", "kind": "radial", "center": [40, -20], "radius": 50}"#);
+    check(&radial, "radial", &|x, y| (x - 40.0).hypot(y + 20.0) / 50.0);
+    let linear = draw(r#"{"type": "gradient", "center": [0, 32], "length": 64}"#);
+    check(&linear, "linear", &|_, y| (y - 32.0) / 64.0 + 0.5);
+    let farthest = draw(r#"{"type": "gradient", "kind": "radial", "center": [64, 0]}"#);
+    let corner = (half[0] + 64.0).hypot(half[1]);
+    check(&farthest, "radial to the corners", &|x, y| {
+        (x - 64.0).hypot(y) / corner
+    });
+}
+
 /// The complementary error function, to seven places (Abramowitz and
 /// Stegun 7.1.26).
 fn erfc(x: f64) -> f64 {

@@ -109,7 +109,7 @@ fn parse_operation(cx: &mut Cx, json: &Json, path: &str) -> Option<Operation> {
         "opacity" | "color" => &["value"],
         "ramp" => &["stops"],
         "split" => &["red", "green", "blue", "radial"],
-        "gradient" => &["kind", "angle"],
+        "gradient" => &["kind", "angle", "center", "length", "radius"],
         "bands" => &["count", "width"],
         _ => {
             cx.error(
@@ -309,22 +309,45 @@ fn parse_operation(cx: &mut Cx, json: &Json, path: &str) -> Option<Operation> {
                     kind
                 }
             };
+            let center = read(
+                cx,
+                json,
+                path,
+                &param("center", PAIR, "[0,0]", (-16384.0, 16384.0)),
+                false,
+            );
+            // A length or radius: `None` where it is left to the view.
+            let extent = |cx: &mut Cx, name| {
+                json.get(name).is_some().then(|| {
+                    let spec = param(name, NUMBER, "1", (0.0, 16384.0));
+                    read(cx, json, path, &spec, false)
+                })
+            };
+            // What the other kind takes and this one doesn't.
+            let ignore = |cx: &mut Cx, names: &[&str]| {
+                for m in members.iter().filter(|m| names.contains(&m.key.as_str())) {
+                    cx.warn_unknown(path, m);
+                }
+            };
             match kind? {
                 "linear" => {
+                    ignore(cx, &["radius"]);
                     let spec = param("angle", NUMBER, "0", (-360.0, 360.0));
                     Operation::Gradient {
                         kind: Gradient::Linear {
                             angle: read(cx, json, path, &spec, false),
+                            center,
+                            length: extent(cx, "length"),
                         },
                     }
                 }
                 _ => {
-                    // A radial gradient has no angle.
-                    if let Some(m) = members.iter().find(|m| m.key == "angle") {
-                        cx.warn_unknown(path, m);
-                    }
+                    ignore(cx, &["angle", "length"]);
                     Operation::Gradient {
-                        kind: Gradient::Radial,
+                        kind: Gradient::Radial {
+                            center,
+                            radius: extent(cx, "radius"),
+                        },
                     }
                 }
             }
@@ -535,13 +558,15 @@ mod tests {
             (pair(red), pair(green), pair(blue), *radial),
             ([2.0, 0.0], [0.0, 0.0], [-2.0, 1.0], true)
         );
+        // A gradient's centre is the view's, its extent the view's, unless
+        // given.
         assert!(matches!(&ops[18], Operation::Gradient {
-            kind: Gradient::Linear { angle }
-        } if n(angle) == 90.0));
+            kind: Gradient::Linear { angle, center, length: None }
+        } if n(angle) == 90.0 && pair(center) == [0.0, 0.0]));
         assert!(matches!(
             &ops[19],
             Operation::Gradient {
-                kind: Gradient::Radial
+                kind: Gradient::Radial { radius: None, .. }
             }
         ));
         assert!(ops.iter().all(|op| !op.reads_camera()));
@@ -668,9 +693,26 @@ mod tests {
         assert!(matches!(
             style.layers[0].operations[..],
             [Operation::Gradient {
-                kind: Gradient::Radial
+                kind: Gradient::Radial { .. }
             }]
         ));
+        // Nor a length; a linear one has no radius.
+        let style = parse(
+            ON,
+            TARGETS,
+            r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"paint",
+                "dev.sargunv.orbis:operations":[{"type":"gradient","kind":"radial","length":45},
+                  {"type":"gradient","radius":45}]}"#,
+        )
+        .unwrap();
+        let paths: Vec<&str> = style.warnings.iter().map(|w| w.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "layers[0].dev.sargunv.orbis:operations[0].length",
+                "layers[0].dev.sargunv.orbis:operations[1].radius"
+            ]
+        );
     }
 
     /// One image-process layer of `ops`.
@@ -683,6 +725,55 @@ mod tests {
                     "dev.sargunv.orbis:source-target":"paint","dev.sargunv.orbis:operations":[{ops}]}}"#
             ),
         )
+    }
+
+    #[test]
+    fn gradients_take_a_centre_and_an_extent_in_pixels() {
+        let style = operations(
+            r#"{"type":"gradient","center":[40,-20],"length":300,"angle":30},
+               {"type":"gradient","kind":"radial","center":[-10,5],"radius":120}"#,
+        )
+        .unwrap();
+        assert!(style.warnings.is_empty(), "{:?}", style.warnings);
+        let [
+            Operation::Gradient {
+                kind:
+                    Gradient::Linear {
+                        angle,
+                        center: linear,
+                        length: Some(length),
+                    },
+            },
+            Operation::Gradient {
+                kind:
+                    Gradient::Radial {
+                        center: radial,
+                        radius: Some(radius),
+                    },
+            },
+        ] = &style.layers[0].operations[..]
+        else {
+            panic!("{:?}", style.layers[0].operations);
+        };
+        assert_eq!(
+            (
+                angle.evaluate(0.0),
+                linear.evaluate(0.0),
+                length.evaluate(0.0)
+            ),
+            (30.0, [40.0, -20.0], 300.0)
+        );
+        assert_eq!(
+            (radial.evaluate(0.0), radius.evaluate(0.0)),
+            ([-10.0, 5.0], 120.0)
+        );
+        for invalid in [
+            r#"{"type":"gradient","length":-1}"#,
+            r#"{"type":"gradient","kind":"radial","radius":-1}"#,
+            r#"{"type":"gradient","center":[1]}"#,
+        ] {
+            assert!(operations(invalid).is_err(), "{invalid}");
+        }
     }
 
     /// Numbers, pairs and colours may follow the camera as well as the

@@ -119,14 +119,24 @@ pub enum Operation {
     },
 }
 
-/// The shape of an [`Operation::Gradient`].
+/// The shape of an [`Operation::Gradient`]. Its `center` is logical
+/// pixels right and down of the view's centre.
 #[derive(Clone, Debug)]
 pub enum Gradient {
     /// Along `angle` degrees, clockwise from top to bottom (90 runs right
-    /// to left), corner to corner.
-    Linear { angle: Property<f32> },
-    /// From the view's centre to its corners.
-    Radial,
+    /// to left), through `center`: 0 to 1 over `length` logical pixels,
+    /// or by default over the view corner to corner along the angle.
+    Linear {
+        angle: Property<f32>,
+        center: Property<[f32; 2]>,
+        length: Option<Property<f32>>,
+    },
+    /// From `center` out: 1 at `radius` logical pixels, or by default at
+    /// the view's corner farthest from it.
+    Radial {
+        center: Property<[f32; 2]>,
+        radius: Option<Property<f32>>,
+    },
 }
 
 /// How [`Operation::Combine`] puts another target's image with the one
@@ -196,16 +206,20 @@ impl Operation {
                 red, green, blue, ..
             } => vec![pair(red), pair(green), pair(blue)],
             Self::Gradient {
-                kind: Gradient::Linear { angle },
-            } => vec![n(angle)],
+                kind:
+                    Gradient::Linear {
+                        angle,
+                        center,
+                        length,
+                    },
+            } => vec![n(angle), pair(center), length.as_ref().and_then(n)],
+            Self::Gradient {
+                kind: Gradient::Radial { center, radius },
+            } => vec![pair(center), radius.as_ref().and_then(n)],
             Self::Bands { count, width } => vec![n(count), n(width)],
-            Self::Invert
-            | Self::Luminance
-            | Self::Convolve { .. }
-            | Self::Combine { .. }
-            | Self::Gradient {
-                kind: Gradient::Radial,
-            } => Vec::new(),
+            Self::Invert | Self::Luminance | Self::Convolve { .. } | Self::Combine { .. } => {
+                Vec::new()
+            }
         };
         values.into_iter().flatten()
     }

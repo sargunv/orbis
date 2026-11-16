@@ -265,13 +265,21 @@ pub(crate) fn ops_at(
                 radial: *radial,
             },
             Operation::Gradient { kind } => match kind {
-                Gradient::Linear { angle } => ProcessOp::Gradient {
+                Gradient::Linear {
+                    angle,
+                    center,
+                    length,
+                } => ProcessOp::Gradient {
                     radial: false,
                     angle: number(angle),
+                    center: pair(center),
+                    extent: length.as_ref().map(number),
                 },
-                Gradient::Radial => ProcessOp::Gradient {
+                Gradient::Radial { center, radius } => ProcessOp::Gradient {
                     radial: true,
                     angle: 0.0,
+                    center: pair(center),
+                    extent: radius.as_ref().map(number),
                 },
             },
             Operation::Bands { count, width } => ProcessOp::Bands {
