@@ -110,7 +110,7 @@ impl Group {
 
     fn mode(&self) -> Mode {
         match self.blend {
-            _ if self.mask.is_some() => Mode::Mask,
+            Blend::Normal if self.mask.is_some() => Mode::Mask,
             Blend::Normal => Mode::Over,
             blend => Mode::Blend(blend),
         }
@@ -159,7 +159,7 @@ impl LayerComposites {
             let texture = source.unwrap_or_else(|| layer.as_ref().expect("made above").texture());
             // The k-th blending group reads the canvas pass k drew.
             let (mode, backdrop) = match blend {
-                _ if mask.is_some() => (Mode::Mask, mask),
+                Blend::Normal if mask.is_some() => (Mode::Mask, None),
                 Blend::Normal => (Mode::Over, None),
                 blend => {
                     backdrops += 1;
@@ -169,7 +169,8 @@ impl LayerComposites {
                     )
                 }
             };
-            let composite = composites.composite(gpu, texture, backdrop, mode, opacity);
+            let composite =
+                composites.composite_through(gpu, (texture, backdrop, mask), mode, opacity);
             self.groups.push(Group {
                 nodes,
                 blend,

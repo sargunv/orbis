@@ -206,3 +206,106 @@ fn noise_moves_with_the_map() {
         "{red} land pixels, {white} road pixels"
     );
 }
+
+/// What an image-process layer's operations make of a triangle drawn into
+/// a target, drawn over the map: moved by an offset; nothing, multiplied by
+/// its own inverse; its colour from a ramp; grown by a dilation and shrunk
+/// by an erosion.
+#[test]
+fn operations_move_cut_colour_and_grow() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let at = (Geodetic::new(0.0, 0.0), 6.0);
+    let mut draw = |ops: &str| {
+        let layers = format!(
+            r##"{{"id": "shape", "type": "fill", "source": "shape",
+                 "dev.sargunv.orbis:destination-target": "drawn", "paint": {{"fill-color": "#d02060"}}}},
+               {{"id": "inverse", "type": "dev.sargunv.orbis.image-process",
+                 "dev.sargunv.orbis:source-target": "drawn", "dev.sargunv.orbis:destination-target": "inverse",
+                 "dev.sargunv.orbis:operations": [{{"type": "invert"}}]}},
+               {{"id": "process", "type": "dev.sargunv.orbis.image-process",
+                 "dev.sargunv.orbis:source-target": "drawn", "dev.sargunv.orbis:operations": [{ops}]}}"##
+        );
+        let style = triangle(r#"{"id": "drawn"}, {"id": "inverse"}"#, &layers);
+        draw(&runtime, &mut target, &style, at.0, at.1)
+    };
+    let plain = draw("");
+    let red = |p: &[u8]| p[..3] == [0xd0, 0x20, 0x60];
+    let pixel = |image: &[u8], x: u32, y: u32| -> [u8; 4] {
+        let i = ((y * WIDTH + x) * 4) as usize;
+        image[i..i + 4].try_into().unwrap()
+    };
+    let covered =
+        |image: &[u8], test: &dyn Fn(&[u8]) -> bool| image.chunks(4).filter(|p| test(p)).count();
+    let inside = covered(&plain, &red);
+    assert!(inside > 2000, "{inside} pixels inside the triangle");
+
+    // Moved 12 right and 6 down.
+    let moved = draw(r#"{"type": "offset", "translate": [12, 6]}"#);
+    let mut off = 0;
+    for y in 8..HEIGHT - 8 {
+        for x in 16..WIDTH - 16 {
+            off += usize::from(
+                largest_difference(&pixel(&moved, x, y), &pixel(&plain, x - 12, y - 6)) > 3,
+            );
+        }
+    }
+    assert_eq!(off, 0, "pixels not moved with the offset");
+
+    // Nothing is both the triangle and its inverse but its edge's pixels,
+    // a quarter covered at most (half times half).
+    let cut = draw(r#"{"type": "combine", "target": "inverse", "mode": "multiply"}"#);
+    let quarter = (255 - 0x20) / 4 + 2;
+    let most = cut.chunks(4).map(|p| 255 - p[1]).max().unwrap_or(0);
+    assert!(
+        most <= quarter,
+        "the triangle times its inverse covers {most} of 255"
+    );
+
+    // A ramp from its coverage: wholly covered becomes green.
+    let ramped = draw(r##"{"type": "ramp", "stops": [[0, "rgba(0, 0, 0, 0)"], [1, "#00ff00"]]}"##);
+    assert_eq!(covered(&ramped, &|p| p[..3] == [0, 255, 0]), inside);
+
+    // Grown by 4 pixels, then shrunk by 4 from the original.
+    let grown = covered(&draw(r#"{"type": "dilate", "size": 4}"#), &red);
+    let shrunk = covered(&draw(r#"{"type": "erode", "size": 4}"#), &red);
+    assert!(
+        grown > inside + 400 && shrunk + 400 < inside,
+        "{shrunk} < {inside} < {grown}"
+    );
+}
+
+/// A fill drawn through a target in a blend mode blends where the target
+/// covers and leaves the map beneath elsewhere: multiplied over a
+/// coloured ground, its colour times the ground's inside the triangle.
+#[test]
+fn a_fill_through_a_target_blends_in_its_mode() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let layers = r##"{"id": "shape", "type": "fill", "source": "shape",
+          "dev.sargunv.orbis:destination-target": "drawn", "paint": {"fill-color": "#fff"}},
+        {"id": "tint", "type": "background", "paint": {"background-color": "#80c0ff"}},
+        {"id": "through", "type": "fill", "dev.sargunv.orbis:source-target": "drawn",
+          "paint": {"fill-color": "#ff8000", "fill-layer-blend": "multiply"}}"##;
+    let style = triangle(r#"{"id": "drawn"}"#, layers);
+    let image = draw(&runtime, &mut target, &style, Geodetic::new(0.0, 0.0), 6.0);
+    let multiplied = [0x80, 0x60, 0x00];
+    let (mut inside, mut outside) = (0, 0);
+    for p in image.chunks(4) {
+        if largest_difference(&p[..3], &multiplied) <= 2 {
+            inside += 1;
+        } else if p[..3] == [0x80, 0xc0, 0xff] {
+            outside += 1;
+        }
+    }
+    let pixels = (WIDTH * HEIGHT) as usize;
+    assert!(
+        inside > pixels / 8 && outside > pixels / 8,
+        "{inside} multiplied, {outside} as the ground"
+    );
+    assert!(
+        inside + outside > pixels * 9 / 10,
+        "{} pixels neither",
+        pixels - inside - outside
+    );
+}

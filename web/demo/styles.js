@@ -4,7 +4,9 @@ import alpsFlight from "./data/alps-flight.json";
 import alps from "./data/alps.json?url";
 import arctic from "./data/crs/arctic.json?url";
 import globe from "./data/globe.json";
+import neon from "./data/neon.json?url";
 import osmCarto from "./data/osm-carto.json?url";
+import papercraft from "./data/papercraft.json?url";
 import catalogue from "./data/scenes.json";
 import mlt from "./data/tokyo-mlt.json?url";
 // The demo's styles: the catalogue the map app's picker shows (the
@@ -200,7 +202,9 @@ const LOCAL = {
   "alps.json": alps,
   "alps-flight.json": alpsFlight,
   "crs/arctic.json": arctic,
+  "neon.json": neon,
   "osm-carto.json": osmCarto,
+  "papercraft.json": papercraft,
   "watercolor.json": watercolor,
 };
 

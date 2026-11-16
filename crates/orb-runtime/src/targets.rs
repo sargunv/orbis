@@ -2,8 +2,8 @@
 //! layers that draw into targets, read them and draw through them, as the
 //! renderer's [`TargetPlan`].
 
-use orb_render::{ProcessOp, ProcessPlan, TargetPlan};
-use orb_style::{LayerType, Operation, Style};
+use orb_render::{CombineMode, ProcessOp, ProcessPlan, TargetPlan};
+use orb_style::{Combine, LayerType, Operation, Style};
 
 use crate::style::NodePlan;
 
@@ -64,6 +64,11 @@ pub(crate) fn plan(
         if source == NOWHERE || destination == Some(NOWHERE) {
             continue;
         }
+        for op in &layer.operations {
+            if let Operation::Combine { target, .. } = op {
+                resolve(l, Some(target), warn);
+            }
+        }
         processes.push(ProcessPlan {
             at: nodes
                 .iter()
@@ -71,18 +76,30 @@ pub(crate) fn plan(
                 .unwrap_or(nodes.len()) as u32,
             source,
             destination,
-            ops: layer.operations.iter().map(op).collect(),
+            ops: ops_at(style, layer, 0.0),
         });
         process_layers.push(l);
     }
-    // A process whose output reaches its own source draws nothing: of the
+    // A process whose output reaches what it reads draws nothing: of the
     // targets processes write from others, those still left once every
     // target nothing leads into is taken away lie on such a loop.
     let targets = style.targets.len();
+    let reads = |p: &ProcessPlan| {
+        let others = p.ops.iter().filter_map(|op| match *op {
+            ProcessOp::Combine { target, .. } => Some(target),
+            _ => None,
+        });
+        std::iter::once(p.source)
+            .chain(others)
+            .filter(|&t| t != NOWHERE)
+            .collect::<Vec<_>>()
+    };
     let mut left = vec![true; targets];
     loop {
         let fed = |t: usize| {
-            (processes.iter()).any(|p| p.destination == Some(t as u32) && left[p.source as usize])
+            (processes.iter()).any(|p| {
+                p.destination == Some(t as u32) && reads(p).iter().any(|&r| left[r as usize])
+            })
         };
         let Some(free) = (0..targets).find(|&t| left[t] && !fed(t)) else {
             break;
@@ -91,7 +108,8 @@ pub(crate) fn plan(
     }
     let mut kept = Vec::new();
     for (p, l) in processes.into_iter().zip(process_layers) {
-        let looped = p.destination.is_some_and(|d| left[d as usize]) && left[p.source as usize];
+        let looped = p.destination.is_some_and(|d| left[d as usize])
+            && reads(&p).iter().any(|&r| left[r as usize]);
         if looped {
             warn(l, "it reads what it draws into; it draws nothing");
         } else {
@@ -108,26 +126,70 @@ pub(crate) fn plan(
     (plan, process_layers)
 }
 
-/// The renderer's operation for a style's.
-fn op(op: &Operation) -> ProcessOp {
-    match *op {
-        Operation::Select { value, tolerance } => {
-            let [r, g, b, _] = value.straight();
-            ProcessOp::Select {
-                color: [r, g, b],
-                tolerance,
+/// Image-process layer `layer`'s operations at `zoom`, for the renderer:
+/// targets by index ([`NOWHERE`] for one the style doesn't declare),
+/// colours straight.
+pub(crate) fn ops_at(style: &Style, layer: &orb_style::Layer, zoom: f64) -> Vec<ProcessOp> {
+    let target = |id: &str| {
+        let at = style.targets.iter().position(|t| t.id == id);
+        at.map_or(NOWHERE, |i| i as u32)
+    };
+    let color = |c: &orb_style::Property<orb_style::Color>| c.evaluate(zoom).straight();
+    let number = |n: &orb_style::Property<f32>| n.evaluate(zoom);
+    (layer.operations.iter())
+        .map(|op| match op {
+            Operation::Select { value, tolerance } => {
+                let [r, g, b, _] = color(value);
+                ProcessOp::Select {
+                    color: [r, g, b],
+                    tolerance: number(tolerance),
+                }
             }
-        }
-        Operation::Blur { size } => ProcessOp::Blur { size },
-        Operation::Noise { size, amount } => ProcessOp::Noise { size, amount },
-        Operation::Threshold { cutoff } => ProcessOp::Threshold { cutoff },
-        Operation::Invert => ProcessOp::Invert,
-        Operation::Sharpen { size, amount } => ProcessOp::Sharpen { size, amount },
-        Operation::HighPass { size } => ProcessOp::HighPass { size },
-        Operation::Convolve { ref kernel } => ProcessOp::Convolve {
-            kernel: kernel.clone(),
-        },
-    }
+            Operation::Blur { size } => ProcessOp::Blur { size: number(size) },
+            Operation::Noise { size, amount } => ProcessOp::Noise {
+                size: number(size).max(f32::MIN_POSITIVE),
+                amount: number(amount),
+            },
+            Operation::Threshold { cutoff } => ProcessOp::Threshold {
+                cutoff: number(cutoff),
+            },
+            Operation::Invert => ProcessOp::Invert,
+            Operation::Sharpen { size, amount } => ProcessOp::Sharpen {
+                size: number(size),
+                amount: number(amount),
+            },
+            Operation::HighPass { size } => ProcessOp::HighPass { size: number(size) },
+            Operation::Convolve { kernel } => ProcessOp::Convolve {
+                kernel: kernel.clone(),
+            },
+            Operation::Offset { translate } => ProcessOp::Offset {
+                translate: translate.evaluate(zoom),
+            },
+            Operation::Dilate { size } => ProcessOp::Dilate { size: number(size) },
+            Operation::Erode { size } => ProcessOp::Erode { size: number(size) },
+            Operation::Combine { target: id, mode } => ProcessOp::Combine {
+                target: target(id),
+                mode: match mode {
+                    Combine::Multiply => CombineMode::Multiply,
+                    Combine::Subtract => CombineMode::Subtract,
+                    Combine::Max => CombineMode::Max,
+                    Combine::Min => CombineMode::Min,
+                    Combine::Over => CombineMode::Over,
+                    Combine::Under => CombineMode::Under,
+                },
+            },
+            Operation::Opacity { value } => ProcessOp::Opacity {
+                value: number(value),
+            },
+            Operation::Color { value } => ProcessOp::Color {
+                color: color(value),
+            },
+            Operation::Luminance => ProcessOp::Luminance,
+            Operation::Ramp { stops } => ProcessOp::Ramp {
+                stops: stops.iter().map(|(at, c)| (*at, c.straight())).collect(),
+            },
+        })
+        .collect()
 }
 
 #[cfg(test)]

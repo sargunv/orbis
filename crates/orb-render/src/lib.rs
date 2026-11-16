@@ -38,7 +38,7 @@ mod terrain;
 mod tiles;
 pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
 pub use layer_composite::Blend;
-pub use targets::{ProcessOp, ProcessPlan, TargetPlan};
+pub use targets::{CombineMode, MAX_STOPS, ProcessOp, ProcessPlan, TargetPlan};
 pub use terrain::{
     DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeFull, DrapeLayout, MAX_SHRINK, SlotRedraw, TERRAIN_EXTENT,
     TERRAIN_GRID, TerrainDem, TerrainGlobe, TerrainPaint, TerrainTile,
@@ -1817,6 +1817,12 @@ impl Renderer {
         }
     }
 
+    /// Sets an image-process layer's operations as the frame's zoom has
+    /// them.
+    pub fn set_process_ops(&mut self, process: u32, ops: Vec<ProcessOp>) {
+        self.targets.set_ops(process as usize, ops);
+    }
+
     /// Shows or hides an image-process layer of the target plan: a hidden
     /// one draws nothing.
     pub fn set_process_visible(&mut self, process: u32, visible: bool) {
@@ -2195,6 +2201,14 @@ impl Renderer {
     /// when nothing beneath it composites apart, which could split the
     /// pass. Only paint chooses it, so neither a camera move nor showing
     /// or hiding a layer records the bundles again.
+    /// The composite of fill `i` in its colour through its render target,
+    /// where it draws a colour alone, normally blended: blended otherwise,
+    /// it draws apart and blends in the map's pass.
+    fn solid_through(&self, i: usize) -> Option<&offscreen::Composite> {
+        let blend = (self.nodes[i].composite).map_or(Blend::Normal, |(_, _, blend)| blend);
+        self.targets.solid(i).filter(|_| blend == Blend::Normal)
+    }
+
     fn solid_beneath(&self) -> Option<usize> {
         // Not one drawn into a render target, which never reaches the map.
         let i = (self.nodes.iter().enumerate()).rposition(|(i, n)| {
@@ -3141,14 +3155,15 @@ impl Renderer {
             // A node drawn into a render target draws in its pass; a fill
             // drawn through one composites through its coverage, at its
             // layer opacity.
-            if self.targets.off_map(i) || self.targets.solid(i).is_some() {
+            if self.targets.off_map(i) || self.solid_through(i).is_some() {
                 continue;
             }
             let mask = (self.targets.mask_of(i)).and_then(|t| self.targets.texture(t));
             let (key, opacity, blend, source) = match node.terrain_layer.filter(|_| terrain_on) {
                 _ if mask.is_some() => {
-                    let opacity = node.composite.map_or(1.0, |(_, opacity, _)| opacity);
-                    (Key::Mask(i), opacity, Blend::Normal, None)
+                    let (opacity, blend) = (node.composite)
+                        .map_or((1.0, Blend::Normal), |(_, opacity, blend)| (opacity, blend));
+                    (Key::Mask(i), opacity, blend, None)
                 }
                 Some(l) => {
                     let layer = &self.terrain_layers[usize::from(l)];
@@ -3287,7 +3302,7 @@ impl Renderer {
             if self.targets.off_map(i) {
                 continue;
             }
-            if let Some(solid) = self.targets.solid(i) {
+            if let Some(solid) = self.solid_through(i) {
                 if over {
                     commands.extend(self.composites.commands(solid));
                     self.recorded += 1;

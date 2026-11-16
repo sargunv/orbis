@@ -108,10 +108,35 @@
         {
           "key": "watercolor",
           "name": "Watercolor",
-          "detail": "After Stamen Watercolor: OpenFreeMap's land, parks, water and roads painted into a render target, masks of each blurred, roughened by noise fixed to the map and cut, then washed in with darker edges over grained paper, every frame",
+          "detail": "After Stamen Watercolor, in its colours: OpenFreeMap's land, parks, water and roads painted into a render target and masked, roughened by noise fixed to the map and cut, then washed in, mottled, pooling into orange edges and casting a faint shadow on the paper, every frame",
           "orbisOnly": true,
           "url": "watercolor.json",
-          "swatch": ["#f0bf86", "#82bddb", "#fcf8ef"],
+          "swatch": ["#f4d5c2", "#3fb3cf", "#fc9c00"],
+          "unsupported": {
+            "gljs": "GL JS has no render targets or image processing",
+            "native": "MapLibre Native has no render targets or image processing"
+          }
+        },
+        {
+          "key": "neon",
+          "name": "Neon",
+          "detail": "Tokyo at night: roads and railways glowing in their own colours, blurred twice from a render target beneath white-hot cores; the coastline traced in light, the water grown less the water shrunk; buildings outlined by an edge-finding convolution; under film grain",
+          "orbisOnly": true,
+          "url": "neon.json",
+          "dark": true,
+          "swatch": ["#06051a", "#ff2fa8", "#00e5ff"],
+          "unsupported": {
+            "gljs": "GL JS has no render targets or image processing",
+            "native": "MapLibre Native has no render targets or image processing"
+          }
+        },
+        {
+          "key": "papercraft",
+          "name": "Papercraft",
+          "detail": "New York cut from paper: the water in sheets stepping down from the shore (its mask eroded twice), the land a rough-cut sheet with its streets cut in, parks and buildings raised on it, every sheet casting a soft multiplied shadow on what lies beneath",
+          "orbisOnly": true,
+          "url": "papercraft.json",
+          "swatch": ["#f4ecd9", "#2a6aa0", "#7fb85c"],
           "unsupported": {
             "gljs": "GL JS has no render targets or image processing",
             "native": "MapLibre Native has no render targets or image processing"

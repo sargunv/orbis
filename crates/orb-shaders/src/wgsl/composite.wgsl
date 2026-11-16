@@ -15,17 +15,20 @@
 //   (`*-layer-blend`, `blend.wgsl`).
 
 // x: the opacity; y: the mode (`Mode` in orb-render: 0 over, 1–6 the blend
-// modes, 7 ramp, 8 mask, 9 solid, 10 sampled); `color`: solid's colour,
-// premultiplied.
+// modes, 7 ramp, 8 mask, 9 solid, 10 sampled); z: 1 where a blend mode
+// blends through the mask; `color`: solid's colour, premultiplied.
 struct Composite {
     params: vec4<f32>,
     color: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> composite: Composite;
 @group(0) @binding(1) var source: texture_2d<f32>;
-// The ramp, the mask, or the map beneath.
+// The ramp, or the map beneath.
 @group(0) @binding(2) var aux: texture_2d<f32>;
 @group(0) @binding(3) var linear: sampler;
+// The render target a fill drawn through one takes its coverage from, a
+// texel a logical pixel.
+@group(0) @binding(4) var mask: texture_2d<f32>;
 
 struct CompositeOut {
     @builtin(position) position: vec4<f32>,
@@ -51,10 +54,10 @@ fn fs_over(in: CompositeOut) -> @location(0) vec4<f32> {
         }
         case 8u: {
             let s = textureLoad(source, vec2<i32>(in.position.xy), 0);
-            return s * opacity * textureSample(aux, linear, in.uv).a;
+            return s * opacity * textureSample(mask, linear, in.uv).a;
         }
         case 9u: {
-            return composite.color * opacity * textureSample(aux, linear, in.uv).a;
+            return composite.color * opacity * textureSample(mask, linear, in.uv).a;
         }
         case 10u: {
             return textureSample(source, linear, in.uv) * opacity;
@@ -68,6 +71,9 @@ fn fs_over(in: CompositeOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_replace(in: CompositeOut) -> @location(0) vec4<f32> {
     let texel = vec2<i32>(in.position.xy);
-    let s = textureLoad(source, texel, 0) * composite.params.x;
+    var s = textureLoad(source, texel, 0) * composite.params.x;
+    if composite.params.z > 0.5 {
+        s *= textureSample(mask, linear, in.uv).a;
+    }
     return blend_over(u32(composite.params.y), s, textureLoad(aux, texel, 0));
 }

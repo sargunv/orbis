@@ -58,11 +58,11 @@ pub struct ProcessPlan {
     pub ops: Vec<ProcessOp>,
 }
 
-/// An image-process operation (`orb_style::Operation`), sizes in logical
-/// pixels.
+/// An image-process operation (`orb_style::Operation`) at the frame's zoom,
+/// sizes in logical pixels, colours straight (not premultiplied).
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProcessOp {
-    /// `color` unpremultiplied, `tolerance` 0–255.
+    /// `tolerance` 0–255.
     Select {
         color: [f32; 3],
         tolerance: f32,
@@ -90,16 +90,59 @@ pub enum ProcessOp {
     Convolve {
         kernel: Vec<f32>,
     },
+    /// Right and down.
+    Offset {
+        translate: [f32; 2],
+    },
+    Dilate {
+        size: f32,
+    },
+    Erode {
+        size: f32,
+    },
+    /// With target `target`'s image (an index past the plan's targets reads
+    /// as nothing).
+    Combine {
+        target: u32,
+        mode: CombineMode,
+    },
+    Opacity {
+        value: f32,
+    },
+    Color {
+        color: [f32; 4],
+    },
+    Luminance,
+    /// Coverages 0–1 in order, up to [`MAX_STOPS`].
+    Ramp {
+        stops: Vec<(f32, [f32; 4])>,
+    },
+}
+
+/// How [`ProcessOp::Combine`] puts another target's image with the one
+/// processed (`orb_style::Combine`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CombineMode {
+    Multiply,
+    Subtract,
+    Max,
+    Min,
+    Over,
+    Under,
 }
 
 /// Pointwise operations one pass applies at most (`image_process.wgsl`'s
 /// `ops`).
 const MAX_POINTWISE: usize = 8;
+/// A ramp's stops at most (`ramp_at`, `ramp_colors`).
+pub const MAX_STOPS: usize = 8;
 /// Linear taps a side a blur pass takes at most (`weights` holds the
 /// centre and a pair for each).
 const MAX_TAPS: usize = 31;
+/// Texels a side a dilation or erosion pass reaches at most.
+const MAX_REACH: f32 = 64.0;
 /// The uniform's words (`Process` in `image_process.wgsl`).
-const WORDS: usize = 4 + 4 + 64 + 4 + 64 + 12;
+const WORDS: usize = 4 + 4 + 64 + 4 + 64 + 12 + 8 + 32;
 
 /// What a pass samples its input through.
 #[derive(Clone, Debug, PartialEq)]
@@ -117,15 +160,61 @@ enum Kernel {
         amount: f32,
     },
     Convolve(Vec<f32>),
+    /// The most (or least, `erode`) within `size` along one axis.
+    Morph {
+        size: f32,
+        erode: bool,
+        y: bool,
+    },
+    /// The input moved by `translate`.
+    Offset {
+        translate: [f32; 2],
+    },
+}
+
+impl Kernel {
+    /// What decides the pass's bindings and number: its kind, not its
+    /// sizes.
+    fn kind(&self) -> u32 {
+        match self {
+            Kernel::Copy => 0,
+            Kernel::BlurX { .. } => 1,
+            Kernel::BlurY { combine, .. } => 2 + combine,
+            Kernel::Convolve(_) => 5,
+            Kernel::Morph { .. } => 6,
+            Kernel::Offset { .. } => 7,
+        }
+    }
 }
 
 /// A pointwise operation of a pass.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Pointwise {
-    Select { color: [f32; 3], tolerance: f32 },
-    Noise { size: f32, amount: f32 },
-    Threshold { cutoff: f32 },
+    Select {
+        color: [f32; 3],
+        tolerance: f32,
+    },
+    Noise {
+        size: f32,
+        amount: f32,
+    },
+    Threshold {
+        cutoff: f32,
+    },
     Invert,
+    Opacity {
+        value: f32,
+    },
+    Color {
+        color: [f32; 4],
+    },
+    Luminance,
+    /// The pass's ramp.
+    Ramp,
+    /// With the pass's other target.
+    Combine {
+        mode: CombineMode,
+    },
 }
 
 /// One pass of a process.
@@ -133,6 +222,10 @@ enum Pointwise {
 struct Step {
     kernel: Kernel,
     pointwise: Vec<Pointwise>,
+    /// The ramp its `Ramp` reads, premultiplied.
+    ramp: Vec<(f32, [f32; 4])>,
+    /// The target its `Combine`s read.
+    other: Option<u32>,
 }
 
 impl Step {
@@ -140,6 +233,8 @@ impl Step {
         Self {
             kernel,
             pointwise: Vec::new(),
+            ramp: Vec::new(),
+            other: None,
         }
     }
 
@@ -147,10 +242,33 @@ impl Step {
     fn reads_original(&self) -> bool {
         matches!(self.kernel, Kernel::BlurY { combine, .. } if combine != 0)
     }
+
+    /// What its bindings and its place among the passes come of: steps of
+    /// one shape differ only in their uniform.
+    fn shape(&self) -> (u32, usize, Option<u32>) {
+        (self.kernel.kind(), self.pointwise.len(), self.other)
+    }
+
+    /// Whether `op` can join its pointwise operations: room left, and no
+    /// second ramp or other target.
+    fn takes(&self, op: &ProcessOp) -> bool {
+        self.pointwise.len() < MAX_POINTWISE
+            && match op {
+                ProcessOp::Ramp { .. } => self.ramp.is_empty(),
+                ProcessOp::Combine { target, .. } => self.other.is_none_or(|o| o == *target),
+                _ => true,
+            }
+    }
 }
 
-/// A process's operations as passes: each blur two, pointwise operations
-/// on the pass before them, and a copy where nothing else passes.
+/// Premultiplies a straight colour.
+fn premultiply([r, g, b, a]: [f32; 4]) -> [f32; 4] {
+    [r * a, g * a, b * a, a]
+}
+
+/// A process's operations as passes: each blur, dilation and erosion two,
+/// pointwise operations on the pass before them, and a copy where nothing
+/// else passes.
 fn steps(ops: &[ProcessOp]) -> Vec<Step> {
     let mut steps: Vec<Step> = Vec::new();
     let blur = |steps: &mut Vec<Step>, size: f32, combine: u32, amount: f32| {
@@ -169,6 +287,11 @@ fn steps(ops: &[ProcessOp]) -> Vec<Step> {
             ProcessOp::Noise { size, amount } => Pointwise::Noise { size, amount },
             ProcessOp::Threshold { cutoff } => Pointwise::Threshold { cutoff },
             ProcessOp::Invert => Pointwise::Invert,
+            ProcessOp::Opacity { value } => Pointwise::Opacity { value },
+            ProcessOp::Color { color } => Pointwise::Color { color },
+            ProcessOp::Luminance => Pointwise::Luminance,
+            ProcessOp::Ramp { .. } => Pointwise::Ramp,
+            ProcessOp::Combine { mode, .. } => Pointwise::Combine { mode },
             ProcessOp::Blur { size } => {
                 blur(&mut steps, size, 0, 0.0);
                 continue;
@@ -185,14 +308,34 @@ fn steps(ops: &[ProcessOp]) -> Vec<Step> {
                 steps.push(Step::of(Kernel::Convolve(kernel.clone())));
                 continue;
             }
+            ProcessOp::Dilate { size } | ProcessOp::Erode { size } => {
+                let erode = matches!(op, ProcessOp::Erode { .. });
+                if size > 0.0 {
+                    for y in [false, true] {
+                        steps.push(Step::of(Kernel::Morph { size, erode, y }));
+                    }
+                }
+                continue;
+            }
+            ProcessOp::Offset { translate } => {
+                steps.push(Step::of(Kernel::Offset { translate }));
+                continue;
+            }
         };
-        match steps.last_mut() {
-            Some(step) if step.pointwise.len() < MAX_POINTWISE => step.pointwise.push(pointwise),
-            _ => steps.push(Step {
-                kernel: Kernel::Copy,
-                pointwise: vec![pointwise],
-            }),
+        if !steps.last().is_some_and(|s| s.takes(op)) {
+            steps.push(Step::of(Kernel::Copy));
         }
+        let step = steps.last_mut().expect("pushed above");
+        match op {
+            ProcessOp::Ramp { stops } => {
+                step.ramp = (stops.iter().take(MAX_STOPS))
+                    .map(|&(at, color)| (at, premultiply(color)))
+                    .collect();
+            }
+            ProcessOp::Combine { target, .. } => step.other = Some(*target),
+            _ => {}
+        }
+        step.pointwise.push(pointwise);
     }
     if steps.is_empty() {
         steps.push(Step::of(Kernel::Copy));
@@ -318,6 +461,7 @@ impl Targets {
                 E::texture(1, fs, true, TextureViewDimension::D2),
                 E::texture(2, fs, true, TextureViewDimension::D2),
                 E::sampler(3, fs, true),
+                E::texture(4, fs, true, TextureViewDimension::D2),
             ],
         });
         let sampler = gpu.create_sampler(&SamplerDesc {
@@ -415,8 +559,14 @@ impl Targets {
         seen.push(run);
         match run {
             Run::Process(p) => {
-                if let Some(writer) = self.writer(self.plan.processes[p].source) {
-                    self.visit(writer, seen, order);
+                let others = self.steps[p].iter().filter_map(|s| s.other);
+                let reads: Vec<u32> = std::iter::once(self.plan.processes[p].source)
+                    .chain(others)
+                    .collect();
+                for t in reads {
+                    if let Some(writer) = self.writer(t) {
+                        self.visit(writer, seen, order);
+                    }
                 }
             }
             Run::Draw(t) => {
@@ -435,6 +585,28 @@ impl Targets {
             Role::Unused => None,
             Role::Drawn => Some(Run::Draw(t as usize)),
             Role::Output(p) => Some(Run::Process(*p)),
+        }
+    }
+
+    /// Sets process `p`'s operations as the frame's zoom has them: passes
+    /// of the same shapes take the new values in their uniforms; others
+    /// are made anew with the targets.
+    pub(crate) fn set_ops(&mut self, p: usize, ops: Vec<ProcessOp>) {
+        let Some(process) = self.plan.processes.get_mut(p) else {
+            return;
+        };
+        if process.ops == ops {
+            return;
+        }
+        let steps = steps(&ops);
+        let old = &self.steps[p];
+        let same =
+            steps.len() == old.len() && steps.iter().zip(old).all(|(a, b)| a.shape() == b.shape());
+        process.ops = ops;
+        self.steps[p] = steps;
+        if !same {
+            self.order = self.order();
+            self.stale = true;
         }
     }
 
@@ -604,9 +776,9 @@ impl Targets {
                 Texture::Scratch(i) => self.made.scratch[i],
                 Texture::Output => self.made.outputs[p],
             };
-            let passes = wires
-                .iter()
-                .map(|&(input, original, output)| {
+            let passes = (wires.iter().zip(&self.steps[p]))
+                .map(|(&(input, original, output), step)| {
+                    let other = step.other.and_then(|t| self.texture(t)).unwrap_or(blank);
                     let uniform = gpu.create_buffer(&BufferDesc {
                         label: "image process",
                         size: (WORDS * 4) as u64,
@@ -624,6 +796,7 @@ impl Targets {
                                 TextureViewDimension::D2,
                             ),
                             BindGroupEntry::sampler(3, self.sampler),
+                            BindGroupEntry::texture(4, other, TextureViewDimension::D2),
                         ],
                     });
                     Pass_ {
@@ -650,7 +823,8 @@ impl Targets {
         let solids = (0..self.plan.masks.len())
             .map(|node| {
                 let mask = self.texture(self.plan.masks[node]?)?;
-                let mut solid = composites.composite(gpu, blank, Some(mask), Mode::Solid, 1.0);
+                let sources = (blank, None, Some(mask));
+                let mut solid = composites.composite_through(gpu, sources, Mode::Solid, 1.0);
                 if let Some(color) = self.colors[node] {
                     Composites::set_color(gpu, &mut solid, color);
                 }
@@ -852,9 +1026,24 @@ fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2]) -> [f32; WORDS] {
             let kernel = [2.0, side, 0.0, 0.0];
             (kernel, texel, k.clone())
         }
+        &Kernel::Morph { size, erode, y } => {
+            let reach = size.round().clamp(1.0, MAX_REACH);
+            let axis = if y { [0.0, 1.0] } else { [1.0, 0.0] };
+            (
+                [3.0, reach, f32::from(u8::from(erode)), 0.0],
+                axis,
+                Vec::new(),
+            )
+        }
+        Kernel::Offset { .. } => ([4.0, 0.0, 0.0, 0.0], [0.0; 2], Vec::new()),
     };
     words[0..4].copy_from_slice(&kernel);
     words[4..6].copy_from_slice(&step_uv);
+    // Where a moved pixel's colour comes from: back along the move.
+    if let Kernel::Offset { translate } = step.kernel {
+        words[6] = -translate[0] * texel[0];
+        words[7] = -translate[1] * texel[1];
+    }
     words[8..8 + weights.len().min(64)].copy_from_slice(&weights[..weights.len().min(64)]);
     words[72] = step.pointwise.len() as f32;
     // Noise is fixed to the map: lattices of the whole zooms around the
@@ -880,6 +1069,21 @@ fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2]) -> [f32; WORDS] {
             }
             Pointwise::Threshold { cutoff } => ([3.0, cutoff / 255.0, 0.0, 0.0], [0.0; 4]),
             Pointwise::Invert => ([4.0, 0.0, 0.0, 0.0], [0.0; 4]),
+            Pointwise::Opacity { value } => ([5.0, value, 0.0, 0.0], [0.0; 4]),
+            Pointwise::Color { color } => ([6.0, 0.0, 0.0, 0.0], color),
+            Pointwise::Luminance => ([7.0, 0.0, 0.0, 0.0], [0.0; 4]),
+            Pointwise::Ramp => ([8.0, 0.0, 0.0, 0.0], [0.0; 4]),
+            Pointwise::Combine { mode } => {
+                let mode = match mode {
+                    CombineMode::Multiply => 0.0,
+                    CombineMode::Subtract => 1.0,
+                    CombineMode::Max => 2.0,
+                    CombineMode::Min => 3.0,
+                    CombineMode::Over => 4.0,
+                    CombineMode::Under => 5.0,
+                };
+                ([9.0, mode, 0.0, 0.0], [0.0; 4])
+            }
         };
         let at = 76 + i * 8;
         words[at..at + 4].copy_from_slice(&a);
@@ -891,6 +1095,11 @@ fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2]) -> [f32; WORDS] {
         .any(|p| matches!(p, Pointwise::Noise { .. }))
     {
         words[140..152].copy_from_slice(&unproject(&frame.view_proj));
+    }
+    words[73] = step.ramp.len() as f32;
+    for (i, &(at, color)) in step.ramp.iter().enumerate() {
+        words[152 + i] = at;
+        words[160 + i * 4..164 + i * 4].copy_from_slice(&color);
     }
     words
 }

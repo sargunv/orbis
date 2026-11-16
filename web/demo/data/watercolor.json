@@ -2,7 +2,7 @@
   "version": 8,
   "name": "Watercolor",
   "metadata": {
-    "description": "Orbis's render targets (the dev.sargunv.orbis:targets preview) after Stamen Watercolor and Wet Dog Weather's sketch of it in MapLibre: land, parks, water and roads painted into one target in colours told apart, a mask selected from it for each, blurred, roughened by noise fixed to the map and cut, then filled with darker edges where the paint pools, over paper with a grain of its own."
+    "description": "After Stamen Watercolor, in its own colours: OpenFreeMap's land, parks, water and roads painted into one render target in colours told apart, a mask selected for each, blurred, roughened by noise fixed to the map and cut; each washed in, mottled where its pigment settles, pooling into darker edges, casting a faint shadow on the paper, under pencil buildings and hand-lettered names."
   },
   "sources": {
     "openmaptiles": {
@@ -30,19 +30,34 @@
       "id": "green"
     },
     {
-      "id": "land-edge"
+      "id": "land-pool"
     },
     {
-      "id": "water-edge"
+      "id": "land-deep"
     },
     {
-      "id": "green-edge"
+      "id": "water-pool"
+    },
+    {
+      "id": "green-pool"
     },
     {
       "id": "grain"
     },
     {
       "id": "mottle"
+    },
+    {
+      "id": "land-mottle"
+    },
+    {
+      "id": "water-mottle"
+    },
+    {
+      "id": "painted"
+    },
+    {
+      "id": "shadow"
     }
   ],
   "layers": [
@@ -92,6 +107,36 @@
       }
     },
     {
+      "id": "paint-landuse",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "landuse",
+      "dev.sargunv.orbis:destination-target": "paint",
+      "filter": [
+        "in",
+        [
+          "get",
+          "class"
+        ],
+        [
+          "literal",
+          [
+            "cemetery",
+            "pitch",
+            "stadium",
+            "garden",
+            "park",
+            "recreation_ground",
+            "playground"
+          ]
+        ]
+      ],
+      "paint": {
+        "fill-color": "#00ff00",
+        "fill-antialias": false
+      }
+    },
+    {
       "id": "paint-water",
       "type": "fill",
       "source": "openmaptiles",
@@ -117,20 +162,76 @@
         "line-width": [
           "interpolate",
           [
-            "linear"
+            "exponential",
+            1.3
           ],
           [
             "zoom"
           ],
           10,
           0.8,
-          16,
-          6
+          14,
+          3,
+          18,
+          10
         ]
       }
     },
     {
-      "id": "paint-roads-minor",
+      "id": "paint-paths",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "dev.sargunv.orbis:destination-target": "paint",
+      "filter": [
+        "all",
+        [
+          "==",
+          [
+            "geometry-type"
+          ],
+          "LineString"
+        ],
+        [
+          "in",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "literal",
+            [
+              "path",
+              "track"
+            ]
+          ]
+        ]
+      ],
+      "minzoom": 15,
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#ffffff",
+        "line-width": [
+          "interpolate",
+          [
+            "exponential",
+            1.5
+          ],
+          [
+            "zoom"
+          ],
+          15,
+          1.5,
+          18,
+          5
+        ]
+      }
+    },
+    {
+      "id": "paint-minor",
       "type": "line",
       "source": "openmaptiles",
       "source-layer": "transportation",
@@ -159,7 +260,7 @@
           ]
         ]
       ],
-      "minzoom": 13,
+      "minzoom": 12,
       "layout": {
         "line-cap": "round",
         "line-join": "round"
@@ -175,17 +276,19 @@
           [
             "zoom"
           ],
-          13,
+          12,
           0.8,
-          15,
-          2,
+          14,
+          2.2,
+          16,
+          6.5,
           18,
-          12
+          18
         ]
       }
     },
     {
-      "id": "paint-roads-mid",
+      "id": "paint-mid",
       "type": "line",
       "source": "openmaptiles",
       "source-layer": "transportation",
@@ -214,7 +317,7 @@
           ]
         ]
       ],
-      "minzoom": 11,
+      "minzoom": 10,
       "layout": {
         "line-cap": "round",
         "line-join": "round"
@@ -230,8 +333,8 @@
           [
             "zoom"
           ],
-          11,
-          1,
+          10,
+          0.8,
           13,
           2.2,
           14,
@@ -242,7 +345,7 @@
       }
     },
     {
-      "id": "paint-roads-major",
+      "id": "paint-major",
       "type": "line",
       "source": "openmaptiles",
       "source-layer": "transportation",
@@ -272,7 +375,7 @@
           ]
         ]
       ],
-      "minzoom": 8,
+      "minzoom": 6,
       "layout": {
         "line-cap": "round",
         "line-join": "round"
@@ -288,8 +391,8 @@
           [
             "zoom"
           ],
-          8,
-          1.2,
+          6,
+          0.8,
           12,
           3,
           14,
@@ -311,17 +414,32 @@
         },
         {
           "type": "blur",
-          "size": 3
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            10,
+            2,
+            14,
+            3,
+            18,
+            4.5
+          ]
         },
         {
           "type": "noise",
-          "size": 14,
-          "amount": 0.3
+          "size": 16,
+          "amount": 0.32
         },
         {
           "type": "noise",
-          "size": 3,
-          "amount": 0.08
+          "size": 3.5,
+          "amount": 0.1
         },
         {
           "type": "threshold",
@@ -329,7 +447,7 @@
         },
         {
           "type": "blur",
-          "size": 0.8
+          "size": 0.7
         }
       ],
       "dev.sargunv.orbis:destination-target": "land"
@@ -346,17 +464,32 @@
         },
         {
           "type": "blur",
-          "size": 3
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            10,
+            2,
+            14,
+            3,
+            18,
+            4.5
+          ]
         },
         {
           "type": "noise",
-          "size": 14,
-          "amount": 0.3
+          "size": 16,
+          "amount": 0.32
         },
         {
           "type": "noise",
-          "size": 3,
-          "amount": 0.08
+          "size": 3.5,
+          "amount": 0.1
         },
         {
           "type": "threshold",
@@ -364,7 +497,7 @@
         },
         {
           "type": "blur",
-          "size": 0.8
+          "size": 0.7
         }
       ],
       "dev.sargunv.orbis:destination-target": "water"
@@ -381,17 +514,32 @@
         },
         {
           "type": "blur",
-          "size": 3
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            10,
+            2,
+            14,
+            3,
+            18,
+            4.5
+          ]
         },
         {
           "type": "noise",
-          "size": 14,
-          "amount": 0.3
+          "size": 16,
+          "amount": 0.32
         },
         {
           "type": "noise",
-          "size": 3,
-          "amount": 0.08
+          "size": 3.5,
+          "amount": 0.1
         },
         {
           "type": "threshold",
@@ -399,46 +547,181 @@
         },
         {
           "type": "blur",
-          "size": 0.8
+          "size": 0.7
         }
       ],
       "dev.sargunv.orbis:destination-target": "green"
     },
     {
-      "id": "land-edge-mask",
+      "id": "land-pool-mask",
       "type": "dev.sargunv.orbis.image-process",
       "dev.sargunv.orbis:source-target": "land",
       "dev.sargunv.orbis:operations": [
         {
           "type": "high-pass",
-          "size": 6
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            10,
+            3.5,
+            16,
+            6.5
+          ]
+        },
+        {
+          "type": "ramp",
+          "stops": [
+            [
+              0,
+              "rgba(0,0,0,0)"
+            ],
+            [
+              0.1,
+              "rgba(0,0,0,0.5)"
+            ],
+            [
+              0.32,
+              "rgba(0,0,0,0.92)"
+            ],
+            [
+              0.5,
+              "#000"
+            ]
+          ]
         }
       ],
-      "dev.sargunv.orbis:destination-target": "land-edge"
+      "dev.sargunv.orbis:destination-target": "land-pool"
     },
     {
-      "id": "water-edge-mask",
+      "id": "land-deep-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "land",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "high-pass",
+          "size": 2.2
+        },
+        {
+          "type": "ramp",
+          "stops": [
+            [
+              0,
+              "rgba(0,0,0,0)"
+            ],
+            [
+              0.1,
+              "rgba(0,0,0,0.5)"
+            ],
+            [
+              0.32,
+              "rgba(0,0,0,0.92)"
+            ],
+            [
+              0.5,
+              "#000"
+            ]
+          ]
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "land-deep"
+    },
+    {
+      "id": "water-pool-mask",
       "type": "dev.sargunv.orbis.image-process",
       "dev.sargunv.orbis:source-target": "water",
       "dev.sargunv.orbis:operations": [
         {
           "type": "high-pass",
-          "size": 6
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            10,
+            4,
+            16,
+            8
+          ]
+        },
+        {
+          "type": "ramp",
+          "stops": [
+            [
+              0,
+              "rgba(0,0,0,0)"
+            ],
+            [
+              0.1,
+              "rgba(0,0,0,0.5)"
+            ],
+            [
+              0.32,
+              "rgba(0,0,0,0.92)"
+            ],
+            [
+              0.5,
+              "#000"
+            ]
+          ]
         }
       ],
-      "dev.sargunv.orbis:destination-target": "water-edge"
+      "dev.sargunv.orbis:destination-target": "water-pool"
     },
     {
-      "id": "green-edge-mask",
+      "id": "green-pool-mask",
       "type": "dev.sargunv.orbis.image-process",
       "dev.sargunv.orbis:source-target": "green",
       "dev.sargunv.orbis:operations": [
         {
           "type": "high-pass",
-          "size": 6
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            10,
+            3,
+            16,
+            6
+          ]
+        },
+        {
+          "type": "ramp",
+          "stops": [
+            [
+              0,
+              "rgba(0,0,0,0)"
+            ],
+            [
+              0.1,
+              "rgba(0,0,0,0.5)"
+            ],
+            [
+              0.32,
+              "rgba(0,0,0,0.92)"
+            ],
+            [
+              0.5,
+              "#000"
+            ]
+          ]
         }
       ],
-      "dev.sargunv.orbis:destination-target": "green-edge"
+      "dev.sargunv.orbis:destination-target": "green-pool"
     },
     {
       "id": "paint-grain",
@@ -456,22 +739,118 @@
       "dev.sargunv.orbis:operations": [
         {
           "type": "noise",
-          "size": 60,
-          "amount": 0.5
+          "size": 70,
+          "amount": 0.6
         },
         {
           "type": "noise",
-          "size": 5,
-          "amount": 0.2
+          "size": 12,
+          "amount": 0.3
+        },
+        {
+          "type": "noise",
+          "size": 2,
+          "amount": 0.12
         }
       ],
       "dev.sargunv.orbis:destination-target": "mottle"
     },
     {
+      "id": "land-mottle-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "mottle",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "combine",
+          "target": "land",
+          "mode": "multiply"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "land-mottle"
+    },
+    {
+      "id": "water-mottle-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "mottle",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "combine",
+          "target": "water",
+          "mode": "multiply"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "water-mottle"
+    },
+    {
+      "id": "painted-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "paint",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "select",
+          "value": "#ffffff",
+          "tolerance": 40
+        },
+        {
+          "type": "invert"
+        },
+        {
+          "type": "blur",
+          "size": 1.5
+        },
+        {
+          "type": "threshold"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "painted"
+    },
+    {
+      "id": "shadow-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "painted",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "offset",
+          "translate": [
+            1.5,
+            2
+          ]
+        },
+        {
+          "type": "blur",
+          "size": 2
+        },
+        {
+          "type": "combine",
+          "target": "painted",
+          "mode": "subtract"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "shadow"
+    },
+    {
       "id": "paper",
       "type": "background",
       "paint": {
-        "background-color": "#fcf8ef"
+        "background-color": "#fcf3d9"
+      }
+    },
+    {
+      "id": "paper-grain",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "mottle",
+      "paint": {
+        "fill-color": "#a07850",
+        "fill-opacity": 0.07
+      }
+    },
+    {
+      "id": "shadow",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "shadow",
+      "paint": {
+        "fill-color": "#7a5a3a",
+        "fill-opacity": 0.35
       }
     },
     {
@@ -479,17 +858,35 @@
       "type": "fill",
       "dev.sargunv.orbis:source-target": "land",
       "paint": {
-        "fill-color": "#f0bf86",
-        "fill-opacity": 0.85
+        "fill-color": "#f4d5c2",
+        "fill-opacity": 1.0
       }
     },
     {
-      "id": "land-edge",
+      "id": "land-mottle",
       "type": "fill",
-      "dev.sargunv.orbis:source-target": "land-edge",
+      "dev.sargunv.orbis:source-target": "land-mottle",
       "paint": {
-        "fill-color": "#b8692b",
+        "fill-color": "#e9a878",
+        "fill-opacity": 0.55
+      }
+    },
+    {
+      "id": "land-pool",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "land-pool",
+      "paint": {
+        "fill-color": "#fc9c00",
         "fill-opacity": 0.9
+      }
+    },
+    {
+      "id": "land-deep",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "land-deep",
+      "paint": {
+        "fill-color": "#e86f00",
+        "fill-opacity": 0.55
       }
     },
     {
@@ -497,16 +894,16 @@
       "type": "fill",
       "dev.sargunv.orbis:source-target": "green",
       "paint": {
-        "fill-color": "#a6cc78",
-        "fill-opacity": 0.9
+        "fill-color": "#9cd86c",
+        "fill-opacity": 0.95
       }
     },
     {
-      "id": "green-edge",
+      "id": "green-pool",
       "type": "fill",
-      "dev.sargunv.orbis:source-target": "green-edge",
+      "dev.sargunv.orbis:source-target": "green-pool",
       "paint": {
-        "fill-color": "#4e8a39",
+        "fill-color": "#54b800",
         "fill-opacity": 0.9
       }
     },
@@ -515,26 +912,186 @@
       "type": "fill",
       "dev.sargunv.orbis:source-target": "water",
       "paint": {
-        "fill-color": "#82bddb",
+        "fill-color": "#3fb3cf",
         "fill-opacity": 0.95
       }
     },
     {
-      "id": "water-edge",
+      "id": "water-mottle",
       "type": "fill",
-      "dev.sargunv.orbis:source-target": "water-edge",
+      "dev.sargunv.orbis:source-target": "water-mottle",
       "paint": {
-        "fill-color": "#245f94",
-        "fill-opacity": 0.9
+        "fill-color": "#1f86b8",
+        "fill-opacity": 0.4
       }
     },
     {
-      "id": "mottle",
+      "id": "water-pool",
       "type": "fill",
-      "dev.sargunv.orbis:source-target": "mottle",
+      "dev.sargunv.orbis:source-target": "water-pool",
       "paint": {
-        "fill-color": "#7a4e22",
-        "fill-opacity": 0.12
+        "fill-color": "#0048a8",
+        "fill-opacity": 0.85
+      }
+    },
+    {
+      "id": "pencil-buildings",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "building",
+      "minzoom": 15,
+      "paint": {
+        "line-color": "#5a4632",
+        "line-opacity": [
+          "interpolate",
+          [
+            "exponential",
+            1
+          ],
+          [
+            "zoom"
+          ],
+          15,
+          0,
+          16,
+          0.22
+        ],
+        "line-width": 0.6
+      }
+    },
+    {
+      "id": "water-names",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "water_name",
+      "layout": {
+        "text-field": [
+          "get",
+          "name"
+        ],
+        "text-font": [
+          "Noto Sans Italic"
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "exponential",
+            1
+          ],
+          [
+            "zoom"
+          ],
+          10,
+          11,
+          16,
+          15
+        ],
+        "text-letter-spacing": 0.15
+      },
+      "paint": {
+        "text-color": "#0a4f8a",
+        "text-halo-color": "rgba(255,255,255,0.6)",
+        "text-halo-width": 1.2
+      }
+    },
+    {
+      "id": "place-names",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "place",
+      "filter": [
+        "in",
+        [
+          "get",
+          "class"
+        ],
+        [
+          "literal",
+          [
+            "city",
+            "town",
+            "suburb",
+            "quarter",
+            "neighbourhood"
+          ]
+        ]
+      ],
+      "layout": {
+        "text-field": [
+          "get",
+          "name"
+        ],
+        "text-font": [
+          "Noto Sans Italic"
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          8,
+          [
+            "match",
+            [
+              "get",
+              "class"
+            ],
+            "city",
+            14,
+            "town",
+            11,
+            10
+          ],
+          14,
+          [
+            "match",
+            [
+              "get",
+              "class"
+            ],
+            "city",
+            24,
+            "town",
+            18,
+            13
+          ],
+          17,
+          [
+            "match",
+            [
+              "get",
+              "class"
+            ],
+            "city",
+            30,
+            "town",
+            22,
+            16
+          ]
+        ],
+        "text-letter-spacing": 0.08,
+        "text-transform": [
+          "match",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "city",
+            "town"
+          ],
+          "uppercase",
+          "none"
+        ],
+        "text-max-width": 8
+      },
+      "paint": {
+        "text-color": "#4a3020",
+        "text-halo-color": "rgba(252,243,217,0.85)",
+        "text-halo-width": 1.6
       }
     }
   ]

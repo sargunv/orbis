@@ -4,30 +4,36 @@
 // is their alpha.
 //
 // A pass samples its input through a kernel: a copy, one axis of a
-// Gaussian blur, or a square convolution. The blur's second axis may weigh
-// the pass's original against the blur (`sharpen`, `high-pass`). Then it
-// applies its pointwise operations in order: `select`, `noise`,
-// `threshold` and `invert`.
+// Gaussian blur, a square convolution, one axis of a dilation or erosion,
+// or a move. The blur's second axis may weigh the pass's original against
+// the blur (`sharpen`, `high-pass`). Then it applies its pointwise
+// operations in order (`pointwise`), which may read one colour ramp and
+// one other target.
 
 struct Process {
-    // x: the kernel (0 copy, 1 blur, 2 convolve); y: a blur's linear taps
-    // each side, or a convolution's side; z: how a blur combines with the
-    // original (0 the blur alone, 1 sharpen, 2 high-pass); w: sharpen's
-    // amount.
+    // x: the kernel (0 copy, 1 blur, 2 convolve, 3 dilate or erode, 4
+    // move); y: a blur's linear taps each side, a convolution's side, or a
+    // dilation's reach in texels; z: how a blur combines with the original
+    // (0 the blur alone, 1 sharpen, 2 high-pass), or 1 to erode; w:
+    // sharpen's amount.
     kernel: vec4<f32>,
-    // xy: a blur's step between taps, or a convolution's between weights,
-    // in uv.
+    // xy: a blur's step between taps or a convolution's between weights,
+    // in uv, or a dilation's axis in texels; zw: where a move takes each
+    // pixel from, in uv.
     step: vec4<f32>,
     // A blur's centre weight, then (offset, weight) pairs of linear taps,
     // in steps; or a convolution's weights, row by row.
     weights: array<vec4<f32>, 16>,
-    // x: how many pointwise operations follow.
+    // x: how many pointwise operations follow; y: the ramp's stops.
     count: vec4<f32>,
     // Each pointwise operation as two vectors (`pointwise`).
     ops: array<vec4<f32>, 16>,
     // Normalized device coordinates on the view to the camera-relative
     // world on the plane, homogeneous: noise is fixed to the map.
     unproject: array<vec4<f32>, 3>,
+    // The ramp's stops: coverages, and colours premultiplied.
+    ramp_at: array<vec4<f32>, 2>,
+    ramp_colors: array<vec4<f32>, 8>,
 };
 
 @group(0) @binding(0) var<uniform> process: Process;
@@ -35,6 +41,8 @@ struct Process {
 // What a blur's second axis weighs itself against: the first's input.
 @group(0) @binding(2) var original: texture_2d<f32>;
 @group(0) @binding(3) var linear: sampler;
+// The target a pass's `combine` reads.
+@group(0) @binding(4) var other: texture_2d<f32>;
 
 struct ProcessOut {
     @builtin(position) position: vec4<f32>,
@@ -111,6 +119,58 @@ fn convolve(uv: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(min(s.rgb, vec3<f32>(s.a)), s.a);
 }
 
+// The most (or, eroding, least) of the texels within the reach along the
+// pass's axis, the view's edges extended.
+fn morph(position: vec2<f32>) -> vec4<f32> {
+    let reach = i32(process.kernel.y);
+    let erode = process.kernel.z > 0.5;
+    let axis = vec2<i32>(process.step.xy);
+    let last = vec2<i32>(textureDimensions(input)) - vec2<i32>(1);
+    let at = vec2<i32>(position);
+    var c = textureLoad(input, at, 0);
+    for (var i = -reach; i <= reach; i++) {
+        let t = textureLoad(input, clamp(at + axis * i, vec2<i32>(0), last), 0);
+        c = select(max(c, t), min(c, t), erode);
+    }
+    return c;
+}
+
+fn ramp(t: f32) -> vec4<f32> {
+    let stops = u32(process.count.y);
+    var c = process.ramp_colors[0];
+    for (var i = 1u; i < stops; i++) {
+        let a = process.ramp_at[(i - 1u) / 4u][(i - 1u) % 4u];
+        let b = process.ramp_at[i / 4u][i % 4u];
+        let f = clamp((t - a) / max(b - a, 0.00001), 0.0, 1.0);
+        c = select(c, mix(process.ramp_colors[i - 1u], process.ramp_colors[i], f), t > a);
+    }
+    return c;
+}
+
+fn combine(c: vec4<f32>, mode: u32, uv: vec2<f32>) -> vec4<f32> {
+    let o = textureSampleLevel(other, linear, uv, 0.0);
+    switch mode {
+        case 0u: {
+            return c * o.a;
+        }
+        case 1u: {
+            return c * (1.0 - o.a);
+        }
+        case 2u: {
+            return max(c, o);
+        }
+        case 3u: {
+            return min(c, o);
+        }
+        case 4u: {
+            return o + c * (1.0 - o.a);
+        }
+        default: {
+            return c + o * (1.0 - c.a);
+        }
+    }
+}
+
 // A hash of a lattice point, repeating every 256 points.
 fn lattice_hash(p: vec2<f32>) -> f32 {
     let q = vec2<u32>(vec2<i32>(p) & vec2<i32>(255));
@@ -152,8 +212,13 @@ fn world_at(uv: vec2<f32>) -> vec2<f32> {
 //   octaves has faded in, `a.w` the coarser's lattice points per world
 //   unit, `b` each octave's lattice offset at the camera;
 // - threshold (3): `a.y` the cutoff (0–1);
-// - invert (4).
-fn pointwise(c: vec4<f32>, a: vec4<f32>, b: vec4<f32>, world: vec2<f32>) -> vec4<f32> {
+// - invert (4);
+// - opacity (5): `a.y` the factor;
+// - color (6): `b` the colour, straight;
+// - luminance (7);
+// - ramp (8): coverage through the pass's ramp;
+// - combine (9): `a.y` the mode (`combine`) with the pass's other target.
+fn pointwise(c: vec4<f32>, a: vec4<f32>, b: vec4<f32>, world: vec2<f32>, uv: vec2<f32>) -> vec4<f32> {
     switch u32(a.x) {
         case 1u: {
             let rgb = unpremultiplied(c);
@@ -172,6 +237,23 @@ fn pointwise(c: vec4<f32>, a: vec4<f32>, b: vec4<f32>, world: vec2<f32>) -> vec4
         case 4u: {
             return with_coverage(c, 1.0 - c.a);
         }
+        case 5u: {
+            return c * a.y;
+        }
+        case 6u: {
+            return vec4<f32>(b.rgb, 1.0) * b.a * c.a;
+        }
+        case 7u: {
+            let rgb = unpremultiplied(c);
+            let l = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+            return vec4<f32>(l * c.a);
+        }
+        case 8u: {
+            return ramp(c.a);
+        }
+        case 9u: {
+            return combine(c, u32(a.y), uv);
+        }
         default: {
             return c;
         }
@@ -188,6 +270,12 @@ fn fs_process(in: ProcessOut) -> @location(0) vec4<f32> {
         case 2u: {
             c = convolve(in.uv);
         }
+        case 3u: {
+            c = morph(in.position.xy);
+        }
+        case 4u: {
+            c = sample_at(in.uv + process.step.zw);
+        }
         default: {
             c = textureLoad(input, vec2<i32>(in.position.xy), 0);
         }
@@ -195,7 +283,7 @@ fn fs_process(in: ProcessOut) -> @location(0) vec4<f32> {
     let world = world_at(in.uv);
     let count = u32(process.count.x);
     for (var i = 0u; i < count; i++) {
-        c = pointwise(c, process.ops[2u * i], process.ops[2u * i + 1u], world);
+        c = pointwise(c, process.ops[2u * i], process.ops[2u * i + 1u], world, in.uv);
     }
     return c;
 }

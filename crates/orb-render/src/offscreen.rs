@@ -222,6 +222,8 @@ pub(crate) struct Composites {
 #[derive(Debug)]
 pub(crate) struct Composite {
     mode: Mode,
+    /// It composites through a mask.
+    masked: bool,
     opacity: f32,
     /// A solid composite's colour, premultiplied.
     color: [f32; 4],
@@ -240,6 +242,7 @@ impl Composites {
                 E::texture(1, fs, true, TextureViewDimension::D2),
                 E::texture(2, fs, true, TextureViewDimension::D2),
                 E::sampler(3, fs, true),
+                E::texture(4, fs, true, TextureViewDimension::D2),
             ],
         });
         let linear = gpu.create_sampler(&SamplerDesc {
@@ -320,12 +323,26 @@ impl Composites {
         mode: Mode,
         opacity: f32,
     ) -> Composite {
+        self.composite_through(gpu, (source, aux, None), mode, opacity)
+    }
+
+    /// [`composite`](Self::composite) through the coverage of `mask`, a
+    /// render target: a fill drawn through one, in `Mode::Mask` or
+    /// `Mode::Solid`, or in a blend mode.
+    pub(crate) fn composite_through(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        (source, aux, mask): (TextureId, Option<TextureId>, Option<TextureId>),
+        mode: Mode,
+        opacity: f32,
+    ) -> Composite {
+        let masked = mask.is_some();
         let uniform = gpu.create_buffer(&BufferDesc {
             label: "composite",
             size: 32,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
-        write_uniform(gpu, uniform, mode, opacity, [0.0; 4]);
+        write_uniform(gpu, uniform, (mode, masked), opacity, [0.0; 4]);
         use TextureViewDimension::D2;
         let group = gpu.create_bind_group(&BindGroupDesc {
             label: "composite",
@@ -335,9 +352,11 @@ impl Composites {
                 BindGroupEntry::texture(1, source, D2),
                 BindGroupEntry::texture(2, aux.unwrap_or(self.blank), D2),
                 BindGroupEntry::sampler(3, self.linear),
+                BindGroupEntry::texture(4, mask.unwrap_or(self.blank), D2),
             ],
         });
         Composite {
+            masked,
             mode,
             opacity,
             color: [0.0; 4],
@@ -352,7 +371,7 @@ impl Composites {
         if composite.opacity != opacity {
             composite.opacity = opacity;
             let c = &*composite;
-            write_uniform(gpu, c.uniform, c.mode, opacity, c.color);
+            write_uniform(gpu, c.uniform, (c.mode, c.masked), opacity, c.color);
         }
     }
 
@@ -361,7 +380,7 @@ impl Composites {
         if composite.color != color {
             composite.color = color;
             let c = &*composite;
-            write_uniform(gpu, c.uniform, c.mode, c.opacity, color);
+            write_uniform(gpu, c.uniform, (c.mode, c.masked), c.opacity, color);
         }
     }
 
@@ -405,9 +424,24 @@ impl Composites {
 
 /// Writes a composite's uniform: its opacity, `composite.wgsl`'s mode and a
 /// solid one's colour.
-fn write_uniform(gpu: &mut dyn Gpu, uniform: BufferId, mode: Mode, opacity: f32, color: [f32; 4]) {
+fn write_uniform(
+    gpu: &mut dyn Gpu,
+    uniform: BufferId,
+    (mode, masked): (Mode, bool),
+    opacity: f32,
+    color: [f32; 4],
+) {
     let [r, g, b, a] = color;
-    let words = [opacity, mode.number(), 0.0, 0.0, r, g, b, a];
+    let words = [
+        opacity,
+        mode.number(),
+        f32::from(u8::from(masked)),
+        0.0,
+        r,
+        g,
+        b,
+        a,
+    ];
     gpu.write_buffer(uniform, 0, bytemuck::cast_slice(&words));
 }
 

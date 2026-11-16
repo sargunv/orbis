@@ -1,0 +1,896 @@
+{
+  "version": 8,
+  "name": "Papercraft",
+  "metadata": {
+    "description": "Manhattan cut from paper: the water in three sheets stepping down from the shore, the water's mask eroded twice; the land a cream sheet with rough-cut edges and its streets cut into it as grooves; the parks a green sheet on it, the buildings little blocks on that; each sheet casting a soft shadow, its mask moved and blurred, on what lies beneath; over a paper grain."
+  },
+  "sources": {
+    "openmaptiles": {
+      "type": "vector",
+      "url": "https://tiles.openfreemap.org/planet"
+    }
+  },
+  "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+  "center": [
+    -73.982,
+    40.758
+  ],
+  "zoom": 13.6,
+  "bearing": 29,
+  "dev.sargunv.orbis:targets": [
+    {
+      "id": "bevel-land"
+    },
+    {
+      "id": "bevel-parks"
+    },
+    {
+      "id": "bevel-blocks"
+    },
+    {
+      "id": "bevel-shallow"
+    },
+    {
+      "id": "paint"
+    },
+    {
+      "id": "water"
+    },
+    {
+      "id": "middle"
+    },
+    {
+      "id": "shallow"
+    },
+    {
+      "id": "land"
+    },
+    {
+      "id": "parks"
+    },
+    {
+      "id": "grooves"
+    },
+    {
+      "id": "blocks"
+    },
+    {
+      "id": "shadow-middle"
+    },
+    {
+      "id": "shadow-shallow"
+    },
+    {
+      "id": "shadow-land"
+    },
+    {
+      "id": "shadow-parks"
+    },
+    {
+      "id": "shadow-grooves"
+    },
+    {
+      "id": "shadow-blocks"
+    },
+    {
+      "id": "land-top"
+    },
+    {
+      "id": "grain"
+    },
+    {
+      "id": "fibres"
+    }
+  ],
+  "layers": [
+    {
+      "id": "paint-land",
+      "type": "background",
+      "dev.sargunv.orbis:destination-target": "paint",
+      "paint": {
+        "background-color": "#ffff00"
+      }
+    },
+    {
+      "id": "paint-park",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "park",
+      "dev.sargunv.orbis:destination-target": "paint",
+      "paint": {
+        "fill-color": "#00ff00",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "paint-green",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "landcover",
+      "dev.sargunv.orbis:destination-target": "paint",
+      "filter": [
+        "in",
+        [
+          "get",
+          "class"
+        ],
+        [
+          "literal",
+          [
+            "wood",
+            "grass"
+          ]
+        ]
+      ],
+      "paint": {
+        "fill-color": "#00ff00",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "paint-streets",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "dev.sargunv.orbis:destination-target": "paint",
+      "filter": [
+        "all",
+        [
+          "==",
+          [
+            "geometry-type"
+          ],
+          "LineString"
+        ],
+        [
+          "in",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "literal",
+            [
+              "motorway",
+              "trunk",
+              "primary",
+              "secondary",
+              "tertiary",
+              "minor"
+            ]
+          ]
+        ]
+      ],
+      "minzoom": 11,
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#ffffff",
+        "line-width": [
+          "interpolate",
+          [
+            "exponential",
+            1.5
+          ],
+          [
+            "zoom"
+          ],
+          11,
+          0.6,
+          14,
+          2,
+          16,
+          6,
+          18,
+          18
+        ]
+      }
+    },
+    {
+      "id": "paint-water",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "water",
+      "dev.sargunv.orbis:destination-target": "water",
+      "paint": {
+        "fill-color": "#fff",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "middle-sheet",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "water",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "erode",
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            11,
+            4,
+            16,
+            12
+          ]
+        },
+        {
+          "type": "invert"
+        },
+        {
+          "type": "blur",
+          "size": 1.2
+        },
+        {
+          "type": "noise",
+          "size": 5,
+          "amount": 0.18
+        },
+        {
+          "type": "threshold"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "middle"
+    },
+    {
+      "id": "shallow-sheet",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "water",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "erode",
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            11,
+            1.5,
+            16,
+            5
+          ]
+        },
+        {
+          "type": "invert"
+        },
+        {
+          "type": "blur",
+          "size": 1.2
+        },
+        {
+          "type": "noise",
+          "size": 5,
+          "amount": 0.18
+        },
+        {
+          "type": "threshold"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "shallow"
+    },
+    {
+      "id": "land-sheet",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "water",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "invert"
+        },
+        {
+          "type": "blur",
+          "size": 1.2
+        },
+        {
+          "type": "noise",
+          "size": 5,
+          "amount": 0.18
+        },
+        {
+          "type": "threshold"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "land"
+    },
+    {
+      "id": "park-sheet",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "paint",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "select",
+          "value": "#00ff00",
+          "tolerance": 40
+        },
+        {
+          "type": "blur",
+          "size": 1
+        },
+        {
+          "type": "threshold"
+        },
+        {
+          "type": "erode",
+          "size": 1
+        },
+        {
+          "type": "combine",
+          "target": "land",
+          "mode": "multiply"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "parks"
+    },
+    {
+      "id": "street-grooves",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "paint",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "select",
+          "value": "#ffffff",
+          "tolerance": 40
+        },
+        {
+          "type": "combine",
+          "target": "land",
+          "mode": "multiply"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "grooves"
+    },
+    {
+      "id": "land-top-sheet",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "land",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "combine",
+          "target": "grooves",
+          "mode": "subtract"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "land-top"
+    },
+    {
+      "id": "shadow-middle-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "middle",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "offset",
+          "translate": [
+            3,
+            4
+          ]
+        },
+        {
+          "type": "blur",
+          "size": 3.5
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "shadow-middle"
+    },
+    {
+      "id": "shadow-shallow-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "shallow",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "offset",
+          "translate": [
+            3,
+            4
+          ]
+        },
+        {
+          "type": "blur",
+          "size": 3.5
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "shadow-shallow"
+    },
+    {
+      "id": "shadow-land-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "land",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "offset",
+          "translate": [
+            5,
+            7
+          ]
+        },
+        {
+          "type": "blur",
+          "size": 6
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "shadow-land"
+    },
+    {
+      "id": "shadow-parks-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "parks",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "offset",
+          "translate": [
+            2,
+            3
+          ]
+        },
+        {
+          "type": "blur",
+          "size": 2.5
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "shadow-parks"
+    },
+    {
+      "id": "bevel-land-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "land",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "offset",
+          "translate": [
+            1.2,
+            1.2
+          ]
+        },
+        {
+          "type": "invert"
+        },
+        {
+          "type": "combine",
+          "target": "land",
+          "mode": "multiply"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "bevel-land"
+    },
+    {
+      "id": "bevel-shallow-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "shallow",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "offset",
+          "translate": [
+            1.2,
+            1.2
+          ]
+        },
+        {
+          "type": "invert"
+        },
+        {
+          "type": "combine",
+          "target": "shallow",
+          "mode": "multiply"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "bevel-shallow"
+    },
+    {
+      "id": "bevel-parks-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "parks",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "offset",
+          "translate": [
+            1.2,
+            1.2
+          ]
+        },
+        {
+          "type": "invert"
+        },
+        {
+          "type": "combine",
+          "target": "parks",
+          "mode": "multiply"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "bevel-parks"
+    },
+    {
+      "id": "groove-shadow-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "land-top",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "offset",
+          "translate": [
+            1,
+            1.5
+          ]
+        },
+        {
+          "type": "blur",
+          "size": 0.8
+        },
+        {
+          "type": "combine",
+          "target": "grooves",
+          "mode": "multiply"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "shadow-grooves"
+    },
+    {
+      "id": "draw-blocks",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "building",
+      "dev.sargunv.orbis:destination-target": "blocks",
+      "minzoom": 14.5,
+      "paint": {
+        "fill-color": "#fff",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "shadow-blocks-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "blocks",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "offset",
+          "translate": [
+            1.5,
+            2.2
+          ]
+        },
+        {
+          "type": "blur",
+          "size": 1.4
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "shadow-blocks"
+    },
+    {
+      "id": "bevel-blocks-mask",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "blocks",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "offset",
+          "translate": [
+            1.2,
+            1.2
+          ]
+        },
+        {
+          "type": "invert"
+        },
+        {
+          "type": "combine",
+          "target": "blocks",
+          "mode": "multiply"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "bevel-blocks"
+    },
+    {
+      "id": "paint-grain",
+      "type": "background",
+      "dev.sargunv.orbis:destination-target": "grain",
+      "paint": {
+        "background-color": "#000",
+        "background-opacity": 0.5
+      }
+    },
+    {
+      "id": "grain-fibres",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "grain",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "noise",
+          "size": 40,
+          "amount": 0.35
+        },
+        {
+          "type": "noise",
+          "size": 1.6,
+          "amount": 0.35
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "fibres"
+    },
+    {
+      "id": "deep",
+      "type": "background",
+      "paint": {
+        "background-color": "#173f66"
+      }
+    },
+    {
+      "id": "middle-shadow",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "shadow-middle",
+      "paint": {
+        "fill-color": "#5b6f86",
+        "fill-opacity": 1,
+        "fill-layer-blend": "multiply"
+      }
+    },
+    {
+      "id": "middle",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "middle",
+      "paint": {
+        "fill-color": "#2a6aa0",
+        "fill-opacity": 1.0
+      }
+    },
+    {
+      "id": "shallow-shadow",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "shadow-shallow",
+      "paint": {
+        "fill-color": "#6b7f96",
+        "fill-opacity": 1,
+        "fill-layer-blend": "multiply"
+      }
+    },
+    {
+      "id": "shallow",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "shallow",
+      "paint": {
+        "fill-color": "#5c9fd0",
+        "fill-opacity": 1.0
+      }
+    },
+    {
+      "id": "shallow-bevel",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "bevel-shallow",
+      "paint": {
+        "fill-color": "#ffffff",
+        "fill-opacity": 0.35
+      }
+    },
+    {
+      "id": "land-shadow",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "shadow-land",
+      "paint": {
+        "fill-color": "#4f6075",
+        "fill-opacity": 1,
+        "fill-layer-blend": "multiply"
+      }
+    },
+    {
+      "id": "land",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "land",
+      "paint": {
+        "fill-color": "#f4ecd9",
+        "fill-opacity": 1.0
+      }
+    },
+    {
+      "id": "land-bevel",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "bevel-land",
+      "paint": {
+        "fill-color": "#ffffff",
+        "fill-opacity": 0.9
+      }
+    },
+    {
+      "id": "grooves",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "grooves",
+      "paint": {
+        "fill-color": "#d3c4a6",
+        "fill-opacity": 1.0
+      }
+    },
+    {
+      "id": "groove-shadow",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "shadow-grooves",
+      "paint": {
+        "fill-color": "#5a4a36",
+        "fill-opacity": 0.5
+      }
+    },
+    {
+      "id": "park-shadow",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "shadow-parks",
+      "paint": {
+        "fill-color": "#9c9078",
+        "fill-opacity": 1,
+        "fill-layer-blend": "multiply"
+      }
+    },
+    {
+      "id": "parks",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "parks",
+      "paint": {
+        "fill-color": "#7fb85c",
+        "fill-opacity": 1.0
+      }
+    },
+    {
+      "id": "park-bevel",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "bevel-parks",
+      "paint": {
+        "fill-color": "#e6f5d8",
+        "fill-opacity": 0.7
+      }
+    },
+    {
+      "id": "block-shadow",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "shadow-blocks",
+      "paint": {
+        "fill-color": "#3a3020",
+        "fill-opacity": [
+          "interpolate",
+          [
+            "exponential",
+            1
+          ],
+          [
+            "zoom"
+          ],
+          14.5,
+          0,
+          15.5,
+          0.45
+        ]
+      }
+    },
+    {
+      "id": "blocks",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "blocks",
+      "paint": {
+        "fill-color": "#fffcf4",
+        "fill-opacity": [
+          "interpolate",
+          [
+            "exponential",
+            1
+          ],
+          [
+            "zoom"
+          ],
+          14.5,
+          0,
+          15.5,
+          1
+        ]
+      }
+    },
+    {
+      "id": "block-bevel",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "bevel-blocks",
+      "paint": {
+        "fill-color": "#ffffff",
+        "fill-opacity": [
+          "interpolate",
+          [
+            "exponential",
+            1
+          ],
+          [
+            "zoom"
+          ],
+          14.5,
+          0,
+          15.5,
+          1
+        ]
+      }
+    },
+    {
+      "id": "paper-fibres",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "fibres",
+      "paint": {
+        "fill-color": "#6a5a40",
+        "fill-opacity": 0.09
+      }
+    },
+    {
+      "id": "water-names",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "water_name",
+      "layout": {
+        "text-field": [
+          "get",
+          "name:latin"
+        ],
+        "text-font": [
+          "Noto Sans Italic"
+        ],
+        "text-size": 13,
+        "text-letter-spacing": 0.25
+      },
+      "paint": {
+        "text-color": "#e8f2fa",
+        "text-halo-color": "rgba(29,78,120,0.6)",
+        "text-halo-width": 1
+      }
+    },
+    {
+      "id": "place-names",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "place",
+      "filter": [
+        "in",
+        [
+          "get",
+          "class"
+        ],
+        [
+          "literal",
+          [
+            "city",
+            "town",
+            "suburb",
+            "quarter",
+            "neighbourhood"
+          ]
+        ]
+      ],
+      "layout": {
+        "text-field": [
+          "get",
+          "name:latin"
+        ],
+        "text-font": [
+          "Noto Sans Bold"
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "exponential",
+            1
+          ],
+          [
+            "zoom"
+          ],
+          11,
+          10,
+          16,
+          14
+        ],
+        "text-letter-spacing": 0.12,
+        "text-transform": "uppercase",
+        "text-max-width": 7,
+        "text-padding": 10
+      },
+      "paint": {
+        "text-color": "#3d362c",
+        "text-halo-color": "rgba(243,236,220,0.9)",
+        "text-halo-width": 1.4
+      }
+    }
+  ]
+}

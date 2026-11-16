@@ -1,0 +1,923 @@
+{
+  "version": 8,
+  "name": "Neon",
+  "metadata": {
+    "description": "Tokyo at night in neon: OpenFreeMap's roads and railways drawn into a render target in their own colours, blurred twice into a wide glow and a tight halo beneath white-hot cores; the coastline traced in light, the water's dilation less its erosion; the buildings' edges found by a Laplacian convolution and ramped to violet; under a haze and film grain."
+  },
+  "sources": {
+    "openmaptiles": {
+      "type": "vector",
+      "url": "https://tiles.openfreemap.org/planet"
+    }
+  },
+  "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+  "center": [
+    139.7005,
+    35.6905
+  ],
+  "zoom": 14.2,
+  "pitch": 55,
+  "bearing": -25,
+  "sky": {
+    "sky-color": "#0b0630",
+    "horizon-color": "#40104a",
+    "fog-color": "#1a0a35",
+    "fog-ground-blend": 0.4,
+    "horizon-fog-blend": 0.6,
+    "sky-horizon-blend": 0.6
+  },
+  "dev.sargunv.orbis:targets": [
+    {
+      "id": "lights"
+    },
+    {
+      "id": "water"
+    },
+    {
+      "id": "water-in"
+    },
+    {
+      "id": "coast"
+    },
+    {
+      "id": "blocks"
+    },
+    {
+      "id": "outlines"
+    },
+    {
+      "id": "grain"
+    },
+    {
+      "id": "film"
+    }
+  ],
+  "layers": [
+    {
+      "id": "night",
+      "type": "background",
+      "paint": {
+        "background-color": "#06051a"
+      }
+    },
+    {
+      "id": "parks",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "park",
+      "paint": {
+        "fill-color": "#08201e",
+        "fill-opacity": 0.9
+      }
+    },
+    {
+      "id": "water",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "water",
+      "paint": {
+        "fill-color": "#030c1e"
+      }
+    },
+    {
+      "id": "draw-water",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "water",
+      "dev.sargunv.orbis:destination-target": "water",
+      "paint": {
+        "fill-color": "#fff",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "water-shrunk",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "water",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "erode",
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            10,
+            1,
+            16,
+            2
+          ]
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "water-in"
+    },
+    {
+      "id": "coastline",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "water",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "dilate",
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            10,
+            1,
+            16,
+            2
+          ]
+        },
+        {
+          "type": "combine",
+          "target": "water-in",
+          "mode": "subtract"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "coast"
+    },
+    {
+      "id": "coast-bloom",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "coast",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "blur",
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            10,
+            4,
+            16,
+            9
+          ]
+        },
+        {
+          "type": "color",
+          "value": "#00c8ff"
+        },
+        {
+          "type": "opacity",
+          "value": 0.9
+        }
+      ]
+    },
+    {
+      "id": "coast-line",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "coast",
+      "paint": {
+        "fill-color": "#9ff8ff",
+        "fill-opacity": 0.95
+      }
+    },
+    {
+      "id": "buildings",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "building",
+      "minzoom": 13,
+      "paint": {
+        "fill-color": "#0f0c2c",
+        "fill-opacity": [
+          "interpolate",
+          [
+            "exponential",
+            1
+          ],
+          [
+            "zoom"
+          ],
+          13,
+          0,
+          14,
+          1
+        ]
+      }
+    },
+    {
+      "id": "draw-blocks",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "building",
+      "dev.sargunv.orbis:destination-target": "blocks",
+      "minzoom": 13.5,
+      "paint": {
+        "fill-color": "#fff",
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "block-edges",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "blocks",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "convolve",
+          "kernel": [
+            -1,
+            -1,
+            -1,
+            -1,
+            8,
+            -1,
+            -1,
+            -1,
+            -1
+          ]
+        },
+        {
+          "type": "luminance"
+        },
+        {
+          "type": "threshold",
+          "cutoff": 60
+        },
+        {
+          "type": "color",
+          "value": "#c48cff"
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "outlines"
+    },
+    {
+      "id": "block-glow",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "outlines",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "blur",
+          "size": 3
+        },
+        {
+          "type": "opacity",
+          "value": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            13.5,
+            0,
+            15,
+            0.4,
+            17,
+            0.7
+          ]
+        }
+      ]
+    },
+    {
+      "id": "block-lines",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "outlines",
+      "paint": {
+        "fill-color": "#e7d2ff",
+        "fill-opacity": [
+          "interpolate",
+          [
+            "exponential",
+            1
+          ],
+          [
+            "zoom"
+          ],
+          13.5,
+          0,
+          15,
+          0.3,
+          17,
+          0.5
+        ]
+      }
+    },
+    {
+      "id": "paint-minor",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "dev.sargunv.orbis:destination-target": "lights",
+      "filter": [
+        "all",
+        [
+          "==",
+          [
+            "geometry-type"
+          ],
+          "LineString"
+        ],
+        [
+          "in",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "literal",
+            [
+              "minor",
+              "service"
+            ]
+          ]
+        ]
+      ],
+      "minzoom": 13,
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#3b3bd6",
+        "line-width": [
+          "interpolate",
+          [
+            "exponential",
+            1.5
+          ],
+          [
+            "zoom"
+          ],
+          12,
+          0.4,
+          14,
+          0.9,
+          18,
+          6
+        ]
+      }
+    },
+    {
+      "id": "paint-mid",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "dev.sargunv.orbis:destination-target": "lights",
+      "filter": [
+        "all",
+        [
+          "==",
+          [
+            "geometry-type"
+          ],
+          "LineString"
+        ],
+        [
+          "in",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "literal",
+            [
+              "secondary",
+              "tertiary"
+            ]
+          ]
+        ]
+      ],
+      "minzoom": 10,
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#a35cff",
+        "line-width": [
+          "interpolate",
+          [
+            "exponential",
+            1.5
+          ],
+          [
+            "zoom"
+          ],
+          10,
+          0.5,
+          14,
+          1.6,
+          18,
+          10
+        ]
+      }
+    },
+    {
+      "id": "paint-primary",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "dev.sargunv.orbis:destination-target": "lights",
+      "filter": [
+        "all",
+        [
+          "==",
+          [
+            "geometry-type"
+          ],
+          "LineString"
+        ],
+        [
+          "in",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "literal",
+            [
+              "primary",
+              "trunk"
+            ]
+          ]
+        ]
+      ],
+      "minzoom": 8,
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#ff7a2e",
+        "line-width": [
+          "interpolate",
+          [
+            "exponential",
+            1.5
+          ],
+          [
+            "zoom"
+          ],
+          8,
+          0.6,
+          14,
+          2.2,
+          18,
+          14
+        ]
+      }
+    },
+    {
+      "id": "paint-motorway",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "dev.sargunv.orbis:destination-target": "lights",
+      "filter": [
+        "all",
+        [
+          "==",
+          [
+            "geometry-type"
+          ],
+          "LineString"
+        ],
+        [
+          "in",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "literal",
+            [
+              "motorway"
+            ]
+          ]
+        ]
+      ],
+      "minzoom": 6,
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#ff2fa8",
+        "line-width": [
+          "interpolate",
+          [
+            "exponential",
+            1.5
+          ],
+          [
+            "zoom"
+          ],
+          6,
+          0.6,
+          14,
+          3,
+          18,
+          18
+        ]
+      }
+    },
+    {
+      "id": "paint-rail",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "dev.sargunv.orbis:destination-target": "lights",
+      "filter": [
+        "all",
+        [
+          "==",
+          [
+            "geometry-type"
+          ],
+          "LineString"
+        ],
+        [
+          "in",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "literal",
+            [
+              "rail"
+            ]
+          ]
+        ]
+      ],
+      "minzoom": 10,
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#ffd23f",
+        "line-width": [
+          "interpolate",
+          [
+            "exponential",
+            1.5
+          ],
+          [
+            "zoom"
+          ],
+          10,
+          0.5,
+          14,
+          1.5,
+          18,
+          6
+        ]
+      }
+    },
+    {
+      "id": "glow-wide",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "lights",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "blur",
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            10,
+            6,
+            16,
+            14
+          ]
+        },
+        {
+          "type": "opacity",
+          "value": 0.85
+        }
+      ]
+    },
+    {
+      "id": "glow-tight",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "lights",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "blur",
+          "size": [
+            "interpolate",
+            [
+              "exponential",
+              1
+            ],
+            [
+              "zoom"
+            ],
+            10,
+            1.5,
+            16,
+            3
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lights-sharp",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "lights",
+      "dev.sargunv.orbis:operations": []
+    },
+    {
+      "id": "core-primary",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "filter": [
+        "all",
+        [
+          "==",
+          [
+            "geometry-type"
+          ],
+          "LineString"
+        ],
+        [
+          "in",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "literal",
+            [
+              "primary",
+              "trunk"
+            ]
+          ]
+        ]
+      ],
+      "minzoom": 8,
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#ffe8f6",
+        "line-width": [
+          "interpolate",
+          [
+            "exponential",
+            1.5
+          ],
+          [
+            "zoom"
+          ],
+          8,
+          0.24,
+          14,
+          0.8800000000000001,
+          18,
+          5.6000000000000005
+        ],
+        "line-opacity": 0.95
+      }
+    },
+    {
+      "id": "core-motorway",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "filter": [
+        "all",
+        [
+          "==",
+          [
+            "geometry-type"
+          ],
+          "LineString"
+        ],
+        [
+          "in",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "literal",
+            [
+              "motorway"
+            ]
+          ]
+        ]
+      ],
+      "minzoom": 6,
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#ffffff",
+        "line-width": [
+          "interpolate",
+          [
+            "exponential",
+            1.5
+          ],
+          [
+            "zoom"
+          ],
+          6,
+          0.24,
+          14,
+          1.2000000000000002,
+          18,
+          7.2
+        ],
+        "line-opacity": 0.95
+      }
+    },
+    {
+      "id": "draw-grain",
+      "type": "background",
+      "dev.sargunv.orbis:destination-target": "grain",
+      "paint": {
+        "background-color": "#000",
+        "background-opacity": 0.5
+      }
+    },
+    {
+      "id": "grain-noise",
+      "type": "dev.sargunv.orbis.image-process",
+      "dev.sargunv.orbis:source-target": "grain",
+      "dev.sargunv.orbis:operations": [
+        {
+          "type": "noise",
+          "size": 1.1,
+          "amount": 0.5
+        },
+        {
+          "type": "threshold",
+          "cutoff": 150
+        }
+      ],
+      "dev.sargunv.orbis:destination-target": "film"
+    },
+    {
+      "id": "film-grain",
+      "type": "fill",
+      "dev.sargunv.orbis:source-target": "film",
+      "paint": {
+        "fill-color": "#ffffff",
+        "fill-opacity": 0.035
+      }
+    },
+    {
+      "id": "place-names",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "place",
+      "filter": [
+        "in",
+        [
+          "get",
+          "class"
+        ],
+        [
+          "literal",
+          [
+            "city",
+            "town",
+            "suburb"
+          ]
+        ]
+      ],
+      "minzoom": 0,
+      "layout": {
+        "text-field": [
+          "get",
+          "name:latin"
+        ],
+        "text-font": [
+          "Noto Sans Bold"
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "exponential",
+            1
+          ],
+          [
+            "zoom"
+          ],
+          10,
+          12,
+          16,
+          18
+        ],
+        "text-letter-spacing": 0.2,
+        "text-transform": "uppercase",
+        "text-max-width": 8,
+        "text-padding": 12
+      },
+      "paint": {
+        "text-color": "#ffd6f0",
+        "text-halo-color": "rgba(255,47,168,0.55)",
+        "text-halo-width": 2,
+        "text-halo-blur": 2
+      }
+    },
+    {
+      "id": "neighbourhood-names",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "place",
+      "filter": [
+        "in",
+        [
+          "get",
+          "class"
+        ],
+        [
+          "literal",
+          [
+            "quarter",
+            "neighbourhood"
+          ]
+        ]
+      ],
+      "minzoom": 15.5,
+      "layout": {
+        "text-field": [
+          "get",
+          "name:latin"
+        ],
+        "text-font": [
+          "Noto Sans Bold"
+        ],
+        "text-size": 12,
+        "text-letter-spacing": 0.2,
+        "text-transform": "uppercase",
+        "text-max-width": 8,
+        "text-padding": 12
+      },
+      "paint": {
+        "text-color": "#ffd6f0",
+        "text-halo-color": "rgba(255,47,168,0.55)",
+        "text-halo-width": 2,
+        "text-halo-blur": 2
+      }
+    },
+    {
+      "id": "stations",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "poi",
+      "filter": [
+        "all",
+        [
+          "==",
+          [
+            "get",
+            "class"
+          ],
+          "railway"
+        ],
+        [
+          "has",
+          "name"
+        ]
+      ],
+      "minzoom": 13,
+      "layout": {
+        "text-field": [
+          "get",
+          "name:latin"
+        ],
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-size": 11,
+        "text-letter-spacing": 0.1
+      },
+      "paint": {
+        "text-color": "#fff4c2",
+        "text-halo-color": "rgba(255,210,63,0.5)",
+        "text-halo-width": 1.6,
+        "text-halo-blur": 1.5
+      }
+    }
+  ]
+}
