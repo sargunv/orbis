@@ -12,6 +12,7 @@ import mlt from "./data/tokyo-mlt.json?url";
 // terrain, a projection, a CRS), and `demoStyle` for the bench and
 // measurement pages.
 import mvt from "./data/tokyo-mvt.json?url";
+import watercolor from "./data/watercolor.json?url";
 
 /** OpenFreeMap's live Liberty style over the planet: the benches' and measurements' live style. */
 export const LIVE = "https://tiles.openfreemap.org/styles/liberty";
@@ -200,7 +201,21 @@ const LOCAL = {
   "alps-flight.json": alpsFlight,
   "crs/arctic.json": arctic,
   "osm-carto.json": osmCarto,
+  "watercolor.json": watercolor,
 };
+
+/**
+ * A catalogue URL as the page fetches it: a local file as the build emits
+ * it, which it emits only where LOCAL imports it, so one missing from
+ * LOCAL throws here rather than going unfetched on the deployed site.
+ */
+function local(url) {
+  if (/^[a-z][a-z\d+.-]*:/i.test(url)) return url;
+  const emitted = LOCAL[url];
+  if (!emitted)
+    throw new Error(`data/scenes.json: add ${url} to LOCAL in styles.js`);
+  return emitted;
+}
 
 /**
  * The picker's catalogue, from data/scenes.json, which orb-demo shows
@@ -212,7 +227,7 @@ export const GROUPS = catalogue.groups.map((group) => ({
   name: group.name,
   scenes: group.scenes.map((scene) => ({
     ...scene,
-    url: LOCAL[scene.url] ?? scene.url,
+    url: local(scene.url),
     ...(scene.flight && { flight: LOCAL[scene.flight].legs }),
     ...(scene.restyle && { restyle: RESTYLES[scene.restyle] }),
   })),
