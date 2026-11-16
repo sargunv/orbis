@@ -455,7 +455,8 @@ fn bands_make_stripes() {
 }
 
 /// Noise with a speed changes with time alone, so the map keeps drawing
-/// while it shows, and stops once it doesn't; still noise idles.
+/// while it shows, at rest but for that, which a wait for the map to
+/// settle takes as settled, and stops once it doesn't; still noise idles.
 #[test]
 fn moving_noise_keeps_the_map_drawing() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
@@ -494,6 +495,12 @@ fn moving_noise_keeps_the_map_drawing() {
     }
     let (a, report) = frame(&mut map, &mut target, time);
     assert!(!report.idle, "a map with moving noise idles");
+    assert!(
+        report.animating,
+        "a loaded map with moving noise isn't animating"
+    );
+    let settled = map.render_until_idle(&mut target, std::time::Duration::from_secs(60));
+    assert!(settled.unwrap().animating);
     let (b, _) = frame(&mut map, &mut target, time + 500.0);
     let (again, _) = frame(&mut map, &mut target, time);
     assert_eq!(a, again, "the same time draws differently");
@@ -508,7 +515,8 @@ fn moving_noise_keeps_the_map_drawing() {
     )
     .unwrap();
     map.edit(&hide).unwrap();
-    common::settle(&mut map, &mut target);
+    let report = (map.render_until_idle(&mut target, std::time::Duration::from_secs(60))).unwrap();
+    assert!(report.idle && !report.animating);
     // Still noise idles, and draws the same at any time.
     let mut still = map_of(&style(0.0));
     common::settle(&mut still, &mut target);

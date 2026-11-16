@@ -101,6 +101,11 @@ pub struct FrameReport {
     /// Nothing is loading: the style, its sources and every tile the view
     /// needs have arrived, so the frame is complete.
     pub idle: bool,
+    /// Everything `idle` waits for is done, but the style's moving
+    /// image-process noise changes every frame a continuous map draws, so
+    /// it never idles: the frames to come differ by time alone. A tool
+    /// that waits for a map to settle takes this as settled.
+    pub animating: bool,
     /// As `idle`, but fades may still run: labels are placed for this
     /// view and cross-fades need only time (GL JS `loaded()`).
     pub loaded: bool,
@@ -2063,8 +2068,7 @@ impl Map {
                 let camera = crate::paint::camera_inputs(self.camera.state());
                 crate::targets::animates(&plan.style, &plan.targets, zoom, camera)
             });
-        report.idle = report.loaded
-            && !animating
+        let rests = report.loaded
             && !self.drape_refused
             && !self.terrain_waits
             && !redrew.redrew
@@ -2074,6 +2078,8 @@ impl Map {
             && !self.root.running()
             && !(self.style.as_ref()).is_some_and(|s| s.states.fading(self.shader_time()))
             && now >= self.image_fades_until;
+        report.idle = rests && !animating;
+        report.animating = rests && animating;
         self.source_events();
 
         let frame = self.frame_block(
@@ -2306,6 +2312,7 @@ impl Map {
         report.compiling = report.idle && report.frame.waited && report.frame.pipelines_pending > 0;
         report.loaded &= !report.frame.waited;
         report.idle &= !report.frame.waited;
+        report.animating &= !report.frame.waited;
         // Idle once the camera rests too. DEM data that arrived after the
         // camera advanced may move it onto the ground it lands on: then
         // this frame isn't a rest.
@@ -2315,6 +2322,7 @@ impl Map {
         self.events
             .frame(report.loaded, report.settled && !moving && !held);
         report.idle &= !moving;
+        report.animating &= !moving;
         self.globe_warps.end_frame();
         report.scene = renderer.stats();
         report.memory = self.memory(renderer);

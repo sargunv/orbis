@@ -319,7 +319,7 @@ pub(crate) fn run(
             now += FRAME.as_secs_f64() * 1000.0;
             let (report, _) = frame(&mut map, &mut target, now)?;
             warnings.extend(crate::take_warnings(&mut map));
-            if report.idle || clock::now() - ended > SETTLE_TIMEOUT {
+            if report.idle || report.animating || clock::now() - ended > SETTLE_TIMEOUT {
                 break;
             }
             std::thread::sleep(FRAME);

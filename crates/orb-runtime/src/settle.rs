@@ -4,7 +4,9 @@
 use crate::{FrameReport, Map};
 
 /// A still's frames so far: it has settled after two idle frames in a
-/// row, the second drawing what the first's replies brought.
+/// row, the second drawing what the first's replies brought. A
+/// continuous map whose noise moves never idles: frames at rest but for
+/// that ([`FrameReport::animating`]) count as idle.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Settle {
     /// Whether the last frame was idle.
@@ -19,7 +21,7 @@ impl Settle {
         if let Some(message) = map.style_error() {
             return Err(message.to_string());
         }
-        let idle = report.is_some_and(|r| r.idle);
+        let idle = report.is_some_and(|r| r.idle || r.animating);
         let settled = idle && self.idle;
         self.idle = idle;
         Ok(settled)

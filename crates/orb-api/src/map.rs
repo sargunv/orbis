@@ -913,7 +913,8 @@ impl Map {
 
     /// Draws frames into `target` until the map is idle (its loads,
     /// pipelines, fades and camera motion done, and a last frame drawing
-    /// what the one before brought), waiting for data between frames, and
+    /// what the one before brought), or at rest but for moving noise
+    /// ([`FrameReport::animating`]), waiting for data between frames, and
     /// returns the last frame's report. Frames are timed on the runtime's
     /// clock. For tools and tests: hosts draw on their display link. An
     /// error after `timeout`.
@@ -1215,7 +1216,7 @@ impl Map {
                 .map_err(Error::InvalidArgument)?;
             match report {
                 Some(report) if settled => return Ok(Some(report)),
-                Some(report) if report.idle => {}
+                Some(report) if report.idle || report.animating => {}
                 _ => return Ok(None),
             }
         }

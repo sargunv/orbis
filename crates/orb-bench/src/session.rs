@@ -647,7 +647,9 @@ fn run_session(
                 ));
             }
             Some(end) if t > end && inputs.is_empty() => {
-                if frames.last().is_some_and(|f| f.report.idle && f.t > end) {
+                if (frames.last())
+                    .is_some_and(|f| (f.report.idle || f.report.animating) && f.t > end)
+                {
                     settled = Some(frames.last().expect("checked").t - end);
                     break;
                 }
