@@ -52,9 +52,7 @@ pub(crate) struct StylePlan {
     /// ([`orb_style::Layer::layout_group`]): the group's leader.
     pub(crate) layout_leaders: Vec<Option<usize>>,
     /// What the style draws through render targets, by node.
-    pub(crate) targets: orb_render::TargetPlan,
-    /// The image-process layers of `targets`' processes, by index.
-    pub(crate) processes: Vec<usize>,
+    pub(crate) targets: crate::targets::Routes,
 }
 
 /// A source some node draws from.
@@ -408,7 +406,7 @@ impl StylePlan {
             });
         }
 
-        let (targets, processes) = crate::targets::plan(&style, &nodes, &mut warn);
+        let targets = crate::targets::plan(&style, &nodes, &mut warn);
         let camera_layers: Vec<usize> = (style.layers.iter().enumerate())
             .filter(|(_, l)| {
                 l.slots()
@@ -434,7 +432,6 @@ impl StylePlan {
             camera_layers,
             layout_leaders,
             targets,
-            processes,
         }
     }
 

@@ -447,7 +447,7 @@ fn write_paint(
         && style.paint.fade == Some(crossfade);
     style.paint.written = Some((zoom, bearing, draping));
     style.paint.fade = Some(crossfade);
-    for (process, &layer) in plan.processes.iter().enumerate() {
+    for (process, layer) in plan.targets.layers().enumerate() {
         let layer = &plan.style.layers[layer];
         renderer.set_process_visible(process as u32, layer.is_visible_at(zoom));
         let ops = crate::targets::ops_at(&plan.style, layer, zoom);

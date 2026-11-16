@@ -1,6 +1,7 @@
 //! Render targets (the `dev.sargunv.orbis:targets` preview): the style's
-//! layers that draw into targets, read them and draw through them, as the
-//! renderer's [`TargetPlan`].
+//! layers that draw into targets, read them and draw through them. The
+//! style plan, which the tile jobs share, holds their [`Routes`]; the map
+//! makes the renderer's [`TargetPlan`] of them.
 
 use orb_render::{CombineMode, ProcessOp, ProcessPlan, TargetPlan};
 use orb_style::{Combine, Gradient, LayerType, Operation, Style};
@@ -11,14 +12,65 @@ use crate::style::NodePlan;
 /// naming an undeclared target draws into or through.
 const NOWHERE: u32 = u32::MAX;
 
-/// The style's target plan for `nodes`, and the layer of each process,
-/// warning (by layer index) of targets it doesn't declare and of
-/// image-process layers that read what they write.
+/// What the style draws through render targets, by node and target index.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Routes {
+    pub(crate) targets: u32,
+    /// The target each node draws into, by node ([`NOWHERE`] for one the
+    /// style doesn't declare).
+    pub(crate) draws: Vec<Option<u32>>,
+    /// The target each node (a fill) draws through, by node.
+    pub(crate) masks: Vec<Option<u32>>,
+    /// The image-process layers that draw, in style order.
+    pub(crate) processes: Vec<Route>,
+}
+
+/// An image-process layer's place among the nodes and the targets it reads
+/// and writes.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Route {
+    /// The style layer.
+    pub(crate) layer: usize,
+    /// It draws before node `at`.
+    pub(crate) at: u32,
+    pub(crate) source: u32,
+    pub(crate) destination: Option<u32>,
+    /// Every target it reads: its source and those it combines with.
+    reads: Vec<u32>,
+}
+
+impl Routes {
+    /// The image-process layers, in style order.
+    pub(crate) fn layers(&self) -> impl Iterator<Item = usize> + '_ {
+        self.processes.iter().map(|p| p.layer)
+    }
+
+    /// The renderer's plan, with each process's operations at zoom 0 until
+    /// a frame's paint gives them at its own.
+    pub(crate) fn render_plan(&self, style: &Style) -> TargetPlan {
+        TargetPlan {
+            targets: self.targets,
+            draws: self.draws.clone(),
+            masks: self.masks.clone(),
+            processes: (self.processes.iter())
+                .map(|p| ProcessPlan {
+                    at: p.at,
+                    source: p.source,
+                    destination: p.destination,
+                    ops: ops_at(style, &style.layers[p.layer], 0.0),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The style's routes for `nodes`, warning (by layer index) of targets it
+/// doesn't declare and of image-process layers that read what they write.
 pub(crate) fn plan(
     style: &Style,
     nodes: &[NodePlan],
     warn: &mut impl FnMut(usize, &str),
-) -> (TargetPlan, Vec<usize>) {
+) -> Routes {
     let layers = &style.layers;
     let uses_targets = layers
         .iter()
@@ -51,7 +103,6 @@ pub(crate) fn plan(
         .map(|n| resolve(n.layer, layers[n.layer].source_target.as_deref(), warn))
         .collect();
     let mut processes = Vec::new();
-    let mut process_layers = Vec::new();
     for (l, layer) in layers.iter().enumerate() {
         if layer.ty != LayerType::ImageProcess {
             continue;
@@ -64,41 +115,32 @@ pub(crate) fn plan(
         if source == NOWHERE || destination == Some(NOWHERE) {
             continue;
         }
+        let mut reads = vec![source];
         for op in &layer.operations {
             if let Operation::Combine { target, .. } = op {
-                resolve(l, Some(target), warn);
+                reads.extend(resolve(l, Some(target), warn).filter(|&t| t != NOWHERE));
             }
         }
-        processes.push(ProcessPlan {
+        processes.push(Route {
+            layer: l,
             at: nodes
                 .iter()
                 .position(|n| n.layer > l)
                 .unwrap_or(nodes.len()) as u32,
             source,
             destination,
-            ops: ops_at(style, layer, 0.0),
+            reads,
         });
-        process_layers.push(l);
     }
     // A process whose output reaches what it reads draws nothing: of the
     // targets processes write from others, those still left once every
     // target nothing leads into is taken away lie on such a loop.
     let targets = style.targets.len();
-    let reads = |p: &ProcessPlan| {
-        let others = p.ops.iter().filter_map(|op| match *op {
-            ProcessOp::Combine { target, .. } => Some(target),
-            _ => None,
-        });
-        std::iter::once(p.source)
-            .chain(others)
-            .filter(|&t| t != NOWHERE)
-            .collect::<Vec<_>>()
-    };
     let mut left = vec![true; targets];
     loop {
         let fed = |t: usize| {
             (processes.iter()).any(|p| {
-                p.destination == Some(t as u32) && reads(p).iter().any(|&r| left[r as usize])
+                p.destination == Some(t as u32) && p.reads.iter().any(|&r| left[r as usize])
             })
         };
         let Some(free) = (0..targets).find(|&t| left[t] && !fed(t)) else {
@@ -106,24 +148,20 @@ pub(crate) fn plan(
         };
         left[free] = false;
     }
-    let mut kept = Vec::new();
-    for (p, l) in processes.into_iter().zip(process_layers) {
+    processes.retain(|p| {
         let looped = p.destination.is_some_and(|d| left[d as usize])
-            && reads(&p).iter().any(|&r| left[r as usize]);
+            && p.reads.iter().any(|&r| left[r as usize]);
         if looped {
-            warn(l, "it reads what it draws into; it draws nothing");
-        } else {
-            kept.push((p, l));
+            warn(p.layer, "it reads what it draws into; it draws nothing");
         }
-    }
-    let (processes, process_layers) = kept.into_iter().unzip();
-    let plan = TargetPlan {
+        !looped
+    });
+    Routes {
         targets: targets as u32,
         draws,
         masks,
         processes,
-    };
-    (plan, process_layers)
+    }
 }
 
 /// Image-process layer `layer`'s operations at `zoom`, for the renderer:
@@ -222,8 +260,8 @@ pub(crate) fn ops_at(style: &Style, layer: &orb_style::Layer, zoom: f64) -> Vec<
 
 /// Whether an image-process layer the style draws shows at `zoom` with
 /// noise that moves: frames then change with time alone.
-pub(crate) fn animates(style: &Style, processes: &[usize], zoom: f64) -> bool {
-    (processes.iter().map(|&l| &style.layers[l]))
+pub(crate) fn animates(style: &Style, routes: &Routes, zoom: f64) -> bool {
+    (routes.layers().map(|l| &style.layers[l]))
         .filter(|layer| layer.is_visible_at(zoom))
         .flat_map(|layer| &layer.operations)
         .any(|op| matches!(op, Operation::Noise { speed, .. } if speed.evaluate(zoom) > 0.0))
@@ -279,8 +317,9 @@ mod tests {
             .map(|p| (p.at, p.source, p.destination))
             .collect();
         assert_eq!(routes, [(3, 0, Some(1)), (3, 1, None)]);
-        assert_eq!(t.processes[0].ops, [ProcessOp::Blur { size: 2.0 }]);
-        assert_eq!(plan.processes, [2, 3]);
+        let ops = &t.render_plan(&plan.style).processes[0].ops;
+        assert_eq!(ops, &[ProcessOp::Blur { size: 2.0 }]);
+        assert_eq!(t.layers().collect::<Vec<_>>(), [2, 3]);
         assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
     }
 
@@ -299,7 +338,7 @@ mod tests {
         );
         assert_eq!(plan.targets.draws, [Some(NOWHERE), Some(NOWHERE)]);
         // The loop's two draw nothing; what reads it from outside draws.
-        assert_eq!(plan.processes, [3]);
+        assert_eq!(plan.targets.layers().collect::<Vec<_>>(), [3]);
         assert_eq!(plan.warnings.len(), 3, "{:?}", plan.warnings);
     }
 }
