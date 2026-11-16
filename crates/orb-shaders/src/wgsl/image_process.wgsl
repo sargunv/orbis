@@ -5,14 +5,14 @@
 //
 // A pass samples its input through a kernel: a copy, one axis of a
 // Gaussian blur, a square convolution, one axis of a dilation or erosion,
-// or a move. The blur's second axis may weigh the pass's original against
+// a move, or a move of each colour channel apart. The blur's second axis may weigh the pass's original against
 // the blur (`sharpen`, `high-pass`). Then it applies its pointwise
 // operations in order (`pointwise`), which may read one colour ramp and
 // one other target.
 
 struct Process {
     // x: the kernel (0 copy, 1 blur, 2 convolve, 3 dilate or erode, 4
-    // move); y: a blur's linear taps each side, a convolution's side, or a
+    // move, 5 split); y: a blur's linear taps each side, a convolution's side, or a
     // dilation's reach in texels; z: how a blur combines with the original
     // (0 the blur alone, 1 sharpen, 2 high-pass), or 1 to erode; w:
     // sharpen's amount.
@@ -22,12 +22,16 @@ struct Process {
     // pixel from, in uv.
     step: vec4<f32>,
     // A blur's centre weight, then (offset, weight) pairs of linear taps,
-    // in steps; or a convolution's weights, row by row.
+    // in steps; or a convolution's weights, row by row; or where a split
+    // takes red, green and blue from, in uv, then 1 to scale those with
+    // the distance from the view's centre.
     weights: array<vec4<f32>, 16>,
-    // x: how many pointwise operations follow; y: the ramp's stops.
+    // x: how many pointwise operations follow; y: the ramp's stops; zw:
+    // the view's centre in pixels (the source may be a blank of another
+    // size).
     count: vec4<f32>,
-    // Each pointwise operation as two vectors (`pointwise`).
-    ops: array<vec4<f32>, 16>,
+    // Each pointwise operation as three vectors (`pointwise`).
+    ops: array<vec4<f32>, 24>,
     // Normalized device coordinates on the view to the camera-relative
     // world on the plane, homogeneous: noise is fixed to the map.
     unproject: array<vec4<f32>, 3>,
@@ -135,6 +139,31 @@ fn morph(position: vec2<f32>) -> vec4<f32> {
     return c;
 }
 
+// Each channel from its own place, coverage the most of the three: a
+// premultiplied channel is within its own sample's coverage, so within
+// that.
+fn split(uv: vec2<f32>, centred: vec2<f32>) -> vec4<f32> {
+    var scale = 1.0;
+    if weight(6u) > 0.5 {
+        scale = length(centred) / max(length(process.count.zw), 1.0);
+    }
+    let r = sample_at(uv + vec2<f32>(weight(0u), weight(1u)) * scale);
+    let g = sample_at(uv + vec2<f32>(weight(2u), weight(3u)) * scale);
+    let b = sample_at(uv + vec2<f32>(weight(4u), weight(5u)) * scale);
+    return vec4<f32>(r.r, g.g, b.b, max(max(r.a, g.a), b.a));
+}
+
+// Stripes of a band pattern a period apart, each `width` of one, box
+// filtered over `fw` periods about `x`: what of a pixel they cover.
+fn bands(x: f32, width: f32, fw: f32) -> f32 {
+    let w = max(fw, 0.0001);
+    let lo = x - w * 0.5;
+    let hi = x + w * 0.5;
+    let below_hi = floor(hi) * width + min(fract(hi), width);
+    let below_lo = floor(lo) * width + min(fract(lo), width);
+    return clamp((below_hi - below_lo) / w, 0.0, 1.0);
+}
+
 fn ramp(t: f32) -> vec4<f32> {
     let stops = u32(process.count.y);
     var c = process.ramp_colors[0];
@@ -206,7 +235,8 @@ fn world_at(uv: vec2<f32>) -> vec2<f32> {
     return h.xy / h.z;
 }
 
-// A pointwise operation, as two vectors (`a`, `b`): `a.x` names it.
+// A pointwise operation on `c`, as three vectors (`a`, `b`, `d`): `a.x`
+// names it.
 // - select (1): `a.y` the tolerance (0–1), `b.rgb` the colour;
 // - noise (2): `a.y` the amount, `a.z` how far the finer of its two
 //   octaves has faded in, `a.w` the coarser's lattice points per world
@@ -217,8 +247,22 @@ fn world_at(uv: vec2<f32>) -> vec2<f32> {
 // - color (6): `b` the colour, straight;
 // - luminance (7);
 // - ramp (8): coverage through the pass's ramp;
-// - combine (9): `a.y` the mode (`combine`) with the pass's other target.
-fn pointwise(c: vec4<f32>, a: vec4<f32>, b: vec4<f32>, world: vec2<f32>, uv: vec2<f32>) -> vec4<f32> {
+// - combine (9): `a.y` the mode (`combine`) with the pass's other target;
+// - moving noise (10): as noise, each octave the mean of two lattices
+//   sliding apart, `b` and `d` their offsets;
+// - gradient (11): `a.y` 1 for radial; `b.xy` a linear one's direction
+//   over its length in pixels, `b.z` a radial one's over the corners';
+// - bands (12): `a.y` the count, `a.z` the width.
+// `centred` is the pixel's place from the view's centre, in pixels.
+fn pointwise(
+    c: vec4<f32>,
+    a: vec4<f32>,
+    b: vec4<f32>,
+    d: vec4<f32>,
+    world: vec2<f32>,
+    uv: vec2<f32>,
+    centred: vec2<f32>,
+) -> vec4<f32> {
     switch u32(a.x) {
         case 1u: {
             let rgb = unpremultiplied(c);
@@ -254,6 +298,22 @@ fn pointwise(c: vec4<f32>, a: vec4<f32>, b: vec4<f32>, world: vec2<f32>, uv: vec
         case 9u: {
             return combine(c, u32(a.y), uv);
         }
+        case 10u: {
+            let p = world * a.w;
+            let coarse = gradient_noise(p + b.xy) + gradient_noise(p + d.xy);
+            let fine = gradient_noise(p * 2.0 + b.zw) + gradient_noise(p * 2.0 + d.zw);
+            return with_coverage(c, c.a + a.y * mix(coarse, fine, a.z) * 0.70710678);
+        }
+        case 11u: {
+            let linear = dot(centred, b.xy) + 0.5;
+            let radial = length(centred) * b.z;
+            return with_coverage(c, select(linear, radial, a.y > 0.5));
+        }
+        case 12u: {
+            let x = c.a * a.y;
+            let covered = bands(x, a.z, fwidth(x));
+            return with_coverage(c, select(0.0, covered, c.a > 0.0));
+        }
         default: {
             return c;
         }
@@ -262,6 +322,7 @@ fn pointwise(c: vec4<f32>, a: vec4<f32>, b: vec4<f32>, world: vec2<f32>, uv: vec
 
 @fragment
 fn fs_process(in: ProcessOut) -> @location(0) vec4<f32> {
+    let centred = in.position.xy - process.count.zw;
     var c: vec4<f32>;
     switch u32(process.kernel.x) {
         case 1u: {
@@ -276,6 +337,9 @@ fn fs_process(in: ProcessOut) -> @location(0) vec4<f32> {
         case 4u: {
             c = sample_at(in.uv + process.step.zw);
         }
+        case 5u: {
+            c = split(in.uv, centred);
+        }
         default: {
             c = textureLoad(input, vec2<i32>(in.position.xy), 0);
         }
@@ -283,7 +347,11 @@ fn fs_process(in: ProcessOut) -> @location(0) vec4<f32> {
     let world = world_at(in.uv);
     let count = u32(process.count.x);
     for (var i = 0u; i < count; i++) {
-        c = pointwise(c, process.ops[2u * i], process.ops[2u * i + 1u], world, in.uv);
+        let at = 3u * i;
+        let a = process.ops[at];
+        let b = process.ops[at + 1u];
+        let d = process.ops[at + 2u];
+        c = pointwise(c, a, b, d, world, in.uv, centred);
     }
     return c;
 }

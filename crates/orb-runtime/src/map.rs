@@ -2055,7 +2055,15 @@ impl Map {
         }
         // Loaded once the drape, too, shows all of it.
         report.loaded = data_loaded && labels_settled && !redrew.deferred;
+        // Moving noise changes every frame a continuous map draws; still
+        // output takes it as it is.
+        let animating = self.mode == RenderMode::Continuous
+            && (self.style.as_ref()).is_some_and(|s| {
+                let plan = s.worker.plan();
+                crate::targets::animates(&plan.style, &plan.processes, zoom)
+            });
         report.idle = report.loaded
+            && !animating
             && !self.drape_refused
             && !self.terrain_waits
             && !redrew.redrew

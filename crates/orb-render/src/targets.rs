@@ -70,9 +70,11 @@ pub enum ProcessOp {
     Blur {
         size: f32,
     },
+    /// `speed` logical pixels a second, 0 for still noise.
     Noise {
         size: f32,
         amount: f32,
+        speed: f32,
     },
     /// `cutoff` 0–255.
     Threshold {
@@ -117,6 +119,23 @@ pub enum ProcessOp {
     Ramp {
         stops: Vec<(f32, [f32; 4])>,
     },
+    /// Each channel's move, right and down, red, green then blue; scaled
+    /// by the distance from the view's centre where `radial`.
+    Split {
+        channels: [[f32; 2]; 3],
+        radial: bool,
+    },
+    /// Radial, or linear along `angle` degrees clockwise from top to
+    /// bottom.
+    Gradient {
+        radial: bool,
+        angle: f32,
+    },
+    /// `width` 0–1.
+    Bands {
+        count: f32,
+        width: f32,
+    },
 }
 
 /// How [`ProcessOp::Combine`] puts another target's image with the one
@@ -141,8 +160,14 @@ pub const MAX_STOPS: usize = 8;
 const MAX_TAPS: usize = 31;
 /// Texels a side a dilation or erosion pass reaches at most.
 const MAX_REACH: f32 = 64.0;
+/// Vectors of four each pointwise operation takes in the uniform.
+const OP_VECTORS: usize = 3;
 /// The uniform's words (`Process` in `image_process.wgsl`).
-const WORDS: usize = 4 + 4 + 64 + 4 + 64 + 12 + 8 + 32;
+const WORDS: usize = 4 + 4 + 64 + 4 + MAX_POINTWISE * OP_VECTORS * 4 + 12 + 8 + 32;
+/// Where the uniform's pointwise operations, unprojection and ramp start.
+const OPS_AT: usize = 76;
+const UNPROJECT_AT: usize = OPS_AT + MAX_POINTWISE * OP_VECTORS * 4;
+const RAMP_AT: usize = UNPROJECT_AT + 12;
 
 /// What a pass samples its input through.
 #[derive(Clone, Debug, PartialEq)]
@@ -170,6 +195,11 @@ enum Kernel {
     Offset {
         translate: [f32; 2],
     },
+    /// Each channel of the input moved by its own offset.
+    Split {
+        channels: [[f32; 2]; 3],
+        radial: bool,
+    },
 }
 
 impl Kernel {
@@ -183,6 +213,7 @@ impl Kernel {
             Kernel::Convolve(_) => 5,
             Kernel::Morph { .. } => 6,
             Kernel::Offset { .. } => 7,
+            Kernel::Split { .. } => 8,
         }
     }
 }
@@ -197,11 +228,20 @@ enum Pointwise {
     Noise {
         size: f32,
         amount: f32,
+        speed: f32,
     },
     Threshold {
         cutoff: f32,
     },
     Invert,
+    Gradient {
+        radial: bool,
+        angle: f32,
+    },
+    Bands {
+        count: f32,
+        width: f32,
+    },
     Opacity {
         value: f32,
     },
@@ -284,7 +324,17 @@ fn steps(ops: &[ProcessOp]) -> Vec<Step> {
     for op in ops {
         let pointwise = match *op {
             ProcessOp::Select { color, tolerance } => Pointwise::Select { color, tolerance },
-            ProcessOp::Noise { size, amount } => Pointwise::Noise { size, amount },
+            ProcessOp::Noise {
+                size,
+                amount,
+                speed,
+            } => Pointwise::Noise {
+                size,
+                amount,
+                speed,
+            },
+            ProcessOp::Gradient { radial, angle } => Pointwise::Gradient { radial, angle },
+            ProcessOp::Bands { count, width } => Pointwise::Bands { count, width },
             ProcessOp::Threshold { cutoff } => Pointwise::Threshold { cutoff },
             ProcessOp::Invert => Pointwise::Invert,
             ProcessOp::Opacity { value } => Pointwise::Opacity { value },
@@ -319,6 +369,10 @@ fn steps(ops: &[ProcessOp]) -> Vec<Step> {
             }
             ProcessOp::Offset { translate } => {
                 steps.push(Step::of(Kernel::Offset { translate }));
+                continue;
+            }
+            ProcessOp::Split { channels, radial } => {
+                steps.push(Step::of(Kernel::Split { channels, radial }));
                 continue;
             }
         };
@@ -1036,6 +1090,14 @@ fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2]) -> [f32; WORDS] {
             )
         }
         Kernel::Offset { .. } => ([4.0, 0.0, 0.0, 0.0], [0.0; 2], Vec::new()),
+        // Where each channel comes from, in uv: back along its move.
+        &Kernel::Split { channels, radial } => {
+            let mut from: Vec<f32> = (channels.iter())
+                .flat_map(|[x, y]| [-x * texel[0], -y * texel[1]])
+                .collect();
+            from.push(f32::from(u8::from(radial)));
+            ([5.0, 0.0, 0.0, 0.0], [0.0; 2], from)
+        }
     };
     words[0..4].copy_from_slice(&kernel);
     words[4..6].copy_from_slice(&step_uv);
@@ -1046,6 +1108,9 @@ fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2]) -> [f32; WORDS] {
     }
     words[8..8 + weights.len().min(64)].copy_from_slice(&weights[..weights.len().min(64)]);
     words[72] = step.pointwise.len() as f32;
+    // The view's pixels from its centre, for gradients across it.
+    let half = [size[0] as f32 * 0.5, size[1] as f32 * 0.5];
+    let to_corner = half[0].hypot(half[1]).max(f32::MIN_POSITIVE);
     // Noise is fixed to the map: lattices of the whole zooms around the
     // camera's, each `size` logical pixels a point at its zoom, the finer
     // fading in towards the next zoom; positions camera-relative, with
@@ -1054,25 +1119,75 @@ fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2]) -> [f32; WORDS] {
     let fade = (frame.zoom - zoom_floor) as f32;
     let px_per_world = 1.0 / f64::from(frame.world_per_px.max(f32::MIN_POSITIVE));
     let floor_px_per_world = px_per_world * (zoom_floor - frame.zoom).exp2();
+    // Moving noise drifts each lattice `speed` logical pixels a second at
+    // the zoom its points are `size` apart: as many of its own points
+    // each `size` pixels, on both octaves, so the finer drifts on as the
+    // coarser once a whole zoom takes it there.
+    let seconds = f64::from(frame.time) / 1000.0;
     for (i, op) in step.pointwise.iter().enumerate() {
-        let (a, b): ([f32; 4], [f32; 4]) = match *op {
+        let none = [0.0; 4];
+        let (a, b, c): ([f32; 4], [f32; 4], [f32; 4]) = match *op {
             Pointwise::Select { color, tolerance } => (
                 [1.0, tolerance / 255.0, 0.0, 0.0],
                 [color[0], color[1], color[2], 0.0],
+                none,
             ),
-            Pointwise::Noise { size, amount } => {
+            Pointwise::Noise {
+                size,
+                amount,
+                speed,
+            } => {
                 let scale = floor_px_per_world / f64::from(size);
-                let offset = |s: f64| frame.camera.map(|c| (c * s).rem_euclid(256.0) as f32);
-                let [x0, y0] = offset(scale);
-                let [x1, y1] = offset(scale * 2.0);
-                ([2.0, amount, fade, scale as f32], [x0, y0, x1, y1])
+                // Each lattice's offset at the camera, slid `drift` of its
+                // points along `direction`.
+                let offset = |s: f64, direction: [f64; 2], drift: f64| {
+                    let at = |k: usize| frame.camera[k] * s + direction[k] * drift;
+                    [0, 1].map(|k| at(k).rem_euclid(256.0) as f32)
+                };
+                let [x0, y0] = offset(scale, [0.0; 2], 0.0);
+                let [x1, y1] = offset(scale * 2.0, [0.0; 2], 0.0);
+                if speed > 0.0 {
+                    let drift = seconds * f64::from(speed) / f64::from(size);
+                    // Two lattices each octave, apart, sliding two ways.
+                    let (one, other) = ([0.8, 0.6], [-0.6, 0.8]);
+                    let [x0, y0] = offset(scale, one, drift);
+                    let [x1, y1] = offset(scale * 2.0, one, drift);
+                    let [x2, y2] = offset(scale, other, drift + 128.0);
+                    let [x3, y3] = offset(scale * 2.0, other, drift + 128.0);
+                    (
+                        [10.0, amount, fade, scale as f32],
+                        [x0, y0, x1, y1],
+                        [x2, y2, x3, y3],
+                    )
+                } else {
+                    ([2.0, amount, fade, scale as f32], [x0, y0, x1, y1], none)
+                }
             }
-            Pointwise::Threshold { cutoff } => ([3.0, cutoff / 255.0, 0.0, 0.0], [0.0; 4]),
-            Pointwise::Invert => ([4.0, 0.0, 0.0, 0.0], [0.0; 4]),
-            Pointwise::Opacity { value } => ([5.0, value, 0.0, 0.0], [0.0; 4]),
-            Pointwise::Color { color } => ([6.0, 0.0, 0.0, 0.0], color),
-            Pointwise::Luminance => ([7.0, 0.0, 0.0, 0.0], [0.0; 4]),
-            Pointwise::Ramp => ([8.0, 0.0, 0.0, 0.0], [0.0; 4]),
+            Pointwise::Threshold { cutoff } => ([3.0, cutoff / 255.0, 0.0, 0.0], none, none),
+            Pointwise::Invert => ([4.0, 0.0, 0.0, 0.0], none, none),
+            Pointwise::Opacity { value } => ([5.0, value, 0.0, 0.0], none, none),
+            Pointwise::Color { color } => ([6.0, 0.0, 0.0, 0.0], color, none),
+            Pointwise::Luminance => ([7.0, 0.0, 0.0, 0.0], none, none),
+            Pointwise::Ramp => ([8.0, 0.0, 0.0, 0.0], none, none),
+            // A linear gradient's direction over the length that takes it
+            // corner to corner; a radial one's scale to the corners.
+            Pointwise::Gradient { radial, angle } => {
+                let (sin, cos) = angle.to_radians().sin_cos();
+                let direction = [-sin, cos];
+                let length = (half[0] * direction[0]).abs() + (half[1] * direction[1]).abs();
+                let per_px = 0.5 / length.max(f32::MIN_POSITIVE);
+                (
+                    [11.0, f32::from(u8::from(radial)), 0.0, 0.0],
+                    [
+                        direction[0] * per_px,
+                        direction[1] * per_px,
+                        1.0 / to_corner,
+                        0.0,
+                    ],
+                    none,
+                )
+            }
+            Pointwise::Bands { count, width } => ([12.0, count, width, 0.0], none, none),
             Pointwise::Combine { mode } => {
                 let mode = match mode {
                     CombineMode::Multiply => 0.0,
@@ -1082,24 +1197,27 @@ fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2]) -> [f32; WORDS] {
                     CombineMode::Over => 4.0,
                     CombineMode::Under => 5.0,
                 };
-                ([9.0, mode, 0.0, 0.0], [0.0; 4])
+                ([9.0, mode, 0.0, 0.0], none, none)
             }
         };
-        let at = 76 + i * 8;
+        let at = OPS_AT + i * OP_VECTORS * 4;
         words[at..at + 4].copy_from_slice(&a);
         words[at + 4..at + 8].copy_from_slice(&b);
+        words[at + 8..at + 12].copy_from_slice(&c);
     }
     if step
         .pointwise
         .iter()
         .any(|p| matches!(p, Pointwise::Noise { .. }))
     {
-        words[140..152].copy_from_slice(&unproject(&frame.view_proj));
+        words[UNPROJECT_AT..RAMP_AT].copy_from_slice(&unproject(&frame.view_proj));
     }
     words[73] = step.ramp.len() as f32;
+    words[74..76].copy_from_slice(&half);
+    let colors_at = RAMP_AT + MAX_STOPS;
     for (i, &(at, color)) in step.ramp.iter().enumerate() {
-        words[152 + i] = at;
-        words[160 + i * 4..164 + i * 4].copy_from_slice(&color);
+        words[RAMP_AT + i] = at;
+        words[colors_at + i * 4..colors_at + i * 4 + 4].copy_from_slice(&color);
     }
     words
 }
@@ -1172,6 +1290,7 @@ mod tests {
             ProcessOp::Noise {
                 size: 2.0,
                 amount: 0.25,
+                speed: 0.0,
             },
             ProcessOp::Threshold { cutoff: 128.0 },
             ProcessOp::Blur { size: 0.0 },
@@ -1223,6 +1342,24 @@ mod tests {
             ]
         );
         assert_eq!(steps(&[]), [Step::of(Kernel::Copy)]);
+        // A split samples its input as a kernel; what follows applies on
+        // its pass.
+        let split = steps(&[
+            ProcessOp::Split {
+                channels: [[2.0, 0.0], [0.0; 2], [-2.0, 0.0]],
+                radial: false,
+            },
+            ProcessOp::Gradient {
+                radial: true,
+                angle: 0.0,
+            },
+            ProcessOp::Bands {
+                count: 4.0,
+                width: 0.5,
+            },
+        ]);
+        assert_eq!(split.len(), 1);
+        assert_eq!(split[0].pointwise.len(), 2);
     }
 
     #[test]

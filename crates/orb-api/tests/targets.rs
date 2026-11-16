@@ -309,3 +309,208 @@ fn a_fill_through_a_target_blends_in_its_mode() {
         pixels - inside - outside
     );
 }
+
+/// A style over a black ground with a white triangle drawn into target
+/// `drawn` and an image-process layer of `ops` reading it, drawn over the
+/// map.
+fn processed_triangle(ops: &str) -> String {
+    let layers = format!(
+        r##"{{"id": "dark", "type": "background", "paint": {{"background-color": "#000000"}}}},
+           {{"id": "shape", "type": "fill", "source": "shape",
+             "dev.sargunv.orbis:destination-target": "drawn", "paint": {{"fill-color": "#ffffff"}}}},
+           {{"id": "process", "type": "dev.sargunv.orbis.image-process",
+             "dev.sargunv.orbis:source-target": "drawn", "dev.sargunv.orbis:operations": [{ops}]}}"##
+    );
+    triangle(r#"{"id": "drawn"}"#, &layers)
+}
+
+/// Channel `channel` of the pixel at (`x`, `y`).
+fn channel(image: &[u8], x: u32, y: u32, channel: usize) -> u8 {
+    image[((y * WIDTH + x) * 4) as usize + channel]
+}
+
+/// A split moves each colour channel by its own offset: red right, blue
+/// left, green not at all. Radial, the moves shrink towards the view's
+/// centre.
+#[test]
+fn a_split_moves_each_channel_apart() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let at = (Geodetic::new(0.0, 0.0), 6.0);
+    let mut draw = |ops: &str| draw(&runtime, &mut target, &processed_triangle(ops), at.0, at.1);
+    let plain = draw("");
+    let split = draw(r#"{"type": "split", "red": [10, 0], "blue": [-10, 0]}"#);
+    let mut off = 0;
+    for y in 4..HEIGHT - 4 {
+        for x in 12..WIDTH - 12 {
+            let expected = [
+                channel(&plain, x - 10, y, 0),
+                channel(&plain, x, y, 1),
+                channel(&plain, x + 10, y, 2),
+            ];
+            let found = [0, 1, 2].map(|c| channel(&split, x, y, c));
+            off += usize::from(largest_difference(&expected, &found) > 2);
+        }
+    }
+    assert_eq!(off, 0, "pixels whose channels didn't move by their offsets");
+    // Where the triangle's left edge crosses the middle row, by its red.
+    let edge = |image: &[u8]| (0..WIDTH).find(|&x| channel(image, x, HEIGHT / 2, 0) > 127);
+    let radial = draw(r#"{"type": "split", "red": [16, 0], "radial": true}"#);
+    let (plain_edge, radial_edge) = (edge(&plain).unwrap(), edge(&radial).unwrap());
+    // The edge is about a quarter of the way from the centre to a corner.
+    let distance =
+        f64::from(WIDTH / 2 - plain_edge) / (f64::from(WIDTH) / 2.0).hypot(f64::from(HEIGHT) / 2.0);
+    let moved = f64::from(radial_edge - plain_edge);
+    assert!(
+        (moved - 16.0 * distance).abs() <= 1.5,
+        "the edge {distance:.2} of the way out moved {moved} pixels of 16"
+    );
+}
+
+/// A linear gradient runs from none at one edge of the view to whole at
+/// the other, along its angle; a radial one from none at the centre to
+/// whole at the corners. It needs nothing drawn beneath it: it reads a
+/// target nothing writes.
+#[test]
+fn a_gradient_runs_across_the_view() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let at = (Geodetic::new(0.0, 0.0), 6.0);
+    let mut draw = |ops: &str| {
+        let style = processed_triangle(ops)
+            .replace(r#"{"id": "drawn"}"#, r#"{"id": "drawn"}, {"id": "empty"}"#)
+            .replace(
+                r#""dev.sargunv.orbis:source-target": "drawn""#,
+                r#""dev.sargunv.orbis:source-target": "empty""#,
+            );
+        draw(&runtime, &mut target, &style, at.0, at.1)
+    };
+    let (last, middle) = (WIDTH - 1, WIDTH / 2);
+    let near = |found: u8, expected: u8| found.abs_diff(expected) <= 2;
+    let down = draw(r#"{"type": "gradient"}"#);
+    for x in [0, middle, last] {
+        let column: Vec<u8> = (0..HEIGHT).map(|y| channel(&down, x, y, 1)).collect();
+        assert!(
+            near(column[0], 0) && near(column[HEIGHT as usize - 1], 255),
+            "column {x} runs {} to {}",
+            column[0],
+            column[HEIGHT as usize - 1]
+        );
+        assert!(
+            near(column[middle as usize], 128),
+            "{}",
+            column[middle as usize]
+        );
+        assert!(
+            column.windows(2).all(|w| w[0] <= w[1]),
+            "column {x} isn't monotonic"
+        );
+    }
+    // Turned a quarter clockwise, it runs right to left.
+    let across = draw(r#"{"type": "gradient", "kind": "linear", "angle": 90}"#);
+    let (right, left) = (
+        channel(&across, last, middle, 1),
+        channel(&across, 0, middle, 1),
+    );
+    assert!(
+        near(right, 0) && near(left, 255),
+        "{right} at the right, {left} at the left"
+    );
+    let radial = draw(r#"{"type": "gradient", "kind": "radial"}"#);
+    let centre = channel(&radial, middle, middle, 1);
+    let corners =
+        [(0, 0), (last, 0), (0, last), (last, last)].map(|(x, y)| channel(&radial, x, y, 1));
+    assert!(
+        near(centre, 0) && corners.iter().all(|&c| near(c, 255)),
+        "{centre} at the centre, {corners:?} at the corners"
+    );
+}
+
+/// Bands over a gradient make as many stripes as they count, each the
+/// width they give.
+#[test]
+fn bands_make_stripes() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let at = (Geodetic::new(0.0, 0.0), 6.0);
+    let mut draw = |ops: &str| draw(&runtime, &mut target, &processed_triangle(ops), at.0, at.1);
+    for (count, width) in [(4, 0.5), (8, 0.25)] {
+        let image = draw(&format!(
+            r#"{{"type": "gradient"}}, {{"type": "bands", "count": {count}, "width": {width}}}"#
+        ));
+        let column: Vec<bool> = (0..HEIGHT)
+            .map(|y| channel(&image, WIDTH / 2, y, 1) > 127)
+            .collect();
+        let stripes = column.windows(2).filter(|w| w[1] && !w[0]).count() + usize::from(column[0]);
+        let covered = column.iter().filter(|&&c| c).count() as f64 / f64::from(HEIGHT);
+        assert_eq!(stripes, count, "{count} bands {width} wide");
+        assert!(
+            (covered - width).abs() < 0.03,
+            "{count} bands {width} wide cover {covered:.3} of the view"
+        );
+    }
+}
+
+/// Noise with a speed changes with time alone, so the map keeps drawing
+/// while it shows, and stops once it doesn't; still noise idles.
+#[test]
+fn moving_noise_keeps_the_map_drawing() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let style = |speed: f64| {
+        processed_triangle(&format!(
+            r#"{{"type": "blur", "size": 8}}, {{"type": "noise", "size": 8, "amount": 0.5, "speed": {speed}}},
+                {{"type": "threshold"}}"#
+        ))
+    };
+    let map_of = |style: &str| {
+        let mut map = Map::new(&runtime, options());
+        map.set_style_json(style).unwrap();
+        map.jump_to(&CameraTarget {
+            center: Some(Geodetic::new(0.0, 0.0)),
+            zoom: Some(6.0),
+            ..CameraTarget::default()
+        });
+        map
+    };
+    // What a map draws at `time`, and whether it was idle.
+    let frame = |map: &mut Map, target: &mut Target, time: f64| {
+        let report = map.render(target, time).unwrap().expect("a frame");
+        (target.read_pixels().unwrap(), report)
+    };
+    let mut map = map_of(&style(40.0));
+    let mut time = 0.0;
+    // Frames until everything has loaded, a few in a row.
+    let mut loaded = 0;
+    while loaded < 3 {
+        let (_, report) = frame(&mut map, &mut target, time);
+        assert!(time < 60_000.0, "the map didn't load");
+        loaded = if report.loaded { loaded + 1 } else { 0 };
+        std::thread::sleep(std::time::Duration::from_millis(16));
+        time += 16.0;
+    }
+    let (a, report) = frame(&mut map, &mut target, time);
+    assert!(!report.idle, "a map with moving noise idles");
+    let (b, _) = frame(&mut map, &mut target, time + 500.0);
+    let (again, _) = frame(&mut map, &mut target, time);
+    assert_eq!(a, again, "the same time draws differently");
+    let changed = a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| p != q).count();
+    assert!(
+        changed > (WIDTH * HEIGHT) as usize / 50,
+        "half a second later, {changed} pixels changed"
+    );
+    // Hidden, the noise no longer keeps the map drawing.
+    let hide = orb_api::Transaction::from_commands(
+        r#"[["setLayoutProperty", "process", "visibility", "none"]]"#,
+    )
+    .unwrap();
+    map.edit(&hide).unwrap();
+    common::settle(&mut map, &mut target);
+    // Still noise idles, and draws the same at any time.
+    let mut still = map_of(&style(0.0));
+    common::settle(&mut still, &mut target);
+    let (a, report) = frame(&mut still, &mut target, 1000.0);
+    assert!(report.idle);
+    let (b, _) = frame(&mut still, &mut target, 5000.0);
+    assert_eq!(a, b, "still noise changed with time");
+}

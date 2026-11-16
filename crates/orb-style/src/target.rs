@@ -28,10 +28,13 @@ pub enum Operation {
         size: Property<f32>,
     },
     /// Moves coverage by up to `amount` (0–1) of gradient noise with
-    /// features `size` across, fixed to the map.
+    /// features `size` across, fixed to the map. With a `speed` (logical
+    /// pixels a second at the zoom its features are `size` across) it
+    /// drifts and changes as time passes: two lattices sliding apart.
     Noise {
         size: Property<f32>,
         amount: Property<f32>,
+        speed: Property<f32>,
     },
     /// Coverage at or above `cutoff` (0–255) becomes whole, the rest none.
     Threshold {
@@ -88,6 +91,38 @@ pub enum Operation {
     Ramp {
         stops: Vec<(f32, Color)>,
     },
+    /// Each colour channel moved by its own `[x, y]` pixels, right and
+    /// down, coverage the most of the three: chromatic aberration. With
+    /// `radial`, the moves scale with the distance from the view's centre,
+    /// none there and whole at its corners, as a lens's.
+    Split {
+        red: Property<[f32; 2]>,
+        green: Property<[f32; 2]>,
+        blue: Property<[f32; 2]>,
+        radial: bool,
+    },
+    /// Coverage replaced by a gradient across the view, 0 to 1, the colour
+    /// kept: fixed to the screen, not the map.
+    Gradient {
+        kind: Gradient,
+    },
+    /// Coverage made `count` antialiased stripes: whole where the fraction
+    /// of coverage times `count` is under `width` (0–1), none elsewhere
+    /// and where nothing covered.
+    Bands {
+        count: Property<f32>,
+        width: Property<f32>,
+    },
+}
+
+/// The shape of an [`Operation::Gradient`].
+#[derive(Clone, Debug)]
+pub enum Gradient {
+    /// Along `angle` degrees, clockwise from top to bottom (90 runs right
+    /// to left), corner to corner.
+    Linear { angle: Property<f32> },
+    /// From the view's centre to its corners.
+    Radial,
 }
 
 /// How [`Operation::Combine`] puts another target's image with the one
@@ -126,7 +161,7 @@ impl Combine {
 
 impl Operation {
     /// The operation names, as `type` gives them.
-    pub const NAMES: [&'static str; 16] = [
+    pub const NAMES: [&'static str; 19] = [
         "select",
         "blur",
         "noise",
@@ -143,5 +178,8 @@ impl Operation {
         "color",
         "luminance",
         "ramp",
+        "split",
+        "gradient",
+        "bands",
     ];
 }

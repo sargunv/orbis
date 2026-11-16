@@ -3,7 +3,7 @@
 //! renderer's [`TargetPlan`].
 
 use orb_render::{CombineMode, ProcessOp, ProcessPlan, TargetPlan};
-use orb_style::{Combine, LayerType, Operation, Style};
+use orb_style::{Combine, Gradient, LayerType, Operation, Style};
 
 use crate::style::NodePlan;
 
@@ -146,9 +146,14 @@ pub(crate) fn ops_at(style: &Style, layer: &orb_style::Layer, zoom: f64) -> Vec<
                 }
             }
             Operation::Blur { size } => ProcessOp::Blur { size: number(size) },
-            Operation::Noise { size, amount } => ProcessOp::Noise {
+            Operation::Noise {
+                size,
+                amount,
+                speed,
+            } => ProcessOp::Noise {
                 size: number(size).max(f32::MIN_POSITIVE),
                 amount: number(amount),
+                speed: number(speed),
             },
             Operation::Threshold { cutoff } => ProcessOp::Threshold {
                 cutoff: number(cutoff),
@@ -188,8 +193,40 @@ pub(crate) fn ops_at(style: &Style, layer: &orb_style::Layer, zoom: f64) -> Vec<
             Operation::Ramp { stops } => ProcessOp::Ramp {
                 stops: stops.iter().map(|(at, c)| (*at, c.straight())).collect(),
             },
+            Operation::Split {
+                red,
+                green,
+                blue,
+                radial,
+            } => ProcessOp::Split {
+                channels: [red, green, blue].map(|c| c.evaluate(zoom)),
+                radial: *radial,
+            },
+            Operation::Gradient { kind } => match kind {
+                Gradient::Linear { angle } => ProcessOp::Gradient {
+                    radial: false,
+                    angle: number(angle),
+                },
+                Gradient::Radial => ProcessOp::Gradient {
+                    radial: true,
+                    angle: 0.0,
+                },
+            },
+            Operation::Bands { count, width } => ProcessOp::Bands {
+                count: number(count),
+                width: number(width),
+            },
         })
         .collect()
+}
+
+/// Whether an image-process layer the style draws shows at `zoom` with
+/// noise that moves: frames then change with time alone.
+pub(crate) fn animates(style: &Style, processes: &[usize], zoom: f64) -> bool {
+    (processes.iter().map(|&l| &style.layers[l]))
+        .filter(|layer| layer.is_visible_at(zoom))
+        .flat_map(|layer| &layer.operations)
+        .any(|op| matches!(op, Operation::Noise { speed, .. } if speed.evaluate(zoom) > 0.0))
 }
 
 #[cfg(test)]

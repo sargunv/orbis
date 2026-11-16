@@ -96,7 +96,8 @@ fn parse_operation(cx: &mut Cx, json: &Json, path: &str) -> Option<Operation> {
     let params: &[&str] = match name.as_str() {
         "select" => &["value", "tolerance"],
         "blur" | "high-pass" | "dilate" | "erode" => &["size"],
-        "noise" | "sharpen" => &["size", "amount"],
+        "noise" => &["size", "amount", "speed"],
+        "sharpen" => &["size", "amount"],
         "threshold" => &["cutoff"],
         "invert" | "luminance" => &[],
         "convolve" => &["kernel"],
@@ -104,6 +105,9 @@ fn parse_operation(cx: &mut Cx, json: &Json, path: &str) -> Option<Operation> {
         "combine" => &["target", "mode"],
         "opacity" | "color" => &["value"],
         "ramp" => &["stops"],
+        "split" => &["red", "green", "blue", "radial"],
+        "gradient" => &["kind", "angle"],
+        "bands" => &["count", "width"],
         _ => {
             cx.error(
                 format!("{path}.type"),
@@ -172,6 +176,13 @@ fn parse_operation(cx: &mut Cx, json: &Json, path: &str) -> Option<Operation> {
                 json,
                 path,
                 &param("amount", NUMBER, "0.25", (0.0, 1.0)),
+                false,
+            ),
+            speed: read(
+                cx,
+                json,
+                path,
+                &param("speed", NUMBER, "0", (0.0, 1024.0)),
                 false,
             ),
         },
@@ -252,6 +263,84 @@ fn parse_operation(cx: &mut Cx, json: &Json, path: &str) -> Option<Operation> {
         }
         "ramp" => Operation::Ramp {
             stops: ramp_stops(cx, json, path)?,
+        },
+        "split" => {
+            let mut channel = |name| {
+                let spec = param(name, PAIR, "[0,0]", (-512.0, 512.0));
+                read(cx, json, path, &spec, false)
+            };
+            let (red, green, blue) = (channel("red"), channel("green"), channel("blue"));
+            let radial = match json.get("radial") {
+                None => Some(false),
+                Some(r) => {
+                    let radial = r.as_bool();
+                    if radial.is_none() {
+                        cx.error(
+                            format!("{path}.radial"),
+                            r.span,
+                            format!("expected a boolean, {r} found"),
+                        );
+                    }
+                    radial
+                }
+            };
+            Operation::Split {
+                red,
+                green,
+                blue,
+                radial: radial?,
+            }
+        }
+        "gradient" => {
+            let kind = match json.get("kind") {
+                None => Some("linear"),
+                Some(k) => {
+                    let kind = k.as_str().filter(|k| ["linear", "radial"].contains(k));
+                    if kind.is_none() {
+                        cx.error(
+                            format!("{path}.kind"),
+                            k.span,
+                            format!("expected one of [linear, radial], {k} found"),
+                        );
+                    }
+                    kind
+                }
+            };
+            match kind? {
+                "linear" => {
+                    let spec = param("angle", NUMBER, "0", (-360.0, 360.0));
+                    Operation::Gradient {
+                        kind: Gradient::Linear {
+                            angle: read(cx, json, path, &spec, false),
+                        },
+                    }
+                }
+                _ => {
+                    // A radial gradient has no angle.
+                    if let Some(m) = members.iter().find(|m| m.key == "angle") {
+                        cx.warn_unknown(path, m);
+                    }
+                    Operation::Gradient {
+                        kind: Gradient::Radial,
+                    }
+                }
+            }
+        }
+        "bands" => Operation::Bands {
+            count: read(
+                cx,
+                json,
+                path,
+                &param("count", NUMBER, "8", (1.0, 256.0)),
+                false,
+            ),
+            width: read(
+                cx,
+                json,
+                path,
+                &param("width", NUMBER, "0.5", (0.0, 1.0)),
+                false,
+            ),
         },
         "convolve" => {
             let Some(kernel) = json.get("kernel") else {
@@ -355,7 +444,11 @@ mod tests {
                    {"type":"offset","translate":[3,-4]},{"type":"dilate","size":2},{"type":"erode","size":1},
                    {"type":"combine","target":"land","mode":"subtract"},{"type":"opacity","value":0.5},
                    {"type":"color","value":"red"},{"type":"luminance"},
-                   {"type":"ramp","stops":[[0,"rgba(0,0,0,0)"],[1,"#fff"]]}]},
+                   {"type":"ramp","stops":[[0,"rgba(0,0,0,0)"],[1,"#fff"]]},
+                   {"type":"noise","size":8,"speed":["interpolate",["linear"],["zoom"],10,4,14,12]},
+                   {"type":"split","red":[2,0],"blue":[-2,1],"radial":true},
+                   {"type":"gradient","kind":"linear","angle":90},{"type":"gradient","kind":"radial"},
+                   {"type":"bands","count":6,"width":0.25}]},
                {"id":"land","type":"fill","dev.sargunv.orbis:source-target":"land",
                  "paint":{"fill-color":"orange"}}"##,
         )
@@ -371,7 +464,7 @@ mod tests {
         assert_eq!(mask.source_target.as_deref(), Some("paint"));
         assert_eq!(mask.destination_target.as_deref(), Some("land"));
         let ops = &mask.operations;
-        assert_eq!(ops.len(), 16);
+        assert_eq!(ops.len(), 21);
         let n = |p: &Property<f32>| p.evaluate(10.0);
         let Operation::Select { value, tolerance } = &ops[0] else {
             panic!("{:?}", ops[0]);
@@ -385,9 +478,8 @@ mod tests {
             panic!("{:?}", ops[1]);
         };
         assert_eq!((size.evaluate(10.0), size.evaluate(14.0)), (2.0, 6.0));
-        assert!(
-            matches!(&ops[2], Operation::Noise { size, amount } if n(size) == 2.0 && n(amount) == 0.25)
-        );
+        assert!(matches!(&ops[2], Operation::Noise { size, amount, speed }
+                if n(size) == 2.0 && n(amount) == 0.25 && n(speed) == 0.0));
         assert!(matches!(&ops[3], Operation::Threshold { cutoff } if n(cutoff) == 128.0));
         assert!(matches!(ops[4], Operation::Invert));
         assert!(
@@ -410,6 +502,37 @@ mod tests {
         assert!(matches!(ops[14], Operation::Luminance));
         assert!(
             matches!(&ops[15], Operation::Ramp { stops } if stops.len() == 2 && stops[1].0 == 1.0)
+        );
+        // A noise's speed may follow the zoom.
+        let Operation::Noise { speed, .. } = &ops[16] else {
+            panic!("{:?}", ops[16]);
+        };
+        assert_eq!((speed.evaluate(10.0), speed.evaluate(14.0)), (4.0, 12.0));
+        let Operation::Split {
+            red,
+            green,
+            blue,
+            radial,
+        } = &ops[17]
+        else {
+            panic!("{:?}", ops[17]);
+        };
+        let pair = |p: &Property<[f32; 2]>| p.evaluate(0.0);
+        assert_eq!(
+            (pair(red), pair(green), pair(blue), *radial),
+            ([2.0, 0.0], [0.0, 0.0], [-2.0, 1.0], true)
+        );
+        assert!(matches!(&ops[18], Operation::Gradient {
+            kind: Gradient::Linear { angle }
+        } if n(angle) == 90.0));
+        assert!(matches!(
+            &ops[19],
+            Operation::Gradient {
+                kind: Gradient::Radial
+            }
+        ));
+        assert!(
+            matches!(&ops[20], Operation::Bands { count, width } if n(count) == 6.0 && n(width) == 0.25)
         );
         assert_eq!(land.source, None);
         assert_eq!(land.source_target.as_deref(), Some("land"));
@@ -482,9 +605,58 @@ mod tests {
                 r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
                     "dev.sargunv.orbis:operations":[{"type":"ramp","stops":[[0.5,"red"],[0.2,"blue"]]}]}"#,
             ),
+            (
+                "",
+                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
+                    "dev.sargunv.orbis:operations":[{"type":"noise","size":4,"speed":-1}]}"#,
+            ),
+            (
+                "",
+                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
+                    "dev.sargunv.orbis:operations":[{"type":"split","red":[1,2,3]}]}"#,
+            ),
+            (
+                "",
+                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
+                    "dev.sargunv.orbis:operations":[{"type":"split","radial":"yes"}]}"#,
+            ),
+            (
+                "",
+                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
+                    "dev.sargunv.orbis:operations":[{"type":"gradient","kind":"conic"}]}"#,
+            ),
+            (
+                "",
+                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
+                    "dev.sargunv.orbis:operations":[{"type":"bands","count":0}]}"#,
+            ),
+            (
+                "",
+                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
+                    "dev.sargunv.orbis:operations":[{"type":"bands","width":2}]}"#,
+            ),
         ] {
             assert!(parse(ON, root, layers).is_err(), "{root} {layers}");
         }
+    }
+
+    #[test]
+    fn a_radial_gradient_has_no_angle() {
+        let style = parse(
+            ON,
+            TARGETS,
+            r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"paint",
+                "dev.sargunv.orbis:operations":[{"type":"gradient","kind":"radial","angle":45}]}"#,
+        )
+        .unwrap();
+        let paths: Vec<&str> = style.warnings.iter().map(|w| w.path.as_str()).collect();
+        assert_eq!(paths, ["layers[0].dev.sargunv.orbis:operations[0].angle"]);
+        assert!(matches!(
+            style.layers[0].operations[..],
+            [Operation::Gradient {
+                kind: Gradient::Radial
+            }]
+        ));
     }
 
     #[test]
