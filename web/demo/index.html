@@ -98,7 +98,19 @@
 
     <div class="sheet scenes" id="scenes" popover aria-label="Choose a map">
       <header class="sheet-head">
-        <h2>Choose a map</h2>
+        <div class="sheet-title">
+          <button
+            class="tool quiet"
+            id="scene-back"
+            type="button"
+            title="All maps"
+            hidden
+          >
+            <span class="icon icon-back" aria-hidden="true"></span
+            ><span class="visually-hidden">All maps</span>
+          </button>
+          <h2 id="scenes-title">Choose a map</h2>
+        </div>
         <button
           class="tool quiet"
           type="button"

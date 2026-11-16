@@ -113,7 +113,12 @@
             "gljs": "GL JS can't draw tile matrix sets",
             "native": "MapLibre Native can't draw tile matrix sets"
           }
-        },
+        }
+      ]
+    },
+    {
+      "name": "Image processing",
+      "scenes": [
         {
           "key": "watercolor",
           "name": "Watercolor",

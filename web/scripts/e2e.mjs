@@ -1478,12 +1478,20 @@ async function switching(browser, server) {
       return { center, zoom, bearing, pitch };
     });
   const start = await camera();
-  const keys = await picking.evaluate(() =>
-    [...document.querySelectorAll("[data-scene]")].map((e) => e.dataset.scene),
+  // Each entry's key and the group whose sub-menu holds it.
+  const groups = await picking.evaluate(() =>
+    Object.fromEntries(
+      [...document.querySelectorAll("[data-scene]")].map((e) => [
+        e.dataset.scene,
+        e.closest("[data-group-scenes]").dataset.groupScenes,
+      ]),
+    ),
   );
+  const keys = Object.keys(groups);
   assert.ok(keys.length > 10 && keys.includes("arctic"), keys.join());
   const pick = async (key) => {
     await picking.click("#scene-button");
+    await picking.click(`[data-group="${groups[key]}"]`);
     await picking.click(`[data-scene="${key}"]`);
     await Promise.race([
       picking

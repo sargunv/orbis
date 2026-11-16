@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 
 use crate::host::Trackpad;
 use crate::options::{Context, Kind, Opt, Panel};
-use crate::scenes::{Catalogue, Flight, Scene};
+use crate::scenes::{Catalogue, Flight, Group, Scene};
 
 /// What the command line asks for.
 pub(crate) struct Launch {
@@ -48,6 +48,10 @@ pub(crate) struct Demo {
     attribution: String,
     toast: Option<(String, bool)>,
     scenes_open: bool,
+    /// The group whose maps the picker shows, or none for the groups.
+    scenes_group: Option<usize>,
+    /// The picker's row to focus next frame, after a move by keyboard.
+    scenes_focus: Option<usize>,
     options_open: bool,
     input: InputState,
     flight: Option<Flight>,
@@ -117,6 +121,8 @@ impl Demo {
             attribution: String::new(),
             toast: None,
             scenes_open: false,
+            scenes_group: None,
+            scenes_focus: None,
             options_open: false,
             input: InputState::default(),
             flight: None,
@@ -803,6 +809,34 @@ fn sheet_head(ui: &mut Ui, palette: &Palette, title: &str) -> bool {
     close
 }
 
+/// A sub-menu's head: a way back, its title, and a close button; whether
+/// each was clicked.
+fn sub_sheet_head(ui: &mut Ui, palette: &Palette, title: &str) -> (bool, bool) {
+    let (back, close) = egui::Sides::new().show(
+        ui,
+        |ui| {
+            let back = tool(ui, palette, "All maps", |p, rect, ink| {
+                let c = rect.center();
+                p.add(Shape::line(
+                    vec![c + vec2(2.5, -5.5), c + vec2(-3.0, 0.0), c + vec2(2.5, 5.5)],
+                    Stroke::new(1.8, ink),
+                ));
+            })
+            .clicked();
+            ui.label(RichText::new(title).size(18.0).strong());
+            back
+        },
+        |ui| close_button(ui, palette).clicked(),
+    );
+    (back, close)
+}
+
+/// Whether a click came from the keyboard (Enter or Space on a focused
+/// widget) rather than a pointer.
+fn by_keyboard(response: &Response) -> bool {
+    response.clicked() && !response.clicked_by(egui::PointerButton::Primary)
+}
+
 fn group_heading(ui: &mut Ui, palette: &Palette, text: &str) {
     ui.add_space(6.0);
     ui.label(RichText::new(text).size(12.0).strong().color(palette.muted));
@@ -827,14 +861,42 @@ fn tag(ui: &mut Ui, palette: &Palette, text: &str, hint: Option<&str>) {
 /// The picker's chip in a style's colours: land, a corner of water, a line.
 fn chip(ui: &mut Ui, swatch: &[String; 3]) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::hover());
-    let color = |s: &String| Color32::from_hex(s).unwrap_or(Color32::GRAY);
+    paint_chip(ui.painter(), rect, swatch);
+}
+
+/// A group's first few chips, fanned, in a chip's room.
+fn chip_stack(ui: &mut Ui, swatches: &[&[String; 3]]) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::same(8), color(&swatch[0]));
+    let side = 22.0;
+    let step = (rect.width() - side) / 2.0;
+    for (i, swatch) in swatches.iter().enumerate().take(3) {
+        let i = i as f32;
+        let chip = Rect::from_min_size(
+            rect.min + vec2(2.0 * step - i * step, i * step),
+            Vec2::splat(side),
+        );
+        // A soft shadow parts each chip from the one under it.
+        p.rect_filled(
+            chip.translate(vec2(-1.0, 1.0)).expand(0.5),
+            CornerRadius::same(7),
+            Color32::from_black_alpha(45),
+        );
+        paint_chip(p, chip, swatch);
+    }
+}
+
+fn paint_chip(p: &egui::Painter, rect: Rect, swatch: &[String; 3]) {
+    // Drawn for a 32-point chip and scaled to `rect`.
+    let k = rect.width() / 32.0;
+    let color = |s: &String| Color32::from_hex(s).unwrap_or(Color32::GRAY);
+    let corner = CornerRadius::same((8.0 * k).round() as u8);
+    p.rect_filled(rect, corner, color(&swatch[0]));
     let water = rect.right_bottom();
     let points = (0..=8)
         .map(|i| {
             let a = std::f32::consts::FRAC_PI_2 * (i as f32 / 8.0);
-            water + vec2(-a.cos(), -a.sin()) * 18.0
+            water + vec2(-a.cos(), -a.sin()) * 18.0 * k
         })
         .chain([water])
         .collect();
@@ -845,14 +907,14 @@ fn chip(ui: &mut Ui, swatch: &[String; 3]) {
     ));
     p.line_segment(
         [
-            rect.left_top() + vec2(4.0, 22.0),
-            rect.left_top() + vec2(24.0, 4.0),
+            rect.left_top() + vec2(4.0, 22.0) * k,
+            rect.left_top() + vec2(24.0, 4.0) * k,
         ],
-        Stroke::new(3.0, color(&swatch[2])),
+        Stroke::new(3.0 * k, color(&swatch[2])),
     );
     p.rect_stroke(
         rect,
-        CornerRadius::same(8),
+        corner,
         Stroke::new(1.0, Color32::from_black_alpha(30)),
         StrokeKind::Inside,
     );
@@ -953,35 +1015,79 @@ impl Demo {
             .on_hover_text("Choose a map")
             .clicked();
         if clicked {
+            // The picker opens on its groups, the current map's marked.
             self.scenes_open = !self.scenes_open;
+            self.scenes_group = None;
+            self.scenes_focus = None;
             self.options_open = false;
         }
     }
 
     fn scene_sheet(&mut self, ctx: &egui::Context, palette: &Palette) {
         let screen = ctx.content_rect();
+        let groups = &self.catalogue.groups;
+        let group = self.scenes_group.and_then(|i| groups.get(i));
+        let focus = self.scenes_focus.take();
         let mut picked = None;
+        let mut opened = None;
+        let mut back = false;
         let mut close = false;
         layer("scenes", Align2::LEFT_TOP, vec2(EDGE, EDGE + 60.0)).show(ctx, |ui| {
             palette.sheet().show(ui, |ui| {
                 ui.set_width(SHEET_WIDTH);
-                close = sheet_head(ui, palette, "Choose a map");
+                (back, close) = match group {
+                    Some(group) => sub_sheet_head(ui, palette, &group.name),
+                    None => (false, sheet_head(ui, palette, "Choose a map")),
+                };
                 egui::ScrollArea::vertical()
+                    .id_salt(self.scenes_group)
                     .max_height((screen.height() - 160.0).max(200.0))
                     .show(ui, |ui| {
-                        for group in &self.catalogue.groups {
-                            group_heading(ui, palette, &group.name);
-                            for scene in &group.scenes {
-                                if scene_row(ui, palette, scene, scene.key == self.scene.key)
-                                    .clicked()
-                                {
+                        ui.add_space(4.0);
+                        if let Some(group) = group {
+                            let current = group.scenes.iter().position(|s| s.key == self.scene.key);
+                            for (i, scene) in group.scenes.iter().enumerate() {
+                                let row = scene_row(ui, palette, scene, current == Some(i));
+                                if focus.is_some() && i == current.unwrap_or(0) {
+                                    row.request_focus();
+                                    row.scroll_to_me(None);
+                                }
+                                if row.clicked() {
                                     picked = Some(scene.clone());
+                                }
+                            }
+                        } else {
+                            for (i, group) in groups.iter().enumerate() {
+                                let current = group.scenes.iter().any(|s| s.key == self.scene.key);
+                                let row = group_row(ui, palette, group, current);
+                                if focus == Some(i) {
+                                    row.request_focus();
+                                    row.scroll_to_me(None);
+                                }
+                                if row.clicked() {
+                                    opened = Some((i, by_keyboard(&row)));
                                 }
                             }
                         }
                     });
             });
         });
+        // Left, or Backspace, goes back up from a group too, as on the web.
+        let up = group.is_some()
+            && ctx.memory(|m| m.focused().is_some())
+            && ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
+            });
+        if let Some((i, keyboard)) = opened {
+            self.scenes_group = Some(i);
+            self.scenes_focus = keyboard.then_some(0);
+        } else if back || up {
+            // By keyboard, focus lands back on the group's row.
+            let keyboard = up || ctx.memory(|m| m.focused().is_some());
+            self.scenes_focus = if keyboard { self.scenes_group } else { None };
+            self.scenes_group = None;
+        }
         if close || picked.is_some() {
             self.scenes_open = false;
         }
@@ -1165,39 +1271,89 @@ impl Demo {
 }
 
 fn scene_row(ui: &mut Ui, palette: &Palette, scene: &Scene, current: bool) -> Response {
+    picker_row(ui, palette, current, |ui| {
+        chip(ui, &scene.swatch);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&scene.name).size(15.0));
+                if scene.orbis_only {
+                    tag(
+                        ui,
+                        palette,
+                        "Orbis only",
+                        Some(
+                            "Shows an Orbis extension beyond the style spec: GL JS and MapLibre Native can't draw it",
+                        ),
+                    );
+                }
+                if scene.dark {
+                    tag(ui, palette, "Dark", None);
+                }
+            });
+            if let Some(detail) = &scene.detail {
+                ui.add(
+                    egui::Label::new(RichText::new(detail).size(12.0).color(palette.muted)).wrap(),
+                );
+            }
+        });
+    })
+}
+
+/// A group's row in the picker, opening its maps; `current` when the map
+/// shown is one of them.
+fn group_row(ui: &mut Ui, palette: &Palette, group: &Group, current: bool) -> Response {
+    picker_row(ui, palette, current, |ui| {
+        let swatches: Vec<_> = group.scenes.iter().map(|s| &s.swatch).collect();
+        chip_stack(ui, &swatches);
+        let names = group
+            .scenes
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        egui::Sides::new().shrink_left().show(
+            ui,
+            |ui| {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    ui.label(RichText::new(&group.name).size(15.0));
+                    ui.add(
+                        egui::Label::new(RichText::new(names).size(12.0).color(palette.muted))
+                            .wrap(),
+                    );
+                });
+            },
+            |ui| {
+                let (rect, _) = ui.allocate_exact_size(vec2(16.0, 32.0), Sense::hover());
+                let c = rect.center();
+                ui.painter().add(Shape::line(
+                    vec![
+                        c + vec2(-2.0, -4.0),
+                        c + vec2(2.0, 0.0),
+                        c + vec2(-2.0, 4.0),
+                    ],
+                    Stroke::new(1.6, palette.muted),
+                ));
+            },
+        );
+    })
+}
+
+/// A clickable row of the picker, filled when it is `current`, hovered or
+/// focused.
+fn picker_row(
+    ui: &mut Ui,
+    palette: &Palette,
+    current: bool,
+    content: impl FnOnce(&mut Ui),
+) -> Response {
     let background = ui.painter().add(Shape::Noop);
     let inner = Frame::new()
         .inner_margin(Margin::symmetric(8, 6))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                chip(ui, &scene.swatch);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 1.0;
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(&scene.name).size(15.0));
-                        if scene.orbis_only {
-                            tag(
-                                ui,
-                                palette,
-                                "Orbis only",
-                                Some(
-                                    "Shows an Orbis extension beyond the style spec: GL JS and MapLibre Native can't draw it",
-                                ),
-                            );
-                        }
-                        if scene.dark {
-                            tag(ui, palette, "Dark", None);
-                        }
-                    });
-                    if let Some(detail) = &scene.detail {
-                        ui.add(
-                            egui::Label::new(RichText::new(detail).size(12.0).color(palette.muted))
-                                .wrap(),
-                        );
-                    }
-                });
-            });
+            ui.horizontal(content);
         });
     let response = inner
         .response
@@ -1205,14 +1361,25 @@ fn scene_row(ui: &mut Ui, palette: &Palette, scene: &Scene, current: bool) -> Re
         .on_hover_cursor(CursorIcon::PointingHand);
     let fill = if current {
         palette.accent_wash
-    } else if response.hovered() {
+    } else if response.hovered() || response.has_focus() {
         palette.well
     } else {
         Color32::TRANSPARENT
     };
+    let stroke = if response.has_focus() {
+        Stroke::new(1.5, palette.accent)
+    } else {
+        Stroke::NONE
+    };
     ui.painter().set(
         background,
-        Shape::rect_filled(response.rect, CornerRadius::same(10), fill),
+        Shape::Rect(egui::epaint::RectShape::new(
+            response.rect,
+            CornerRadius::same(10),
+            fill,
+            stroke,
+            StrokeKind::Inside,
+        )),
     );
     response
 }
