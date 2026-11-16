@@ -655,16 +655,27 @@ fn a_draped_line_is_as_wide_as_a_flat_one() {
 /// perspective narrows both alike, and under the camera each keeps its
 /// width east to west, which the sphere doesn't foreshorten: drawn right,
 /// they are as wide as each other, draped or not. On Web Mercator, at the
-/// equator where it holds the camera, both are the spec's width.
+/// equator where it holds the camera, both are the spec's width, in a
+/// view 256 px square at z−1, a whole zoom where its height fills the
+/// world. At a fractional zoom a drape's texels are filtered down by a
+/// scale that isn't a power of two, and a draped line's ink rounds by
+/// where its edges fall among them, by up to 5% as it moves a fraction
+/// of a pixel: the 512×384 view holds Mercator at z−0.415, where this
+/// meridian, on the terrain tiles' seam, measures 2.10 px on one GPU and
+/// 2.09 px on another.
 #[test]
 fn a_line_is_as_wide_at_every_latitude_below_its_tiles_zoom() {
     let (flat, _dem) = dem("flat", (-179.9, -85.0, 179.9, 85.0), 1, |_, _| 0.0);
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
-    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
     const LINE_WIDTH: f64 = 2.0;
     // The meridian's width around 70°N and around 15°N: the blue ink of
     // the rows of each of its two segments, less two at each end.
-    let mut widths = |projection: &str, terrain: bool| -> [f64; 2] {
+    let widths = |projection: &str, terrain: bool| -> [f64; 2] {
+        let (width, height, zoom) = match projection {
+            "globe" => (WIDTH, HEIGHT, -0.5),
+            _ => (256, 256, -1.0),
+        };
+        let mut target = Target::texture(&runtime, width, height, 1.0);
         let style = format!(
             r##"{{"version": 8, "projection": {{"type": "{projection}"}},
             "sources": {{{flat}
@@ -684,13 +695,18 @@ fn a_line_is_as_wide_at_every_latitude_below_its_tiles_zoom() {
         );
         let mut map = Map::new(&runtime, options());
         map.set_style_json(&style).unwrap();
-        map.jump_to(&camera((Geodetic::new(0.0, 42.5), -0.5, 0.0, 0.0)));
+        map.jump_to(&camera((Geodetic::new(0.0, 42.5), zoom, 0.0, 0.0)));
         common::settle(&mut map, &mut target);
+        assert!(
+            (map.zoom() - zoom).abs() < 1e-9,
+            "{projection}: z{}",
+            map.zoom()
+        );
         let pixels = target.read_pixels().unwrap();
-        let ink = (0..HEIGHT).map(|y| -> f64 {
-            (0..WIDTH)
+        let ink = (0..height).map(|y| -> f64 {
+            (0..width)
                 .map(|x| {
-                    let i = ((y * WIDTH + x) * 4) as usize;
+                    let i = ((y * width + x) * 4) as usize;
                     (f64::from(pixels[i + 2]) - f64::from(pixels[i])).max(0.0) / 255.0
                 })
                 .sum()
@@ -724,16 +740,10 @@ fn a_line_is_as_wide_at_every_latitude_below_its_tiles_zoom() {
                 (north - south).abs() < 0.1,
                 "{case}: {north:.2} px wide around 70°N, {south:.2} px around 15°N"
             );
-            // The globe's perspective narrows both a little. A drape's
-            // texels, filtered down by a scale that isn't a power of two,
-            // round a line's ink by where its edges fall among them: on
-            // Mercator, which holds this camera at z−0.415 where the
-            // viewport's height fills the world, the draped line measures
-            // 2.09 px, and 2.06 px at z0.5, on a drape step, but 2.00 px
-            // at whole zooms.
-            let tolerance = match (projection, terrain) {
-                ("globe", _) => 0.2,
-                (_, true) => 0.1,
+            // The globe's perspective narrows both a little, and its
+            // drape is filtered down by a scale that isn't a power of two.
+            let tolerance = match projection {
+                "globe" => 0.2,
                 _ => 0.05,
             };
             for width in [north, south] {
