@@ -166,10 +166,10 @@
           },
           "marker": {
             "view": {
-              "center": [-74.03, 40.695],
-              "zoom": 13.4,
+              "center": [-74.0, 40.703],
+              "zoom": 14.2,
               "bearing": 29,
-              "pitch": 40,
+              "pitch": 45,
               "duration": 3500
             }
           }

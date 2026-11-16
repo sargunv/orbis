@@ -17,8 +17,8 @@
         "geometry": {
           "type": "Point",
           "coordinates": [
-            -74.0445,
-            40.6892
+            -73.9969,
+            40.7058
           ]
         }
       }
@@ -5537,7 +5537,7 @@
       "type": "symbol",
       "source": "marker",
       "layout": {
-        "text-field": "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588",
+        "text-field": "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588",
         "text-font": [
           "Noto Sans Bold"
         ],
@@ -5568,7 +5568,7 @@
       "type": "symbol",
       "source": "marker",
       "layout": {
-        "text-field": "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588",
+        "text-field": "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588",
         "text-font": [
           "Noto Sans Bold"
         ],
@@ -5596,7 +5596,7 @@
       "type": "symbol",
       "source": "marker",
       "layout": {
-        "text-field": "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588",
+        "text-field": "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588",
         "text-font": [
           "Noto Sans Bold"
         ],
@@ -5619,7 +5619,7 @@
       "type": "symbol",
       "source": "marker",
       "layout": {
-        "text-field": "Statue of Liberty",
+        "text-field": "Brooklyn Bridge",
         "text-font": [
           "Noto Sans Bold"
         ],
