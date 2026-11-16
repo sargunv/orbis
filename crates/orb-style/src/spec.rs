@@ -369,6 +369,9 @@ pub enum LayerType {
     Hillshade,
     ColorRelief,
     Symbol,
+    /// `dev.sargunv.orbis.image-process`: a render target's image through
+    /// a list of operations ([`crate::Operation`]).
+    ImageProcess,
 }
 
 impl LayerType {
@@ -398,6 +401,7 @@ impl LayerType {
             Self::Hillshade => "hillshade",
             Self::ColorRelief => "color-relief",
             Self::Symbol => "symbol",
+            Self::ImageProcess => "dev.sargunv.orbis.image-process",
         }
     }
 
@@ -414,6 +418,7 @@ impl LayerType {
             "hillshade" => Self::Hillshade,
             "color-relief" => Self::ColorRelief,
             "symbol" => Self::Symbol,
+            "dev.sargunv.orbis.image-process" => Self::ImageProcess,
             _ => return None,
         })
     }
@@ -427,12 +432,18 @@ impl LayerType {
             .map(|(i, _)| PropertyId(i as u16))
     }
 
-    /// The type's first property, from which a layer indexes its own.
+    /// The type's first property, from which a layer indexes its own (0
+    /// for a type without properties).
     pub(crate) fn first(self) -> u16 {
-        PROPS
-            .iter()
-            .position(|p| p.layer == self)
-            .expect("every type has properties") as u16
+        PROPS.iter().position(|p| p.layer == self).unwrap_or(0) as u16
+    }
+
+    /// The preview a type beyond the approved spec needs.
+    pub const fn preview(self) -> Option<crate::Preview> {
+        match self {
+            Self::ImageProcess => Some(crate::Preview::Targets),
+            _ => None,
+        }
     }
 
     /// Whether the layer draws a source's features (and has a source
@@ -440,7 +451,11 @@ impl LayerType {
     pub const fn draws_features(self) -> bool {
         !matches!(
             self,
-            Self::Background | Self::Raster | Self::Hillshade | Self::ColorRelief
+            Self::Background
+                | Self::Raster
+                | Self::Hillshade
+                | Self::ColorRelief
+                | Self::ImageProcess
         )
     }
 }

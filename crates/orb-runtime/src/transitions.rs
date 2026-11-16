@@ -99,6 +99,7 @@ fn fade_properties(ty: LayerType) -> &'static [PropertyId] {
         LayerType::ColorRelief => ids!(COLOR_RELIEF_OPACITY),
         // A hillshade without exaggeration shades nothing.
         LayerType::Hillshade => ids!(HILLSHADE_EXAGGERATION),
+        LayerType::ImageProcess => ids!(),
     }
 }
 

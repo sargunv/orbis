@@ -201,6 +201,15 @@ pub const COMPOSITE_REPLACE_SHADER: Shader = Shader {
     compute: "",
 };
 
+/// A pass of an image-process layer's operations (`image_process.wgsl`).
+pub const IMAGE_PROCESS_SHADER: Shader = Shader {
+    label: "image process",
+    parts: &[wgsl!("image_process")],
+    vertex: "vs_process",
+    fragment: "fs_process",
+    compute: "",
+};
+
 /// The globe atmosphere's scattering over the map.
 pub const SCATTER_SHADER: Shader = Shader {
     label: "atmosphere scattering",
@@ -530,6 +539,7 @@ pub const SHADERS: &[Shader] = &[
     SCATTER_SHADER,
     COMPOSITE_OVER_SHADER,
     COMPOSITE_REPLACE_SHADER,
+    IMAGE_PROCESS_SHADER,
     TERRAIN_SHADER,
     TERRAIN_SHADE_SHADER,
     EXTRUSION_SHADER,

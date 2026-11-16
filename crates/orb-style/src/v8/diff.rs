@@ -81,6 +81,16 @@ fn layer_changes(
             change: LayoutChange::Filter,
         });
     }
+    if [
+        crate::v8::target::DESTINATION,
+        crate::v8::target::SOURCE,
+        crate::v8::target::OPERATIONS,
+    ]
+    .iter()
+    .any(|k| differs(old_json.get(k), new_json.get(k)))
+    {
+        out.push(Change::Targets(key));
+    }
     if ["minzoom", "maxzoom"]
         .iter()
         .any(|k| !same_opt(old_json.get(k), new_json.get(k)))
@@ -94,7 +104,7 @@ fn layer_changes(
 
 /// The root keys whose change needs a full reload: every label's glyphs
 /// load again.
-const RESTYLE_ROOT: &[&str] = &["glyphs", "font-faces"];
+const RESTYLE_ROOT: &[&str] = &["glyphs", "font-faces", crate::v8::target::TARGETS];
 
 /// Adds `change` unless an earlier step did.
 fn add_once(changes: &mut Vec<Change>, change: Change) {

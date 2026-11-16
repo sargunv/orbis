@@ -78,12 +78,17 @@ pub(crate) struct Run {
     /// layer, which leaves nothing to composite), or `None` for the
     /// group's own target.
     pub(crate) source: Option<TextureId>,
+    /// The render target whose coverage it composites through (a fill
+    /// drawn through a target).
+    pub(crate) mask: Option<TextureId>,
 }
 
 #[derive(Debug)]
 pub(crate) struct Group {
     pub(crate) nodes: Range<usize>,
     pub(crate) blend: Blend,
+    /// The target it composites through, if any.
+    mask: Option<TextureId>,
     /// Its own target, unless another pass draws the layer.
     layer: Option<Target>,
     composite: Composite,
@@ -105,6 +110,7 @@ impl Group {
 
     fn mode(&self) -> Mode {
         match self.blend {
+            _ if self.mask.is_some() => Mode::Mask,
             Blend::Normal => Mode::Over,
             blend => Mode::Blend(blend),
         }
@@ -144,6 +150,7 @@ impl LayerComposites {
             opacity,
             blend,
             source,
+            mask,
         } in runs
         {
             let layer = source
@@ -152,6 +159,7 @@ impl LayerComposites {
             let texture = source.unwrap_or_else(|| layer.as_ref().expect("made above").texture());
             // The k-th blending group reads the canvas pass k drew.
             let (mode, backdrop) = match blend {
+                _ if mask.is_some() => (Mode::Mask, mask),
                 Blend::Normal => (Mode::Over, None),
                 blend => {
                     backdrops += 1;
@@ -165,6 +173,7 @@ impl LayerComposites {
             self.groups.push(Group {
                 nodes,
                 blend,
+                mask,
                 layer,
                 composite,
                 bundle: None,

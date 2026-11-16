@@ -400,6 +400,8 @@ impl TileWorker {
             previews: update.previews,
             sources,
             layers,
+            // Tile jobs never draw through render targets.
+            targets: Vec::new(),
             warnings: Vec::new(),
         };
         // A source sent again or diffed has new data (an added one has

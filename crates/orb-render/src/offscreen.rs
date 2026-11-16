@@ -175,6 +175,13 @@ pub(crate) enum Mode {
     Blend(Blend),
     /// The source's red channel through a colour ramp.
     Ramp,
+    /// The source through the coverage of a render target, a texel a
+    /// logical pixel.
+    Mask,
+    /// A colour through the coverage of a render target.
+    Solid,
+    /// A render target's image, sampled to the map's pixels.
+    Sampled,
 }
 
 impl Mode {
@@ -184,6 +191,9 @@ impl Mode {
             Mode::Over => 0.0,
             Mode::Blend(blend) => blend.mode(),
             Mode::Ramp => 7.0,
+            Mode::Mask => 8.0,
+            Mode::Solid => 9.0,
+            Mode::Sampled => 10.0,
         }
     }
 
@@ -213,6 +223,8 @@ pub(crate) struct Composites {
 pub(crate) struct Composite {
     mode: Mode,
     opacity: f32,
+    /// A solid composite's colour, premultiplied.
+    color: [f32; 4],
     uniform: BufferId,
     group: BindGroupId,
 }
@@ -310,10 +322,10 @@ impl Composites {
     ) -> Composite {
         let uniform = gpu.create_buffer(&BufferDesc {
             label: "composite",
-            size: 16,
+            size: 32,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
-        write_uniform(gpu, uniform, mode, opacity);
+        write_uniform(gpu, uniform, mode, opacity, [0.0; 4]);
         use TextureViewDimension::D2;
         let group = gpu.create_bind_group(&BindGroupDesc {
             label: "composite",
@@ -328,6 +340,7 @@ impl Composites {
         Composite {
             mode,
             opacity,
+            color: [0.0; 4],
             uniform,
             group,
         }
@@ -338,7 +351,17 @@ impl Composites {
     pub(crate) fn set_opacity(gpu: &mut dyn Gpu, composite: &mut Composite, opacity: f32) {
         if composite.opacity != opacity {
             composite.opacity = opacity;
-            write_uniform(gpu, composite.uniform, composite.mode, opacity);
+            let c = &*composite;
+            write_uniform(gpu, c.uniform, c.mode, opacity, c.color);
+        }
+    }
+
+    /// Writes a solid composite's colour, if it changed.
+    pub(crate) fn set_color(gpu: &mut dyn Gpu, composite: &mut Composite, color: [f32; 4]) {
+        if composite.color != color {
+            composite.color = color;
+            let c = &*composite;
+            write_uniform(gpu, c.uniform, c.mode, c.opacity, color);
         }
     }
 
@@ -380,13 +403,12 @@ impl Composites {
     }
 }
 
-/// Writes a composite's uniform: its opacity and `composite.wgsl`'s mode.
-fn write_uniform(gpu: &mut dyn Gpu, uniform: BufferId, mode: Mode, opacity: f32) {
-    gpu.write_buffer(
-        uniform,
-        0,
-        bytemuck::cast_slice(&[opacity, mode.number(), 0.0, 0.0]),
-    );
+/// Writes a composite's uniform: its opacity, `composite.wgsl`'s mode and a
+/// solid one's colour.
+fn write_uniform(gpu: &mut dyn Gpu, uniform: BufferId, mode: Mode, opacity: f32, color: [f32; 4]) {
+    let [r, g, b, a] = color;
+    let words = [opacity, mode.number(), 0.0, 0.0, r, g, b, a];
+    gpu.write_buffer(uniform, 0, bytemuck::cast_slice(&words));
 }
 
 impl crate::release::Release for Apart {

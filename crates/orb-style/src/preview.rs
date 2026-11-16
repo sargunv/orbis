@@ -39,11 +39,17 @@ pub enum Preview {
     /// style-spec#1661: `dev.sargunv.orbis:color-relief-layer-blend`, a
     /// colour relief composited in a blend mode.
     ColorReliefLayerBlend,
+    /// Render targets after Wet Dog Weather's sketch for Stamen
+    /// Watercolor: the root `dev.sargunv.orbis:targets`, layers drawn into
+    /// one (`dev.sargunv.orbis:destination-target`), the
+    /// `dev.sargunv.orbis.image-process` layer type, and fills drawn
+    /// through one's coverage (`dev.sargunv.orbis:source-target`).
+    Targets,
 }
 
 impl Preview {
     /// Every preview, in the order the docs list them.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Equirectangular,
         Self::NaturalEarth,
         Self::EqualEarth,
@@ -52,6 +58,7 @@ impl Preview {
         Self::TileMatrixSet,
         Self::HillshadeLayerBlend,
         Self::ColorReliefLayerBlend,
+        Self::Targets,
     ];
 
     /// The name a map enables it by: the name of the key, property, value
@@ -66,6 +73,7 @@ impl Preview {
             Self::TileMatrixSet => "dev.sargunv.orbis:tileMatrixSet",
             Self::HillshadeLayerBlend => "dev.sargunv.orbis:hillshade-layer-blend",
             Self::ColorReliefLayerBlend => "dev.sargunv.orbis:color-relief-layer-blend",
+            Self::Targets => "dev.sargunv.orbis:targets",
         }
     }
 
@@ -81,7 +89,7 @@ impl Preview {
             Self::EqualEarth => 1865,
             Self::ProjectionTransition => 1866,
             Self::HillshadeLayerBlend | Self::ColorReliefLayerBlend => 1661,
-            Self::NaturalEarth | Self::Crs | Self::TileMatrixSet => return None,
+            Self::NaturalEarth | Self::Crs | Self::TileMatrixSet | Self::Targets => return None,
         })
     }
 
@@ -111,6 +119,9 @@ impl Preview {
             }
             Self::ColorReliefLayerBlend => {
                 "`dev.sargunv.orbis:color-relief-layer-blend` (default `normal`): how a colour relief layer composites with what is beneath it, in the same seven modes, so that an elevation ramp can tint (`color`, `multiply`) or light (`screen`, `overlay`) the map beneath rather than cover it. A constant, as the spec's are. The proposal names `*-layer-blend` for every layer type; Orbis takes it for the two image layers the spec left out."
+            }
+            Self::Targets => {
+                "Render targets, after [Wet Dog Weather's sketch](https://www.wetdogweather.com/2024/06/12/how-to-make-stamen-watercolor-in-maplibre/) for Stamen Watercolor: offscreen images the size of the view, a texel a logical pixel, drawn every frame (the sketch's real-time targets), so they keep a vector map's precision at any zoom. The root `dev.sargunv.orbis:targets` declares them (`[{\"id\": \"paint\"}]`). A layer with `dev.sargunv.orbis:destination-target` draws into that target rather than the map, in style order; fill-extrusion and heatmap layers draw apart and can't. A `dev.sargunv.orbis.image-process` layer reads its `dev.sargunv.orbis:source-target` through its `dev.sargunv.orbis:operations`, in order, and draws the result into its destination target, or over the map in its place without one. Operations act on premultiplied colour, coverage being alpha, sizes in pixels: `select` (`value`, a colour; `tolerance`, 0–255 per channel, default 16) keeps the pixels of that colour; `blur` (`size`, the Gaussian's standard deviation, as CSS's `blur()`); `noise` (`size`; `amount`, 0–1, default 0.25) moves coverage by gradient noise fixed to the map; `threshold` (`cutoff`, 0–255, default 128) makes coverage whole or none, antialiased; `invert` swaps coverage for its absence; `sharpen` (`size`; `amount`, default 1) pushes a pixel away from its blur; `high-pass` (`size`) keeps the coverage its blur lacks, the band inside an edge; `convolve` (`kernel`, 9, 25 or 49 weights, row by row). A fill with `dev.sargunv.orbis:source-target` and no source draws its colour and pattern everywhere through the target's coverage; what it would read of features draws its default. The view's edges extend what is at them, so a blur sees no edge there. What is drawn into or through a target doesn't drape on terrain, and noise follows the plane on the globe. Our own design; no proposal yet."
             }
         }
     }

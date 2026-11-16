@@ -116,6 +116,9 @@ pub enum Change {
     },
     /// `visibility`: shows or hides the layer's nodes.
     Visibility(LayerKey),
+    /// The render targets a layer draws into or reads, or an image-process
+    /// layer's operations.
+    Targets(LayerKey),
     /// A paint property's `*-transition`: how its next changes ease.
     Transitions(LayerKey),
     Layout {
@@ -150,7 +153,10 @@ impl Change {
             Self::Root => Class::Block,
             Self::Projection | Self::Sprite | Self::SourceData(_) => Class::Relayout,
             Self::SourceAdded(_) | Self::SourceRemoved(_) => Class::Reload,
-            Self::LayerAdded(_) | Self::LayerRemoved(_) | Self::LayersReordered => Class::Nodes,
+            Self::LayerAdded(_)
+            | Self::LayerRemoved(_)
+            | Self::LayersReordered
+            | Self::Targets(_) => Class::Nodes,
             Self::Visibility(_) | Self::Transitions(_) => Class::Block,
             Self::Layout { .. } => Class::Relayout,
             Self::Paint { from, to, .. } => {
@@ -171,6 +177,7 @@ impl Change {
             Self::LayerAdded(l)
             | Self::LayerRemoved(l)
             | Self::Visibility(l)
+            | Self::Targets(l)
             | Self::Transitions(l)
             | Self::Paint { layer: l, .. }
             | Self::Layout { layer: l, .. } => Some(*l),

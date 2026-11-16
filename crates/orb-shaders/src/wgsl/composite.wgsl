@@ -6,15 +6,24 @@
 //   blend (a 3D layer, a layer composited once);
 // - ramp: the source's red channel looked up in a colour ramp, sampled
 //   linearly (a heatmap's density, at a quarter of the resolution);
+// - mask: the source at an opacity through the coverage of a render
+//   target, which is a texel a logical pixel (a fill drawn through a
+//   target); solid: a colour so (one without a pattern); sampled: a render
+//   target's image over the map (an image-process layer's);
 // - replace: W3C Compositing 1's blend modes against the map beneath,
 //   read from the canvas it was drawn into, written over it in place
 //   (`*-layer-blend`, `blend.wgsl`).
 
 // x: the opacity; y: the mode (`Mode` in orb-render: 0 over, 1–6 the blend
-// modes, 7 ramp).
-@group(0) @binding(0) var<uniform> composite: vec4<f32>;
+// modes, 7 ramp, 8 mask, 9 solid, 10 sampled); `color`: solid's colour,
+// premultiplied.
+struct Composite {
+    params: vec4<f32>,
+    color: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> composite: Composite;
 @group(0) @binding(1) var source: texture_2d<f32>;
-// The ramp, or the map beneath.
+// The ramp, the mask, or the map beneath.
 @group(0) @binding(2) var aux: texture_2d<f32>;
 @group(0) @binding(3) var linear: sampler;
 
@@ -34,16 +43,31 @@ fn vs_composite(@builtin(vertex_index) index: u32) -> CompositeOut {
 
 @fragment
 fn fs_over(in: CompositeOut) -> @location(0) vec4<f32> {
-    if u32(composite.y) == 7u {
-        let t = textureSample(source, linear, in.uv).r;
-        return textureSample(aux, linear, vec2<f32>(t, 0.5)) * composite.x;
+    let opacity = composite.params.x;
+    switch u32(composite.params.y) {
+        case 7u: {
+            let t = textureSample(source, linear, in.uv).r;
+            return textureSample(aux, linear, vec2<f32>(t, 0.5)) * opacity;
+        }
+        case 8u: {
+            let s = textureLoad(source, vec2<i32>(in.position.xy), 0);
+            return s * opacity * textureSample(aux, linear, in.uv).a;
+        }
+        case 9u: {
+            return composite.color * opacity * textureSample(aux, linear, in.uv).a;
+        }
+        case 10u: {
+            return textureSample(source, linear, in.uv) * opacity;
+        }
+        default: {
+            return textureLoad(source, vec2<i32>(in.position.xy), 0) * opacity;
+        }
     }
-    return textureLoad(source, vec2<i32>(in.position.xy), 0) * composite.x;
 }
 
 @fragment
 fn fs_replace(in: CompositeOut) -> @location(0) vec4<f32> {
     let texel = vec2<i32>(in.position.xy);
-    let s = textureLoad(source, texel, 0) * composite.x;
-    return blend_over(u32(composite.y), s, textureLoad(aux, texel, 0));
+    let s = textureLoad(source, texel, 0) * composite.params.x;
+    return blend_over(u32(composite.params.y), s, textureLoad(aux, texel, 0));
 }

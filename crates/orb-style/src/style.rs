@@ -42,6 +42,8 @@ pub struct Style {
     /// Shared, so a snapshot that changes some layers (an edit, a frame's
     /// transitions) copies only those.
     pub layers: Vec<std::sync::Arc<Layer>>,
+    /// The render targets layers draw into (`dev.sargunv.orbis:targets`).
+    pub targets: Vec<crate::RenderTarget>,
     /// What parsed but isn't supported or rendered yet.
     pub warnings: Vec<Diagnostic>,
     /// The previews it was parsed with: inputs beyond the approved spec

@@ -51,6 +51,10 @@ pub(crate) struct StylePlan {
     /// By layer, the first layer before it that lays out alike
     /// ([`orb_style::Layer::layout_group`]): the group's leader.
     pub(crate) layout_leaders: Vec<Option<usize>>,
+    /// What the style draws through render targets, by node.
+    pub(crate) targets: orb_render::TargetPlan,
+    /// The image-process layers of `targets`' processes, by index.
+    pub(crate) processes: Vec<usize>,
 }
 
 /// A source some node draws from.
@@ -256,6 +260,22 @@ impl StylePlan {
 
         for (index, layer) in style.layers.iter().enumerate() {
             let key = node_key(layer_keys[index], 0);
+            // An image-process layer draws through the target plan; a fill
+            // drawn through a target draws everywhere, as a background,
+            // through the target's coverage.
+            if layer.ty == LayerType::ImageProcess {
+                continue;
+            }
+            if layer.source_target.is_some() {
+                nodes.push(NodePlan {
+                    layer: index,
+                    family: Family::Fill,
+                    source: usize::MAX,
+                    key,
+                    elevation: None,
+                });
+                continue;
+            }
             let family = match layer.ty {
                 LayerType::Background => {
                     nodes.push(NodePlan {
@@ -276,6 +296,7 @@ impl StylePlan {
                 LayerType::Hillshade => Family::Hillshade,
                 LayerType::ColorRelief => Family::ColorRelief,
                 LayerType::Symbol => Family::SymbolIcon,
+                LayerType::ImageProcess => unreachable!("drawn by the target plan"),
             };
             let source = layer.source.as_deref().expect("drawn layers have sources");
             match style.source(source).map(|s| &s.kind) {
@@ -387,6 +408,7 @@ impl StylePlan {
             });
         }
 
+        let (targets, processes) = crate::targets::plan(&style, &nodes, &mut warn);
         let camera_layers: Vec<usize> = (style.layers.iter().enumerate())
             .filter(|(_, l)| {
                 l.slots()
@@ -411,6 +433,8 @@ impl StylePlan {
             warnings,
             camera_layers,
             layout_leaders,
+            targets,
+            processes,
         }
     }
 

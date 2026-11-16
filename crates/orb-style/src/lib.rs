@@ -17,6 +17,7 @@ mod resources;
 mod source;
 mod spec;
 mod style;
+mod target;
 mod transition;
 pub mod v8;
 
@@ -36,4 +37,5 @@ pub use source::{
 };
 pub use spec::*;
 pub use style::Style;
+pub use target::{Operation, RenderTarget};
 pub use transition::{Transition, TransitionOverride};

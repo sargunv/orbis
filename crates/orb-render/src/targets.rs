@@ -1,0 +1,1064 @@
+//! Render targets (the `dev.sargunv.orbis:targets` preview): offscreen
+//! images the size of the view, a texel a logical pixel, drawn every frame
+//! before the map. Their sizes are logical pixels, and what reads them
+//! (blurs, masks) is soft: a device's further pixels would cost a pass
+//! their square for nothing that shows.
+//!
+//! A target is written by the nodes its layers route into it and by the
+//! image-process layers that name it their destination, in style order.
+//! One written by nodes, or by several writers, is *drawn*: a target in
+//! the map's format, which a pass of its own clears and draws its writers
+//! into, a process by compositing its output. One written by a single
+//! process alone is that process's output, which nothing copies.
+//!
+//! A process runs its operations as passes over textures of the view's
+//! size ([`Step`]): a kernel (a copy, one axis of a Gaussian blur, a
+//! convolution), then pointwise operations. Its passes read its source
+//! target, take turns in up to three scratch textures shared by every
+//! process, and end in its output, which composites into its destination
+//! target or, with none, into the map in its layer's place.
+//!
+//! What reads a target runs after whatever writes it ([`Targets::order`]):
+//! processes reading it, and the fills drawn through it, which composite
+//! in the map's pass through its coverage: a colour (`Mode::Solid`), or a
+//! patterned fill drawn apart first (`Mode::Mask`).
+
+use orb_hal::*;
+use orb_shaders::IMAGE_PROCESS_SHADER;
+
+use crate::offscreen::{Composite, Composites, Mode, Target};
+use crate::pipeline::{Attachments, Draw};
+use crate::release::Release;
+use crate::{FrameBlock, TargetFormat};
+
+/// What a style draws through render targets, by node index and target
+/// index ([`crate::Renderer::set_targets`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TargetPlan {
+    /// How many targets the style declares.
+    pub targets: u32,
+    /// The target each node draws into rather than the map, by node.
+    pub draws: Vec<Option<u32>>,
+    /// The target each node (a fill) draws through, by node.
+    pub masks: Vec<Option<u32>>,
+    /// The image-process layers, in style order.
+    pub processes: Vec<ProcessPlan>,
+}
+
+/// An image-process layer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcessPlan {
+    /// Where it draws among the nodes, into its destination or the map:
+    /// before node `at`.
+    pub at: u32,
+    /// The target it reads.
+    pub source: u32,
+    /// The target it draws into; `None` for the map.
+    pub destination: Option<u32>,
+    pub ops: Vec<ProcessOp>,
+}
+
+/// An image-process operation (`orb_style::Operation`), sizes in logical
+/// pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProcessOp {
+    /// `color` unpremultiplied, `tolerance` 0–255.
+    Select {
+        color: [f32; 3],
+        tolerance: f32,
+    },
+    Blur {
+        size: f32,
+    },
+    Noise {
+        size: f32,
+        amount: f32,
+    },
+    /// `cutoff` 0–255.
+    Threshold {
+        cutoff: f32,
+    },
+    Invert,
+    Sharpen {
+        size: f32,
+        amount: f32,
+    },
+    HighPass {
+        size: f32,
+    },
+    /// A square kernel, row by row.
+    Convolve {
+        kernel: Vec<f32>,
+    },
+}
+
+/// Pointwise operations one pass applies at most (`image_process.wgsl`'s
+/// `ops`).
+const MAX_POINTWISE: usize = 8;
+/// Linear taps a side a blur pass takes at most (`weights` holds the
+/// centre and a pair for each).
+const MAX_TAPS: usize = 31;
+/// The uniform's words (`Process` in `image_process.wgsl`).
+const WORDS: usize = 4 + 4 + 64 + 4 + 64 + 12;
+
+/// What a pass samples its input through.
+#[derive(Clone, Debug, PartialEq)]
+enum Kernel {
+    Copy,
+    /// A Gaussian of standard deviation `size` along x.
+    BlurX {
+        size: f32,
+    },
+    /// The same along y, weighed against the input of the pass before
+    /// (`combine` 1 sharpen by `amount`, 2 high-pass; 0 the blur alone).
+    BlurY {
+        size: f32,
+        combine: u32,
+        amount: f32,
+    },
+    Convolve(Vec<f32>),
+}
+
+/// A pointwise operation of a pass.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Pointwise {
+    Select { color: [f32; 3], tolerance: f32 },
+    Noise { size: f32, amount: f32 },
+    Threshold { cutoff: f32 },
+    Invert,
+}
+
+/// One pass of a process.
+#[derive(Clone, Debug, PartialEq)]
+struct Step {
+    kernel: Kernel,
+    pointwise: Vec<Pointwise>,
+}
+
+impl Step {
+    fn of(kernel: Kernel) -> Self {
+        Self {
+            kernel,
+            pointwise: Vec::new(),
+        }
+    }
+
+    /// Whether it reads the input of the pass before it as well.
+    fn reads_original(&self) -> bool {
+        matches!(self.kernel, Kernel::BlurY { combine, .. } if combine != 0)
+    }
+}
+
+/// A process's operations as passes: each blur two, pointwise operations
+/// on the pass before them, and a copy where nothing else passes.
+fn steps(ops: &[ProcessOp]) -> Vec<Step> {
+    let mut steps: Vec<Step> = Vec::new();
+    let blur = |steps: &mut Vec<Step>, size: f32, combine: u32, amount: f32| {
+        if size > 0.0 {
+            steps.push(Step::of(Kernel::BlurX { size }));
+            steps.push(Step::of(Kernel::BlurY {
+                size,
+                combine,
+                amount,
+            }));
+        }
+    };
+    for op in ops {
+        let pointwise = match *op {
+            ProcessOp::Select { color, tolerance } => Pointwise::Select { color, tolerance },
+            ProcessOp::Noise { size, amount } => Pointwise::Noise { size, amount },
+            ProcessOp::Threshold { cutoff } => Pointwise::Threshold { cutoff },
+            ProcessOp::Invert => Pointwise::Invert,
+            ProcessOp::Blur { size } => {
+                blur(&mut steps, size, 0, 0.0);
+                continue;
+            }
+            ProcessOp::Sharpen { size, amount } => {
+                blur(&mut steps, size, 1, amount);
+                continue;
+            }
+            ProcessOp::HighPass { size } => {
+                blur(&mut steps, size, 2, 0.0);
+                continue;
+            }
+            ProcessOp::Convolve { ref kernel } => {
+                steps.push(Step::of(Kernel::Convolve(kernel.clone())));
+                continue;
+            }
+        };
+        match steps.last_mut() {
+            Some(step) if step.pointwise.len() < MAX_POINTWISE => step.pointwise.push(pointwise),
+            _ => steps.push(Step {
+                kernel: Kernel::Copy,
+                pointwise: vec![pointwise],
+            }),
+        }
+    }
+    if steps.is_empty() {
+        steps.push(Step::of(Kernel::Copy));
+    }
+    steps
+}
+
+/// A texture a pass reads or writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Texture {
+    /// The process's source target.
+    Source,
+    Scratch(usize),
+    /// The process's output.
+    Output,
+}
+
+/// Each step's input, the original it weighs against, and its output:
+/// scratch textures in turn, none a pass reads, the last step into the
+/// output.
+fn wiring(steps: &[Step]) -> Vec<(Texture, Option<Texture>, Texture)> {
+    let mut current = Texture::Source;
+    let mut previous = Texture::Source;
+    let mut wires = Vec::with_capacity(steps.len());
+    for (i, step) in steps.iter().enumerate() {
+        let original = step.reads_original().then_some(previous);
+        let output = if i + 1 == steps.len() {
+            Texture::Output
+        } else {
+            (0..3)
+                .map(Texture::Scratch)
+                .find(|t| *t != current && Some(*t) != original)
+                .expect("three scratch textures suffice")
+        };
+        wires.push((current, original, output));
+        previous = current;
+        current = output;
+    }
+    wires
+}
+
+/// How a target is written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    /// Nothing writes it: it reads as transparent.
+    Unused,
+    /// A pass of its own draws its writers.
+    Drawn,
+    /// It is process `p`'s output.
+    Output(usize),
+}
+
+/// What the frame runs before the map, in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Run {
+    /// A process's passes.
+    Process(usize),
+    /// A drawn target's pass.
+    Draw(usize),
+}
+
+/// A process's pass as made: its uniform and bind group, the words last
+/// written, and its output.
+#[derive(Debug)]
+struct Pass_ {
+    uniform: BufferId,
+    group: BindGroupId,
+    written: [f32; WORDS],
+    output: TextureId,
+}
+
+/// What the targets hold on the device at a size.
+#[derive(Debug, Default)]
+struct Made {
+    size: [u32; 2],
+    attachments: Option<Attachments>,
+    /// By target, the drawn ones.
+    drawn: Vec<Option<Target>>,
+    /// By process.
+    outputs: Vec<TextureId>,
+    scratch: Vec<TextureId>,
+    /// By process, by step.
+    passes: Vec<Vec<Pass_>>,
+    /// By process, its output's composite into its destination where that
+    /// is drawn, or into the map.
+    composites: Vec<Option<Composite>>,
+    /// By target, a drawn one's recorded draws.
+    bundles: Vec<Option<RenderBundleId>>,
+    /// The drawn targets' depth, where the map's passes have one, which
+    /// every pipeline they draw with declares.
+    depth: Option<TextureId>,
+    /// By node, a fill's composite of its colour through its target.
+    solids: Vec<Option<Composite>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct Targets {
+    plan: TargetPlan,
+    roles: Vec<Role>,
+    order: Vec<Run>,
+    steps: Vec<Vec<Step>>,
+    /// By process, whether its layer shows at the frame's zoom.
+    visible: Vec<bool>,
+    /// By node, a fill drawn through a target in a colour alone: that
+    /// colour at its opacity, premultiplied.
+    colors: Vec<Option<[f32; 4]>>,
+    made: Made,
+    /// The plan changed since the targets were made.
+    stale: bool,
+    pipeline: Option<RenderPipelineId>,
+    layout: BindGroupLayoutId,
+    sampler: SamplerId,
+}
+
+impl Targets {
+    pub(crate) fn new(gpu: &mut dyn Gpu) -> Self {
+        use BindGroupLayoutEntry as E;
+        let fs = ShaderStages::FRAGMENT;
+        let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
+            label: "image process",
+            entries: &[
+                E::uniform(0, fs),
+                E::texture(1, fs, true, TextureViewDimension::D2),
+                E::texture(2, fs, true, TextureViewDimension::D2),
+                E::sampler(3, fs, true),
+            ],
+        });
+        let sampler = gpu.create_sampler(&SamplerDesc {
+            label: "image process",
+            filter: FilterMode::Linear,
+            mipmap_filter: FilterMode::Nearest,
+            anisotropy: 1,
+        });
+        Self {
+            plan: TargetPlan::default(),
+            roles: Vec::new(),
+            order: Vec::new(),
+            steps: Vec::new(),
+            visible: Vec::new(),
+            colors: Vec::new(),
+            made: Made::default(),
+            stale: false,
+            pipeline: None,
+            layout,
+            sampler,
+        }
+    }
+
+    /// Whether the style draws through any target.
+    pub(crate) fn any(&self) -> bool {
+        self.plan.targets > 0
+    }
+
+    /// Takes `plan`, unless it is the one held; whether it changed. Makes
+    /// the process pipeline for the first process.
+    pub(crate) fn set_plan(&mut self, gpu: &mut dyn Gpu, plan: TargetPlan) -> bool {
+        if plan == self.plan {
+            return false;
+        }
+        let targets = plan.targets as usize;
+        let mut writers = vec![(0u32, None); targets];
+        for &t in plan.draws.iter().flatten() {
+            writers[t as usize].0 += 1;
+        }
+        for (p, process) in plan.processes.iter().enumerate() {
+            if let Some(t) = process.destination {
+                let w = &mut writers[t as usize];
+                w.0 += 1;
+                w.1 = Some(p);
+            }
+        }
+        self.roles = writers
+            .iter()
+            .map(|&(count, process)| match (count, process) {
+                (0, _) => Role::Unused,
+                (1, Some(p)) => Role::Output(p),
+                _ => Role::Drawn,
+            })
+            .collect();
+        self.steps = plan.processes.iter().map(|p| steps(&p.ops)).collect();
+        self.visible = vec![true; plan.processes.len()];
+        self.colors = vec![None; plan.masks.len()];
+        self.plan = plan;
+        self.order = self.order();
+        self.stale = true;
+        if !self.plan.processes.is_empty() && self.pipeline.is_none() {
+            let target = TargetFormat {
+                color: TextureFormat::Rgba8Unorm,
+                sample_count: 1,
+            };
+            let layouts = [self.layout];
+            let draw = Draw::new(&IMAGE_PROCESS_SHADER, &layouts, target, None);
+            self.pipeline = Some(draw.make(gpu));
+        }
+        true
+    }
+
+    /// The runs in an order where each comes after what it reads: a
+    /// process after its source's writers, a drawn target after its
+    /// processes. A cycle (which the runtime refuses) runs where it is
+    /// first met.
+    fn order(&self) -> Vec<Run> {
+        let mut order = Vec::new();
+        let mut seen = Vec::new();
+        let runs = (0..self.plan.processes.len()).map(Run::Process).chain(
+            (0..self.roles.len())
+                .filter(|&t| self.roles[t] == Role::Drawn)
+                .map(Run::Draw),
+        );
+        for run in runs {
+            self.visit(run, &mut seen, &mut order);
+        }
+        order
+    }
+
+    fn visit(&self, run: Run, seen: &mut Vec<Run>, order: &mut Vec<Run>) {
+        if seen.contains(&run) {
+            return;
+        }
+        seen.push(run);
+        match run {
+            Run::Process(p) => {
+                if let Some(writer) = self.writer(self.plan.processes[p].source) {
+                    self.visit(writer, seen, order);
+                }
+            }
+            Run::Draw(t) => {
+                let processes = self.plan.processes.iter().enumerate();
+                for (p, _) in processes.filter(|(_, q)| q.destination == Some(t as u32)) {
+                    self.visit(Run::Process(p), seen, order);
+                }
+            }
+        }
+        order.push(run);
+    }
+
+    /// The run that completes target `t`.
+    fn writer(&self, t: u32) -> Option<Run> {
+        match self.roles.get(t as usize)? {
+            Role::Unused => None,
+            Role::Drawn => Some(Run::Draw(t as usize)),
+            Role::Output(p) => Some(Run::Process(*p)),
+        }
+    }
+
+    /// Shows or hides a process: a hidden one's output is transparent.
+    pub(crate) fn set_visible(&mut self, process: usize, visible: bool) {
+        if let Some(v) = self.visible.get_mut(process) {
+            *v = visible;
+        }
+    }
+
+    /// Whether node `node` draws into or through a target.
+    pub(crate) fn routes(&self, node: usize) -> bool {
+        self.draws_into(node).is_some() || self.mask_of(node).is_some()
+    }
+
+    /// Whether node `node` draws nothing: into a target, which draws it in
+    /// its own pass, or through one nothing writes.
+    pub(crate) fn off_map(&self, node: usize) -> bool {
+        self.draws_into(node).is_some()
+            || self
+                .mask_of(node)
+                .is_some_and(|t| self.texture(t).is_none())
+    }
+
+    /// Sets the colour of fill `node`, drawn through a target, where it
+    /// draws one alone (no pattern); whether it changed between a colour
+    /// and none, which records the bundles again.
+    pub(crate) fn set_color(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        node: usize,
+        color: Option<[f32; 4]>,
+    ) -> bool {
+        let Some(slot) = self.colors.get_mut(node) else {
+            return false;
+        };
+        let changed = slot.is_some() != color.is_some();
+        *slot = color;
+        if let (Some(color), Some(Some(composite))) = (color, self.made.solids.get_mut(node)) {
+            Composites::set_color(gpu, composite, color);
+        }
+        changed
+    }
+
+    /// The composite of fill `node` in its colour through its target,
+    /// where it draws a colour alone.
+    pub(crate) fn solid(&self, node: usize) -> Option<&Composite> {
+        self.colors.get(node)?.as_ref()?;
+        self.made.solids.get(node)?.as_ref()
+    }
+
+    /// The target node `node` draws into, if any.
+    pub(crate) fn draws_into(&self, node: usize) -> Option<u32> {
+        self.plan.draws.get(node).copied().flatten()
+    }
+
+    /// The target node `node` draws through, if any.
+    pub(crate) fn mask_of(&self, node: usize) -> Option<u32> {
+        self.plan.masks.get(node).copied().flatten()
+    }
+
+    /// The texture target `t` reads as, once made: `None` where nothing
+    /// writes it.
+    pub(crate) fn texture(&self, t: u32) -> Option<TextureId> {
+        match *self.roles.get(t as usize)? {
+            Role::Unused => None,
+            Role::Drawn => Some(self.made.drawn.get(t as usize)?.as_ref()?.texture()),
+            Role::Output(p) => self.made.outputs.get(p).copied(),
+        }
+    }
+
+    /// Whether the process pipeline compiled, where there is one.
+    pub(crate) fn ready(&self, gpu: &mut dyn Gpu) -> bool {
+        self.pipeline.is_none_or(|p| gpu.pipeline_ready(p.into()))
+    }
+
+    pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
+        self.pipeline.into_iter().map(PipelineId::from).collect()
+    }
+
+    /// Makes the targets for frames of `size` pixels drawn into
+    /// `attachments`, unless they are made for those; whether they were
+    /// made anew, so that the bundles drawing into or from them record
+    /// again.
+    pub(crate) fn fit(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        composites: &mut Composites,
+        size: [u32; 2],
+        attachments: Attachments,
+    ) -> bool {
+        // Without targets nothing is made, at any size: only the plan that
+        // dropped them lets theirs go.
+        let made = &self.made;
+        let fits = !self.any() || (made.size == size && made.attachments == Some(attachments));
+        if !self.stale && fits {
+            return false;
+        }
+        self.stale = false;
+        std::mem::take(&mut self.made).release(gpu);
+        if !self.any() {
+            return true;
+        }
+        let color = |gpu: &mut dyn Gpu, label| {
+            gpu.create_texture(&TextureDesc {
+                label,
+                width: size[0],
+                height: size[1],
+                array_layers: 1,
+                dimension: TextureViewDimension::D2,
+                format: TextureFormat::Rgba8Unorm,
+                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+                sample_count: 1,
+                mip_levels: 1,
+            })
+        };
+        let samples = (attachments.sample_count, false);
+        let drawn: Vec<_> = (self.roles.iter())
+            .map(|r| {
+                (*r == Role::Drawn)
+                    .then(|| Target::new(gpu, "render target", attachments.color, size, samples))
+            })
+            .collect();
+        let depth = (attachments.depth)
+            .filter(|_| drawn.iter().any(Option::is_some))
+            .map(|format| {
+                gpu.create_texture(&TextureDesc {
+                    label: "render target depth",
+                    width: size[0],
+                    height: size[1],
+                    array_layers: 1,
+                    dimension: TextureViewDimension::D2,
+                    format,
+                    usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TRANSIENT_ATTACHMENT,
+                    sample_count: attachments.sample_count,
+                    mip_levels: 1,
+                })
+            });
+        let wirings: Vec<_> = self.steps.iter().map(|s| wiring(s)).collect();
+        let scratch_count = (wirings.iter().flatten())
+            .filter_map(|&(_, _, out)| match out {
+                Texture::Scratch(i) => Some(i + 1),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let scratch = (0..scratch_count)
+            .map(|_| color(gpu, "image process scratch"))
+            .collect();
+        let outputs = (0..self.plan.processes.len())
+            .map(|_| color(gpu, "image process output"))
+            .collect();
+        self.made = Made {
+            size,
+            attachments: Some(attachments),
+            drawn,
+            outputs,
+            scratch,
+            depth,
+            ..Made::default()
+        };
+        let blank = composites.blank();
+        for (p, wires) in wirings.iter().enumerate() {
+            let source = self.texture(self.plan.processes[p].source);
+            let resolve = |t: Texture| match t {
+                Texture::Source => source.unwrap_or(blank),
+                Texture::Scratch(i) => self.made.scratch[i],
+                Texture::Output => self.made.outputs[p],
+            };
+            let passes = wires
+                .iter()
+                .map(|&(input, original, output)| {
+                    let uniform = gpu.create_buffer(&BufferDesc {
+                        label: "image process",
+                        size: (WORDS * 4) as u64,
+                        usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+                    });
+                    let group = gpu.create_bind_group(&BindGroupDesc {
+                        label: "image process",
+                        layout: self.layout,
+                        entries: &[
+                            BindGroupEntry::buffer(0, uniform),
+                            BindGroupEntry::texture(1, resolve(input), TextureViewDimension::D2),
+                            BindGroupEntry::texture(
+                                2,
+                                original.map_or(blank, resolve),
+                                TextureViewDimension::D2,
+                            ),
+                            BindGroupEntry::sampler(3, self.sampler),
+                        ],
+                    });
+                    Pass_ {
+                        uniform,
+                        group,
+                        written: [f32::NAN; WORDS],
+                        output: resolve(output),
+                    }
+                })
+                .collect();
+            self.made.passes.push(passes);
+        }
+        let drawn_out = (0..self.plan.processes.len())
+            .map(|p| {
+                let to_map = match self.plan.processes[p].destination {
+                    None => true,
+                    Some(t) => self.roles[t as usize] == Role::Drawn,
+                };
+                let output = self.made.outputs[p];
+                to_map.then(|| composites.composite(gpu, output, None, Mode::Sampled, 1.0))
+            })
+            .collect();
+        self.made.composites = drawn_out;
+        let solids = (0..self.plan.masks.len())
+            .map(|node| {
+                let mask = self.texture(self.plan.masks[node]?)?;
+                let mut solid = composites.composite(gpu, blank, Some(mask), Mode::Solid, 1.0);
+                if let Some(color) = self.colors[node] {
+                    Composites::set_color(gpu, &mut solid, color);
+                }
+                Some(solid)
+            })
+            .collect();
+        self.made.solids = solids;
+        self.made.bundles = vec![None; self.roles.len()];
+        true
+    }
+
+    /// The draws of a process's output into the map, or into its drawn
+    /// destination: `None` where it has none.
+    pub(crate) fn composite(&self, process: usize) -> Option<&Composite> {
+        self.made.composites.get(process)?.as_ref()
+    }
+
+    /// The processes that draw into the map before node `at`.
+    pub(crate) fn drawing_on_map_at(&self, at: usize) -> impl Iterator<Item = usize> + '_ {
+        (self.plan.processes.iter().enumerate())
+            .filter(move |(_, p)| p.destination.is_none() && p.at as usize == at)
+            .map(|(i, _)| i)
+    }
+
+    /// What drawn target `t` draws, in style order: its nodes, and its
+    /// processes' outputs before node `at`.
+    pub(crate) fn writers(&self, t: usize) -> Vec<Writer> {
+        let mut writers: Vec<(usize, u8, Writer)> = (self.plan.draws.iter().enumerate())
+            .filter(|(_, d)| **d == Some(t as u32))
+            .map(|(n, _)| (n, 1, Writer::Node(n)))
+            .collect();
+        for (p, process) in self.plan.processes.iter().enumerate() {
+            if process.destination == Some(t as u32) {
+                writers.push((process.at as usize, 0, Writer::Process(p)));
+            }
+        }
+        writers.sort_by_key(|&(at, kind, _)| (at, kind));
+        writers.into_iter().map(|(_, _, w)| w).collect()
+    }
+
+    /// The drawn targets, by index.
+    pub(crate) fn drawn(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.roles.len()).filter(|&t| self.roles[t] == Role::Drawn)
+    }
+
+    /// Replaces drawn target `t`'s recorded draws.
+    pub(crate) fn set_bundle(&mut self, gpu: &mut dyn Gpu, t: usize, bundle: RenderBundleId) {
+        if let Some(slot) = self.made.bundles.get_mut(t) {
+            slot.replace(bundle).release(gpu);
+        } else {
+            bundle.release(gpu);
+        }
+    }
+
+    /// The frame's passes before the map: each process's, where its
+    /// pipeline compiled, and each drawn target's. Returns the draws.
+    pub(crate) fn passes(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        frame: &FrameBlock,
+        out: &mut Vec<orb_hal::Pass>,
+    ) -> u32 {
+        let depth = self.made.depth;
+        let ready = self.ready(gpu);
+        let mut draws = 0;
+        for run in self.order.clone() {
+            match run {
+                Run::Draw(t) => {
+                    let Some(target) = &self.made.drawn[t] else {
+                        continue;
+                    };
+                    let bundle = self.made.bundles[t];
+                    out.push(orb_hal::Pass::Render(RenderPass {
+                        label: "render target",
+                        colors: vec![target.attachment(LoadOp::Clear([0.0; 4]))],
+                        depth: depth.map(|target| DepthAttachment {
+                            target,
+                            load: LoadOp::Clear(0.0),
+                            store: StoreOp::Discard,
+                        }),
+                        commands: bundle
+                            .map(|b| vec![RenderCommand::ExecuteBundles(vec![b])])
+                            .unwrap_or_default(),
+                    }));
+                    draws += u32::from(bundle.is_some());
+                }
+                Run::Process(p) => {
+                    let shown = self.visible[p] && ready;
+                    if !shown {
+                        out.push(clear(self.made.outputs[p]));
+                        continue;
+                    }
+                    let pipeline = self.pipeline.expect("made with the first process");
+                    for (s, step) in self.steps[p].iter().enumerate() {
+                        let words = uniform(step, frame, self.made.size);
+                        let pass = &mut self.made.passes[p][s];
+                        if words != pass.written {
+                            pass.written = words;
+                            gpu.write_buffer(pass.uniform, 0, bytemuck::cast_slice(&words));
+                        }
+                        out.push(orb_hal::Pass::Render(RenderPass {
+                            label: "image process",
+                            commands: vec![
+                                RenderCommand::SetPipeline(pipeline),
+                                RenderCommand::SetBindGroup {
+                                    index: 0,
+                                    group: pass.group,
+                                },
+                                RenderCommand::Draw {
+                                    vertices: 0..3,
+                                    instances: 0..1,
+                                },
+                            ],
+                            ..clear_pass(pass.output)
+                        }));
+                        draws += 1;
+                    }
+                }
+            }
+        }
+        draws
+    }
+}
+
+/// What reads a drawn target writes into it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Writer {
+    Node(usize),
+    Process(usize),
+}
+
+fn clear_pass(texture: TextureId) -> RenderPass {
+    RenderPass {
+        label: "image process clear",
+        colors: vec![ColorAttachment {
+            target: texture,
+            resolve: None,
+            store: StoreOp::Store,
+            load: LoadOp::Clear([0.0; 4]),
+        }],
+        depth: None,
+        commands: Vec::new(),
+    }
+}
+
+fn clear(texture: TextureId) -> orb_hal::Pass {
+    orb_hal::Pass::Render(clear_pass(texture))
+}
+
+/// A Gaussian of standard deviation `sigma` texels as linear taps: the
+/// centre weight, then each tap's (offset, weight), offsets in texels,
+/// sampling every `stride` texels where the kernel is wider than the taps
+/// reach.
+fn gaussian(sigma: f32) -> (f32, Vec<[f32; 2]>) {
+    let radius = (sigma * 3.0).ceil().max(1.0);
+    let stride = (radius / (2 * MAX_TAPS) as f32).ceil().max(1.0);
+    let n = (radius / stride).ceil() as usize;
+    let w = |i: usize| {
+        let x = i as f32 * stride;
+        (-x * x / (2.0 * sigma * sigma)).exp()
+    };
+    let total = w(0) + 2.0 * (1..=n).map(w).sum::<f32>();
+    let taps = (1..=n)
+        .step_by(2)
+        .map(|i| {
+            let (a, b) = (w(i), if i < n { w(i + 1) } else { 0.0 });
+            let offset = (i as f32 * a + (i + 1) as f32 * b) / (a + b) * stride;
+            [offset, (a + b) / total]
+        })
+        .collect();
+    (w(0) / total, taps)
+}
+
+/// A pass's uniform for `frame`, over textures of `size` pixels.
+fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2]) -> [f32; WORDS] {
+    let mut words = [0.0f32; WORDS];
+    let texel = [1.0 / size[0].max(1) as f32, 1.0 / size[1].max(1) as f32];
+    let (kernel, step_uv, weights): ([f32; 4], [f32; 2], Vec<f32>) = match &step.kernel {
+        Kernel::Copy => ([0.0; 4], [0.0; 2], Vec::new()),
+        Kernel::BlurX { size } | Kernel::BlurY { size, .. } => {
+            let (centre, taps) = gaussian(*size);
+            let (combine, amount) = match step.kernel {
+                Kernel::BlurY {
+                    combine, amount, ..
+                } => (combine, amount),
+                _ => (0, 0.0),
+            };
+            let axis = match step.kernel {
+                Kernel::BlurX { .. } => [texel[0], 0.0],
+                _ => [0.0, texel[1]],
+            };
+            let mut weights = vec![centre];
+            weights.extend(taps.iter().flatten());
+            let kernel = [1.0, taps.len() as f32, combine as f32, amount];
+            (kernel, axis, weights)
+        }
+        Kernel::Convolve(k) => {
+            let side = (k.len() as f32).sqrt().round();
+            let kernel = [2.0, side, 0.0, 0.0];
+            (kernel, texel, k.clone())
+        }
+    };
+    words[0..4].copy_from_slice(&kernel);
+    words[4..6].copy_from_slice(&step_uv);
+    words[8..8 + weights.len().min(64)].copy_from_slice(&weights[..weights.len().min(64)]);
+    words[72] = step.pointwise.len() as f32;
+    // Noise is fixed to the map: lattices of the whole zooms around the
+    // camera's, each `size` logical pixels a point at its zoom, the finer
+    // fading in towards the next zoom; positions camera-relative, with
+    // each lattice's offset at the camera taken in f64 where it repeats.
+    let zoom_floor = frame.zoom.floor();
+    let fade = (frame.zoom - zoom_floor) as f32;
+    let px_per_world = 1.0 / f64::from(frame.world_per_px.max(f32::MIN_POSITIVE));
+    let floor_px_per_world = px_per_world * (zoom_floor - frame.zoom).exp2();
+    for (i, op) in step.pointwise.iter().enumerate() {
+        let (a, b): ([f32; 4], [f32; 4]) = match *op {
+            Pointwise::Select { color, tolerance } => (
+                [1.0, tolerance / 255.0, 0.0, 0.0],
+                [color[0], color[1], color[2], 0.0],
+            ),
+            Pointwise::Noise { size, amount } => {
+                let scale = floor_px_per_world / f64::from(size);
+                let offset = |s: f64| frame.camera.map(|c| (c * s).rem_euclid(256.0) as f32);
+                let [x0, y0] = offset(scale);
+                let [x1, y1] = offset(scale * 2.0);
+                ([2.0, amount, fade, scale as f32], [x0, y0, x1, y1])
+            }
+            Pointwise::Threshold { cutoff } => ([3.0, cutoff / 255.0, 0.0, 0.0], [0.0; 4]),
+            Pointwise::Invert => ([4.0, 0.0, 0.0, 0.0], [0.0; 4]),
+        };
+        let at = 76 + i * 8;
+        words[at..at + 4].copy_from_slice(&a);
+        words[at + 4..at + 8].copy_from_slice(&b);
+    }
+    if step
+        .pointwise
+        .iter()
+        .any(|p| matches!(p, Pointwise::Noise { .. }))
+    {
+        words[140..152].copy_from_slice(&unproject(&frame.view_proj));
+    }
+    words
+}
+
+/// The rows of the map from normalized device coordinates to the
+/// camera-relative world on the plane (z = 0), homogeneous, as vectors of
+/// four: the inverse of the view's projection of the plane.
+fn unproject(m: &[[f64; 4]; 4]) -> [f32; 12] {
+    // Clip x, y and w of the plane's (x, y, 1), by row.
+    let h = [
+        [m[0][0], m[1][0], m[3][0]],
+        [m[0][1], m[1][1], m[3][1]],
+        [m[0][3], m[1][3], m[3][3]],
+    ];
+    let det = h[0][0] * (h[1][1] * h[2][2] - h[1][2] * h[2][1])
+        - h[0][1] * (h[1][0] * h[2][2] - h[1][2] * h[2][0])
+        + h[0][2] * (h[1][0] * h[2][1] - h[1][1] * h[2][0]);
+    if det.abs() < f64::MIN_POSITIVE {
+        return [0.0; 12];
+    }
+    let c =
+        |r0: usize, c0: usize, r1: usize, c1: usize| h[r0][c0] * h[r1][c1] - h[r0][c1] * h[r1][c0];
+    let inv = [
+        [c(1, 1, 2, 2), -c(0, 1, 2, 2), c(0, 1, 1, 2)],
+        [-c(1, 0, 2, 2), c(0, 0, 2, 2), -c(0, 0, 1, 2)],
+        [c(1, 0, 2, 1), -c(0, 0, 2, 1), c(0, 0, 1, 1)],
+    ];
+    let mut rows = [0.0f32; 12];
+    for (r, row) in inv.iter().enumerate() {
+        for (k, v) in row.iter().enumerate() {
+            rows[r * 4 + k] = (v / det) as f32;
+        }
+    }
+    rows
+}
+
+impl Release for Pass_ {
+    fn release(self, gpu: &mut dyn Gpu) {
+        (self.group, self.uniform).release(gpu);
+    }
+}
+
+impl Release for Made {
+    fn release(self, gpu: &mut dyn Gpu) {
+        (self.bundles, self.composites, self.solids, self.passes).release(gpu);
+        self.depth.release(gpu);
+        (self.drawn, self.outputs, self.scratch).release(gpu);
+    }
+}
+
+impl Release for Targets {
+    fn release(self, gpu: &mut dyn Gpu) {
+        self.made.release(gpu);
+        (self.pipeline, self.layout, self.sampler).release(gpu);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operations_become_passes() {
+        let ops = [
+            ProcessOp::Select {
+                color: [1.0, 1.0, 0.0],
+                tolerance: 16.0,
+            },
+            ProcessOp::Blur { size: 5.0 },
+            ProcessOp::Noise {
+                size: 2.0,
+                amount: 0.25,
+            },
+            ProcessOp::Threshold { cutoff: 128.0 },
+            ProcessOp::Blur { size: 0.0 },
+            ProcessOp::HighPass { size: 2.0 },
+        ];
+        let passes = steps(&ops);
+        let kernels: Vec<_> = passes
+            .iter()
+            .map(|s| (&s.kernel, s.pointwise.len()))
+            .collect();
+        assert_eq!(
+            kernels,
+            [
+                (&Kernel::Copy, 1),
+                (&Kernel::BlurX { size: 5.0 }, 0),
+                (
+                    &Kernel::BlurY {
+                        size: 5.0,
+                        combine: 0,
+                        amount: 0.0
+                    },
+                    2
+                ),
+                (&Kernel::BlurX { size: 2.0 }, 0),
+                (
+                    &Kernel::BlurY {
+                        size: 2.0,
+                        combine: 2,
+                        amount: 0.0
+                    },
+                    0
+                ),
+            ]
+        );
+        // The high-pass weighs the threshold's output against its blur:
+        // neither is the scratch its axes write.
+        assert_eq!(
+            wiring(&passes),
+            [
+                (Texture::Source, None, Texture::Scratch(0)),
+                (Texture::Scratch(0), None, Texture::Scratch(1)),
+                (Texture::Scratch(1), None, Texture::Scratch(0)),
+                (Texture::Scratch(0), None, Texture::Scratch(1)),
+                (
+                    Texture::Scratch(1),
+                    Some(Texture::Scratch(0)),
+                    Texture::Output
+                ),
+            ]
+        );
+        assert_eq!(steps(&[]), [Step::of(Kernel::Copy)]);
+    }
+
+    #[test]
+    fn gaussians_sum_to_one() {
+        for sigma in [0.3, 1.0, 5.0, 20.0, 100.0] {
+            let (centre, taps) = gaussian(sigma);
+            assert!(taps.len() <= MAX_TAPS, "{sigma}: {} taps", taps.len());
+            let sum = centre + 2.0 * taps.iter().map(|t| t[1]).sum::<f32>();
+            assert!((sum - 1.0).abs() < 1e-4, "{sigma}: {sum}");
+            // Variance about the centre, as the taps sample it: texels
+            // resolve a kernel only a texel or more wide.
+            if sigma < 1.0 {
+                continue;
+            }
+            let variance = 2.0 * taps.iter().map(|t| t[0] * t[0] * t[1]).sum::<f32>();
+            assert!(
+                (variance.sqrt() / sigma - 1.0).abs() < 0.15,
+                "{sigma}: σ {}",
+                variance.sqrt()
+            );
+        }
+    }
+
+    #[test]
+    fn the_plane_unprojects_where_it_projects() {
+        // A tilted, turned view: world (x, y, 0) → clip.
+        let (c, s) = (0.6f64.cos(), 0.6f64.sin());
+        let m = [
+            [0.002 * c, 0.001 * s, 0.0, 0.0004],
+            [-0.002 * s, 0.001 * c, 0.0, 0.0002],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.1, -0.2, 0.5, 1.0],
+        ];
+        let rows = unproject(&m);
+        for world in [[0.0, 0.0], [120.0, -40.0], [-300.0, 250.0]] {
+            let clip = |r: usize| m[0][r] * world[0] + m[1][r] * world[1] + m[3][r];
+            let ndc = [clip(0) / clip(3), clip(1) / clip(3), 1.0];
+            let h: Vec<f64> = (0..3)
+                .map(|r| (0..3).map(|k| f64::from(rows[r * 4 + k]) * ndc[k]).sum())
+                .collect();
+            let back = [h[0] / h[2], h[1] / h[2]];
+            assert!(
+                (back[0] - world[0]).abs() < 1e-2 && (back[1] - world[1]).abs() < 1e-2,
+                "{world:?} → {back:?}"
+            );
+        }
+    }
+}

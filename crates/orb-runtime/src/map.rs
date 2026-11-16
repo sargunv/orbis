@@ -474,6 +474,8 @@ pub(crate) struct LoadedStyle {
     pub(crate) globe_meshes: bool,
     /// What the renderer's pipeline set was made for.
     pub(crate) pipelines: Option<crate::pipelines::SetKey>,
+    /// The plan revision whose render targets the renderer has.
+    pub(crate) targets: Option<u64>,
 }
 
 impl LoadedStyle {
@@ -1640,6 +1642,7 @@ impl Map {
             terrain: None,
             globe_meshes: self.surface.globe().is_some(),
             pipelines: None,
+            targets: None,
         });
         self.nodes_stale = true;
     }
@@ -2395,6 +2398,12 @@ impl Map {
         let plan = style.worker.plan();
         let keys: Vec<u32> = plan.nodes.iter().map(|n| n.key).collect();
         let fresh = std::mem::take(&mut self.nodes_stale);
+        // The target plan names nodes by index: the renderer takes it with
+        // them.
+        if fresh || style.targets != Some(plan.revision) {
+            style.targets = Some(plan.revision);
+            renderer.set_targets(gpu, plan.targets.clone());
+        }
         // A projection edit put the map on or off a globe: the background
         // takes the mesh it bends (image tiles take theirs as they draw).
         let globe = self.surface.globe().is_some();

@@ -16,6 +16,7 @@ mod paint;
 mod sky;
 mod source;
 mod sprite;
+mod target;
 mod terrain;
 mod tx;
 
@@ -155,6 +156,14 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
             "version" | "name" | "metadata" | "center" | "zoom" | "bearing" | "pitch" | "roll"
             | "sources" | "layers" | "sprite" | "glyphs" | "font-faces" | "light" | "state"
             | "sky" | "terrain" | "projection" | "transition" => {}
+            target::TARGETS => {
+                cx.preview(
+                    Preview::Targets,
+                    target::TARGETS,
+                    m.key_span,
+                    "\"dev.sargunv.orbis:targets\"",
+                );
+            }
             key if UNMODELED_ROOT.contains(&key) => {
                 cx.warn(
                     key,
@@ -228,6 +237,10 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
             .map(std::sync::Arc::new)
             .collect(),
     };
+    let targets = match doc.get(target::TARGETS) {
+        Some(json) if cx.previews.contains(Preview::Targets) => target::parse_targets(cx, json),
+        _ => Vec::new(),
+    };
     let layers = match doc.get("layers") {
         None => {
             cx.error("", doc.span, "missing required property \"layers\"");
@@ -270,6 +283,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
             .and_then(|json| terrain::parse(cx, json, &sources)),
         sources,
         layers,
+        targets,
         warnings: Vec::new(),
         previews: cx.previews,
     })

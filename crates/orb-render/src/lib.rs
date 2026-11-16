@@ -33,10 +33,12 @@ mod pipeline;
 mod release;
 mod scene;
 mod symbol;
+mod targets;
 mod terrain;
 mod tiles;
 pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
 pub use layer_composite::Blend;
+pub use targets::{ProcessOp, ProcessPlan, TargetPlan};
 pub use terrain::{
     DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeFull, DrapeLayout, MAX_SHRINK, SlotRedraw, TERRAIN_EXTENT,
     TERRAIN_GRID, TerrainDem, TerrainGlobe, TerrainPaint, TerrainTile,
@@ -497,6 +499,8 @@ pub struct Renderer {
     layers: layer_composite::LayerComposites,
     /// What draws apart from the map composites through these.
     composites: offscreen::Composites,
+    /// Render targets, which layers draw into and fills through.
+    targets: targets::Targets,
     /// Made for the first terrain.
     terrain: Option<terrain::Terrain>,
     /// The DEM page the terrain reads, as `set_terrain` last gave it.
@@ -621,7 +625,7 @@ impl Renderer {
             self.extrusions,
         )
             .release(gpu);
-        (self.layers, self.composites).release(gpu);
+        (self.layers, self.composites, self.targets).release(gpu);
         let drape = self
             .drape_pipelines
             .map(|d| ((d.paint.pipelines, d.paint.untested), d.images.0));
@@ -800,6 +804,7 @@ impl Renderer {
             downsampler,
             heatmaps,
             layers: Default::default(),
+            targets: targets::Targets::new(gpu),
             composites,
             extrusions,
             terrain: None,
@@ -1263,9 +1268,11 @@ impl Renderer {
 
     /// Puts the draped nodes in stacks as on terrain (`on`), or in none.
     fn assign_stacks_as(&mut self, on: bool) {
-        let inputs: Vec<StackInput> = (self.nodes.iter())
-            .map(|node| StackInput {
-                draped: on && node.family.is_draped(),
+        let inputs: Vec<StackInput> = (self.nodes.iter().enumerate())
+            .map(|(i, node)| StackInput {
+                // What draws into or through a render target draws in
+                // screen space, on the plane.
+                draped: on && node.family.is_draped() && !self.targets.routes(i),
                 group: composite_group(node.composite),
                 blend: (node.composite).map_or(Blend::Normal, |(_, _, blend)| blend),
                 shaded: node.shaded,
@@ -1436,6 +1443,9 @@ impl Renderer {
             .release(gpu);
         self.pipelines_stale = true;
         self.set_stale = true;
+        if self.targets.any() {
+            self.composites.make(gpu, offscreen::Mode::Over);
+        }
         self.invalidate_bundle(gpu);
         self.layers.clear(gpu);
     }
@@ -1501,6 +1511,10 @@ impl Renderer {
                 self.composites.make(gpu, mode);
             }
             self.node_pipelines(i, &mut wanted);
+        }
+        if self.targets.any() {
+            self.composites.make(gpu, offscreen::Mode::Over);
+            wanted.extend(self.targets.pipelines());
         }
         wanted.extend(self.composites.pipelines());
         wanted.extend(self.atmosphere.pipelines());
@@ -1790,6 +1804,25 @@ impl Renderer {
         }
     }
 
+    /// Sets what the style draws through render targets (the
+    /// `dev.sargunv.orbis:targets` preview), by node index: the nodes'
+    /// targets, the fills drawn through them and the image-process layers.
+    /// The bundles record again for a new plan.
+    pub fn set_targets(&mut self, gpu: &mut dyn Gpu, plan: TargetPlan) {
+        if self.targets.set_plan(gpu, plan) {
+            if self.targets.any() {
+                self.composites.make(gpu, offscreen::Mode::Over);
+            }
+            self.restack(gpu);
+        }
+    }
+
+    /// Shows or hides an image-process layer of the target plan: a hidden
+    /// one draws nothing.
+    pub fn set_process_visible(&mut self, process: u32, visible: bool) {
+        self.targets.set_visible(process as usize, visible);
+    }
+
     /// A page of tile textures, `size` texels per tile, for image nodes to
     /// bind.
     pub fn create_page(&mut self, gpu: &mut dyn Gpu, kind: PageKind, size: [u32; 2]) -> PageId {
@@ -1937,11 +1970,22 @@ impl Renderer {
     pub fn set_paint(&mut self, gpu: &mut dyn Gpu, node: u32, paint: &NodePaint) {
         let second_row = self.scene.second_row(node);
         let planes = self.planes;
-        let entry = &mut self.nodes[node as usize];
         assert!(
-            paint.fits(entry.family),
+            paint.fits(self.nodes[node as usize].family),
             "paint family mismatch for node {node}"
         );
+        // A fill drawn through a target in a colour alone composites that
+        // colour through it, drawing nothing of its own.
+        let color = match paint {
+            NodePaint::Fill(p) if p.table_mask == 0 && p.state.mask == 0 => {
+                Some(p.color.map(|c| c * p.opacity))
+            }
+            _ => None,
+        };
+        if self.targets.set_color(gpu, node as usize, color) {
+            self.invalidate_bundle(gpu);
+        }
+        let entry = &mut self.nodes[node as usize];
         let mut words = paint.uniform_words(node);
         entry.solid = match paint {
             NodePaint::Background(p)
@@ -2152,8 +2196,12 @@ impl Renderer {
     /// pass. Only paint chooses it, so neither a camera move nor showing
     /// or hiding a layer records the bundles again.
     fn solid_beneath(&self) -> Option<usize> {
-        let i = (self.nodes.iter()).rposition(|n| {
-            n.solid.is_some() && n.drawn && composite_group(n.composite).is_none()
+        // Not one drawn into a render target, which never reaches the map.
+        let i = (self.nodes.iter().enumerate()).rposition(|(i, n)| {
+            n.solid.is_some()
+                && n.drawn
+                && composite_group(n.composite).is_none()
+                && !self.targets.routes(i)
         })?;
         (self.nodes[..i].iter())
             .all(|n| composite_group(n.composite).is_none())
@@ -2863,8 +2911,13 @@ impl Renderer {
             passes.extend(three_d.drain(..).map(|(_, pass)| Pass::Render(pass)));
             Pass::group(&mut passes, start, "3d layers");
         }
-        let start = passes.len();
         let depth = self.map_depth.filter(|_| self.target.depth.is_some());
+        if self.targets.any() && cull_ready {
+            let start = passes.len();
+            stats.draws += self.targets.passes(gpu, frame, &mut passes);
+            Pass::group(&mut passes, start, "render targets");
+        }
+        let start = passes.len();
         passes.extend(self.layers.passes(depth.map(|(depth, _)| depth)));
         Pass::group(&mut passes, start, "layers apart");
         let map = (target, clear, size);
@@ -2883,6 +2936,7 @@ impl Renderer {
         let end = gpu.poll_pipelines();
         stats.pipelines_pending = end.pending;
         stats.waited = compiling.pending > 0
+            || !self.targets.ready(gpu)
             || end.pending > 0
             || end.made != made
             || self.waiting > 0
@@ -3042,6 +3096,7 @@ impl Renderer {
                     .resize(gpu, &mut self.composites, heatmap, density_size);
             }
         }
+        resized |= (self.targets).fit(gpu, &mut self.composites, logical, self.target);
         if resized {
             self.invalidate_bundle(gpu);
         }
@@ -3078,11 +3133,23 @@ impl Renderer {
         enum Key {
             Layer(u32),
             Terrain(u8),
+            Mask(usize),
         }
         let blank = self.composites.blank();
         let mut runs: Vec<(Key, layer_composite::Run)> = Vec::new();
         for (i, node) in self.nodes.iter().enumerate() {
+            // A node drawn into a render target draws in its pass; a fill
+            // drawn through one composites through its coverage, at its
+            // layer opacity.
+            if self.targets.off_map(i) || self.targets.solid(i).is_some() {
+                continue;
+            }
+            let mask = (self.targets.mask_of(i)).and_then(|t| self.targets.texture(t));
             let (key, opacity, blend, source) = match node.terrain_layer.filter(|_| terrain_on) {
+                _ if mask.is_some() => {
+                    let opacity = node.composite.map_or(1.0, |(_, opacity, _)| opacity);
+                    (Key::Mask(i), opacity, Blend::Normal, None)
+                }
                 Some(l) => {
                     let layer = &self.terrain_layers[usize::from(l)];
                     if !layer.reads_beneath() {
@@ -3109,6 +3176,7 @@ impl Renderer {
                         opacity,
                         blend,
                         source,
+                        mask,
                     },
                 )),
             }
@@ -3153,6 +3221,36 @@ impl Renderer {
                 &bound_once(group),
             ));
         }
+        // Each drawn render target's writers, in style order.
+        let over = self.composites.ready(gpu, offscreen::Mode::Over);
+        for t in self.targets.drawn().collect::<Vec<_>>() {
+            let mut draws = Vec::new();
+            for writer in self.targets.writers(t) {
+                match writer {
+                    targets::Writer::Node(i) => {
+                        let node = &self.nodes[i];
+                        let groups = (&self.draw_groups[..], (node.group, node.second_group), true);
+                        let before = draws.len();
+                        if !self.node_commands(gpu, ready, i, groups, &mut draws, None) {
+                            self.waiting += 1;
+                        }
+                        self.recorded += u32::from(draws.len() > before);
+                    }
+                    targets::Writer::Process(p) => match self.targets.composite(p) {
+                        Some(composite) if over => {
+                            draws.extend(self.composites.commands(composite));
+                        }
+                        _ => self.waiting += 1,
+                    },
+                }
+            }
+            let desc = RenderBundleDesc {
+                label: "render target",
+                ..layers
+            };
+            let bundle = gpu.create_render_bundle(&desc, &bound_once(draws));
+            self.targets.set_bundle(gpu, t, bundle);
+        }
         let mut steps = Vec::new();
         let mut bundles = Vec::new();
         let mut flush = |gpu: &mut dyn Gpu, commands: &mut Vec<RenderCommand>, beneath: bool| {
@@ -3173,8 +3271,30 @@ impl Renderer {
             if self.beneath.is_some_and(|b| i == b + 1) {
                 steps.extend(flush(gpu, &mut commands, true));
             }
+            // Image-process layers drawing into the map, in their place.
+            for p in self.targets.drawing_on_map_at(i) {
+                match self.targets.composite(p) {
+                    Some(composite) if over => {
+                        commands.extend(self.composites.commands(composite));
+                        self.recorded += 1;
+                    }
+                    _ => self.waiting += 1,
+                }
+            }
             if i == self.nodes.len() {
                 break;
+            }
+            if self.targets.off_map(i) {
+                continue;
+            }
+            if let Some(solid) = self.targets.solid(i) {
+                if over {
+                    commands.extend(self.composites.commands(solid));
+                    self.recorded += 1;
+                } else {
+                    self.waiting += 1;
+                }
+                continue;
             }
             let (start, member) = self.layers.at(i);
             match start.map(|g| (g, &self.layers.groups[g])) {

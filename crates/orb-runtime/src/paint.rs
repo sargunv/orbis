@@ -447,6 +447,10 @@ fn write_paint(
         && style.paint.fade == Some(crossfade);
     style.paint.written = Some((zoom, bearing, draping));
     style.paint.fade = Some(crossfade);
+    for (process, &layer) in plan.processes.iter().enumerate() {
+        let shown = plan.style.layers[layer].is_visible_at(zoom);
+        renderer.set_process_visible(process as u32, shown);
+    }
     for (index, node) in plan.nodes.iter().enumerate() {
         if turned_only && !node.family.is_image() {
             continue;

@@ -35,6 +35,14 @@ pub struct Layer {
     /// layout are the same, as GL JS's and Native's `groupByLayout` key
     /// them. `None` groups with no other layer.
     pub layout_group: Option<u64>,
+    /// The render target the layer draws into rather than the map
+    /// (`dev.sargunv.orbis:destination-target`).
+    pub destination_target: Option<String>,
+    /// The render target an image-process layer reads, or a fill draws
+    /// through (`dev.sargunv.orbis:source-target`).
+    pub source_target: Option<String>,
+    /// An image-process layer's operations, in order.
+    pub operations: Vec<crate::Operation>,
 }
 impl Layer {
     /// A layer of type `ty` with `props`, one slot per property of the
@@ -58,6 +66,9 @@ impl Layer {
             first: ty.first(),
             transitions: Vec::new(),
             layout_group: None,
+            destination_target: None,
+            source_target: None,
+            operations: Vec::new(),
         }
     }
 

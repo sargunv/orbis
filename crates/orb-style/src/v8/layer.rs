@@ -6,7 +6,7 @@ use crate::*;
 use orb_expr::json::{Json, JsonValue, Member, Span};
 use orb_expr::{Filter, Kind, PropertyExpression, Value};
 
-use crate::v8::Cx;
+use crate::v8::{Cx, target};
 
 const LAYER_KEYS: &[&str] = &[
     "id",
@@ -402,7 +402,17 @@ pub(crate) fn parse_layer(
             None
         }
         Some(t) => match t.as_str().and_then(LayerType::from_name) {
-            Some(ty) => Some(ty),
+            Some(ty) => match ty.preview() {
+                Some(preview) if !cx.previews.contains(preview) => {
+                    cx.error(
+                        format!("{path}.type"),
+                        t.span,
+                        format!("{t} needs the \"{preview}\" preview, which is off"),
+                    );
+                    None
+                }
+                _ => Some(ty),
+            },
             None => {
                 let names: Vec<&str> = LayerType::V8.iter().map(|t| t.name()).collect();
                 cx.error(
@@ -414,8 +424,17 @@ pub(crate) fn parse_layer(
             }
         },
     };
+    let target_keys = [target::DESTINATION, target::SOURCE, target::OPERATIONS];
     for m in members {
-        if !LAYER_KEYS.contains(&m.key.as_str()) {
+        if target_keys.contains(&m.key.as_str()) {
+            let what = format!("\"{}\"", m.key);
+            cx.preview(
+                Preview::Targets,
+                format!("{path}.{}", m.key),
+                m.key_span,
+                what,
+            );
+        } else if !LAYER_KEYS.contains(&m.key.as_str()) {
             cx.warn_unknown(&path, m);
         }
     }
@@ -443,7 +462,8 @@ pub(crate) fn parse_layer(
             .and_then(Visibility::from_value)
             .unwrap_or(Visibility::Visible)
     };
-    let props: Vec<Slot> = ty
+    let targets = targets(cx, json, &path, ty);
+    let mut props: Vec<Slot> = ty
         .properties()
         .map(|id| {
             let prop = id.prop();
@@ -455,7 +475,35 @@ pub(crate) fn parse_layer(
             property_at(cx, json, &path, prop)
         })
         .collect();
+    // A fill drawn through a target has no features: what would vary by
+    // feature draws its default.
+    if targets.source.is_some() {
+        for (id, slot) in ty.properties().zip(&mut props) {
+            let per_feature = slot
+                .as_expression()
+                .is_some_and(|e| matches!(e.kind(), Kind::Source | Kind::Composite));
+            if per_feature {
+                let section = if id.is_paint() { &paint } else { &layout };
+                cx.warn(
+                    format!("{}.{}", section.path, id.name()),
+                    json.span,
+                    "a fill drawn through a target has no features; this draws its default",
+                );
+                *slot = Slot::constant(Value::Null, false);
+            }
+        }
+    }
     let (source, source_layer, filter) = match ty {
+        _ if targets.source.is_some() => {
+            for key in ["source", "source-layer", "filter"] {
+                if let Some(m) = members.iter().find(|m| m.key == key) {
+                    let message = format!("\"{key}\" is ignored where a layer reads a target");
+                    cx.warn(format!("{path}.{key}"), m.key_span, message);
+                }
+            }
+            (None, None, None)
+        }
+        LayerType::ImageProcess => (None, None, None),
         LayerType::Background => (None, None, None),
         LayerType::Raster | LayerType::Hillshade | LayerType::ColorRelief => {
             let dem = ty != LayerType::Raster;
@@ -493,7 +541,89 @@ pub(crate) fn parse_layer(
     layer.visibility = visibility;
     layer.transitions = transitions;
     layer.layout_group = Some(layout_group(json));
+    layer.destination_target = targets.destination;
+    layer.source_target = targets.source;
+    layer.operations = targets.operations;
     (cx.diagnostics.errors.len() == errors).then_some(layer)
+}
+
+/// A layer's render target keys, as it may have them.
+#[derive(Default)]
+struct Targets {
+    destination: Option<String>,
+    source: Option<String>,
+    operations: Vec<Operation>,
+}
+
+/// The render target keys of a `ty` layer, while their preview is on: a
+/// destination on any layer but extrusions and heatmaps, which draw apart,
+/// and fills drawn through a target; a source on fills and image-process
+/// layers, which need one; operations on image-process layers.
+fn targets(cx: &mut Cx, json: &Json, path: &str, ty: LayerType) -> Targets {
+    if !cx.previews.contains(Preview::Targets) {
+        return Targets::default();
+    }
+    let ignored = |cx: &mut Cx, key: &str, why: &str| {
+        if let Some(value) = json.get(key) {
+            cx.warn(
+                format!("{path}.{key}"),
+                value.span,
+                format!("{why}; ignored"),
+            );
+        }
+    };
+    let source = match ty {
+        LayerType::Fill | LayerType::ImageProcess => {
+            optional_string(cx, json, target::SOURCE, path)
+        }
+        _ => {
+            let why = "only fill and image-process layers read a target";
+            ignored(cx, target::SOURCE, why);
+            None
+        }
+    };
+    if ty == LayerType::ImageProcess && source.is_none() && json.get(target::SOURCE).is_none() {
+        let message = format!("missing required property \"{}\"", target::SOURCE);
+        cx.error(path, json.span, message);
+    }
+    let destination = match ty {
+        LayerType::FillExtrusion | LayerType::Heatmap => {
+            ignored(
+                cx,
+                target::DESTINATION,
+                "extrusions and heatmaps draw apart from targets",
+            );
+            None
+        }
+        LayerType::Fill if source.is_some() => {
+            ignored(
+                cx,
+                target::DESTINATION,
+                "a fill drawn through a target draws on the map",
+            );
+            None
+        }
+        _ => optional_string(cx, json, target::DESTINATION, path),
+    };
+    let operations = match (ty, json.get(target::OPERATIONS)) {
+        (LayerType::ImageProcess, Some(ops)) => {
+            target::parse_operations(cx, ops, &format!("{path}.{}", target::OPERATIONS))
+        }
+        (_, Some(_)) => {
+            ignored(
+                cx,
+                target::OPERATIONS,
+                "only image-process layers have operations",
+            );
+            Vec::new()
+        }
+        (_, None) => Vec::new(),
+    };
+    Targets {
+        destination,
+        source,
+        operations,
+    }
 }
 
 /// A hash of what GL JS's `groupByLayout` keys a layer by: its type,

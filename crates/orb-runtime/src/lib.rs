@@ -49,6 +49,7 @@ mod style;
 mod style_image;
 mod surface;
 mod symbol;
+mod targets;
 mod terrain;
 #[cfg(test)]
 mod testing;

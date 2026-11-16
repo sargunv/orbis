@@ -104,6 +104,18 @@
             "gljs": "GL JS can't draw tile matrix sets",
             "native": "MapLibre Native can't draw tile matrix sets"
           }
+        },
+        {
+          "key": "watercolor",
+          "name": "Watercolor",
+          "detail": "After Stamen Watercolor: OpenFreeMap's land, parks, water and roads painted into a render target, masks of each blurred, roughened by noise fixed to the map and cut, then washed in with darker edges over grained paper, every frame",
+          "orbisOnly": true,
+          "url": "watercolor.json",
+          "swatch": ["#f0bf86", "#82bddb", "#fcf8ef"],
+          "unsupported": {
+            "gljs": "GL JS has no render targets or image processing",
+            "native": "MapLibre Native has no render targets or image processing"
+          }
         }
       ]
     },
