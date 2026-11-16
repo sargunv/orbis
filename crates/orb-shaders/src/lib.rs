@@ -140,6 +140,10 @@ pub const PATTERNS: &str = "with_patterns";
 /// need no test (orb-render's `Untested`).
 pub const CLIP_FRAGMENTS: &str = "clip_fragments";
 
+/// The override constant that sets how many layers a pipeline of stacked
+/// composites samples (`composite_stack.wgsl`'s `stack_layers`, 2 to 8).
+pub const STACK_LAYERS: &str = "stack_layers";
+
 /// The override constant that, set to 11, makes a pipeline read data
 /// textures 2048 words wide (`data_texture.wgsl`'s `data_width_log2`;
 /// 4096 by default): for a device whose texture side is shorter

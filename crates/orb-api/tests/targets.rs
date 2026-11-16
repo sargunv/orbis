@@ -760,3 +760,68 @@ fn a_blended_fill_through_a_target_covers_the_sky() {
         }
     }
 }
+
+/// Image-process layers drawing into the map and fills drawn through
+/// targets in a colour, in a row, draw as they do apart (each a layer
+/// between them, which draws nothing), a row longer than one draw takes
+/// too.
+#[test]
+fn composites_in_a_row_draw_as_they_do_apart() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let at = (Geodetic::new(0.0, 0.0), 6.0);
+    let process = |id: usize, ops: &str| {
+        format!(
+            r#"{{"id": "process-{id}", "type": "dev.sargunv.orbis.image-process",
+                "dev.sargunv.orbis:source-target": "drawn", "dev.sargunv.orbis:operations": [{ops}]}}"#
+        )
+    };
+    let kinds = |id: usize| match id % 4 {
+        0 => process(
+            id,
+            r##"{"type": "color", "value": "#d02060"}, {"type": "opacity", "value": 0.6}"##,
+        ),
+        1 => process(
+            id,
+            r##"{"type": "blur", "size": 6}, {"type": "color", "value": "#2040ff"}, {"type": "opacity", "value": 0.5}"##,
+        ),
+        2 => format!(
+            r##"{{"id": "through-{id}", "type": "fill", "dev.sargunv.orbis:source-target": "drawn",
+                "paint": {{"fill-color": "#20c040", "fill-opacity": 0.4}}}}"##
+        ),
+        _ => process(
+            id,
+            r#"{"type": "invert"}, {"type": "opacity", "value": 0.3}"#,
+        ),
+    };
+    let style = |count: usize, apart: bool| {
+        let mut layers = vec![
+            r##"{"id": "shape", "type": "fill", "source": "shape",
+                "dev.sargunv.orbis:destination-target": "drawn", "paint": {"fill-color": "#fff"}}"##
+                .to_string(),
+        ];
+        for id in 0..count {
+            layers.push(kinds(id));
+            if apart {
+                layers.push(format!(
+                    r#"{{"id": "between-{id}", "type": "line", "source": "shape", "filter": false}}"#
+                ));
+            }
+        }
+        triangle(r#"{"id": "drawn"}"#, &layers.join(", "))
+    };
+    let plain = draw(&runtime, &mut target, &style(0, false), at.0, at.1);
+    for count in [3, 11] {
+        let row = draw(&runtime, &mut target, &style(count, false), at.0, at.1);
+        let apart = draw(&runtime, &mut target, &style(count, true), at.0, at.1);
+        assert!(
+            largest_difference(&row, &plain) > 64,
+            "{count} composites drew little"
+        );
+        let difference = largest_difference(&row, &apart);
+        assert!(
+            difference <= 3,
+            "{count} composites in a row differ from them apart by {difference}"
+        );
+    }
+}

@@ -201,6 +201,16 @@ pub const COMPOSITE_REPLACE_SHADER: Shader = Shader {
     compute: "",
 };
 
+/// Composites in a row over one another and the map, in one draw
+/// (`composite_stack.wgsl`).
+pub const COMPOSITE_STACK_SHADER: Shader = Shader {
+    label: "composite stack",
+    parts: &[wgsl!("composite_stack")],
+    vertex: "vs_stack",
+    fragment: "fs_stack",
+    compute: "",
+};
+
 /// A pass of an image-process layer's operations (`image_process.wgsl`).
 pub const IMAGE_PROCESS_SHADER: Shader = Shader {
     label: "image process",
@@ -539,6 +549,7 @@ pub const SHADERS: &[Shader] = &[
     SCATTER_SHADER,
     COMPOSITE_OVER_SHADER,
     COMPOSITE_REPLACE_SHADER,
+    COMPOSITE_STACK_SHADER,
     IMAGE_PROCESS_SHADER,
     TERRAIN_SHADER,
     TERRAIN_SHADE_SHADER,

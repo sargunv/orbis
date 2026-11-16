@@ -487,6 +487,9 @@ pub struct Renderer {
     /// passes draw in order, the bundles among it.
     bundles: Vec<RenderBundleId>,
     steps: Vec<Step>,
+    /// The stacks the bundles draw rows of composites with, and the fill
+    /// whose colour each layer draws, if one does.
+    stacks: Vec<(offscreen::Stack, Vec<Option<usize>>)>,
     /// Node uniform writes since the last frame.
     paints_written: u32,
     images: image::Images,
@@ -625,7 +628,9 @@ impl Renderer {
             self.extrusions,
         )
             .release(gpu);
+        let stacks = self.stacks.into_iter().map(|(stack, _)| stack);
         (self.layers, self.composites, self.targets).release(gpu);
+        stacks.collect::<Vec<_>>().release(gpu);
         let drape = self
             .drape_pipelines
             .map(|d| ((d.paint.pipelines, d.paint.untested), d.images.0));
@@ -798,6 +803,7 @@ impl Renderer {
             tiles: Default::default(),
             surface_warps: Default::default(),
             bundles: Vec::new(),
+            stacks: Vec::new(),
             steps: Vec::new(),
             paints_written: 0,
             images,
@@ -1445,6 +1451,7 @@ impl Renderer {
         self.set_stale = true;
         if self.targets.any() {
             self.composites.make(gpu, offscreen::Mode::Over);
+            self.composites.make_stack(gpu);
         }
         self.invalidate_bundle(gpu);
         self.layers.clear(gpu);
@@ -1514,6 +1521,7 @@ impl Renderer {
         }
         if self.targets.any() {
             self.composites.make(gpu, offscreen::Mode::Over);
+            self.composites.make_stack(gpu);
             wanted.extend(self.targets.pipelines());
         }
         wanted.extend(self.composites.pipelines());
@@ -1777,6 +1785,9 @@ impl Renderer {
 
     fn drop_bundles(&mut self, gpu: &mut dyn Gpu) {
         std::mem::take(&mut self.bundles).release(gpu);
+        for (stack, _) in std::mem::take(&mut self.stacks) {
+            stack.release(gpu);
+        }
         self.steps.clear();
     }
 
@@ -1812,6 +1823,7 @@ impl Renderer {
         if self.targets.set_plan(gpu, plan) {
             if self.targets.any() {
                 self.composites.make(gpu, offscreen::Mode::Over);
+                self.composites.make_stack(gpu);
             }
             self.restack(gpu);
         }
@@ -1992,6 +2004,20 @@ impl Renderer {
             self.invalidate_bundle(gpu);
         } else if let Some(color) = color {
             self.layers.set_color(gpu, node as usize, color);
+            let layer = self
+                .targets
+                .solid(node as usize)
+                .and_then(offscreen::Composite::layer);
+            for (stack, fills) in &mut self.stacks {
+                for (k, _) in fills
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| **f == Some(node as usize))
+                {
+                    let layer = layer.expect("a fill a stack draws composites a colour");
+                    offscreen::Composites::set_layer(gpu, stack, k, layer);
+                }
+            }
         }
         let entry = &mut self.nodes[node as usize];
         let mut words = paint.uniform_words(node);
@@ -3287,19 +3313,31 @@ impl Renderer {
                 Step::Bundle(bundle)
             })
         };
+        // Image-process layers drawing into the map and fills drawn
+        // through targets in a colour, in a row with nothing else between
+        // them in style order (layers drawn into targets aside), draw as
+        // stacks: a full-screen draw each would cost the map's pass its
+        // every pixel again.
+        for (stack, _) in std::mem::take(&mut self.stacks) {
+            stack.release(gpu);
+        }
+        let stacked = over && self.composites.stack_ready(gpu);
+        let mut row = Vec::new();
         for i in 0..=self.nodes.len() {
             // The solid background and what it hides go in a bundle
             // of their own, which the clear can stand for.
             if self.beneath.is_some_and(|b| i == b + 1) {
+                self.stack_row(gpu, &mut row, &mut commands);
                 steps.extend(flush(gpu, &mut commands, true));
             }
             // Image-process layers drawing into the map, in their place.
             for p in self.targets.drawing_on_map_at(i) {
-                match self.targets.composite(p) {
-                    Some(composite) if over => {
-                        commands.extend(self.composites.commands(composite));
-                        self.recorded += 1;
-                    }
+                match self
+                    .targets
+                    .composite(p)
+                    .and_then(offscreen::Composite::layer)
+                {
+                    Some(layer) if stacked => row.push((layer, Composited::Process(p))),
                     _ => self.waiting += 1,
                 }
             }
@@ -3310,14 +3348,14 @@ impl Renderer {
                 continue;
             }
             if let Some(solid) = self.solid_through(i) {
-                if over {
-                    commands.extend(self.composites.commands(solid));
-                    self.recorded += 1;
-                } else {
-                    self.waiting += 1;
+                match solid.layer() {
+                    Some(layer) if stacked => row.push((layer, Composited::Fill(i))),
+                    _ => self.waiting += 1,
                 }
                 continue;
             }
+            // Whatever else the node draws ends the row.
+            self.stack_row(gpu, &mut row, &mut commands);
             let (start, member) = self.layers.at(i);
             match start.map(|g| (g, &self.layers.groups[g])) {
                 // The pass splits here: its blend draw opens the next
@@ -3357,6 +3395,7 @@ impl Renderer {
             }
             self.recorded += u32::from(commands.len() > before);
         }
+        self.stack_row(gpu, &mut row, &mut commands);
         // The last bundle, empty or not: recorded bundles are never none.
         steps.extend(flush(gpu, &mut commands, true).map(|s| match s {
             Step::Beneath(b) => Step::Bundle(b),
@@ -3364,6 +3403,37 @@ impl Renderer {
         }));
         self.bundles = bundles;
         self.steps = steps;
+    }
+
+    /// Draws `row`, composites in a row as layers and what each
+    /// composites, as stacks into `commands` (one alone as itself), and
+    /// empties it.
+    fn stack_row(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        row: &mut Vec<(offscreen::Layer, Composited)>,
+        commands: &mut Vec<RenderCommand>,
+    ) {
+        for chunk in row.chunks(offscreen::STACK) {
+            self.recorded += 1;
+            if let [(_, alone)] = *chunk {
+                let composite = match alone {
+                    Composited::Process(p) => self.targets.composite(p),
+                    Composited::Fill(i) => self.targets.solid(i),
+                };
+                commands.extend(self.composites.commands(composite.expect("in the row")));
+                continue;
+            }
+            let layers: Vec<offscreen::Layer> = chunk.iter().map(|&(layer, _)| layer).collect();
+            let stack = self.composites.stack(gpu, &layers);
+            commands.extend(self.composites.stack_commands(&stack));
+            let fills = chunk.iter().map(|&(_, c)| match c {
+                Composited::Fill(i) => Some(i),
+                Composited::Process(_) => None,
+            });
+            self.stacks.push((stack, fills.collect()));
+        }
+        row.clear();
     }
 
     /// The DEM prepare, hillshade table, image mip and cull passes and the
@@ -4261,6 +4331,16 @@ fn drape_attachments() -> Attachments {
         sample_count: 1,
     }
     .into()
+}
+
+/// What a composite of a row drawn as stacks composites
+/// ([`Renderer::stack_row`]).
+#[derive(Clone, Copy, Debug)]
+enum Composited {
+    /// An image-process layer's output, into the map.
+    Process(usize),
+    /// A fill drawn through a target in its colour, by node.
+    Fill(usize),
 }
 
 /// What the map's passes draw, in order ([`Renderer::record_bundles`]).

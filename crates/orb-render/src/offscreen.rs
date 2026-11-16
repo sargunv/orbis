@@ -8,7 +8,7 @@
 
 use crate::release::Release;
 use orb_hal::*;
-use orb_shaders::{COMPOSITE_OVER_SHADER, COMPOSITE_REPLACE_SHADER};
+use orb_shaders::{COMPOSITE_OVER_SHADER, COMPOSITE_REPLACE_SHADER, COMPOSITE_STACK_SHADER};
 
 use crate::Blend;
 use crate::pipeline::{Attachments, Draw};
@@ -207,11 +207,15 @@ impl Mode {
 #[derive(Debug)]
 pub(crate) struct Composites {
     layout: BindGroupLayoutId,
+    /// Stacks' ([`Stack`]).
+    stack_layout: BindGroupLayoutId,
     /// Made for the first composite that needs each.
     over: Option<RenderPipelineId>,
     replace: Option<RenderPipelineId>,
+    /// Stacks' by size ([`STACK_SIZES`]).
+    stacks: [Option<RenderPipelineId>; 3],
     /// Those for the map's other kind of pass ([`retarget`](Self::retarget)).
-    kept: [Option<RenderPipelineId>; 2],
+    kept: [Option<RenderPipelineId>; 5],
     target: Attachments,
     linear: SamplerId,
     /// Bound where a composite has no ramp or backdrop.
@@ -226,6 +230,9 @@ pub(crate) struct Composite {
     masked: bool,
     /// It blends its colour rather than its source.
     colored: bool,
+    /// What it samples, as one of a stack ([`Composite::layer`]): a
+    /// sampled composite's source, a solid one's mask.
+    sampled: Option<TextureId>,
     opacity: f32,
     /// A solid composite's colour, premultiplied.
     color: [f32; 4],
@@ -247,6 +254,10 @@ impl Composites {
                 E::texture(4, fs, true, TextureViewDimension::D2),
             ],
         });
+        let stack_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
+            label: "composite stack",
+            entries: &STACK_ENTRIES,
+        });
         let linear = gpu.create_sampler(&SamplerDesc {
             label: "composite",
             filter: FilterMode::Linear,
@@ -266,9 +277,11 @@ impl Composites {
         });
         Self {
             layout,
+            stack_layout,
             over: None,
             replace: None,
-            kept: [None; 2],
+            stacks: [None; 3],
+            kept: [None; 5],
             target,
             linear,
             blank,
@@ -286,8 +299,10 @@ impl Composites {
     /// composited into them, take the place of these, which are kept in
     /// turn.
     pub(crate) fn retarget(&mut self, target: Attachments) {
-        let current = [self.over, self.replace];
-        [self.over, self.replace] = std::mem::replace(&mut self.kept, current);
+        let [a, b, c] = self.stacks;
+        let current = [self.over, self.replace, a, b, c];
+        let [over, replace, a, b, c] = std::mem::replace(&mut self.kept, current);
+        (self.over, self.replace, self.stacks) = (over, replace, [a, b, c]);
         self.target = target;
     }
 
@@ -312,6 +327,97 @@ impl Composites {
         if slot.is_none() {
             *slot = Some(Draw::new(shader, &[self.layout], target, blend).make(gpu));
         }
+    }
+
+    /// Makes the pipelines of stacks, unless they are made.
+    pub(crate) fn make_stack(&mut self, gpu: &mut dyn Gpu) {
+        let layouts = [self.stack_layout];
+        let blend = Some(BlendState::PremultipliedAlpha);
+        let draw = Draw::new(&COMPOSITE_STACK_SHADER, &layouts, self.target, blend);
+        for (slot, size) in self.stacks.iter_mut().zip(STACK_SIZES) {
+            slot.get_or_insert_with(|| {
+                let constants: &[_] = &[(orb_shaders::STACK_LAYERS, size as f64)];
+                Draw {
+                    constants: [&[], constants],
+                    ..draw
+                }
+                .make(gpu)
+            });
+        }
+    }
+
+    /// Whether the pipelines of stacks compiled.
+    pub(crate) fn stack_ready(&self, gpu: &mut dyn Gpu) -> bool {
+        (self.stacks.iter()).all(|p| p.is_some_and(|p| gpu.pipeline_ready(p.into())))
+    }
+
+    /// A stack of `layers`, 2 to [`STACK`], bottom first.
+    pub(crate) fn stack(&mut self, gpu: &mut dyn Gpu, layers: &[Layer]) -> Stack {
+        assert!(
+            (2..=STACK).contains(&layers.len()),
+            "a stack of 2 to {STACK}"
+        );
+        let uniform = gpu.create_buffer(&BufferDesc {
+            label: "composite stack",
+            size: (STACK_WORDS * 4) as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        });
+        let textures: [BindGroupEntry; STACK] = std::array::from_fn(|i| {
+            let texture = layers.get(i).map_or(self.blank, |l| l.texture);
+            BindGroupEntry::texture(2 + i as u32, texture, TextureViewDimension::D2)
+        });
+        let mut entries = vec![
+            BindGroupEntry::buffer(0, uniform),
+            BindGroupEntry::sampler(1, self.linear),
+        ];
+        entries.extend(textures);
+        let group = gpu.create_bind_group(&BindGroupDesc {
+            label: "composite stack",
+            layout: self.stack_layout,
+            entries: &entries,
+        });
+        let stack = Stack {
+            layers: layers.to_vec(),
+            uniform,
+            group,
+        };
+        stack.write(gpu);
+        stack
+    }
+
+    /// Sets layer `i` of `stack` to `layer`, of the same texture, if it
+    /// changed.
+    pub(crate) fn set_layer(gpu: &mut dyn Gpu, stack: &mut Stack, i: usize, layer: Layer) {
+        if stack.layers[i] != layer {
+            debug_assert_eq!(
+                stack.layers[i].texture, layer.texture,
+                "a layer's texture changed"
+            );
+            stack.layers[i] = layer;
+            stack.write(gpu);
+        }
+    }
+
+    /// The pipeline of stacks of `layers`: the smallest that holds them.
+    fn stack_pipeline(&self, layers: usize) -> RenderPipelineId {
+        let size = STACK_SIZES.iter().position(|&s| s >= layers);
+        let pipeline = size.and_then(|s| self.stacks[s]);
+        pipeline.expect("made with the stack")
+    }
+
+    /// A stack's draw, for a bundle.
+    pub(crate) fn stack_commands(&self, stack: &Stack) -> [RenderCommand; 3] {
+        [
+            RenderCommand::SetPipeline(self.stack_pipeline(stack.layers.len())),
+            RenderCommand::SetBindGroup {
+                index: 0,
+                group: stack.group,
+            },
+            RenderCommand::Draw {
+                vertices: 0..3,
+                instances: 0..1,
+            },
+        ]
     }
 
     /// A composite of `source` in `mode` at `opacity`, with `aux` its ramp
@@ -357,9 +463,15 @@ impl Composites {
                 BindGroupEntry::texture(4, mask.unwrap_or(self.blank), D2),
             ],
         });
+        let sampled = match mode {
+            Mode::Sampled => Some(source),
+            Mode::Solid => mask,
+            _ => None,
+        };
         Composite {
             masked: flags.1,
             colored: false,
+            sampled,
             mode,
             opacity,
             color: [0.0; 4],
@@ -429,6 +541,7 @@ impl Composites {
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
         [self.over, self.replace]
             .into_iter()
+            .chain(self.stacks)
             .flatten()
             .map(PipelineId::from)
             .collect()
@@ -461,6 +574,90 @@ impl Composite {
     /// Its colour, premultiplied: a solid composite's.
     pub(crate) fn color(&self) -> [f32; 4] {
         self.color
+    }
+
+    /// What it draws as one layer of a stack: a sampled composite's
+    /// source at its opacity, a solid one's colour through its mask.
+    /// `None` for one that reads the map's pixels or the map beneath.
+    pub(crate) fn layer(&self) -> Option<Layer> {
+        let texture = self.sampled?;
+        Some(match self.mode {
+            Mode::Solid => Layer {
+                texture,
+                scale: 0.0,
+                tint: self.color.map(|c| c * self.opacity),
+            },
+            _ => Layer {
+                texture,
+                scale: self.opacity,
+                tint: [0.0; 4],
+            },
+        })
+    }
+}
+
+/// The most layers a stack draws.
+pub(crate) const STACK: usize = 8;
+
+/// The sizes of stacks' pipelines, each of which samples that many
+/// layers (`composite_stack.wgsl`'s `stack_layers`): a stack draws with the
+/// smallest that holds it, the layers past its own blank.
+const STACK_SIZES: [usize; 3] = [2, 4, STACK];
+
+/// A stack's uniform: its count, then each layer's scale and tint.
+const STACK_WORDS: usize = 4 + STACK * 8;
+
+/// A stack's bind group layout: its uniform, the sampler, its textures.
+const STACK_ENTRIES: [BindGroupLayoutEntry; 2 + STACK] = {
+    let fs = ShaderStages::FRAGMENT;
+    let mut entries = [BindGroupLayoutEntry::uniform(0, fs); 2 + STACK];
+    entries[1] = BindGroupLayoutEntry::sampler(1, fs, true);
+    let mut i = 0;
+    while i < STACK {
+        entries[2 + i] =
+            BindGroupLayoutEntry::texture(2 + i as u32, fs, true, TextureViewDimension::D2);
+        i += 1;
+    }
+    entries
+};
+
+/// One layer of a [`Stack`] ([`Composite::layer`]): its texture sampled
+/// linearly, times `scale`, plus `tint` times the texel's coverage.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Layer {
+    texture: TextureId,
+    scale: f32,
+    tint: [f32; 4],
+}
+
+/// Composites in a row drawn as one: their layers put over one another in
+/// the shader, the result over the map by premultiplied blending, as the
+/// composites one by one would draw it (`composite_stack.wgsl`). Each of
+/// those is a full-screen draw at the map's resolution, which a stack of
+/// [`STACK`] pays once.
+#[derive(Debug)]
+pub(crate) struct Stack {
+    layers: Vec<Layer>,
+    uniform: BufferId,
+    group: BindGroupId,
+}
+
+impl Stack {
+    fn write(&self, gpu: &mut dyn Gpu) {
+        let mut words = [0.0f32; STACK_WORDS];
+        words[0] = self.layers.len() as f32;
+        for (i, layer) in self.layers.iter().enumerate() {
+            let at = 4 + i * 8;
+            words[at] = layer.scale;
+            words[at + 4..at + 8].copy_from_slice(&layer.tint);
+        }
+        gpu.write_buffer(self.uniform, 0, bytemuck::cast_slice(&words));
+    }
+}
+
+impl crate::release::Release for Stack {
+    fn release(self, gpu: &mut dyn Gpu) {
+        (self.group, self.uniform).release(gpu);
     }
 }
 
@@ -514,9 +711,10 @@ impl crate::release::Release for Composite {
 impl crate::release::Release for Composites {
     fn release(self, gpu: &mut dyn Gpu) {
         (
-            self.layout,
+            (self.layout, self.stack_layout),
             self.over,
             self.replace,
+            self.stacks,
             self.kept,
             self.linear,
             self.blank,
