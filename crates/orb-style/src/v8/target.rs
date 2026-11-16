@@ -62,7 +62,8 @@ pub(crate) fn parse_operations(cx: &mut Cx, json: &Json, path: &str) -> Vec<Oper
         .collect()
 }
 
-/// A parameter's spec: a number, colour or pair, which may follow the zoom.
+/// A parameter's spec: a number, colour or pair, which may follow the zoom
+/// and the camera, as a layer-phase paint property may.
 fn param(
     name: &'static str,
     ty: PropertyType,
@@ -76,6 +77,8 @@ fn param(
         interpolated: true,
         minimum: Some(minimum),
         maximum: Some(maximum),
+        extended: Inputs::CAMERA,
+        preview: Some(Preview::Targets),
         ..Prop::ROOT
     }
 }
@@ -370,39 +373,49 @@ fn parse_operation(cx: &mut Cx, json: &Json, path: &str) -> Option<Operation> {
     (cx.diagnostics.errors.len() == errors).then_some(op)
 }
 
-/// A ramp's `stops`: `[[coverage, colour], …]`, coverages 0–1 in order, up
-/// to eight.
-fn ramp_stops(cx: &mut Cx, json: &Json, path: &str) -> Option<Vec<(f32, Color)>> {
+/// A ramp's `stops`: `[[coverage, colour], …]`, up to eight, coverages
+/// 0–1 and, those that are constants, in order. Either may follow the zoom
+/// and the camera.
+fn ramp_stops(
+    cx: &mut Cx,
+    json: &Json,
+    path: &str,
+) -> Option<Vec<(Property<f32>, Property<Color>)>> {
     let at = format!("{path}.stops");
     let Some(stops) = json.get("stops") else {
         cx.error(path, json.span, "missing required property \"stops\"");
         return None;
     };
     let items = cx.array(stops, &at)?;
-    let parsed: Option<Vec<(f32, Color)>> = items
-        .iter()
-        .map(|stop| match stop.as_array()? {
-            [at, color] => Some((at.as_f64()? as f32, Color::parse(color.as_str()?)?)),
-            _ => None,
+    let pairs: Option<Vec<&[Json]>> = (items.iter())
+        .map(|stop| stop.as_array().filter(|s| s.len() == 2))
+        .collect();
+    let Some(pairs) = pairs.filter(|p| (1..=8).contains(&p.len())) else {
+        cx.error(at, stops.span, "expected 1 to 8 [coverage, colour] stops");
+        return None;
+    };
+    let coverage = param("coverage", NUMBER, "0", (0.0, 1.0));
+    let color = param("color", COLOR, "\"black\"", (0.0, 0.0));
+    let parsed: Vec<(Property<f32>, Property<Color>)> = (pairs.iter().enumerate())
+        .map(|(i, pair)| {
+            let path = format!("{at}[{i}]");
+            (
+                typed_property_at(cx, Some(&pair[0]), &format!("{path}[0]"), &coverage),
+                typed_property_at(cx, Some(&pair[1]), &format!("{path}[1]"), &color),
+            )
         })
         .collect();
-    match parsed {
-        Some(stops)
-            if (1..=8).contains(&stops.len())
-                && stops.windows(2).all(|w| w[0].0 <= w[1].0)
-                && stops.iter().all(|s| (0.0..=1.0).contains(&s.0)) =>
-        {
-            Some(stops)
-        }
-        _ => {
-            cx.error(
-                at,
-                stops.span,
-                "expected 1 to 8 [coverage, colour] stops, coverages 0 to 1 in order",
-            );
-            None
-        }
+    let constants: Vec<Option<f32>> = (parsed.iter())
+        .map(|(at, _)| (at.kind() == Kind::Constant).then(|| at.evaluate(0.0)))
+        .collect();
+    let ordered = (constants.iter().flatten())
+        .zip(constants.iter().flatten().skip(1))
+        .all(|(a, b)| a <= b);
+    if !ordered {
+        cx.error(at, stops.span, "expected the stops' coverages in order");
+        return None;
     }
+    Some(parsed)
 }
 
 #[cfg(test)]
@@ -501,7 +514,7 @@ mod tests {
         );
         assert!(matches!(ops[14], Operation::Luminance));
         assert!(
-            matches!(&ops[15], Operation::Ramp { stops } if stops.len() == 2 && stops[1].0 == 1.0)
+            matches!(&ops[15], Operation::Ramp { stops } if stops.len() == 2 && n(&stops[1].0) == 1.0)
         );
         // A noise's speed may follow the zoom.
         let Operation::Noise { speed, .. } = &ops[16] else {
@@ -531,6 +544,7 @@ mod tests {
                 kind: Gradient::Radial
             }
         ));
+        assert!(ops.iter().all(|op| !op.reads_camera()));
         assert!(
             matches!(&ops[20], Operation::Bands { count, width } if n(count) == 6.0 && n(width) == 0.25)
         );
@@ -657,6 +671,101 @@ mod tests {
                 kind: Gradient::Radial
             }]
         ));
+    }
+
+    /// One image-process layer of `ops`.
+    fn operations(ops: &str) -> Result<Style, crate::v8::Diagnostics> {
+        parse(
+            ON,
+            TARGETS,
+            &format!(
+                r#"{{"id":"p","type":"dev.sargunv.orbis.image-process",
+                    "dev.sargunv.orbis:source-target":"paint","dev.sargunv.orbis:operations":[{ops}]}}"#
+            ),
+        )
+    }
+
+    /// Numbers, pairs and colours may follow the camera as well as the
+    /// zoom, as a layer's paint may, without a warning: the operations are
+    /// Orbis's own, beyond what GL JS and Native read anyway.
+    #[test]
+    fn operation_values_follow_the_camera() {
+        let style = operations(
+            r#"{"type":"gradient","angle":["*",-1,["bearing"]]},
+               {"type":"offset",
+                 "translate":["interpolate",["linear"],["pitch"],0,["literal",[0,0]],60,["literal",[0,-200]]]},
+               {"type":"color","value":["interpolate",["linear"],["pitch"],0,"red",60,"blue"]},
+               {"type":"blur","size":["interpolate",["linear"],["zoom"],10,2,14,6]}"#,
+        )
+        .unwrap();
+        assert!(style.warnings.is_empty(), "{:?}", style.warnings);
+        let ops = &style.layers[0].operations;
+        let camera = |pitch, bearing| orb_expr::CameraInputs { pitch, bearing };
+        let Operation::Gradient {
+            kind: Gradient::Linear { angle, .. },
+        } = &ops[0]
+        else {
+            panic!("{:?}", ops[0]);
+        };
+        assert_eq!(angle.evaluate_camera(0.0, camera(0.0, 90.0)), -90.0);
+        let Operation::Offset { translate } = &ops[1] else {
+            panic!("{:?}", ops[1]);
+        };
+        assert_eq!(
+            translate.evaluate_camera(0.0, camera(30.0, 0.0)),
+            [0.0, -100.0]
+        );
+        let Operation::Color { value } = &ops[2] else {
+            panic!("{:?}", ops[2]);
+        };
+        assert_eq!(
+            value.evaluate_camera(0.0, camera(60.0, 0.0)),
+            Color::parse("blue").unwrap()
+        );
+        let reads: Vec<bool> = ops.iter().map(Operation::reads_camera).collect();
+        assert_eq!(reads, [true, true, true, false]);
+    }
+
+    /// A ramp's stops are a coverage and a colour each, either a constant
+    /// or following the zoom and the camera; constant coverages are in
+    /// order.
+    #[test]
+    fn ramp_stops_follow_the_zoom_and_the_camera() {
+        let style = operations(
+            r##"{"type":"ramp","stops":[
+                 [0,"rgba(0,0,0,0)"],
+                 [["interpolate",["linear"],["zoom"],10,0.2,14,0.6],"#f00"],
+                 [1,["interpolate",["linear"],["pitch"],0,"#000",60,"#fff"]]]}"##,
+        )
+        .unwrap();
+        assert!(style.warnings.is_empty(), "{:?}", style.warnings);
+        let op = &style.layers[0].operations[0];
+        let Operation::Ramp { stops } = op else {
+            panic!("{op:?}");
+        };
+        let camera = orb_expr::CameraInputs {
+            pitch: 60.0,
+            bearing: 0.0,
+        };
+        let at: Vec<f32> = stops.iter().map(|s| s.0.evaluate(12.0)).collect();
+        assert_eq!(at, [0.0, 0.4, 1.0]);
+        assert_eq!(
+            stops[2].1.evaluate_camera(0.0, camera),
+            Color::parse("#fff").unwrap()
+        );
+        assert!(op.reads_camera());
+        for invalid in [
+            r#"{"type":"ramp","stops":[]}"#,
+            r#"{"type":"ramp","stops":[[0,"red","blue"]]}"#,
+            r#"{"type":"ramp","stops":[[1.5,"red"]]}"#,
+            r#"{"type":"ramp","stops":[[0,"nope"]]}"#,
+            r#"{"type":"ramp","stops":[[0.6,"red"],
+               [["interpolate",["linear"],["zoom"],0,0.5,20,0.5],"red"],[0.4,"blue"]]}"#,
+            r#"{"type":"ramp","stops":[[0,"red"],[1,"red"],[0,"red"],[1,"red"],[0,"red"],
+               [1,"red"],[0,"red"],[1,"red"],[1,"red"]]}"#,
+        ] {
+            assert!(operations(invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]

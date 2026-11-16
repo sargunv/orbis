@@ -36,6 +36,9 @@ pub(crate) struct PaintState {
     drape: DrapePaint,
     /// The camera inputs paint that reads the camera was written at.
     camera: Option<CameraInputs>,
+    /// The zoom, and the camera where they read it, image-process
+    /// operations were written at.
+    processes: Option<(f64, Option<CameraInputs>)>,
     /// This frame's plan with its transitions eased in, which the drape
     /// paints from too; `None` with nothing easing.
     pub(crate) overlay: Option<Arc<StylePlan>>,
@@ -56,6 +59,12 @@ impl PaintState {
     /// Every node's paint is written again with the next frame.
     pub(crate) fn invalidate(&mut self) {
         self.written = None;
+    }
+
+    /// The image-process operations are written again with the next
+    /// frame: the renderer took a new target plan.
+    pub(crate) fn rewrite_processes(&mut self) {
+        self.processes = None;
     }
 }
 
@@ -145,7 +154,6 @@ pub(crate) fn frame(
         style.paint.invalidate();
     }
     // Paint that reads the camera is written again as it moves.
-    let bearing = inputs.bearing;
     let camera = camera_plan(style, plan, inputs);
     if camera.is_some() && style.paint.camera != Some(inputs) {
         style.paint.camera = Some(inputs);
@@ -176,7 +184,7 @@ pub(crate) fn frame(
         gpu,
         renderer,
         (style, plan),
-        (zoom, bearing),
+        (zoom, inputs),
         crossfade,
         atlas,
     );
@@ -421,15 +429,30 @@ fn write_paint(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
     (style, plan): (&mut LoadedStyle, &StylePlan),
-    (zoom, bearing): (f64, f64),
+    (zoom, inputs): (f64, CameraInputs),
     crossfade: Crossfade,
     atlas: &mut ImageAtlas,
 ) -> Vec<String> {
     let mut missing = Vec::new();
+    let bearing = inputs.bearing;
     if style.paint.written.is_none() {
         // What draped nodes draw with may have changed.
         style.paint.drape.painted = None;
         style.paint.epoch += 1;
+        style.paint.processes = None;
+    }
+    // Image-process operations, at the zoom and, where they read it, the
+    // camera: a change of their values rewrites only their passes'
+    // uniforms.
+    let processes = (zoom, plan.targets.camera.then_some(inputs));
+    if style.paint.processes != Some(processes) {
+        style.paint.processes = Some(processes);
+        for (process, layer) in plan.targets.layers().enumerate() {
+            let layer = &plan.style.layers[layer];
+            renderer.set_process_visible(process as u32, layer.is_visible_at(zoom));
+            let ops = crate::targets::ops_at(&plan.style, layer, zoom, inputs);
+            renderer.set_process_ops(process as u32, ops);
+        }
     }
     // Draped nodes on terrain draw their drape paint, which leaves them
     // out where their layers don't draw ([`drape`]).
@@ -447,12 +470,6 @@ fn write_paint(
         && style.paint.fade == Some(crossfade);
     style.paint.written = Some((zoom, bearing, draping));
     style.paint.fade = Some(crossfade);
-    for (process, layer) in plan.targets.layers().enumerate() {
-        let layer = &plan.style.layers[layer];
-        renderer.set_process_visible(process as u32, layer.is_visible_at(zoom));
-        let ops = crate::targets::ops_at(&plan.style, layer, zoom);
-        renderer.set_process_ops(process as u32, ops);
-    }
     for (index, node) in plan.nodes.iter().enumerate() {
         if turned_only && !node.family.is_image() {
             continue;

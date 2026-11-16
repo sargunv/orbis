@@ -2,7 +2,7 @@
 //! images the size of the view that layers draw into, image-process
 //! layers transform, and fills draw through.
 
-use orb_expr::Color;
+use orb_expr::{Color, PropertyExpression};
 
 use crate::Property;
 
@@ -14,7 +14,9 @@ pub struct RenderTarget {
 
 /// One step of an image-process layer's `dev.sargunv.orbis:operations`.
 /// Images are premultiplied; coverage is their alpha. Sizes are logical
-/// pixels. Numbers and colours may follow the zoom.
+/// pixels. Numbers and colours may follow the zoom and the camera
+/// (`["pitch"]`, `["bearing"]`), evaluated once a frame for the whole
+/// layer, as a layer-phase paint property is.
 #[derive(Clone, Debug)]
 pub enum Operation {
     /// Keeps the pixels whose colour is within `tolerance` (0–255, per
@@ -87,9 +89,11 @@ pub enum Operation {
     /// (a raster's, say) has of light.
     Luminance,
     /// Coverage looked up in a colour ramp: `(coverage, colour)` stops in
-    /// order, interpolated linearly, up to eight.
+    /// order, interpolated linearly, up to eight. A stop's coverage
+    /// (0–1) and colour may follow the zoom and the camera too; a stop
+    /// that falls before the one ahead of it is held at that one's.
     Ramp {
-        stops: Vec<(f32, Color)>,
+        stops: Vec<(Property<f32>, Property<Color>)>,
     },
     /// Each colour channel moved by its own `[x, y]` pixels, right and
     /// down, coverage the most of the three: chromatic aberration. With
@@ -160,6 +164,52 @@ impl Combine {
 }
 
 impl Operation {
+    /// Whether any of its values reads the camera beyond its zoom: it is
+    /// evaluated again as the camera turns and tilts.
+    pub fn reads_camera(&self) -> bool {
+        self.expressions().any(PropertyExpression::reads_camera)
+    }
+
+    /// The expressions among its values.
+    fn expressions(&self) -> impl Iterator<Item = &PropertyExpression> {
+        let n = Property::<f32>::as_expression;
+        let c = Property::<Color>::as_expression;
+        let pair = Property::<[f32; 2]>::as_expression;
+        let values: Vec<Option<&PropertyExpression>> = match self {
+            Self::Select { value, tolerance } => vec![c(value), n(tolerance)],
+            Self::Blur { size }
+            | Self::HighPass { size }
+            | Self::Dilate { size }
+            | Self::Erode { size } => vec![n(size)],
+            Self::Noise {
+                size,
+                amount,
+                speed,
+            } => vec![n(size), n(amount), n(speed)],
+            Self::Threshold { cutoff } => vec![n(cutoff)],
+            Self::Sharpen { size, amount } => vec![n(size), n(amount)],
+            Self::Offset { translate } => vec![pair(translate)],
+            Self::Opacity { value } => vec![n(value)],
+            Self::Color { value } => vec![c(value)],
+            Self::Ramp { stops } => stops.iter().flat_map(|(at, v)| [n(at), c(v)]).collect(),
+            Self::Split {
+                red, green, blue, ..
+            } => vec![pair(red), pair(green), pair(blue)],
+            Self::Gradient {
+                kind: Gradient::Linear { angle },
+            } => vec![n(angle)],
+            Self::Bands { count, width } => vec![n(count), n(width)],
+            Self::Invert
+            | Self::Luminance
+            | Self::Convolve { .. }
+            | Self::Combine { .. }
+            | Self::Gradient {
+                kind: Gradient::Radial,
+            } => Vec::new(),
+        };
+        values.into_iter().flatten()
+    }
+
     /// The operation names, as `type` gives them.
     pub const NAMES: [&'static str; 19] = [
         "select",

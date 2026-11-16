@@ -324,6 +324,17 @@ fn processed_triangle(ops: &str) -> String {
     triangle(r#"{"id": "drawn"}"#, &layers)
 }
 
+/// [`processed_triangle`] with the image-process layer reading a target
+/// nothing writes: what its operations make of nothing.
+fn over_nothing(ops: &str) -> String {
+    processed_triangle(ops)
+        .replace(r#"{"id": "drawn"}"#, r#"{"id": "drawn"}, {"id": "empty"}"#)
+        .replace(
+            r#""dev.sargunv.orbis:source-target": "drawn""#,
+            r#""dev.sargunv.orbis:source-target": "empty""#,
+        )
+}
+
 /// Channel `channel` of the pixel at (`x`, `y`).
 fn channel(image: &[u8], x: u32, y: u32, channel: usize) -> u8 {
     image[((y * WIDTH + x) * 4) as usize + channel]
@@ -376,15 +387,7 @@ fn a_gradient_runs_across_the_view() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
     let at = (Geodetic::new(0.0, 0.0), 6.0);
-    let mut draw = |ops: &str| {
-        let style = processed_triangle(ops)
-            .replace(r#"{"id": "drawn"}"#, r#"{"id": "drawn"}, {"id": "empty"}"#)
-            .replace(
-                r#""dev.sargunv.orbis:source-target": "drawn""#,
-                r#""dev.sargunv.orbis:source-target": "empty""#,
-            );
-        draw(&runtime, &mut target, &style, at.0, at.1)
-    };
+    let mut draw = |ops: &str| draw(&runtime, &mut target, &over_nothing(ops), at.0, at.1);
     let (last, middle) = (WIDTH - 1, WIDTH / 2);
     let near = |found: u8, expected: u8| found.abs_diff(expected) <= 2;
     let down = draw(r#"{"type": "gradient"}"#);
@@ -513,6 +516,88 @@ fn moving_noise_keeps_the_map_drawing() {
     assert!(report.idle);
     let (b, _) = frame(&mut still, &mut target, 5000.0);
     assert_eq!(a, b, "still noise changed with time");
+}
+
+/// A map of `style` at (0, 0), zoom 6 and `camera`'s bearing and pitch,
+/// drawn once idle: the same map each call, moved.
+fn view(map: &mut Map, target: &mut Target, (bearing, pitch): (f64, f64)) -> Vec<u8> {
+    map.jump_to(&CameraTarget {
+        center: Some(Geodetic::new(0.0, 0.0)),
+        zoom: Some(6.0),
+        bearing: Some(bearing),
+        pitch: Some(pitch),
+        ..CameraTarget::default()
+    });
+    common::settle(map, target);
+    target.read_pixels().unwrap()
+}
+
+/// An operation's values may follow the camera, and change as it moves
+/// with the zoom kept: a linear gradient whose angle is the bearing's
+/// negative turns with the map, its none on the north side wherever that
+/// is; a colour that follows the pitch changes as the map tilts.
+#[test]
+fn operations_follow_the_camera() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let style = over_nothing(
+        r##"{"type": "gradient", "angle": ["*", -1, ["bearing"]]},
+            {"type": "color", "value": ["interpolate", ["linear"], ["pitch"], 0, "#00ff00", 60, "#ff00ff"]}"##,
+    );
+    let mut map = Map::new(&runtime, options());
+    map.set_style_json(&style).unwrap();
+    let (last, middle) = (WIDTH - 1, WIDTH / 2);
+    let near = |found: u8, expected: u8| found.abs_diff(expected) <= 2;
+    let north_up = view(&mut map, &mut target, (0.0, 0.0));
+    let (top, bottom) = (
+        channel(&north_up, middle, 0, 1),
+        channel(&north_up, middle, last, 1),
+    );
+    assert!(
+        near(top, 0) && near(bottom, 255),
+        "north up: {top} at the top, {bottom} at the bottom"
+    );
+    // East up: north is on the left.
+    let east_up = view(&mut map, &mut target, (90.0, 0.0));
+    let (left, right) = (
+        channel(&east_up, 0, middle, 1),
+        channel(&east_up, last, middle, 1),
+    );
+    assert!(
+        near(left, 0) && near(right, 255),
+        "east up: {left} at the left, {right} at the right"
+    );
+    // Tilted, magenta.
+    let tilted = view(&mut map, &mut target, (0.0, 60.0));
+    let bottom: Vec<u8> = (0..3).map(|c| channel(&tilted, middle, last, c)).collect();
+    assert!(
+        near(bottom[0], 255) && near(bottom[1], 0) && near(bottom[2], 255),
+        "tilted, the bottom is {bottom:?}"
+    );
+}
+
+/// A ramp's stops may follow the zoom: over a gradient down the view, a
+/// hard step from red to green at a coverage that follows the zoom falls
+/// a quarter of the way down at one zoom and three quarters at another.
+#[test]
+fn ramp_stops_follow_the_zoom() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let style = over_nothing(
+        r##"{"type": "gradient"},
+            {"type": "ramp", "stops": [[0, "#ff0000"],
+              [["interpolate", ["linear"], ["zoom"], 5, 0.25, 7, 0.75], "#ff0000"],
+              [["interpolate", ["linear"], ["zoom"], 5, 0.25, 7, 0.75], "#00ff00"],
+              [1, "#00ff00"]]}"##,
+    );
+    for (zoom, row) in [(5.0, HEIGHT / 4), (7.0, HEIGHT * 3 / 4)] {
+        let image = draw(&runtime, &mut target, &style, Geodetic::new(0.0, 0.0), zoom);
+        let green = (0..HEIGHT).find(|&y| channel(&image, WIDTH / 2, y, 1) > 127);
+        assert!(
+            green.is_some_and(|y| y.abs_diff(row) <= 1),
+            "at zoom {zoom}, green from row {green:?}, not {row}"
+        );
+    }
 }
 
 /// The complementary error function, to seven places (Abramowitz and

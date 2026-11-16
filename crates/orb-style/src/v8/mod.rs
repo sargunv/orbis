@@ -705,9 +705,10 @@ impl Cx {
 
     /// Warns, once per property and document, that a value Orbis draws reads an input
     /// the spec doesn't allow there, so GL JS and MapLibre Native reject
-    /// the style.
+    /// the style. A property behind a preview is Orbis's own, read by
+    /// neither, so it has nothing to warn of.
     pub(crate) fn not_portable(&mut self, path: &str, span: Span, prop: &Prop, beyond: Inputs) {
-        if !self.not_portable.insert(prop.name) {
+        if prop.preview.is_some() || !self.not_portable.insert(prop.name) {
             return;
         }
         let mut inputs: Vec<&str> = beyond.names().collect();

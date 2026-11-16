@@ -2060,7 +2060,8 @@ impl Map {
         let animating = self.mode == RenderMode::Continuous
             && (self.style.as_ref()).is_some_and(|s| {
                 let plan = s.worker.plan();
-                crate::targets::animates(&plan.style, &plan.targets, zoom)
+                let camera = crate::paint::camera_inputs(self.camera.state());
+                crate::targets::animates(&plan.style, &plan.targets, zoom, camera)
             });
         report.idle = report.loaded
             && !animating
@@ -2411,6 +2412,7 @@ impl Map {
         if fresh || style.targets != Some(plan.revision) {
             style.targets = Some(plan.revision);
             renderer.set_targets(gpu, plan.targets.render_plan(&plan.style));
+            style.paint.rewrite_processes();
         }
         // A projection edit put the map on or off a globe: the background
         // takes the mesh it bends (image tiles take theirs as they draw).

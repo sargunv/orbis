@@ -4,13 +4,19 @@
 //! makes the renderer's [`TargetPlan`] of them.
 
 use orb_render::{CombineMode, ProcessOp, ProcessPlan, TargetPlan};
-use orb_style::{Combine, Gradient, LayerType, Operation, Style};
+use orb_style::{CameraInputs, Color, Combine, Gradient, LayerType, Operation, Property, Style};
 
 use crate::style::NodePlan;
 
 /// A target index that draws nowhere and reads as nothing: what a layer
 /// naming an undeclared target draws into or through.
 const NOWHERE: u32 = u32::MAX;
+
+/// A camera looking straight down, north up.
+const LEVEL: CameraInputs = CameraInputs {
+    pitch: 0.0,
+    bearing: 0.0,
+};
 
 /// What the style draws through render targets, by node and target index.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -23,6 +29,8 @@ pub(crate) struct Routes {
     pub(crate) masks: Vec<Option<u32>>,
     /// The image-process layers that draw, in style order.
     pub(crate) processes: Vec<Route>,
+    /// Whether any of their operations reads the camera beyond its zoom.
+    pub(crate) camera: bool,
 }
 
 /// An image-process layer's place among the nodes and the targets it reads
@@ -57,7 +65,7 @@ impl Routes {
                     at: p.at,
                     source: p.source,
                     destination: p.destination,
-                    ops: ops_at(style, &style.layers[p.layer], 0.0),
+                    ops: ops_at(style, &style.layers[p.layer], 0.0, LEVEL),
                 })
                 .collect(),
         }
@@ -156,24 +164,34 @@ pub(crate) fn plan(
         }
         !looped
     });
+    let camera = (processes.iter())
+        .flat_map(|p| &layers[p.layer].operations)
+        .any(Operation::reads_camera);
     Routes {
         targets: targets as u32,
         draws,
         masks,
         processes,
+        camera,
     }
 }
 
-/// Image-process layer `layer`'s operations at `zoom`, for the renderer:
-/// targets by index ([`NOWHERE`] for one the style doesn't declare),
-/// colours straight.
-pub(crate) fn ops_at(style: &Style, layer: &orb_style::Layer, zoom: f64) -> Vec<ProcessOp> {
+/// Image-process layer `layer`'s operations at `zoom` and `camera`, for the
+/// renderer: targets by index ([`NOWHERE`] for one the style doesn't
+/// declare), colours straight.
+pub(crate) fn ops_at(
+    style: &Style,
+    layer: &orb_style::Layer,
+    zoom: f64,
+    camera: CameraInputs,
+) -> Vec<ProcessOp> {
     let target = |id: &str| {
         let at = style.targets.iter().position(|t| t.id == id);
         at.map_or(NOWHERE, |i| i as u32)
     };
-    let color = |c: &orb_style::Property<orb_style::Color>| c.evaluate(zoom).straight();
-    let number = |n: &orb_style::Property<f32>| n.evaluate(zoom);
+    let color = |c: &Property<Color>| c.evaluate_camera(zoom, camera).straight();
+    let number = |n: &Property<f32>| n.evaluate_camera(zoom, camera);
+    let pair = |p: &Property<[f32; 2]>| p.evaluate_camera(zoom, camera);
     (layer.operations.iter())
         .map(|op| match op {
             Operation::Select { value, tolerance } => {
@@ -206,7 +224,7 @@ pub(crate) fn ops_at(style: &Style, layer: &orb_style::Layer, zoom: f64) -> Vec<
                 kernel: kernel.clone(),
             },
             Operation::Offset { translate } => ProcessOp::Offset {
-                translate: translate.evaluate(zoom),
+                translate: pair(translate),
             },
             Operation::Dilate { size } => ProcessOp::Dilate { size: number(size) },
             Operation::Erode { size } => ProcessOp::Erode { size: number(size) },
@@ -228,8 +246,14 @@ pub(crate) fn ops_at(style: &Style, layer: &orb_style::Layer, zoom: f64) -> Vec<
                 color: color(value),
             },
             Operation::Luminance => ProcessOp::Luminance,
+            // A stop before the one ahead of it is held at that one's.
             Operation::Ramp { stops } => ProcessOp::Ramp {
-                stops: stops.iter().map(|(at, c)| (*at, c.straight())).collect(),
+                stops: (stops.iter())
+                    .scan(0.0f32, |last, (at, c)| {
+                        *last = number(at).clamp(*last, 1.0);
+                        Some((*last, color(c)))
+                    })
+                    .collect(),
             },
             Operation::Split {
                 red,
@@ -237,7 +261,7 @@ pub(crate) fn ops_at(style: &Style, layer: &orb_style::Layer, zoom: f64) -> Vec<
                 blue,
                 radial,
             } => ProcessOp::Split {
-                channels: [red, green, blue].map(|c| c.evaluate(zoom)),
+                channels: [red, green, blue].map(pair),
                 radial: *radial,
             },
             Operation::Gradient { kind } => match kind {
@@ -258,13 +282,16 @@ pub(crate) fn ops_at(style: &Style, layer: &orb_style::Layer, zoom: f64) -> Vec<
         .collect()
 }
 
-/// Whether an image-process layer the style draws shows at `zoom` with
-/// noise that moves: frames then change with time alone.
-pub(crate) fn animates(style: &Style, routes: &Routes, zoom: f64) -> bool {
+/// Whether an image-process layer the style draws shows at `zoom` and
+/// `camera` with noise that moves: frames then change with time alone.
+pub(crate) fn animates(style: &Style, routes: &Routes, zoom: f64, camera: CameraInputs) -> bool {
     (routes.layers().map(|l| &style.layers[l]))
         .filter(|layer| layer.is_visible_at(zoom))
         .flat_map(|layer| &layer.operations)
-        .any(|op| matches!(op, Operation::Noise { speed, .. } if speed.evaluate(zoom) > 0.0))
+        .any(|op| {
+            matches!(op, Operation::Noise { speed, .. }
+                if speed.evaluate_camera(zoom, camera) > 0.0)
+        })
 }
 
 #[cfg(test)]
