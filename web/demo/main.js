@@ -34,7 +34,6 @@ import { picker as createPicker } from "./app/picker.js";
 import { attachQuake } from "./app/quake.js";
 import { expose, hashCamera } from "./expose.js";
 import {
-  constraintsOf,
   DEFAULT_SCENE,
   GROUPS,
   LIVE_CAMERA,
@@ -445,7 +444,7 @@ function go(next, { camera, history: mode = "push" } = {}) {
   tone();
   picker.show(next.scene, next.format);
   map.camera.stop();
-  map.camera.setConstraints(constraintsOf(next.scene));
+  map.camera.setConstraints(next.scene.constraints ?? {});
   if (camera) map.camera.jumpTo(camera);
   if (
     sceneUrl(previous.scene, previous.format) ===
@@ -580,7 +579,7 @@ async function load(next, { camera }) {
       container,
       style: await styleFor(next),
       camera,
-      constraints: constraintsOf(next.scene),
+      constraints: next.scene.constraints,
       // The demo shows what Orbis can do beyond the spec too.
       previews: "all",
       backend: backendFor(params()),

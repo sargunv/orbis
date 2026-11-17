@@ -44,8 +44,7 @@
             "zoom": 1.5
           },
           "constraints": {
-            "minZoom": 0,
-            "maxPitch": 85
+            "minZoom": 0
           },
           "flight": "alps-flight.json",
           "light": true,
@@ -65,10 +64,7 @@
             "center": [7.79, 46.06],
             "zoom": 10.4,
             "bearing": -28,
-            "pitch": 62
-          },
-          "constraints": {
-            "maxPitch": 85
+            "pitch": 60
           },
           "terrain": true,
           "swatch": ["#e9e4d8", "#9fc2dd", "#6b5a4a"],
@@ -81,7 +77,7 @@
               "center": [7.6586, 45.9763],
               "zoom": 13.2,
               "bearing": -60,
-              "pitch": 74,
+              "pitch": 60,
               "duration": 4000
             }
           }
@@ -205,9 +201,6 @@
           "detail": "Venice's lagoon at golden hour, sun glitter running to the horizon",
           "orbisOnly": true,
           "url": "shimmer.json",
-          "constraints": {
-            "maxPitch": 85
-          },
           "swatch": ["#f0e2cb", "#33929f", "#e0a855"],
           "unsupported": {
             "gljs": "GL JS has no render targets or image processing",
@@ -218,7 +211,7 @@
               "center": [12.346, 45.4275],
               "zoom": 13.15,
               "bearing": 92,
-              "pitch": 75
+              "pitch": 60
             }
           }
         }

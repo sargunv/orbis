@@ -12,10 +12,10 @@ The cases cover zooms 2.2, 10.3, 14.48 and 18 at pitches 0°, 45°, 60°, 60.1°
 80° and 85°, north-up and rotated 30°. Additional cases cover 256/1024 px source
 tiles, source min/max zoom, a wider FOV, antimeridian crossings, repeated
 worlds, 1200 m elevated content, the close-to-ground camera at zoom 24, GL JS's
-default maxPitch=60 clamp and our maxPitch=85 interaction clamp. Cameras in the
-JSON are the resolved upstream cameras (after its viewport constraints). The
-Rust comparison filters source minzoom just as `TilePyramid` does, and compares
-sorted `(wrap, zoom, column, row)` sets, not traversal order.
+default maxPitch=60 clamp and a maxPitch=85 clamp. Cameras in the JSON are the
+resolved upstream cameras (after its viewport constraints). The Rust comparison
+filters source minzoom just as `TilePyramid` does, and compares sorted
+`(wrap, zoom, column, row)` sets, not traversal order.
 
 Its `globe` set holds 74 covers from upstream's `GlobeTransform`: GL JS's own
 globe cases (`covering_tiles.test.ts` and `globe_covering_tiles.test.ts`: zoomed

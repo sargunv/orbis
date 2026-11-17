@@ -7,8 +7,9 @@ mod common;
 use std::time::Duration;
 
 use orb_api::{
-    Button, CameraEvent, CameraTarget, EaseOptions, Error, Event, Input, Map, MapEvent, MapOptions,
-    Modifiers, Op, PointerKind, Runtime, RuntimeOptions, StyleImage, Target, Transaction, json,
+    Button, CameraEvent, CameraTarget, Constraints, EaseOptions, Error, Event, Input, Map,
+    MapEvent, MapOptions, Modifiers, Op, PointerKind, Runtime, RuntimeOptions, StyleImage, Target,
+    Transaction, json,
 };
 
 /// A red background and a blue box around the origin, with feature ids.
@@ -640,6 +641,11 @@ fn translate_and_circle_pitch_follow_the_feature() {
     );
     let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
+    // The tilt below reaches past the default 60 degrees.
+    map.set_constraints(Constraints {
+        max_pitch: 85.0,
+        ..Constraints::default()
+    });
     map.set_style_json(&style).expect("style");
     settle(&mut map, &mut target);
     let pixels = target.read_pixels().unwrap();

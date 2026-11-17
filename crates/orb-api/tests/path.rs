@@ -43,6 +43,14 @@ fn extruded(style: String) -> String {
     style
 }
 
+/// Lets a camera tilt to 85 degrees, past the default 60.
+fn tilted() -> Constraints {
+    Constraints {
+        max_pitch: 85.0,
+        ..Constraints::default()
+    }
+}
+
 /// Lets a globe's camera look past its horizon.
 fn steep() -> Constraints {
     Constraints {
@@ -1699,6 +1707,7 @@ fn a_turned_view_holds_the_drape_pages_a_fresh_one_does() {
         report.expect("the map idles").memory.drape_atlas
     };
     let mut map = Map::new(&runtime, options());
+    map.set_constraints(tilted());
     map.set_style_json(&alps).unwrap();
     map.jump_to(&camera(at(45.0, 80.0)));
     let rest = settled(&mut map, &mut target);
@@ -1715,6 +1724,7 @@ fn a_turned_view_holds_the_drape_pages_a_fresh_one_does() {
     }
     let turned = settled(&mut map, &mut target);
     let mut fresh = Map::new(&runtime, options());
+    fresh.set_constraints(tilted());
     fresh.set_style_json(&alps).unwrap();
     fresh.jump_to(&camera(at(45.0 + 89.0 * 0.05, 80.0)));
     let fresh = settled(&mut fresh, &mut target);
@@ -2368,6 +2378,7 @@ fn a_blended_hillshade_fades_into_the_fog() {
                 ]}}"##
             );
             let mut map = Map::new(&runtime, options());
+            map.set_constraints(tilted());
             map.set_style_json(&style).unwrap();
             map.jump_to(&camera((Geodetic::new(8.0, 43.0), 7.5, 0.0, 75.0)));
             common::settle(&mut map, &mut target);

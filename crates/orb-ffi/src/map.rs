@@ -864,8 +864,8 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                 let extent = options.initial_extent;
                 map.set_viewport(f64::from(extent.width), f64::from(extent.height));
                 // Native's limits, not orb-camera's GL JS ones (zoom from
-                // -2 to 22, pitch to 85°), which a map whose bounds were
-                // never set would otherwise keep.
+                // -2 to 22), which a map whose bounds were never set would
+                // otherwise keep.
                 map.set_constraints(constraints(&default_bounds()));
                 if options.fields & MLN_MAP_OPTION_TILE_CACHE_ENABLED != 0 {
                     map.set_tile_cache(options.tile_cache_enabled);

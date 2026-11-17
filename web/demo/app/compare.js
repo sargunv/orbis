@@ -15,7 +15,6 @@
 // setStyle, loaded, remove }`, and `style` where it can give its style. In ENGINES, `unsupported(scene)` says why it
 // can't show an entry, `once` why it can't draw both sides, and `isolated`
 // that it needs a cross-origin isolated page (isolation.js).
-import { constraintsOf } from "../styles.js";
 import { h } from "./dom.js";
 import { isolate, isolated } from "./isolation.js";
 
@@ -237,7 +236,7 @@ function show(map, scene, pair, { isolating, onPick }) {
         const opened = await module.open(side.inner, {
           style: await style(),
           camera: map.camera.current,
-          constraints: constraintsOf(scene),
+          constraints: scene.constraints,
         });
         if (closed) {
           opened.remove();

@@ -195,14 +195,8 @@ impl Scene {
         }
     }
 
-    /// The entry's constraints, pitch stopping at 60 degrees where it
-    /// sets none, as in GL JS and MapLibre Native (the library's default
-    /// reaches 85).
     pub(crate) fn constraints(&self) -> Constraints {
-        let defaults = Constraints {
-            max_pitch: 60.0,
-            ..Constraints::default()
-        };
+        let defaults = Constraints::default();
         let Some(c) = self.constraints else {
             return defaults;
         };

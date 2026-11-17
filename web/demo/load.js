@@ -45,6 +45,7 @@ const engines = {
       container,
       style,
       camera: { center: [lon, lat], zoom, bearing, pitch },
+      constraints: { maxPitch: 85 },
       ...(backend && { backend }),
       ...(fetches && { tileFetches: fetches }),
     });
@@ -83,7 +84,7 @@ const engines = {
     ]);
     const maplibregl = gl.default ?? gl;
     maplibregl.setWorkerUrl(workerUrl);
-    // GL JS stops pitch at 60° unless told otherwise; Orbis and Native go to 85°.
+    // GL JS stops pitch at 60° unless told otherwise, as Orbis does.
     const map = new maplibregl.Map({
       container,
       style,

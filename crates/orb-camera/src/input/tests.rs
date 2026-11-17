@@ -949,6 +949,10 @@ fn notches_add_up_within_the_zoom_range() {
 #[test]
 fn a_drag_toward_a_tilted_horizon_moves_a_bounded_way_and_on_past_it() {
     let mut rig = Rig::new();
+    rig.camera.set_constraints(crate::Constraints {
+        max_pitch: 85.0,
+        ..crate::Constraints::default()
+    });
     rig.camera.pitch_by(85.0);
     let mid = DVec2::new(400.0, 300.0);
     // The ground the centre's 25 px span, and the view's top row of ground.

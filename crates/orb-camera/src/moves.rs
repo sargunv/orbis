@@ -77,14 +77,15 @@ pub struct Constraints {
 }
 
 impl Default for Constraints {
-    /// GL JS's defaults, except that pitch reaches 85 degrees, the steepest
-    /// view the flat surface's horizon supports (GL JS stops at 60).
+    /// GL JS's defaults, pitch stopping at 60 degrees as there and in
+    /// MapLibre Native. A map may raise it to 85, the steepest view the
+    /// flat surface's horizon supports.
     fn default() -> Self {
         Self {
             min_zoom: -2.0,
             max_zoom: 22.0,
             min_pitch: 0.0,
-            max_pitch: 85.0,
+            max_pitch: 60.0,
             bounds: None,
         }
     }
@@ -674,7 +675,7 @@ mod tests {
         steep.pitch = 89.0;
         steep.constrain(&Constraints::default(), &Surface::from(&p), VIEWPORT);
         assert!((steep.zoom(&mercator()) - 22.0).abs() < 1e-9);
-        assert_eq!(steep.pitch, 85.0);
+        assert_eq!(steep.pitch, 60.0);
     }
 
     /// Moves on planes other than Web Mercator: a polar plane (where north

@@ -400,7 +400,9 @@ struct Samples {
 }
 
 /// A map on `runtime` loading `style` at `camera`, with every preview on,
-/// as the demo has them, and 3D layers multisampled or not.
+/// as the demo has them, and 3D layers multisampled or not. Its pitch
+/// reaches 85 degrees, past the default 60, for the steep views the
+/// benches measure.
 pub(crate) fn new_map(runtime: &Runtime, style: &str, camera: CameraState, antialias: bool) -> Map {
     let mut map = Map::new(
         runtime,
@@ -411,6 +413,11 @@ pub(crate) fn new_map(runtime: &Runtime, style: &str, camera: CameraState, antia
             ..MapOptions::default()
         },
     );
+    map.set_constraints(orb_api::Constraints {
+        max_pitch: 85.0,
+        ..orb_api::Constraints::default()
+    });
+    map.jump_to_state(camera);
     map.load_style_url(style);
     map
 }

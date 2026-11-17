@@ -245,16 +245,6 @@ export const GROUPS = catalogue.groups.map((group) => ({
 for (const group of GROUPS)
   for (const scene of group.scenes) scene.provider = group.name;
 
-/**
- * The constraints `scene` keeps the camera within: pitch stops at 60
- * degrees where it sets none, as in GL JS and MapLibre Native (Orbis's own
- * default reaches 85).
- */
-export const constraintsOf = (scene) => ({
-  maxPitch: 60,
-  ...scene.constraints,
-});
-
 const SCENES = Object.fromEntries(
   GROUPS.flatMap((g) => g.scenes).map((s) => [s.key, s]),
 );
@@ -283,7 +273,6 @@ SCENES.alps = {
   url: alps,
   provider: "Orbis",
   flight: alpsFlight.legs,
-  constraints: { maxPitch: 85 },
   light: true,
   terrain: true,
   swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"],

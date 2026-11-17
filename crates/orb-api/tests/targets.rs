@@ -4,7 +4,9 @@
 
 mod common;
 
-use orb_api::{CameraTarget, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target};
+use orb_api::{
+    CameraTarget, Constraints, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target,
+};
 
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 256;
@@ -830,6 +832,11 @@ fn a_blended_fill_through_a_target_covers_the_sky() {
     };
     let mut draw = |style: String| {
         let mut map = Map::new(&runtime, options());
+        // The style's pitch of 75 degrees reaches past the default 60.
+        map.set_constraints(Constraints {
+            max_pitch: 85.0,
+            ..Constraints::default()
+        });
         map.set_style_json(&style).unwrap();
         common::settle(&mut map, &mut target);
         target.read_pixels().unwrap()

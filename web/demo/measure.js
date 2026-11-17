@@ -67,6 +67,7 @@ async function startOrbis() {
     container,
     style: demoStyle(params, "tokyo"),
     camera: START,
+    constraints: { maxPitch: 85 },
   });
   await map.once("idle");
   const at = await circleLngLat(
