@@ -4,7 +4,9 @@
 //! makes the renderer's [`TargetPlan`] of them.
 
 use orb_render::{CombineMode, ProcessOp, ProcessPlan, TargetPlan};
-use orb_style::{CameraInputs, Color, Combine, Gradient, LayerType, Operation, Property, Style};
+use orb_style::{
+    CameraInputs, Color, Combine, Gradient, LayerType, Operation, Precision, Property, Style,
+};
 
 use crate::style::NodePlan;
 
@@ -31,6 +33,8 @@ pub(crate) struct Routes {
     pub(crate) processes: Vec<Route>,
     /// Whether any of their operations reads the camera beyond its zoom.
     pub(crate) camera: bool,
+    /// By target, whether it keeps 16-bit float channels.
+    pub(crate) high: Vec<bool>,
 }
 
 /// An image-process layer's place among the nodes and the targets it reads
@@ -53,6 +57,15 @@ impl Routes {
         self.processes.iter().map(|p| p.layer)
     }
 
+    /// The image-process layers that read or write a high-precision
+    /// target, in style order: those whose passes hold floats.
+    pub(crate) fn precise_layers(&self) -> impl Iterator<Item = usize> + '_ {
+        let high = |t: u32| self.high.get(t as usize).copied().unwrap_or(false);
+        (self.processes.iter())
+            .filter(move |p| p.reads.iter().copied().chain(p.destination).any(high))
+            .map(|p| p.layer)
+    }
+
     /// The renderer's plan, with each process's operations at zoom 0 until
     /// a frame's paint gives them at its own.
     pub(crate) fn render_plan(&self, style: &Style) -> TargetPlan {
@@ -60,6 +73,7 @@ impl Routes {
             targets: self.targets,
             draws: self.draws.clone(),
             masks: self.masks.clone(),
+            high: self.high.clone(),
             processes: (self.processes.iter())
                 .map(|p| ProcessPlan {
                     at: p.at,
@@ -104,7 +118,7 @@ pub(crate) fn plan(
             }
         })
     };
-    let draws = (nodes.iter())
+    let draws: Vec<Option<u32>> = (nodes.iter())
         .map(|n| resolve(n.layer, layers[n.layer].destination_target.as_deref(), warn))
         .collect();
     let masks = (nodes.iter())
@@ -167,12 +181,32 @@ pub(crate) fn plan(
     let camera = (processes.iter())
         .flat_map(|p| &layers[p.layer].operations)
         .any(Operation::reads_camera);
+    let high: Vec<bool> = (style.targets.iter())
+        .map(|t| t.precision == Precision::High)
+        .collect();
+    // Layers draw at the map's 8 bits, so a target they draw into holds
+    // what a process draws into it at those too.
+    for p in &processes {
+        if let Some(d) = p.destination.filter(|&d| high[d as usize])
+            && draws.contains(&Some(d))
+        {
+            let id = &style.targets[d as usize].id;
+            warn(
+                p.layer,
+                &format!(
+                    "layers draw into high-precision target \"{id}\", which holds what this \
+                     layer draws into it at 8 bits"
+                ),
+            );
+        }
+    }
     Routes {
         targets: targets as u32,
         draws,
         masks,
         processes,
         camera,
+        high,
     }
 }
 
@@ -356,6 +390,33 @@ mod tests {
         assert_eq!(ops, &[ProcessOp::Blur { size: 2.0 }]);
         assert_eq!(t.layers().collect::<Vec<_>>(), [2, 3]);
         assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+    }
+
+    #[test]
+    fn processes_through_high_precision_targets_hold_floats() {
+        let plan = plan_of(
+            r#"{"id":"paint","precision":"high"},{"id":"field","precision":"high"},{"id":"plain"}"#,
+            r#"{"id":"water","type":"fill","source":"v","source-layer":"water",
+                 "dev.sargunv.orbis:destination-target":"paint"},
+               {"id":"blur","type":"dev.sargunv.orbis.image-process",
+                 "dev.sargunv.orbis:source-target":"paint","dev.sargunv.orbis:destination-target":"field"},
+               {"id":"into","type":"dev.sargunv.orbis.image-process",
+                 "dev.sargunv.orbis:source-target":"plain","dev.sargunv.orbis:destination-target":"paint"},
+               {"id":"apart","type":"dev.sargunv.orbis.image-process",
+                 "dev.sargunv.orbis:source-target":"plain"}"#,
+        );
+        let t = &plan.targets;
+        assert_eq!(t.high, [true, true, false]);
+        assert_eq!(t.render_plan(&plan.style).high, [true, true, false]);
+        assert_eq!(t.precise_layers().collect::<Vec<_>>(), [1, 2]);
+        // A layer draws into `paint`, which holds what `into` draws there
+        // at 8 bits.
+        assert_eq!(plan.warnings.len(), 1, "{:?}", plan.warnings);
+        assert!(
+            plan.warnings[0].starts_with("layers[2] (into)"),
+            "{:?}",
+            plan.warnings
+        );
     }
 
     #[test]

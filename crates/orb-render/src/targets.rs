@@ -24,9 +24,19 @@
 //! processes reading it, and the fills drawn through it, which composite
 //! in the map's pass through its coverage: a colour (`Mode::Solid`), or a
 //! patterned fill drawn apart first (`Mode::Mask`).
+//!
+//! A high-precision target ([`TargetPlan::high`]) holds 16-bit floats, and
+//! so do the passes of every process reading or writing it: their scratch
+//! textures are a float set of their own, made only for those processes'
+//! sizes, so that nothing else holds more than 8 bits, and their blurs
+//! reach further and thresholds cut finer. A process's output is a
+//! float texture where its destination is a float target. A target layers
+//! draw into stays in the map's format, which their pipelines draw in.
+//! Where the device can't render to floats, every target is 8 bits
+//! ([`Gap::TargetPrecision`](crate::Gap::TargetPrecision)).
 
 use orb_hal::*;
-use orb_shaders::IMAGE_PROCESS_SHADER;
+use orb_shaders::{COMPOSITE_OVER_SHADER, IMAGE_PROCESS_SHADER};
 
 use crate::offscreen::{Composite, Composites, Mode, Target};
 use crate::pipeline::{Attachments, Draw};
@@ -45,6 +55,9 @@ pub struct TargetPlan {
     pub masks: Vec<Option<u32>>,
     /// The image-process layers, in style order.
     pub processes: Vec<ProcessPlan>,
+    /// By target, whether it keeps 16-bit float channels; none past the
+    /// end.
+    pub high: Vec<bool>,
 }
 
 /// An image-process layer.
@@ -165,10 +178,19 @@ pub const MAX_STOPS: usize = 8;
 /// Linear taps a side a blur pass takes at most (`weights` holds the
 /// centre and a pair for each).
 const MAX_TAPS: usize = 31;
+/// How many standard deviations a blur's taps reach, in a process whose
+/// passes hold floats (`precise`) or 8 bits: what lies beyond is under
+/// what those passes hold (0.13% past three, 0.003% past four).
+fn reach(precise: bool) -> f32 {
+    if precise { 4.0 } else { 3.0 }
+}
+
 /// The widest Gaussian, standard deviation in texels, a blur pass takes
-/// at its textures' size: its taps reach three of them, every texel on
+/// at its textures' size: its taps reach [`reach`] of them, every texel on
 /// the way. A wider blur runs on the image halved until it fits.
-const MAX_SIGMA: f32 = (2 * MAX_TAPS) as f32 / 3.0;
+fn max_sigma(precise: bool) -> f32 {
+    (2 * MAX_TAPS) as f32 / reach(precise)
+}
 /// Halvings a blur takes at most: past them, its taps reach no further.
 const MAX_HALVINGS: u32 = 6;
 /// Texels a side a dilation or erosion pass reaches at most.
@@ -358,16 +380,17 @@ fn premultiply([r, g, b, a]: [f32; 4]) -> [f32; 4] {
 }
 
 /// A process's operations as passes: each blur, dilation and erosion two
-/// (a blur wider than [`MAX_SIGMA`] its halvings, two at the smaller size
+/// (a blur wider than [`max_sigma`] its halvings, two at the smaller size
 /// and one back), pointwise operations on the pass before them, and a copy
-/// where nothing else passes.
-fn steps(ops: &[ProcessOp]) -> Vec<Step> {
+/// where nothing else passes; blurs reaching as far as `precise` passes
+/// need ([`reach`]).
+fn steps(ops: &[ProcessOp], precise: bool) -> Vec<Step> {
     let mut steps: Vec<Step> = Vec::new();
     let blur = |steps: &mut Vec<Step>, size: f32, combine: u32, amount: f32| {
         if size <= 0.0 {
             return;
         }
-        let halvings = halvings(size);
+        let halvings = halvings(size, precise);
         if halvings == 0 {
             steps.push(Step::of(Kernel::BlurX { size }).opening());
             steps.push(Step::of(Kernel::BlurY {
@@ -539,13 +562,30 @@ enum Run {
 }
 
 /// A process's pass as made: its uniform and bind group, the words last
-/// written, and its output.
+/// written, its output and the pipeline for that output's format.
 #[derive(Debug)]
 struct Pass_ {
     uniform: BufferId,
     group: BindGroupId,
     written: [f32; WORDS],
     output: TextureId,
+    pipeline: RenderPipelineId,
+}
+
+/// The process pipeline of a pass of a process whose passes hold floats
+/// (`precise`, whose thresholds' edges are finer: `threshold_floor`) or
+/// 8 bits, into a texture of floats (`float`, only where `precise`) or 8
+/// bits.
+fn pipeline_slot(precise: bool, float: bool) -> usize {
+    usize::from(precise) + usize::from(float)
+}
+
+/// The format of a texture holding floats (`float`) or 8 bits.
+fn format(float: bool) -> TextureFormat {
+    match float {
+        true => TextureFormat::Rgba16Float,
+        false => TextureFormat::Rgba8Unorm,
+    }
 }
 
 /// What the targets hold on the device at a size.
@@ -557,8 +597,9 @@ struct Made {
     drawn: Vec<Option<Target>>,
     /// By process.
     outputs: Vec<TextureId>,
-    /// By how many times each is halved and its index among those.
-    scratch: Vec<((u32, usize), TextureId)>,
+    /// By whether each holds floats, how many times it is halved and its
+    /// index among those.
+    scratch: Vec<((bool, u32, usize), TextureId)>,
     /// By process, by step.
     passes: Vec<Vec<Pass_>>,
     /// By process, its output's composite into its destination where that
@@ -584,10 +625,24 @@ pub(crate) struct Targets {
     /// By node, a fill drawn through a target in a colour alone: that
     /// colour at its opacity, premultiplied.
     colors: Vec<Option<[f32; 4]>>,
+    /// By target, whether its texture holds floats: high precision, on a
+    /// device that renders them, and no layer draws into it.
+    floats: Vec<bool>,
+    /// By process, whether its passes hold floats: it reads or writes a
+    /// high-precision target.
+    precise: Vec<bool>,
+    /// By process, whether its output holds floats: its destination does.
+    float_out: Vec<bool>,
     made: Made,
     /// The plan changed since the targets were made.
     stale: bool,
-    pipeline: Option<RenderPipelineId>,
+    /// The device renders to and blends `Rgba16Float`.
+    float: bool,
+    /// The process pipelines by [`pipeline_slot`], each made for the first
+    /// plan that needs it.
+    pipelines: [Option<RenderPipelineId>; 3],
+    /// The composite of a process's output into a drawn float target.
+    float_over: Option<RenderPipelineId>,
     layout: BindGroupLayoutId,
     sampler: SamplerId,
 }
@@ -619,9 +674,14 @@ impl Targets {
             steps: Vec::new(),
             visible: Vec::new(),
             colors: Vec::new(),
+            floats: Vec::new(),
+            precise: Vec::new(),
+            float_out: Vec::new(),
             made: Made::default(),
             stale: false,
-            pipeline: None,
+            float: gpu.caps().float_targets,
+            pipelines: [None; 3],
+            float_over: None,
             layout,
             sampler,
         }
@@ -633,8 +693,14 @@ impl Targets {
     }
 
     /// Takes `plan`, unless it is the one held; whether it changed. Makes
-    /// the process pipeline for the first process.
-    pub(crate) fn set_plan(&mut self, gpu: &mut dyn Gpu, plan: TargetPlan) -> bool {
+    /// the pipelines its processes draw with, the composite of their
+    /// outputs into drawn float targets among them (of `composites`).
+    pub(crate) fn set_plan(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        composites: &Composites,
+        plan: TargetPlan,
+    ) -> bool {
         if plan == self.plan {
             return false;
         }
@@ -658,22 +724,81 @@ impl Targets {
                 _ => Role::Drawn,
             })
             .collect();
-        self.steps = plan.processes.iter().map(|p| steps(&p.ops)).collect();
         self.visible = vec![true; plan.processes.len()];
         self.colors = vec![None; plan.masks.len()];
+        let high: Vec<bool> = (0..targets)
+            .map(|t| self.float && plan.high.get(t).copied().unwrap_or(false))
+            .collect();
+        let is_high = |t: u32| high.get(t as usize).copied().unwrap_or(false);
+        self.floats = (0..targets)
+            .map(|t| high[t] && !plan.draws.contains(&Some(t as u32)))
+            .collect();
+        self.precise = (plan.processes.iter())
+            .map(|p| {
+                let others = p.ops.iter().filter_map(|op| match op {
+                    ProcessOp::Combine { target, .. } => Some(*target),
+                    _ => None,
+                });
+                let mut touched = [p.source].into_iter().chain(p.destination).chain(others);
+                touched.any(is_high)
+            })
+            .collect();
+        self.float_out = (plan.processes.iter())
+            .map(|p| p.destination.is_some_and(|t| self.floats[t as usize]))
+            .collect();
+        self.steps = (plan.processes.iter().zip(&self.precise))
+            .map(|(p, &precise)| steps(&p.ops, precise))
+            .collect();
         self.plan = plan;
         self.order = self.order();
         self.stale = true;
-        if !self.plan.processes.is_empty() && self.pipeline.is_none() {
+        // A process's passes write floats where it is precise, but its last
+        // into an output of 8 bits.
+        let mut wanted = [false; 3];
+        for (&precise, &float) in self.precise.iter().zip(&self.float_out) {
+            wanted[pipeline_slot(precise, float)] = true;
+            wanted[pipeline_slot(precise, precise)] = true;
+        }
+        for (slot, wanted) in wanted.into_iter().enumerate() {
+            if wanted && self.pipelines[slot].is_none() {
+                let (precise, float) = [(false, false), (true, false), (true, true)][slot];
+                let target = TargetFormat {
+                    color: format(float),
+                    sample_count: 1,
+                };
+                let layouts = [self.layout];
+                let floor: &[_] = &[(orb_shaders::THRESHOLD_FLOOR, 1e-5)];
+                let draw = Draw {
+                    constants: [&[], if precise { floor } else { &[] }],
+                    ..Draw::new(&IMAGE_PROCESS_SHADER, &layouts, target, None)
+                };
+                self.pipelines[slot] = Some(draw.make(gpu));
+            }
+        }
+        let float_drawn = self.drawn().any(|t| self.floats[t]);
+        if self.float_over.is_none() && float_drawn {
             let target = TargetFormat {
-                color: TextureFormat::Rgba8Unorm,
+                color: TextureFormat::Rgba16Float,
                 sample_count: 1,
             };
-            let layouts = [self.layout];
-            let draw = Draw::new(&IMAGE_PROCESS_SHADER, &layouts, target, None);
-            self.pipeline = Some(draw.make(gpu));
+            let layouts = [composites.layout()];
+            let blend = Some(BlendState::PremultipliedAlpha);
+            let draw = Draw::new(&COMPOSITE_OVER_SHADER, &layouts, target, blend);
+            self.float_over = Some(draw.make(gpu));
         }
         true
+    }
+
+    /// Whether target `t` holds floats: drawn, its pass draws only its
+    /// processes' outputs, through [`float_over`](Self::float_over).
+    pub(crate) fn holds_float(&self, t: usize) -> bool {
+        self.floats.get(t).copied().unwrap_or(false)
+    }
+
+    /// The pipeline compositing a process's output into a drawn float
+    /// target, once compiled.
+    pub(crate) fn float_over(&self, gpu: &mut dyn Gpu) -> Option<RenderPipelineId> {
+        self.float_over.filter(|&p| gpu.pipeline_ready(p.into()))
     }
 
     /// The runs in an order where each comes after what it reads: a
@@ -740,7 +865,7 @@ impl Targets {
         if process.ops == ops {
             return;
         }
-        let steps = steps(&ops);
+        let steps = steps(&ops, self.precise[p]);
         let old = &self.steps[p];
         let same =
             steps.len() == old.len() && steps.iter().zip(old).all(|(a, b)| a.shape() == b.shape());
@@ -820,13 +945,18 @@ impl Targets {
         }
     }
 
-    /// Whether the process pipeline compiled, where there is one.
+    /// Whether the process pipelines compiled, where there are any.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu) -> bool {
-        self.pipeline.is_none_or(|p| gpu.pipeline_ready(p.into()))
+        (self.pipelines.into_iter().chain([self.float_over]))
+            .flatten()
+            .all(|p| gpu.pipeline_ready(p.into()))
     }
 
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
-        self.pipeline.into_iter().map(PipelineId::from).collect()
+        (self.pipelines.into_iter().chain([self.float_over]))
+            .flatten()
+            .map(PipelineId::from)
+            .collect()
     }
 
     /// Makes the targets for frames of `size` pixels drawn into
@@ -852,7 +982,7 @@ impl Targets {
         if !self.any() {
             return true;
         }
-        let color = |gpu: &mut dyn Gpu, label, halved| {
+        let color = |gpu: &mut dyn Gpu, label, halved, float| {
             let [width, height] = halved_size(size, halved);
             gpu.create_texture(&TextureDesc {
                 label,
@@ -860,21 +990,25 @@ impl Targets {
                 height,
                 array_layers: 1,
                 dimension: TextureViewDimension::D2,
-                format: TextureFormat::Rgba8Unorm,
+                format: format(float),
                 usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
                 sample_count: 1,
                 mip_levels: 1,
             })
         };
+        // A drawn target layers draw into takes the map's attachments, as
+        // their pipelines do; a float one only composites, once a texel.
         let samples = (attachments.sample_count, false);
-        let drawn: Vec<_> = (self.roles.iter())
-            .map(|r| {
-                (*r == Role::Drawn)
-                    .then(|| Target::new(gpu, "render target", attachments.color, size, samples))
+        let drawn: Vec<_> = (self.roles.iter().enumerate())
+            .map(|(t, r)| {
+                (*r == Role::Drawn).then(|| match self.floats[t] {
+                    true => Target::new(gpu, "render target", format(true), size, (1, false)),
+                    false => Target::new(gpu, "render target", attachments.color, size, samples),
+                })
             })
             .collect();
         let depth = (attachments.depth)
-            .filter(|_| drawn.iter().any(Option::is_some))
+            .filter(|_| (self.drawn()).any(|t| !self.floats[t]))
             .map(|format| {
                 gpu.create_texture(&TextureDesc {
                     label: "render target depth",
@@ -889,19 +1023,24 @@ impl Targets {
                 })
             });
         let wirings: Vec<_> = self.steps.iter().map(|s| wiring(s)).collect();
-        let mut wanted: Vec<(u32, usize)> = (wirings.iter().flatten())
-            .filter_map(|&(_, _, out)| match out {
-                Texture::Scratch(halved, i) => Some((halved, i)),
+        // Each set of scratch textures, 8 bits and floats, only of the
+        // sizes its processes take turns in.
+        let mut wanted: Vec<(bool, u32, usize)> = (wirings.iter().enumerate())
+            .flat_map(|(p, wires)| wires.iter().map(move |w| (p, w.2)))
+            .filter_map(|(p, out)| match out {
+                Texture::Scratch(halved, i) => Some((self.precise[p], halved, i)),
                 _ => None,
             })
             .collect();
         wanted.sort_unstable();
         wanted.dedup();
         let scratch = (wanted.into_iter())
-            .map(|(halved, i)| ((halved, i), color(gpu, "image process scratch", halved)))
+            .map(|key @ (float, halved, _)| {
+                (key, color(gpu, "image process scratch", halved, float))
+            })
             .collect();
-        let outputs = (0..self.plan.processes.len())
-            .map(|_| color(gpu, "image process output", 0))
+        let outputs = (self.float_out.iter())
+            .map(|&float| color(gpu, "image process output", 0, float))
             .collect();
         self.made = Made {
             size,
@@ -915,13 +1054,23 @@ impl Targets {
         let blank = composites.blank();
         for (p, wires) in wirings.iter().enumerate() {
             let source = self.texture(self.plan.processes[p].source);
+            let precise = self.precise[p];
             let resolve = |t: Texture| match t {
                 Texture::Source => source.unwrap_or(blank),
                 Texture::Scratch(halved, i) => {
-                    let at = self.made.scratch.iter().find(|(k, _)| *k == (halved, i));
+                    let key = (precise, halved, i);
+                    let at = self.made.scratch.iter().find(|(k, _)| *k == key);
                     at.expect("made above").1
                 }
                 Texture::Output => self.made.outputs[p],
+            };
+            // Each pass draws with the pipeline of its output's format.
+            let pipeline = |t: Texture| {
+                let float = match t {
+                    Texture::Output => self.float_out[p],
+                    _ => precise,
+                };
+                self.pipelines[pipeline_slot(precise, float)].expect("made with the plan")
             };
             let passes = (wires.iter().zip(&self.steps[p]))
                 .map(|(&(input, original, output), step)| {
@@ -951,6 +1100,7 @@ impl Targets {
                         group,
                         written: [f32::NAN; WORDS],
                         output: resolve(output),
+                        pipeline: pipeline(output),
                     }
                 })
                 .collect();
@@ -1047,11 +1197,13 @@ impl Targets {
                     out.push(orb_hal::Pass::Render(RenderPass {
                         label: "render target",
                         colors: vec![target.attachment(LoadOp::Clear([0.0; 4]))],
-                        depth: depth.map(|target| DepthAttachment {
-                            target,
-                            load: LoadOp::Clear(0.0),
-                            store: StoreOp::Discard,
-                        }),
+                        depth: depth
+                            .filter(|_| !self.floats[t])
+                            .map(|target| DepthAttachment {
+                                target,
+                                load: LoadOp::Clear(0.0),
+                                store: StoreOp::Discard,
+                            }),
                         commands: bundle
                             .map(|b| vec![RenderCommand::ExecuteBundles(vec![b])])
                             .unwrap_or_default(),
@@ -1064,9 +1216,8 @@ impl Targets {
                         out.push(clear(self.made.outputs[p]));
                         continue;
                     }
-                    let pipeline = self.pipeline.expect("made with the first process");
                     for (s, step) in self.steps[p].iter().enumerate() {
-                        let words = uniform(step, frame, self.made.size);
+                        let words = uniform(step, frame, self.made.size, self.precise[p]);
                         let pass = &mut self.made.passes[p][s];
                         if words != pass.written {
                             pass.written = words;
@@ -1075,7 +1226,7 @@ impl Targets {
                         out.push(orb_hal::Pass::Render(RenderPass {
                             label: "image process",
                             commands: vec![
-                                RenderCommand::SetPipeline(pipeline),
+                                RenderCommand::SetPipeline(pass.pipeline),
                                 RenderCommand::SetBindGroup {
                                     index: 0,
                                     group: pass.group,
@@ -1127,11 +1278,11 @@ fn halved_size(size: [u32; 2], halved: u32) -> [u32; 2] {
 }
 
 /// How many times a blur of standard deviation `sigma` texels halves the
-/// image first, for the Gaussian to fit its taps at the smaller size:
-/// none for one that fits at the view's.
-fn halvings(sigma: f32) -> u32 {
+/// image first, for the Gaussian to fit its taps at the smaller size (as
+/// far as `precise` passes reach): none for one that fits at the view's.
+fn halvings(sigma: f32, precise: bool) -> u32 {
     (0..MAX_HALVINGS)
-        .find(|&h| sigma <= MAX_SIGMA * (1 << h) as f32)
+        .find(|&h| sigma <= max_sigma(precise) * (1 << h) as f32)
         .unwrap_or(MAX_HALVINGS)
 }
 
@@ -1149,9 +1300,9 @@ fn small_sigma(sigma: f32, halvings: u32) -> f32 {
 
 /// A Gaussian of standard deviation `sigma` texels as linear taps: the
 /// centre weight, then each tap's (offset, weight), offsets in texels,
-/// cut off where the taps reach no further ([`MAX_SIGMA`]).
-fn gaussian(sigma: f32) -> (f32, Vec<[f32; 2]>) {
-    let radius = (sigma * 3.0).ceil().max(1.0);
+/// reaching `reach` of them, as far as the taps go ([`max_sigma`]).
+fn gaussian(sigma: f32, reach: f32) -> (f32, Vec<[f32; 2]>) {
+    let radius = (sigma * reach).ceil().max(1.0);
     let n = (radius as usize).min(2 * MAX_TAPS);
     let w = |i: usize| {
         let x = i as f32;
@@ -1174,8 +1325,9 @@ fn gaussian(sigma: f32) -> (f32, Vec<[f32; 2]>) {
     (w(0) / total, taps)
 }
 
-/// A pass's uniform for `frame`, over textures of `size` pixels.
-fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2]) -> [f32; WORDS] {
+/// A pass's uniform for `frame`, over textures of `size` pixels, of a
+/// process whose passes hold floats where `precise`.
+fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2], precise: bool) -> [f32; WORDS] {
     let mut words = [0.0f32; WORDS];
     // A pass at a halved size samples texels of that size; one at the
     // view's (all that take pointwise operations) has its pixels.
@@ -1190,7 +1342,7 @@ fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2]) -> [f32; WORDS] {
             ([1.0, 0.0, combine as f32, amount], [0.0; 2], vec![1.0])
         }
         Kernel::BlurX { size } | Kernel::BlurY { size, .. } => {
-            let (centre, taps) = gaussian(*size);
+            let (centre, taps) = gaussian(*size, reach(precise));
             let (combine, amount) = match step.kernel {
                 Kernel::BlurY {
                     combine, amount, ..
@@ -1408,7 +1560,8 @@ impl Release for Made {
 impl Release for Targets {
     fn release(self, gpu: &mut dyn Gpu) {
         self.made.release(gpu);
-        (self.pipeline, self.layout, self.sampler).release(gpu);
+        (self.pipelines, self.float_over).release(gpu);
+        (self.layout, self.sampler).release(gpu);
     }
 }
 
@@ -1433,7 +1586,7 @@ mod tests {
             ProcessOp::Blur { size: 0.0 },
             ProcessOp::HighPass { size: 2.0 },
         ];
-        let passes = steps(&ops);
+        let passes = steps(&ops, false);
         let kernels: Vec<_> = passes
             .iter()
             .map(|s| (&s.kernel, s.pointwise.len()))
@@ -1478,17 +1631,20 @@ mod tests {
                 ),
             ]
         );
-        assert_eq!(steps(&[]), [Step::of(Kernel::Copy)]);
+        assert_eq!(steps(&[], false), [Step::of(Kernel::Copy)]);
         // A wide sharpen blurs the image halved, and weighs what comes
         // back against the image it halved; what follows applies on that
         // pass, at the view's size.
-        let wide = steps(&[
-            ProcessOp::Sharpen {
-                size: 30.0,
-                amount: 1.0,
-            },
-            ProcessOp::Invert,
-        ]);
+        let wide = steps(
+            &[
+                ProcessOp::Sharpen {
+                    size: 30.0,
+                    amount: 1.0,
+                },
+                ProcessOp::Invert,
+            ],
+            false,
+        );
         let kernels: Vec<_> = wide.iter().map(|s| (s.kernel.kind(), s.halved)).collect();
         assert_eq!(kernels, [(9, 1), (1, 1), (2, 1), (11, 0)]);
         assert_eq!(wide[3].pointwise, [Pointwise::Invert]);
@@ -1507,22 +1663,25 @@ mod tests {
         );
         // A split samples its input as a kernel; what follows applies on
         // its pass.
-        let split = steps(&[
-            ProcessOp::Split {
-                channels: [[2.0, 0.0], [0.0; 2], [-2.0, 0.0]],
-                radial: false,
-            },
-            ProcessOp::Gradient {
-                radial: true,
-                angle: 0.0,
-                center: [0.0; 2],
-                extent: None,
-            },
-            ProcessOp::Bands {
-                count: 4.0,
-                width: 0.5,
-            },
-        ]);
+        let split = steps(
+            &[
+                ProcessOp::Split {
+                    channels: [[2.0, 0.0], [0.0; 2], [-2.0, 0.0]],
+                    radial: false,
+                },
+                ProcessOp::Gradient {
+                    radial: true,
+                    angle: 0.0,
+                    center: [0.0; 2],
+                    extent: None,
+                },
+                ProcessOp::Bands {
+                    count: 4.0,
+                    width: 0.5,
+                },
+            ],
+            false,
+        );
         assert_eq!(split.len(), 1);
         assert_eq!(split[0].pointwise.len(), 2);
     }
@@ -1530,30 +1689,33 @@ mod tests {
     #[test]
     fn gaussians_sum_to_one() {
         // A wider blur runs halved, its Gaussian within the taps' reach
-        // there.
-        for sigma in [21.0, 40.0, 64.0, 300.0] {
-            let small = small_sigma(sigma, halvings(sigma));
-            assert!(
-                small <= MAX_SIGMA && small > MAX_SIGMA / 2.5,
-                "{sigma}: {small} halved"
-            );
-        }
-        for sigma in [0.01, 0.3, 1.0, 5.0, 20.0, MAX_SIGMA] {
-            let (centre, taps) = gaussian(sigma);
-            assert!(taps.len() <= MAX_TAPS, "{sigma}: {} taps", taps.len());
-            let sum = centre + 2.0 * taps.iter().map(|t| t[1]).sum::<f32>();
-            assert!((sum - 1.0).abs() < 1e-4, "{sigma}: {sum}");
-            // Variance about the centre, as the taps sample it: texels
-            // resolve a kernel only a texel or more wide.
-            if sigma < 1.0 {
-                continue;
+        // there; passes holding floats reach further.
+        for precise in [false, true] {
+            let most = max_sigma(precise);
+            for sigma in [21.0, 40.0, 64.0, 300.0] {
+                let small = small_sigma(sigma, halvings(sigma, precise));
+                assert!(
+                    small <= most && small > most / 2.5,
+                    "{sigma}: {small} halved"
+                );
             }
-            let variance = 2.0 * taps.iter().map(|t| t[0] * t[0] * t[1]).sum::<f32>();
-            assert!(
-                (variance.sqrt() / sigma - 1.0).abs() < 0.15,
-                "{sigma}: σ {}",
-                variance.sqrt()
-            );
+            for sigma in [0.01, 0.3, 1.0, 5.0, 15.0, most] {
+                let (centre, taps) = gaussian(sigma, reach(precise));
+                assert!(taps.len() <= MAX_TAPS, "{sigma}: {} taps", taps.len());
+                let sum = centre + 2.0 * taps.iter().map(|t| t[1]).sum::<f32>();
+                assert!((sum - 1.0).abs() < 1e-4, "{sigma}: {sum}");
+                // Variance about the centre, as the taps sample it: texels
+                // resolve a kernel only a texel or more wide.
+                if sigma < 1.0 {
+                    continue;
+                }
+                let variance = 2.0 * taps.iter().map(|t| t[0] * t[0] * t[1]).sum::<f32>();
+                assert!(
+                    (variance.sqrt() / sigma - 1.0).abs() < 0.15,
+                    "{sigma}: σ {}",
+                    variance.sqrt()
+                );
+            }
         }
     }
 

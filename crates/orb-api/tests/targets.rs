@@ -703,6 +703,106 @@ fn blurs_are_smooth_at_every_width() {
     assert!(most <= 3, "a high-pass of {sigma} is {most} off at x = {x}");
 }
 
+/// The distance, in standard deviations, past a blurred straight edge at
+/// which its Gaussian profile falls to `coverage`.
+fn profile_distance(coverage: f64) -> f64 {
+    let (mut near, mut far) = (0.0, 10.0);
+    for _ in 0..60 {
+        let mid = 0.5 * (near + far);
+        if 0.5 * erfc(mid / 2f64.sqrt()) > coverage {
+            near = mid;
+        } else {
+            far = mid;
+        }
+    }
+    0.5 * (near + far)
+}
+
+/// A high-precision target resolves a contour a few thousandths of
+/// coverage wide far out in a wide blur, where an 8-bit one rounds it
+/// away: the band where a blur of a straight edge lies between two cuts
+/// falls where the Gaussian's profile puts it, and as wide.
+#[test]
+fn a_high_precision_target_resolves_fine_contours() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let at = (Geodetic::new(0.0, 0.0), 6.0);
+    let (sigma, low, high) = (40.0, 0.0045, 0.006);
+    // White left of a straight edge 100 pixels left of the view's centre,
+    // on a pixel's boundary; drawn without antialiasing, each pixel whole
+    // or empty.
+    let edge = 100.0 * 360.0 / (512.0 * 6f64.exp2());
+    let edge_x = f64::from(WIDTH) / 2.0 - 100.0;
+    // With `twice`, a second process draws nothing into `depth`, which is then
+    // a target of its own that both composite into.
+    let style = |precision: &str, twice: bool| {
+        let nothing = match twice {
+            true => {
+                r#"{"id": "nothing", "type": "dev.sargunv.orbis.image-process",
+                "dev.sargunv.orbis:source-target": "empty", "dev.sargunv.orbis:destination-target": "depth"},"#
+            }
+            false => "",
+        };
+        format!(
+            r##"{{"version": 8,
+            "dev.sargunv.orbis:targets": [{{"id": "land"}},
+              {{"id": "depth", "precision": "{precision}"}}, {{"id": "deep"}}, {{"id": "empty"}}],
+            "sources": {{"shape": {{"type": "geojson", "data": {{"type": "Polygon",
+              "coordinates": [[[-30, -30], [-{edge}, -30], [-{edge}, 30], [-30, 30], [-30, -30]]]}}}}}},
+            "layers": [
+              {{"id": "dark", "type": "background", "paint": {{"background-color": "#000000"}}}},
+              {{"id": "land", "type": "fill", "source": "shape",
+                "dev.sargunv.orbis:destination-target": "land",
+                "paint": {{"fill-color": "#ffffff", "fill-antialias": false}}}},
+              {{"id": "field", "type": "dev.sargunv.orbis.image-process",
+                "dev.sargunv.orbis:source-target": "land", "dev.sargunv.orbis:destination-target": "depth",
+                "dev.sargunv.orbis:operations": [{{"type": "blur", "size": {sigma}}}]}},
+              {nothing}
+              {{"id": "deep", "type": "dev.sargunv.orbis.image-process",
+                "dev.sargunv.orbis:source-target": "depth", "dev.sargunv.orbis:destination-target": "deep",
+                "dev.sargunv.orbis:operations": [{{"type": "threshold", "cutoff": {high_cut}}}]}},
+              {{"id": "contour", "type": "dev.sargunv.orbis.image-process",
+                "dev.sargunv.orbis:source-target": "depth",
+                "dev.sargunv.orbis:operations": [{{"type": "threshold", "cutoff": {low_cut}}},
+                  {{"type": "combine", "target": "deep", "mode": "subtract"}}]}}
+            ]}}"##,
+            high_cut = high * 255.0,
+            low_cut = low * 255.0,
+        )
+    };
+    // The contour's width (its coverage summed along the middle row) and
+    // its centre, in pixels from the view's left edge.
+    let measure = |image: &[u8]| {
+        let (mut width, mut moment) = (0.0, 0.0);
+        for x in 0..WIDTH {
+            let coverage = f64::from(channel(image, x, HEIGHT / 2, 1)) / 255.0;
+            width += coverage;
+            moment += coverage * (f64::from(x) + 0.5);
+        }
+        (width, moment / width.max(f64::MIN_POSITIVE))
+    };
+    let expected_width = sigma * (profile_distance(low) - profile_distance(high));
+    let expected_centre = edge_x + sigma * 0.5 * (profile_distance(low) + profile_distance(high));
+    // Each antialiased edge, sampled at pixel centres, strays by a tenth of
+    // a pixel or more with where it falls between them, and the two add.
+    for twice in [false, true] {
+        let image = draw(&runtime, &mut target, &style("high", twice), at.0, at.1);
+        let (width, centre) = measure(&image);
+        assert!(
+            (width - expected_width).abs() < 0.3 && (centre - expected_centre).abs() < 0.3,
+            "high precision (twice: {twice}): {width:.2} pixels wide at {centre:.2}, \
+             not {expected_width:.2} at {expected_centre:.2}"
+        );
+        // In 8 bits the cuts fall between the same two steps of coverage.
+        let image = draw(&runtime, &mut target, &style("standard", twice), at.0, at.1);
+        let (width, centre) = measure(&image);
+        assert!(
+            (width - expected_width).abs() > 1.0 || (centre - expected_centre).abs() > 1.0,
+            "in 8 bits too (twice: {twice}): {width:.2} pixels wide at {centre:.2}"
+        );
+    }
+}
+
 /// A fill drawn through a target in a colour covers what the target
 /// covers in any blend mode and at any layer opacity, the sky too: steeply
 /// tilted, through a target covering the whole view, it blends with the

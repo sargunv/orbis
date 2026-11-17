@@ -16,7 +16,8 @@ pub(crate) const SOURCE: &str = "dev.sargunv.orbis:source-target";
 /// The layer key holding an image-process layer's operations.
 pub(crate) const OPERATIONS: &str = "dev.sargunv.orbis:operations";
 
-/// The root `dev.sargunv.orbis:targets`: `[{"id": …}]`, ids unique.
+/// The root `dev.sargunv.orbis:targets`: `[{"id": …, "precision": …}]`,
+/// ids unique.
 pub(crate) fn parse_targets(cx: &mut Cx, json: &Json) -> Vec<RenderTarget> {
     let Some(items) = cx.array(json, TARGETS) else {
         return Vec::new();
@@ -28,7 +29,7 @@ pub(crate) fn parse_targets(cx: &mut Cx, json: &Json) -> Vec<RenderTarget> {
             continue;
         };
         for m in members {
-            if m.key != "id" {
+            if m.key != "id" && m.key != "precision" {
                 cx.warn_unknown(&path, m);
             }
         }
@@ -47,7 +48,27 @@ pub(crate) fn parse_targets(cx: &mut Cx, json: &Json) -> Vec<RenderTarget> {
             );
             continue;
         }
-        targets.push(RenderTarget { id: name });
+        let precision = match item.get("precision") {
+            None => Precision::Standard,
+            Some(p) => match p.as_str().and_then(Precision::from_name) {
+                Some(precision) => precision,
+                None => {
+                    cx.error(
+                        format!("{path}.precision"),
+                        p.span,
+                        format!(
+                            "expected one of [{}], {p} found",
+                            Precision::NAMES.join(", ")
+                        ),
+                    );
+                    continue;
+                }
+            },
+        };
+        targets.push(RenderTarget {
+            id: name,
+            precision,
+        });
     }
     targets
 }
@@ -613,6 +634,10 @@ mod tests {
                 "",
             ),
             (r#""dev.sargunv.orbis:targets":[{}],"#, ""),
+            (
+                r#""dev.sargunv.orbis:targets":[{"id":"a","precision":"double"}],"#,
+                "",
+            ),
             ("", r#"{"id":"p","type":"dev.sargunv.orbis.image-process"}"#),
             (
                 "",
@@ -677,6 +702,19 @@ mod tests {
         ] {
             assert!(parse(ON, root, layers).is_err(), "{root} {layers}");
         }
+    }
+
+    #[test]
+    fn a_target_may_keep_high_precision() {
+        let root = r#""dev.sargunv.orbis:targets":[{"id":"a"},{"id":"b","precision":"high"},
+            {"id":"c","precision":"standard"}],"#;
+        let style = parse(ON, root, "").unwrap();
+        assert!(style.warnings.is_empty(), "{:?}", style.warnings);
+        let precisions: Vec<_> = style.targets.iter().map(|t| t.precision).collect();
+        assert_eq!(
+            precisions,
+            [Precision::Standard, Precision::High, Precision::Standard]
+        );
     }
 
     #[test]

@@ -144,6 +144,11 @@ pub const CLIP_FRAGMENTS: &str = "clip_fragments";
 /// composites samples (`composite_stack.wgsl`'s `stack_layers`, 2 to 8).
 pub const STACK_LAYERS: &str = "stack_layers";
 
+/// The override constant that sets the least half-width of a threshold's
+/// edge in an image process (`image_process.wgsl`'s `threshold_floor`,
+/// 0.001 by default): finer for processes that hold 16-bit floats.
+pub const THRESHOLD_FLOOR: &str = "threshold_floor";
+
 /// The override constant that, set to 11, makes a pipeline read data
 /// textures 2048 words wide (`data_texture.wgsl`'s `data_width_log2`;
 /// 4096 by default): for a device whose texture side is shorter

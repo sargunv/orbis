@@ -331,7 +331,8 @@ pub struct Caps {
     /// data textures.
     pub vertex_storage: bool,
     /// Blendable `Rgba16Float` and renderable `R32Float` targets: heatmap
-    /// density and the terrain's depth for what it hides.
+    /// density, high-precision render targets and the terrain's depth for
+    /// what it hides.
     pub float_targets: bool,
     /// Clip-space depth from 0 to 1 as the shaders write it. On a GL
     /// context without clip control (`EXT_clip_control`: Firefox), wgpu's

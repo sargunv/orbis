@@ -52,6 +52,11 @@ struct Process {
 // The target a pass's `combine` reads.
 @group(0) @binding(4) var other: texture_2d<f32>;
 
+// The least half-width of a threshold's antialiased edge, in coverage:
+// finer than the steps of what the process holds, which 16-bit floats
+// make far finer than 8 bits do.
+override threshold_floor: f32 = 0.001;
+
 struct ProcessOut {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -280,7 +285,7 @@ fn pointwise(
             return with_coverage(c, c.a + a.y * mix(coarse, fine, a.z));
         }
         case 3u: {
-            let w = max(fwidth(c.a) * 0.5, 0.001);
+            let w = max(fwidth(c.a) * 0.5, threshold_floor);
             return with_coverage(c, smoothstep(a.y - w, a.y + w, c.a));
         }
         case 4u: {

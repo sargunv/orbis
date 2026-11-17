@@ -55,6 +55,7 @@ let quake;
 const GAP_NAMES = {
   "depth-precision": "coarser 3D depth",
   "heatmap-precision": "8-bit heatmaps",
+  "target-precision": "8-bit render targets",
 };
 
 /** Notes what the map's GPU draws otherwise than WebGPU, under the scene

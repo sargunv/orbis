@@ -3263,10 +3263,15 @@ impl Map {
             let uses = |family: Family| match gap {
                 crate::Gap::HeatmapPrecision => family == Family::Heatmap,
                 crate::Gap::DepthPrecision => family == Family::FillExtrusion,
+                crate::Gap::TargetPrecision => false,
             };
             let mut layers: Vec<String> = (plan.nodes.iter())
                 .filter(|n| uses(n.family))
-                .map(|n| plan.style.layers[n.layer].id.clone())
+                .map(|n| n.layer)
+                .chain(
+                    (plan.targets.precise_layers()).filter(|_| gap == crate::Gap::TargetPrecision),
+                )
+                .map(|l| plan.style.layers[l].id.clone())
                 .collect();
             layers.dedup();
             if !layers.is_empty() {

@@ -146,6 +146,10 @@ pub enum Gap {
     /// Depth remapped from 0–1 into GL's −1–1, where the context has no
     /// clip control (Firefox): far 3D buildings may fight at high pitch.
     DepthPrecision,
+    /// No renderable `Rgba16Float`: high-precision render targets, and the
+    /// image processes through them, hold 8 bits, which band and round
+    /// fine cuts.
+    TargetPrecision,
 }
 
 impl Gap {
@@ -154,6 +158,7 @@ impl Gap {
         match self {
             Self::HeatmapPrecision => "heatmap-precision",
             Self::DepthPrecision => "depth-precision",
+            Self::TargetPrecision => "target-precision",
         }
     }
 }
@@ -648,6 +653,9 @@ impl Renderer {
         }
         if !caps.zero_to_one_depth {
             gaps.push(Gap::DepthPrecision);
+        }
+        if !caps.float_targets {
+            gaps.push(Gap::TargetPrecision);
         }
         gaps
     }
@@ -1820,7 +1828,7 @@ impl Renderer {
     /// targets, the fills drawn through them and the image-process layers.
     /// The bundles record again for a new plan.
     pub fn set_targets(&mut self, gpu: &mut dyn Gpu, plan: TargetPlan) {
-        if self.targets.set_plan(gpu, plan) {
+        if self.targets.set_plan(gpu, &self.composites, plan) {
             if self.targets.any() {
                 self.composites.make(gpu, offscreen::Mode::Over);
                 self.composites.make_stack(gpu);
@@ -3269,9 +3277,12 @@ impl Renderer {
                 &bound_once(group),
             ));
         }
-        // Each drawn render target's writers, in style order.
+        // Each drawn render target's writers, in style order: a float one's
+        // only processes, through the composite made for it.
         let over = self.composites.ready(gpu, offscreen::Mode::Over);
+        let float_over = self.targets.float_over(gpu);
         for t in self.targets.drawn().collect::<Vec<_>>() {
+            let float = self.targets.holds_float(t);
             let mut draws = Vec::new();
             for writer in self.targets.writers(t) {
                 match writer {
@@ -3285,6 +3296,12 @@ impl Renderer {
                         self.recorded += u32::from(draws.len() > before);
                     }
                     targets::Writer::Process(p) => match self.targets.composite(p) {
+                        Some(composite) if float => match float_over {
+                            Some(pipeline) => draws.extend(
+                                offscreen::Composites::commands_through(composite, pipeline),
+                            ),
+                            None => self.waiting += 1,
+                        },
                         Some(composite) if over => {
                             draws.extend(self.composites.commands(composite));
                         }
@@ -3292,9 +3309,17 @@ impl Renderer {
                     },
                 }
             }
-            let desc = RenderBundleDesc {
-                label: "render target",
-                ..layers
+            let desc = match float {
+                true => RenderBundleDesc {
+                    label: "render target",
+                    color_formats: &[TextureFormat::Rgba16Float],
+                    depth_format: None,
+                    sample_count: 1,
+                },
+                false => RenderBundleDesc {
+                    label: "render target",
+                    ..layers
+                },
             };
             let bundle = gpu.create_render_bundle(&desc, &bound_once(draws));
             self.targets.set_bundle(gpu, t, bundle);

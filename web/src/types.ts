@@ -16,8 +16,9 @@ type Fields<T> = {
 /** What a map on WebGL 2 draws otherwise than on WebGPU:
  * `heatmap-precision`, without float targets, heatmap density in 8 bits,
  * which bands; `depth-precision`, without `EXT_clip_control` (Firefox), far
- * 3D buildings may fight at high pitch. */
-export type Gap = "heatmap-precision" | "depth-precision";
+ * 3D buildings may fight at high pitch; `target-precision`, without float
+ * targets, high-precision render targets in 8 bits, which band. */
+export type Gap = "heatmap-precision" | "depth-precision" | "target-precision";
 /** A gap the style uses, and the layers it affects. */
 export interface Degradation {
   gap: Gap;

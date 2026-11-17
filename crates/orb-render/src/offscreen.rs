@@ -547,11 +547,26 @@ impl Composites {
             .collect()
     }
 
+    /// The layout of composites' groups, for pipelines made apart of
+    /// their shaders.
+    pub(crate) fn layout(&self) -> BindGroupLayoutId {
+        self.layout
+    }
+
     /// A composite's draw, for a bundle or the pass it opens.
     pub(crate) fn commands(&self, composite: &Composite) -> [RenderCommand; 3] {
         let pipeline = self.pipeline(composite.mode);
+        Self::commands_through(composite, pipeline.expect("made with the composite"))
+    }
+
+    /// A composite's draw through `pipeline`, one of its mode made for
+    /// other attachments than the map's.
+    pub(crate) fn commands_through(
+        composite: &Composite,
+        pipeline: RenderPipelineId,
+    ) -> [RenderCommand; 3] {
         [
-            RenderCommand::SetPipeline(pipeline.expect("made with the composite")),
+            RenderCommand::SetPipeline(pipeline),
             RenderCommand::SetBindGroup {
                 index: 0,
                 group: composite.group,

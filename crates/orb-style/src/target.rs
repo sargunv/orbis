@@ -10,6 +10,31 @@ use crate::Property;
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderTarget {
     pub id: String,
+    pub precision: Precision,
+}
+
+/// What a target's channels hold.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Precision {
+    /// 8 bits each, as the map's own.
+    #[default]
+    Standard,
+    /// 16-bit floats, kept through the passes of the image processes that
+    /// read or write the target: contours of a wide blur at a few
+    /// thousandths of its coverage, ramps of smooth fields without bands.
+    High,
+}
+
+impl Precision {
+    pub const NAMES: [&'static str; 2] = ["standard", "high"];
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "standard" => Self::Standard,
+            "high" => Self::High,
+            _ => return None,
+        })
+    }
 }
 
 /// One step of an image-process layer's `dev.sargunv.orbis:operations`.
