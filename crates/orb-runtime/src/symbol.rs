@@ -116,6 +116,10 @@ pub(crate) struct SymbolBuild {
     pub(crate) name_bytes: Vec<u8>,
     /// Images features name that the style doesn't have.
     pub(crate) missing_images: Vec<String>,
+    /// Where the layer's filter has camera conditions that read the
+    /// feature, what they read of each instance's feature, by feature
+    /// index, sorted.
+    pub(crate) filter_data: Vec<(u32, orb_expr::FeatureData)>,
 }
 
 fn anchor(a: orb_style::Anchor) -> orb_text::Anchor {
@@ -589,6 +593,7 @@ pub(crate) fn layout(
         name_bytes,
         bucket,
         missing_images,
+        filter_data: Vec::new(),
     }
 }
 
@@ -968,6 +973,8 @@ pub struct ResultSymbols {
     /// By glyph id; `None` for requests nothing could draw.
     pub glyphs: Vec<Option<GlyphKey>>,
     pub images: Vec<String>,
+    /// [`SymbolBuild::filter_data`].
+    pub filter_data: Vec<(u32, orb_expr::FeatureData)>,
 }
 
 impl ResultSymbols {
@@ -1009,6 +1016,7 @@ impl ResultSymbols {
             tables,
             glyphs: build.glyphs.clone(),
             images: build.images.clone(),
+            filter_data: build.filter_data.clone(),
         }
     }
 }

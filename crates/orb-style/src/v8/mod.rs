@@ -726,6 +726,19 @@ impl Cx {
         );
     }
 
+    /// Warns, once per document, that a symbol layer's filter reads the
+    /// camera, which GL JS and MapLibre Native reject.
+    pub(crate) fn filter_not_portable(&mut self, path: &str, span: Span) {
+        if !self.not_portable.insert("filter") {
+            return;
+        }
+        self.warn(
+            path,
+            span,
+            "this filter reads the camera, beyond the spec: Orbis decides it per symbol at placement, but GL JS and MapLibre Native reject the style (reported once per document)",
+        );
+    }
+
     pub(crate) fn warn(&mut self, path: impl Into<String>, span: Span, message: impl Into<String>) {
         self.diagnostics.warnings.push(Diagnostic {
             path: path.into(),

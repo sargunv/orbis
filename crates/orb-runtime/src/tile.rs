@@ -666,7 +666,7 @@ fn build_symbols<'f>(
             .map(|(slot, &f)| (f, slot as u32))
             .collect();
         let layer_key = crate::style::layer_key(node.key);
-        let symbols = crate::symbol::layout(
+        let mut symbols = crate::symbol::layout(
             p,
             (layer, ancestor),
             resolved.glyphs,
@@ -674,6 +674,26 @@ fn build_symbols<'f>(
             &slots,
             symbols.words,
         );
+        // Placement decides the filter's camera conditions per symbol,
+        // from what they read of its feature.
+        let filter = plan.style.layers[node.layer].filter.as_ref();
+        if let Some(camera) = filter
+            .and_then(|f| f.camera())
+            .filter(|c| c.reads_feature())
+        {
+            let mut features: Vec<u32> = (symbols.bucket.instances.iter())
+                .map(|i| i.feature)
+                .collect();
+            features.sort_unstable();
+            features.dedup();
+            symbols.filter_data = (features.into_iter())
+                .map(|f| {
+                    let data =
+                        orb_expr::FeatureData::capture(layer, f as usize, [camera.expression()]);
+                    (f, data)
+                })
+                .collect();
+        }
         let id = &plan.style.layers[node.layer].id;
         let named = format!("layers[{}] ({id})", node.layer);
         warnings.extend(symbols.bucket.warnings.messages(&named));

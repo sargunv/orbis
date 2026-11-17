@@ -200,6 +200,10 @@ struct BucketMeshes {
     /// (for [`shown`](Labels::shown)).
     tables: Arc<PlacementTables>,
     names: Vec<Box<str>>,
+    /// What the layer's filter's camera conditions read of each
+    /// instance's feature, by feature index, sorted
+    /// ([`ResultSymbols::filter_data`]).
+    filter_data: Vec<(u32, orb_expr::FeatureData)>,
 }
 
 impl BucketMeshes {
@@ -381,6 +385,54 @@ fn layer_params(
         writing_modes,
         variable_placement: has_variable_placement(symbol),
     }
+}
+
+/// The instances of `bucket` its layer's filter's camera conditions
+/// reject at `camera`, a bit each ([`orb_symbol::PlacedTile::filtered`]):
+/// evaluated at the zoom the tile was laid out at, as the rest of the
+/// filter was, with each symbol's distance from the view's centre
+/// (`center` of its anchor, in view heights) and what the conditions read
+/// of its feature.
+fn filtered_instances(
+    filter: &orb_expr::CameraFilter,
+    bucket: &BucketMeshes,
+    camera: orb_style::CameraInputs,
+    center: impl Fn([i16; 2]) -> f64,
+) -> Vec<u64> {
+    let instances = &bucket.tables.instances;
+    let context = |center_distance| orb_expr::EvaluationContext {
+        zoom: bucket.tile_zoom,
+        pitch: camera.pitch,
+        bearing: camera.bearing,
+        center_distance,
+        ..Default::default()
+    };
+    let per_symbol = filter.reads_center_distance() || filter.reads_feature();
+    if !per_symbol && filter.passes(&context(0.0), None) {
+        return Vec::new();
+    }
+    let mut words = vec![0u64; instances.len().div_ceil(64)];
+    for (i, instance) in instances.iter().enumerate() {
+        let rejected = per_symbol && {
+            let data = (bucket.filter_data)
+                .binary_search_by_key(&instance.feature, |(f, _)| *f)
+                .ok()
+                .map(|at| &bucket.filter_data[at].1);
+            let distance = if filter.reads_center_distance() {
+                center(instance.anchor)
+            } else {
+                0.0
+            };
+            !filter.passes(&context(distance), data)
+        };
+        if rejected || !per_symbol {
+            words[i / 64] |= 1 << (i % 64);
+        }
+    }
+    if words.iter().all(|&w| w == 0) {
+        words.clear();
+    }
+    words
 }
 
 /// GL JS `sortFeaturesByY`: symbols that may overlap draw ordered by
@@ -1073,6 +1125,7 @@ impl Labels {
             ancestor_scale: meta.ancestor_scale,
         });
         meshes.names = names;
+        meshes.filter_data.clone_from(&s.filter_data);
         self.lane.ingest(bucket, Arc::clone(&meshes.tables));
         self.buckets.insert(bucket, meshes);
         resident.symbols.push(owner);
@@ -1449,6 +1502,12 @@ impl Labels {
         let view_proj = view.view_proj();
         let viewport = view.viewport();
         let camera_inputs = crate::paint::camera_inputs(camera);
+        // World units per view height, and the camera's heading in the
+        // world (y up): what a symbol's distance from the centre reads.
+        let heading = {
+            let (sin, cos) = camera.bearing.to_radians().sin_cos();
+            glam::DVec2::new(sin, cos) / (view.world_per_px() * viewport.height)
+        };
         let layers = plan
             .nodes
             .iter()
@@ -1470,6 +1529,19 @@ impl Labels {
                             a.translation.x + f64::from(t.wrap) * period,
                             a.translation.y,
                         ) - camera_world;
+                        // The filter's camera conditions, which the
+                        // layer that places for its group decides.
+                        let filter = (symbol.filter.as_ref())
+                            .and_then(|f| f.camera())
+                            .filter(|_| plan.layout_leaders[node.layer].is_none());
+                        let filtered = filter.map_or_else(Vec::new, |filter| {
+                            let center = |anchor: [i16; 2]| {
+                                let p =
+                                    glam::DVec2::new(f64::from(anchor[0]), f64::from(anchor[1]));
+                                (a.matrix2 * p + origin).dot(heading)
+                            };
+                            filtered_instances(filter, b, camera_inputs, center)
+                        });
                         let (x, y) = (a.matrix2.x_axis, a.matrix2.y_axis);
                         let tile = glam::DMat4::from_cols(
                             glam::DVec4::new(x.x, x.y, 0.0, 0.0),
@@ -1506,6 +1578,7 @@ impl Labels {
                             ),
                             translate_t: [orb_style::TEXT_PART, orb_style::ICON_PART]
                                 .map(|part| translate_t(symbol, part, b.tile_zoom, zoom)),
+                            filtered,
                         })
                     })
                     .collect();
@@ -2021,6 +2094,7 @@ mod tests {
                 },
                 text_size: orb_symbol::ZoomSize::default(),
                 translate_t: [0.0; 2],
+                filtered: Vec::new(),
             };
             let camera = orb_style::CameraInputs {
                 pitch: 0.0,

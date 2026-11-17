@@ -285,6 +285,36 @@ fn panning_frame_by_frame_draws_what_a_fresh_map_does() {
     }
 }
 
+/// Labels whose filter reads the camera, the far ones of a tilted view
+/// dropped by their distance from the centre and their own rank, show
+/// after a tilt and turn what a fresh map there shows.
+#[test]
+fn camera_filtered_labels_after_a_gesture_are_a_fresh_map_s() {
+    let style = tokyo("", "").replacen(
+        "{\n      \"id\": \"poi_r20\",",
+        r#"{"id": "poi-near", "type": "symbol", "source": "openmaptiles",
+            "source-layer": "poi", "minzoom": 14,
+            "filter": ["all", [">=", ["get", "rank"], 1],
+                ["any", ["<", ["pitch"], 20],
+                 ["<", ["dev.sargunv.orbis:distance-from-center"], ["/", ["get", "rank"], 30]]]],
+            "layout": {"text-field": ["get", "name"], "text-font": ["Noto Sans Italic"],
+                       "text-size": 12, "text-allow-overlap": true}},
+        {"id": "poi_r20","#,
+        1,
+    );
+    assert!(style.contains("poi-near"));
+    let start = (Geodetic::new(139.735, 35.682), 15.0, 0.0, 0.0);
+    let end = (STATION, 15.8, 120.0, 60.0);
+    let (gestured, fresh) = both_ways(&style, start, end, 30);
+    // The filter drops labels there.
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let unfiltered = style.replacen(r#"["<", ["pitch"], 20]"#, "true", 1);
+    let (all, _) = fresh_at(&runtime, &mut target, &unfiltered, end);
+    assert_ne!(all, fresh, "the filter drops no label");
+    assert_same("camera-filter", (gestured, fresh));
+}
+
 #[test]
 fn zooming_out_draws_what_a_fresh_map_does() {
     let start = (STATION, 16.6, -20.0, 30.0);

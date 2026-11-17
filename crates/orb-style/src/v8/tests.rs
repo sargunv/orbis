@@ -956,6 +956,58 @@ fn extended_inputs_are_drawn_and_warn_once() {
     assert!(parse_with(filter, Previews::ALL, &[]).is_err());
 }
 
+/// A symbol layer's filter may read the camera, decided per symbol at
+/// placement; another layer's may not.
+#[test]
+fn symbol_filters_read_the_camera() {
+    let layer = |ty: &str, filter: &str| {
+        format!(
+            r#"{{"version": 8, "sources": {{"s": {{"type": "geojson",
+                "data": {{"type": "FeatureCollection", "features": []}}}}}},
+                "layers": [{{"id": "f", "type": "{ty}", "source": "s", "filter": {filter}}}]}}"#
+        )
+    };
+    let pitch = r#"["all", ["==", ["get", "k"], 1], ["<", ["pitch"], 45]]"#;
+    let style = parse(&layer("symbol", pitch)).unwrap();
+    assert_eq!(style.warnings.len(), 1, "{:?}", style.warnings);
+    assert_eq!(style.warnings[0].path, "layers[0].filter");
+    assert!(style.warnings[0].message.contains("reads the camera"));
+    let filter = style.layers[0].filter.as_ref().unwrap();
+    assert!(filter.camera().is_some_and(|c| c.reads_camera()));
+
+    // The distance from the view's centre is a preview's; without it the
+    // camera conditions are ignored, and the rest still selects.
+    let far =
+        r#"["all", ["==", ["get", "k"], 1], ["<", ["dev.sargunv.orbis:distance-from-center"], 1]]"#;
+    let off = parse(&layer("symbol", far)).unwrap();
+    assert_eq!(off.warnings.len(), 1, "{:?}", off.warnings);
+    assert!(off.warnings[0].message.contains("preview"));
+    let filter = off.layers[0].filter.as_ref().unwrap();
+    assert!(filter.camera().is_none());
+    assert!(filter.expression().constant().is_none());
+    let on = parse_with(&layer("symbol", far), Previews::ALL, &[]).unwrap();
+    assert!(on.warnings.is_empty(), "{:?}", on.warnings);
+    let camera = on.layers[0].filter.as_ref().unwrap().camera().unwrap();
+    assert!(camera.reads_center_distance() && !camera.reads_camera());
+
+    for filter in [pitch, far] {
+        let errors = parse_with(&layer("circle", filter), Previews::ALL, &[])
+            .unwrap_err()
+            .errors;
+        let operator = if filter == pitch {
+            "pitch"
+        } else {
+            "dev.sargunv.orbis:distance-from-center"
+        };
+        assert_eq!(
+            errors[0].message,
+            format!(
+                "[\"{operator}\"] expression is not supported in a filter for a circle layer with id: f"
+            )
+        );
+    }
+}
+
 /// A per-feature value times one of the camera draws per feature, its
 /// rows holding the feature's part and the camera's scaling it: not
 /// portable.

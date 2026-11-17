@@ -187,6 +187,17 @@ fn labels(points: &[(u32, f64, f64)], layout: &str) -> (Map, Target) {
 
 /// [`labels`] with `paint`.
 fn painted_labels(points: &[(u32, f64, f64)], layout: &str, paint: &str) -> (Map, Target) {
+    filtered_labels(points, layout, paint, "true", MapOptions::default())
+}
+
+/// [`painted_labels`] with `filter`, on a map with `options`.
+fn filtered_labels(
+    points: &[(u32, f64, f64)],
+    layout: &str,
+    paint: &str,
+    filter: &str,
+    options: MapOptions,
+) -> (Map, Target) {
     let glyphs = common::data().join("glyphs");
     let features: Vec<String> = points
         .iter()
@@ -203,14 +214,14 @@ fn painted_labels(points: &[(u32, f64, f64)], layout: &str, paint: &str) -> (Map
         "sources": {{"p": {{"type": "geojson", "data": {{"type": "FeatureCollection", "features": [{}]}}}}}},
         "layers": [
           {{"id": "bg", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
-          {{"id": "t", "type": "symbol", "source": "p", "paint": {{{paint}}},
+          {{"id": "t", "type": "symbol", "source": "p", "filter": {filter}, "paint": {{{paint}}},
            "layout": {{"text-font": ["Noto Sans Regular"], "text-size": 20, {layout}}}}}]}}"##,
         glyphs.display(),
         features.join(","),
     );
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, 400, 300, 1.0);
-    let mut map = Map::new(&runtime, MapOptions::default());
+    let mut map = Map::new(&runtime, options);
     map.set_style_json(&style).unwrap();
     common::settle(&mut map, &mut target);
     (map, target)
@@ -307,6 +318,73 @@ fn label_overlap_follows_the_camera() {
         tilt(&mut map, &mut target, 0.0);
         assert_eq!(shown(&mut map), 1, "level again: {layout}");
     }
+}
+
+/// A symbol layer's filter may read the camera, decided per label at each
+/// placement: tilted, the map drops the labels far from its centre away
+/// from the camera, whichever way it faces, and level again it shows them
+/// all, as a fresh map at each camera does. A label a filter drops doesn't
+/// collide either.
+#[test]
+fn tilted_maps_drop_far_labels_by_their_filter() {
+    // Zoom 3: 10° is 114 px, so 8° north or south is about 0.3 view
+    // heights from the centre; the west pair collides.
+    let points = [
+        (1, 0.0, 8.0),
+        (2, 0.0, 0.0),
+        (3, 0.0, -8.0),
+        (4, -10.0, 0.0),
+        (5, -10.3, 0.0),
+    ];
+    let field = r#""text-field": ["to-string", ["get", "k"]]"#;
+    let near = r#"["any", ["<", ["pitch"], 30],
+        ["<", ["dev.sargunv.orbis:distance-from-center"], 0.2]]"#;
+    // Label 4 goes only when tilted: then label 5 shows in its place.
+    let filter =
+        format!(r#"["all", {near}, ["any", ["<", ["pitch"], 30], ["!=", ["get", "k"], 4]]]"#);
+    let options = MapOptions {
+        previews: orb_api::Previews::ALL,
+        ..MapOptions::default()
+    };
+    let shown = |map: &Map| {
+        let mut shown: Vec<String> = (map.shown_labels().into_iter())
+            .filter(|&(_, opacity)| opacity > 0.0)
+            .map(|(name, _)| name.into())
+            .collect();
+        shown.sort();
+        shown
+    };
+    let to = |map: &mut Map, target: &mut Target, bearing: f64, pitch: f64| {
+        map.jump_to(&orb_api::CameraTarget {
+            bearing: Some(bearing),
+            pitch: Some(pitch),
+            ..orb_api::CameraTarget::default()
+        });
+        common::settle(map, target);
+    };
+    let (mut map, mut target) = filtered_labels(&points, field, "", &filter, options.clone());
+    assert_eq!(
+        shown(&map),
+        ["1", "2", "3", "4"],
+        "level, all but the hidden 5"
+    );
+    to(&mut map, &mut target, 0.0, 45.0);
+    assert_eq!(
+        shown(&map),
+        ["2", "3", "5"],
+        "facing north, the north one goes"
+    );
+    to(&mut map, &mut target, 180.0, 45.0);
+    assert_eq!(
+        shown(&map),
+        ["1", "2", "5"],
+        "facing south, the south one goes"
+    );
+    let (mut fresh, mut fresh_target) = filtered_labels(&points, field, "", &filter, options);
+    to(&mut fresh, &mut fresh_target, 180.0, 45.0);
+    assert_eq!(shown(&fresh), shown(&map), "as a fresh map there");
+    to(&mut map, &mut target, 180.0, 0.0);
+    assert_eq!(shown(&map), ["1", "2", "3", "4"], "level again");
 }
 
 /// Labels pick where their `text-translate` draws them, and beyond the

@@ -39,6 +39,10 @@ impl Deps {
     pub(crate) const GEOMETRY: Self = Self(4096 | 2048 | 2);
     /// The camera beyond its zoom: `pitch` and `bearing` (Orbis's own).
     pub(crate) const CAMERA: Self = Self(8192);
+    /// A symbol's distance from the view's centre
+    /// (`dev.sargunv.orbis:distance-from-center`): placement gives it per
+    /// symbol, in a symbol layer's filter alone.
+    pub(crate) const CENTER_DISTANCE: Self = Self(16384);
 
     pub(crate) fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0 && other.0 != 0
@@ -206,6 +210,8 @@ pub(crate) enum Call {
     Pitch,
     /// The camera's bearing, degrees.
     Bearing,
+    /// A symbol's distance from the view's centre, view heights.
+    CenterDistance,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -437,6 +443,7 @@ impl Op {
                 Call::SupportedScript => Deps::SCRIPT,
                 Call::Geometry { .. } => Deps::GEOMETRY,
                 Call::Pitch | Call::Bearing => Deps::CAMERA,
+                Call::CenterDistance => Deps::CENTER_DISTANCE,
                 _ => Deps::NONE,
             },
             Op::Zoom => Deps::ZOOM,

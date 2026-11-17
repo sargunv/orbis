@@ -245,6 +245,20 @@ pub struct PlacedTile {
     /// blends per-feature text and icon translates
     /// ([`PlacementTables::translates`]).
     pub translate_t: [f64; 2],
+    /// The instances the layer's filter rejects at this camera, a bit
+    /// each (instance `i` in word `i / 64`), for a filter that reads the
+    /// camera: they aren't placed, so they neither show nor collide.
+    /// Empty when it rejects none.
+    pub filtered: Vec<u64>,
+}
+
+impl PlacedTile {
+    /// Whether the layer's filter rejects instance `i` at this camera.
+    fn filtered(&self, i: usize) -> bool {
+        self.filtered
+            .get(i / 64)
+            .is_some_and(|word| word >> (i % 64) & 1 != 0)
+    }
 }
 
 /// One layer of a placement, its drawn tiles in any order.
@@ -1168,6 +1182,18 @@ impl<'a> Pass<'a> {
             if self.record.is_some() && !self.index.view.in_view(&tile.view, instance.anchor) {
                 continue;
             }
+            // Rejected by the filter's camera conditions: hidden, fading
+            // out as any label that doesn't fit.
+            if tile.filtered(i) {
+                let hidden = JointPlacement {
+                    text: false,
+                    icon: false,
+                    skip_fade: b.just_reloaded,
+                };
+                self.now.placements.insert(id, hidden);
+                seen.insert(id);
+                continue;
+            }
             let c = Candidate {
                 p,
                 tile,
@@ -1953,6 +1979,7 @@ mod tests {
             view: view(wrap),
             text_size: ZoomSize { size: 16.0, t: 0.0 },
             translate_t: [0.0; 2],
+            filtered: Vec::new(),
         }
     }
 
@@ -2031,6 +2058,7 @@ mod tests {
                     params: params(7),
                     tiles: vec![PlacedTile {
                         translate_t: [t, 0.0],
+                        filtered: Vec::new(),
                         ..tile(1, 0)
                     }],
                 }],
@@ -2089,6 +2117,32 @@ mod tests {
         ));
         let states = &c.changed[0].2;
         assert!((0..4).all(|i| shown(word(states, i))));
+    }
+
+    /// A label its filter's camera conditions reject neither shows nor
+    /// collides: the labels it would have hidden show.
+    #[test]
+    fn filtered_labels_neither_show_nor_collide() {
+        let mut placer = Placer::default();
+        placer.ingest(
+            1,
+            labels(&[(1, [4096, 4096]), (2, [4100, 4100]), (4, [6000, 6000])]),
+        );
+        let filtered = PlacedTile {
+            filtered: vec![0b101],
+            ..tile(1, 0)
+        };
+        let c = placer.place(&frame(
+            vec![LayerFrame {
+                params: params(7),
+                tiles: vec![filtered],
+            }],
+            0.0,
+            0.0,
+        ));
+        let states = &c.changed[0].2;
+        let placed: Vec<bool> = (0..3).map(|i| shown(word(states, i))).collect();
+        assert_eq!(placed, [false, true, false]);
     }
 
     #[test]

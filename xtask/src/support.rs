@@ -356,6 +356,13 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
          (`[\"+\", [\"get\", \"w\"], [\"pitch\"]]`, a colour) are errors.\n\
          Where a feature's part gives no number, the default stands in for\n\
          it, scaled.\n\
+         A symbol layer's `filter` may read the camera too\n\
+         (`[\"<\", [\"pitch\"], 50]`), not portable, and with its\n\
+         preview each symbol's distance from the view's centre: the\n\
+         conditions of its top-level `all` that read neither select a\n\
+         tile's features at the tile's zoom, and placement decides the\n\
+         rest per symbol at each camera, a symbol they reject neither\n\
+         showing nor colliding. Other layers' filters can't read them.\n\
          **Spec** lists the spec's expression parameters; **GL JS** and **Native**\n\
          the first versions with the property and its data-driven form (the\n\
          spec's `sdk-support`; Native is Android's); **Orbis** what Orbis reads:\n\

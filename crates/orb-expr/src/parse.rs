@@ -16,7 +16,13 @@ pub(crate) enum Annotation {
     Omit,
 }
 
-/// The public expression operators in style-spec 26.5.1.
+/// `["dev.sargunv.orbis:distance-from-center"]`, after Mapbox's
+/// `distance-from-center`: a symbol's distance from the view's centre,
+/// read only by a symbol layer's filter (style-spec#161 asks for it).
+pub(crate) const CENTER_DISTANCE: &str = "dev.sargunv.orbis:distance-from-center";
+
+/// The public expression operators in style-spec 26.5.1, with Orbis's
+/// camera inputs.
 const OPERATORS: &[&str] = &[
     "!",
     "!=",
@@ -48,6 +54,7 @@ const OPERATORS: &[&str] = &[
     "collator",
     "concat",
     "cos",
+    CENTER_DISTANCE,
     "distance",
     "downcase",
     "e",
@@ -337,6 +344,9 @@ pub(crate) struct Parser<'l> {
     pub(crate) ir: Ir,
     pub errors: Vec<Diagnostic>,
     pub(super) scope: Vec<(String, NodeId)>,
+    /// `["dev.sargunv.orbis:distance-from-center"]` may be read: the
+    /// parse is a symbol layer's filter.
+    pub(crate) center_distance: bool,
 }
 
 impl<'l> Parser<'l> {
@@ -643,6 +653,18 @@ impl<'l> Parser<'l> {
             }
             "number" | "string" | "boolean" | "object" | "array" => {
                 self.parse_assertion(op, items, span, key)
+            }
+            CENTER_DISTANCE => {
+                if !self.center_distance {
+                    let message = format!(
+                        "[\"{op}\"] expression may only be used in a symbol layer's filter"
+                    );
+                    self.error(child_key(key, 0), items[0].span, message);
+                    return None;
+                }
+                self.arity(items, 0, span, key)?;
+                let op = Op::Call(Call::CenterDistance, Vec::new());
+                Some(self.ir.push(op, Type::Number, key))
             }
             _ => {
                 if let Some((ty, overloads)) = compound(op) {

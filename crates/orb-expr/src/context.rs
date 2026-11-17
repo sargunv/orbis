@@ -9,6 +9,9 @@ pub struct EvaluationContext<'a> {
     /// `["bearing"]`.
     pub pitch: f64,
     pub bearing: f64,
+    /// A symbol's distance from the view's centre along the camera's
+    /// bearing, in view heights: `["dev.sargunv.orbis:distance-from-center"]`.
+    pub center_distance: f64,
     pub line_progress: f64,
     pub heatmap_density: f64,
     pub elevation: f64,
@@ -25,6 +28,7 @@ impl Default for EvaluationContext<'_> {
             zoom: 0.0,
             pitch: 0.0,
             bearing: 0.0,
+            center_distance: 0.0,
             line_progress: 0.0,
             heatmap_density: 0.0,
             elevation: 0.0,

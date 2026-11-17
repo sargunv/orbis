@@ -2,6 +2,7 @@
 
 use orb_tile::Layer;
 
+use crate::ir::{Call, Deps, Ir, NodeId, Op};
 use crate::legacy::{is_expression_filter, lower_filter, mixed_filter_warning};
 use crate::parse::Parser;
 use crate::value::{Type, Value};
@@ -11,23 +12,128 @@ use crate::{CanonicalTile, Diagnostic, Expression};
 type Keys = Box<[Box<str>]>;
 
 /// A compiled layer filter: an expression or a lowered legacy filter.
+///
+/// A symbol layer's filter may read the camera (`["pitch"]`,
+/// `["bearing"]`) and each symbol's distance from the view's centre
+/// (`["dev.sargunv.orbis:distance-from-center"]`), which a tile, laid out
+/// on a job worker, doesn't know. Such a filter splits in two: the
+/// conditions of its top-level `all` that read none of them select a
+/// tile's features as any filter does, and the others
+/// ([`CameraFilter`]) decide per symbol at each placement.
 #[derive(Clone, Debug)]
 pub struct Filter {
+    /// What a tile selects its features by.
     expression: Expression,
     /// The property keys the filter reads, sorted, if they and the
     /// geometry type are all it reads of a feature (see [`FilterGroups`]).
     grouped: Option<Keys>,
+    camera: Option<CameraFilter>,
+}
+
+/// The conditions of a symbol layer's filter that read the camera or the
+/// symbol's distance from the view's centre, which placement evaluates
+/// per symbol: a symbol they reject is not placed, so it neither shows nor
+/// collides.
+#[derive(Clone, Debug)]
+pub struct CameraFilter {
+    expression: Expression,
+}
+
+impl CameraFilter {
+    /// The conditions, as one expression.
+    /// What a tile selects its features by: the whole filter, or for one
+    /// that reads the camera, its conditions that don't.
+    pub fn expression(&self) -> &Expression {
+        &self.expression
+    }
+
+    /// Whether they read the feature (its properties, id or geometry
+    /// type), which placement then needs captured
+    /// ([`FeatureData::capture`](crate::FeatureData::capture)).
+    pub fn reads_feature(&self) -> bool {
+        self.expression.deps().contains(Deps::FEATURE)
+    }
+
+    /// Whether they read the camera's pitch or bearing.
+    pub fn reads_camera(&self) -> bool {
+        self.expression.deps().contains(Deps::CAMERA)
+    }
+
+    /// The name of the first camera operator they read (`"pitch"`), for
+    /// messages.
+    pub fn operator(&self) -> &'static str {
+        camera_operator(&self.expression.ir)
+    }
+
+    /// Whether they read the symbol's distance from the view's centre, so
+    /// that each symbol decides apart rather than each feature.
+    pub fn reads_center_distance(&self) -> bool {
+        self.expression.deps().contains(Deps::CENTER_DISTANCE)
+    }
+
+    /// Whether a symbol passes: `context` holds the zoom the tile was
+    /// laid out at, the camera and the symbol's distance from the view's
+    /// centre; `data` its feature's, when [`reads_feature`](Self::reads_feature).
+    /// A failing evaluation rejects it, as a filter's does.
+    pub fn passes(
+        &self,
+        context: &crate::EvaluationContext<'_>,
+        data: Option<&crate::FeatureData>,
+    ) -> bool {
+        let value = match data {
+            Some(data) => self.expression.evaluate_data(context, data),
+            None => self.expression.evaluate_with(context),
+        };
+        matches!(value, Ok(Value::Bool(true)))
+    }
+}
+
+/// Whether `deps` read what only placement knows.
+fn reads_camera(deps: Deps) -> bool {
+    deps.contains(Deps::CAMERA) || deps.contains(Deps::CENTER_DISTANCE)
+}
+
+/// The conditions `id` holds to: the operands of nested `all`s, in order.
+fn conjuncts(ir: &Ir, id: NodeId, out: &mut Vec<NodeId>) {
+    match &ir.node(id).op {
+        Op::All(ids) => ids.iter().for_each(|&c| conjuncts(ir, c, out)),
+        _ => out.push(id),
+    }
+}
+
+/// A node that holds when all of `ids` do.
+fn conjunction(ir: &mut Ir, ids: &[NodeId]) -> NodeId {
+    match ids {
+        [] => ir.push(Op::Literal(Value::Bool(true)), Type::Boolean, ""),
+        [one] => *one,
+        many => ir.push(Op::All(many.to_vec()), Type::Boolean, ""),
+    }
+}
+
+/// The name of the first camera operator `ir` reads.
+fn camera_operator(ir: &Ir) -> &'static str {
+    ir.nodes
+        .iter()
+        .find_map(|n| match n.op {
+            Op::Call(Call::Pitch, _) => Some("pitch"),
+            Op::Call(Call::Bearing, _) => Some("bearing"),
+            Op::Call(Call::CenterDistance, _) => Some(crate::parse::CENTER_DISTANCE),
+            _ => None,
+        })
+        .unwrap_or("pitch")
 }
 
 impl Filter {
     /// Parses a filter, in expression or legacy syntax. Legacy syntax mixed
     /// into an expression filter is reported in `warnings`, as GL JS warns
-    /// about it. Diagnostic paths are relative to the filter.
+    /// about it. Diagnostic paths are relative to the filter. A filter that
+    /// reads the camera is an error: only a symbol layer's may
+    /// ([`parse_symbol`](Self::parse_symbol)).
     pub fn parse(
         json: &crate::json::Json,
         warnings: &mut Vec<Diagnostic>,
     ) -> Result<Self, Vec<Diagnostic>> {
-        Self::parse_inner(json, warnings, None)
+        Self::parse_inner(json, warnings, None, false)
     }
 
     /// Parses with `global-state` reads folded to `state`'s values.
@@ -36,16 +142,29 @@ impl Filter {
         warnings: &mut Vec<Diagnostic>,
         state: &[(String, Value<'static>)],
     ) -> Result<Self, Vec<Diagnostic>> {
-        Self::parse_inner(json, warnings, Some(state))
+        Self::parse_inner(json, warnings, Some(state), false)
+    }
+
+    /// Parses a symbol layer's filter, which may read the camera and each
+    /// symbol's distance from the view's centre ([`camera`](Self::camera)),
+    /// with `global-state` reads folded to `state`'s values.
+    pub fn parse_symbol(
+        json: &crate::json::Json,
+        warnings: &mut Vec<Diagnostic>,
+        state: &[(String, Value<'static>)],
+    ) -> Result<Self, Vec<Diagnostic>> {
+        Self::parse_inner(json, warnings, Some(state), true)
     }
 
     fn parse_inner(
         json: &crate::json::Json,
         warnings: &mut Vec<Diagnostic>,
         state: Option<&[(String, Value<'static>)]>,
+        symbol: bool,
     ) -> Result<Self, Vec<Diagnostic>> {
         let mut parser = Parser {
             global_state: state,
+            center_distance: symbol,
             ..Parser::default()
         };
         let root = if is_expression_filter(json) {
@@ -54,23 +173,67 @@ impl Filter {
         } else {
             lower_filter(&mut parser, json, "")
         };
-        match root {
+        let Some(root) = root else {
+            return Err(parser.errors);
+        };
+        let error = |message: String| {
+            Err(vec![Diagnostic {
+                path: String::new(),
+                span: json.span,
+                message,
+            }])
+        };
+        let (root, camera) = if !reads_camera(parser.ir.node(root).deps) {
+            (root, None)
+        } else if !symbol {
             // Filters run per tile, which knows no camera beyond its zoom.
-            Some(root) if parser.ir.node(root).deps.contains(crate::ir::Deps::CAMERA) => {
-                Err(vec![Diagnostic {
-                    path: String::new(),
-                    span: json.span,
-                    message: "camera expressions not supported".into(),
-                }])
+            let name = camera_operator(&parser.ir);
+            return error(format!(
+                "[\"{name}\"] expression is not supported in this filter: only a symbol layer's filter reads the camera"
+            ));
+        } else {
+            let mut all = Vec::new();
+            conjuncts(&parser.ir, root, &mut all);
+            let (camera, tile): (Vec<NodeId>, Vec<NodeId>) =
+                (all.into_iter()).partition(|&c| reads_camera(parser.ir.node(c).deps));
+            // Placement has the feature's data but not its geometry.
+            if camera
+                .iter()
+                .any(|&c| parser.ir.node(c).deps.contains(Deps::GEOMETRY))
+            {
+                return error(
+                    "a filter condition that reads the camera can't read the feature's geometry (\"within\", \"distance\"); give those conditions of their own under \"all\"".into(),
+                );
             }
-            Some(root) => {
-                let ir = parser.ir.compact(root);
-                Ok(Self {
-                    grouped: grouped_keys(&ir),
-                    expression: Expression { ir },
-                })
-            }
-            None => Err(parser.errors),
+            let camera = conjunction(&mut parser.ir, &camera);
+            let camera = CameraFilter {
+                expression: Expression {
+                    ir: parser.ir.compact(camera),
+                },
+            };
+            (conjunction(&mut parser.ir, &tile), Some(camera))
+        };
+        let ir = parser.ir.compact(root);
+        Ok(Self {
+            grouped: grouped_keys(&ir),
+            expression: Expression { ir },
+            camera,
+        })
+    }
+
+    /// The conditions placement decides per symbol, for a symbol layer's
+    /// filter that reads the camera.
+    pub fn camera(&self) -> Option<&CameraFilter> {
+        self.camera.as_ref()
+    }
+
+    /// The filter without its [`camera`](Self::camera) conditions: what a
+    /// tile selects by alone.
+    #[must_use]
+    pub fn without_camera(self) -> Self {
+        Self {
+            camera: None,
+            ..self
         }
     }
 
@@ -305,5 +468,118 @@ mod tests {
         assert_eq!(groups_of("class"), Some(8));
         // A column of mixed types gives each feature its own group: none.
         assert_eq!(groups_of("mixed"), None);
+    }
+
+    fn symbol_filter(text: &str) -> Result<Filter, Vec<Diagnostic>> {
+        Filter::parse_symbol(&crate::json::parse(text).unwrap(), &mut Vec::new(), &[])
+    }
+
+    fn at(pitch: f64, center_distance: f64) -> crate::EvaluationContext<'static> {
+        crate::EvaluationContext {
+            zoom: 10.0,
+            pitch,
+            center_distance,
+            ..Default::default()
+        }
+    }
+
+    /// A symbol filter's conditions that read no camera select a tile's
+    /// features; the others decide per symbol at placement.
+    #[test]
+    fn symbol_filters_split_off_their_camera_conditions() {
+        let layer = roads();
+        let filter = symbol_filter(
+            r#"["all", ["==", ["get", "class"], "motorway"],
+                ["all", ["<", ["pitch"], 45], ["!", ["get", "ramp"]]],
+                ["<", ["dev.sargunv.orbis:distance-from-center"], 1]]"#,
+        )
+        .unwrap();
+        let tile = symbol_filter(
+            r#"["all", ["==", ["get", "class"], "motorway"], ["!", ["get", "ramp"]]]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            filter.select(&layer, 10.0, None),
+            tile.select(&layer, 10.0, None)
+        );
+        assert!(tile.camera().is_none());
+        let camera = filter.camera().expect("reads the camera");
+        assert!(camera.reads_center_distance() && !camera.reads_feature());
+        assert!(camera.passes(&at(30.0, 0.5), None));
+        assert!(camera.passes(&at(30.0, -3.0), None));
+        assert!(!camera.passes(&at(50.0, 0.5), None));
+        assert!(!camera.passes(&at(30.0, 1.0), None));
+    }
+
+    /// A camera condition may read the feature, captured for placement,
+    /// and the tile's zoom; a filter that only reads the camera selects
+    /// every feature of a tile.
+    #[test]
+    fn camera_conditions_read_the_feature_and_zoom() {
+        let layer = roads();
+        let filter = symbol_filter(
+            r#"["case", [">=", ["zoom"], 12], true,
+                [">", ["dev.sargunv.orbis:distance-from-center"], ["get", "reach"]]]"#,
+        )
+        .unwrap();
+        assert_eq!(filter.select(&layer, 10.0, None).len(), layer.len());
+        let camera = filter.camera().unwrap();
+        assert!(camera.reads_feature() && camera.reads_center_distance());
+        let data = crate::FeatureData {
+            id: crate::Value::Null,
+            geometry_type: None,
+            properties: vec![("reach".into(), crate::Value::Number(-0.5))],
+        };
+        assert!(camera.passes(&at(0.0, 0.0), Some(&data)));
+        assert!(!camera.passes(&at(0.0, -1.0), Some(&data)));
+        // Without the property the comparison fails, which rejects.
+        assert!(!camera.passes(&at(0.0, 0.0), None));
+        let zoomed = crate::EvaluationContext {
+            zoom: 12.0,
+            ..at(0.0, -1.0)
+        };
+        assert!(camera.passes(&zoomed, Some(&data)));
+    }
+
+    /// Only a symbol layer's filter reads the camera; the distance from the
+    /// view's centre is nothing else's to read.
+    #[test]
+    fn camera_reads_outside_symbol_filters_are_errors() {
+        let message = |text: &str| {
+            Filter::parse(&crate::json::parse(text).unwrap(), &mut Vec::new())
+                .unwrap_err()
+                .remove(0)
+                .message
+        };
+        assert_eq!(
+            message(r#"["<", ["pitch"], 30]"#),
+            "[\"pitch\"] expression is not supported in this filter: only a symbol layer's filter reads the camera"
+        );
+        assert_eq!(
+            message(r#"["<", ["dev.sargunv.orbis:distance-from-center"], 1]"#),
+            "[\"dev.sargunv.orbis:distance-from-center\"] expression may only be used in a symbol layer's filter"
+        );
+        let spec = crate::PropertySpec {
+            ty: crate::PropertyType::Number,
+            default: None,
+            zoom: true,
+            feature: true,
+            state: true,
+            camera: true,
+            camera_data: true,
+            elevation: false,
+            interpolated: true,
+            tokens: false,
+        };
+        let json = crate::json::parse(r#"["dev.sargunv.orbis:distance-from-center"]"#).unwrap();
+        assert!(crate::PropertyExpression::parse(&json, &spec).is_err());
+        // Placement captures no geometry.
+        let polygon = r#"{"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}"#;
+        let within = format!(r#"["any", ["within", {polygon}], ["<", ["pitch"], 30]]"#);
+        let errors = symbol_filter(&within).unwrap_err();
+        assert!(errors[0].message.contains("geometry"), "{errors:?}");
+        let apart = format!(r#"["all", ["within", {polygon}], ["<", ["pitch"], 30]]"#);
+        assert!(symbol_filter(&apart).is_ok());
+        assert!(symbol_filter(r#"["dev.sargunv.orbis:distance-from-center", 1]"#).is_err());
     }
 }
