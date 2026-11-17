@@ -34,9 +34,8 @@ export function open(
     // (Orbis's too), which stopped its globe zooming out at a larger size.
     minZoom: constraints.minZoom ?? -2,
     maxZoom: constraints.maxZoom,
-    // Orbis lets pitch reach 85 degrees by default, GL JS 60.
     minPitch: constraints.minPitch,
-    maxPitch: constraints.maxPitch ?? 85,
+    maxPitch: constraints.maxPitch,
     maxBounds: constraints.bounds ?? undefined,
     // The app shows the style's attribution for both maps.
     attributionControl: false,

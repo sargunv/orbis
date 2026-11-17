@@ -155,11 +155,10 @@ export async function open(container, { style, camera, constraints = {} }) {
     await map.ready;
     const { minZoom, maxZoom, minPitch, maxPitch, bounds } = constraints;
     map.discarding.setBounds({
-      // Orbis lets pitch reach 85 degrees by default.
       minZoom,
       maxZoom,
       minPitch,
-      maxPitch: maxPitch ?? 85,
+      maxPitch,
       ...(bounds
         ? {
             bounds: {

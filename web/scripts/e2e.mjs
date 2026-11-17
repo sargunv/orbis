@@ -4062,7 +4062,9 @@ async function pitchedCity(webgpuBrowser, browser, server) {
   style.terrain = { source: "dem", exaggeration: 1.5 };
   style.projection = { type: "globe" };
   await writeFile(join(server.styles, "city.json"), JSON.stringify(style));
-  const view = "#15.5/35.676/139.745/-67/79";
+  // The demo stops pitch at 60 degrees, so the page opens there and the
+  // check raises the limit to pitch the camera on.
+  const view = "#15.5/35.676/139.745/-67/60";
   const shot = async (browser, backend) => {
     const page = await browser.newPage({
       viewport: { width: 1440, height: 900 },
@@ -4079,11 +4081,16 @@ async function pitchedCity(webgpuBrowser, browser, server) {
     });
     const url = `${server.url}e2e/styles/city.json`;
     await page.goto(`${server.url}?style=${url}&backend=${backend}${view}`);
+    await mapIdle(page, `${backend}: the city at 60°`);
+    await page.evaluate(() => {
+      app.map.camera.setConstraints({ maxPitch: 85 });
+      app.map.camera.jumpTo({ pitch: 79 });
+    });
     await page.waitForFunction(
-      () => document.getElementById("app")?.dataset.map === "idle",
-      null,
-      { timeout: 60_000 },
+      () => document.getElementById("app").dataset.map !== "idle",
     );
+    await mapIdle(page, `${backend}: the city at 79°`);
+    assert.equal(await page.evaluate(() => app.map.camera.current.pitch), 79);
     assert.equal(await page.evaluate(() => app.map.backend), backend);
     await page
       .locator(".corner, .attribution, .toast")
