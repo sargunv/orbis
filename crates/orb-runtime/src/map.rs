@@ -2282,7 +2282,7 @@ impl Map {
                 .max_element(),
             view_proj: view.view_proj().to_cols_array_2d(),
             viewport: [viewport.width as f32, viewport.height as f32],
-            world_per_px: view.world_per_px() as f32,
+            world_per_px: view.world_per_px(),
             pixel_ratio,
             zoom,
             bearing: self.camera.state().bearing.to_radians() as f32,

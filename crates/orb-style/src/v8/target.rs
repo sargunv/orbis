@@ -109,6 +109,43 @@ const COLOR: PropertyType = PropertyType::Color;
 const PAIR: PropertyType = PropertyType::Array(orb_expr::Type::Number, Some(2));
 /// A blur's or a dilation's size: past 64 pixels it reaches no further.
 const SIZE: (f64, f64) = (0.0, 64.0);
+const NOISE_ANCHOR: &str = "dev.sargunv.orbis:anchor";
+const REFERENCE_ZOOM: &str = "dev.sargunv.orbis:reference-zoom";
+
+fn noise_anchor(cx: &mut Cx, json: &Json, path: &str) -> Option<NoiseAnchor> {
+    let anchor = json.get(NOISE_ANCHOR);
+    let reference = json.get(REFERENCE_ZOOM);
+    if let Some(anchor) = anchor
+        && anchor.as_str() == Some("map")
+    {
+        let zoom = match reference {
+            Some(zoom) => cx.number_in(zoom, &format!("{path}.{REFERENCE_ZOOM}"), 0.0, 24.0)?,
+            None => 14.0,
+        };
+        return Some(NoiseAnchor::Map {
+            reference_zoom: zoom,
+        });
+    }
+    if let Some(reference) = reference {
+        cx.error(
+            format!("{path}.{REFERENCE_ZOOM}"),
+            reference.span,
+            format!("requires \"{NOISE_ANCHOR}\": \"map\""),
+        );
+    }
+    match anchor {
+        None => Some(NoiseAnchor::Adaptive),
+        Some(a) if a.as_str() == Some("viewport") => Some(NoiseAnchor::Viewport),
+        Some(a) => {
+            cx.error(
+                format!("{path}.{NOISE_ANCHOR}"),
+                a.span,
+                format!("expected one of [map, viewport], {a} found"),
+            );
+            None
+        }
+    }
+}
 
 fn parse_operation(cx: &mut Cx, json: &Json, path: &str) -> Option<Operation> {
     let members = cx.object(json, path)?;
@@ -120,7 +157,7 @@ fn parse_operation(cx: &mut Cx, json: &Json, path: &str) -> Option<Operation> {
     let params: &[&str] = match name.as_str() {
         "select" => &["value", "tolerance"],
         "blur" | "high-pass" | "dilate" | "erode" => &["size"],
-        "noise" => &["size", "amount", "speed"],
+        "noise" => &["size", "amount", "speed", NOISE_ANCHOR, REFERENCE_ZOOM],
         "sharpen" => &["size", "amount"],
         "threshold" => &["cutoff"],
         "invert" | "luminance" => &[],
@@ -188,6 +225,7 @@ fn parse_operation(cx: &mut Cx, json: &Json, path: &str) -> Option<Operation> {
         "dilate" => Operation::Dilate { size: size(cx) },
         "erode" => Operation::Erode { size: size(cx) },
         "noise" => Operation::Noise {
+            anchor: noise_anchor(cx, json, path)?,
             size: read(
                 cx,
                 json,
@@ -535,8 +573,10 @@ mod tests {
             panic!("{:?}", ops[1]);
         };
         assert_eq!((size.evaluate(10.0), size.evaluate(14.0)), (2.0, 6.0));
-        assert!(matches!(&ops[2], Operation::Noise { size, amount, speed }
-                if n(size) == 2.0 && n(amount) == 0.25 && n(speed) == 0.0));
+        assert!(
+            matches!(&ops[2], Operation::Noise { size, amount, speed, anchor: NoiseAnchor::Adaptive }
+                if n(size) == 2.0 && n(amount) == 0.25 && n(speed) == 0.0)
+        );
         assert!(matches!(&ops[3], Operation::Threshold { cutoff } if n(cutoff) == 128.0));
         assert!(matches!(ops[4], Operation::Invert));
         assert!(

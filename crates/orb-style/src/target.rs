@@ -37,6 +37,17 @@ impl Precision {
     }
 }
 
+/// The coordinate system and scale of a noise lattice.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NoiseAnchor {
+    /// Map coordinates, fading between lattices at consecutive camera zooms.
+    Adaptive,
+    /// Map coordinates, with size in pixels at this style zoom.
+    Map { reference_zoom: f64 },
+    /// Logical pixels from the viewport's top left.
+    Viewport,
+}
+
 /// One step of an image-process layer's `dev.sargunv.orbis:operations`.
 /// Images are premultiplied; coverage is their alpha. Sizes are logical
 /// pixels. Numbers and colours may follow the zoom and the camera
@@ -55,13 +66,13 @@ pub enum Operation {
         size: Property<f32>,
     },
     /// Moves coverage by up to `amount` (0–1) of gradient noise with
-    /// features `size` across, fixed to the map. With a `speed` (logical
-    /// pixels a second at the zoom its features are `size` across) it
-    /// drifts and changes as time passes: two lattices sliding apart.
+    /// features `size` across. With a `speed` (logical pixels a second
+    /// at the scale where its features are `size` across) it drifts and changes.
     Noise {
         size: Property<f32>,
         amount: Property<f32>,
         speed: Property<f32>,
+        anchor: NoiseAnchor,
     },
     /// Coverage at or above `cutoff` (0–255) becomes whole, the rest none.
     Threshold {
@@ -220,6 +231,7 @@ impl Operation {
                 size,
                 amount,
                 speed,
+                ..
             } => vec![n(size), n(amount), n(speed)],
             Self::Threshold { cutoff } => vec![n(cutoff)],
             Self::Sharpen { size, amount } => vec![n(size), n(amount)],

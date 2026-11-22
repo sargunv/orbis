@@ -38,7 +38,7 @@ mod terrain;
 mod tiles;
 pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
 pub use layer_composite::Blend;
-pub use targets::{CombineMode, MAX_STOPS, ProcessOp, ProcessPlan, TargetPlan};
+pub use targets::{CombineMode, MAX_STOPS, NoiseAnchor, ProcessOp, ProcessPlan, TargetPlan};
 pub use terrain::{
     DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeFull, DrapeLayout, MAX_SHRINK, SlotRedraw, TERRAIN_EXTENT,
     TERRAIN_GRID, TerrainDem, TerrainGlobe, TerrainPaint, TerrainTile,

@@ -90,6 +90,7 @@ pub enum ProcessOp {
         size: f32,
         amount: f32,
         speed: f32,
+        anchor: NoiseAnchor,
     },
     /// `cutoff` 0–255.
     Threshold {
@@ -264,6 +265,14 @@ impl Kernel {
     }
 }
 
+/// Where a noise operation samples its lattice.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NoiseAnchor {
+    Adaptive,
+    Map { reference_zoom: f64 },
+    Viewport,
+}
+
 /// A pointwise operation of a pass.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Pointwise {
@@ -275,6 +284,7 @@ enum Pointwise {
         size: f32,
         amount: f32,
         speed: f32,
+        anchor: NoiseAnchor,
     },
     Threshold {
         cutoff: f32,
@@ -424,10 +434,12 @@ fn steps(ops: &[ProcessOp], precise: bool) -> Vec<Step> {
                 size,
                 amount,
                 speed,
+                anchor,
             } => Pointwise::Noise {
                 size,
                 amount,
                 speed,
+                anchor,
             },
             ProcessOp::Gradient {
                 radial,
@@ -1393,18 +1405,11 @@ fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2], precise: bool) -> [f
     words[72] = step.pointwise.len() as f32;
     // The view's pixels from its centre, for gradients across it.
     let half = [size[0] as f32 * 0.5, size[1] as f32 * 0.5];
-    // Noise is fixed to the map: lattices of the whole zooms around the
-    // camera's, each `size` logical pixels a point at its zoom, the finer
-    // fading in towards the next zoom; positions camera-relative, with
-    // each lattice's offset at the camera taken in f64 where it repeats.
+    // The map lattices use camera-relative positions, with the camera's
+    // offset reduced to one noise period before narrowing to f32.
     let zoom_floor = frame.zoom.floor();
     let fade = (frame.zoom - zoom_floor) as f32;
-    let px_per_world = 1.0 / f64::from(frame.world_per_px.max(f32::MIN_POSITIVE));
-    let floor_px_per_world = px_per_world * (zoom_floor - frame.zoom).exp2();
-    // Moving noise drifts each lattice `speed` logical pixels a second at
-    // the zoom its points are `size` apart: as many of its own points
-    // each `size` pixels, on both octaves, so the finer drifts on as the
-    // coarser once a whole zoom takes it there.
+    let px_per_world_at = |zoom: f64| (zoom - frame.zoom).exp2() / frame.world_per_px;
     let seconds = f64::from(frame.time) / 1000.0;
     for (i, op) in step.pointwise.iter().enumerate() {
         let none = [0.0; 4];
@@ -1418,31 +1423,49 @@ fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2], precise: bool) -> [f
                 size,
                 amount,
                 speed,
+                anchor,
             } => {
-                let scale = floor_px_per_world / f64::from(size);
-                // Each lattice's offset at the camera, slid `drift` of its
-                // points along `direction`.
-                let offset = |s: f64, direction: [f64; 2], drift: f64| {
-                    let at = |k: usize| frame.camera[k] * s + direction[k] * drift;
+                let size = f64::from(size).max(1e-6);
+                let (pixels, origin) = match anchor {
+                    NoiseAnchor::Adaptive => (px_per_world_at(zoom_floor), frame.camera),
+                    NoiseAnchor::Map { reference_zoom } => {
+                        (px_per_world_at(reference_zoom), frame.camera)
+                    }
+                    NoiseAnchor::Viewport => (1.0, [0.0; 2]),
+                };
+                let scale = pixels / size;
+                let drift = seconds * f64::from(speed) / size;
+                let offset = |s: f64, travel: [f64; 2]| {
+                    let at = |k: usize| origin[k] * s + travel[k];
                     [0, 1].map(|k| at(k).rem_euclid(256.0) as f32)
                 };
-                let [x0, y0] = offset(scale, [0.0; 2], 0.0);
-                let [x1, y1] = offset(scale * 2.0, [0.0; 2], 0.0);
-                if speed > 0.0 {
-                    let drift = seconds * f64::from(speed) / f64::from(size);
-                    // Two lattices each octave, apart, sliding two ways.
-                    let (one, other) = ([0.8, 0.6], [-0.6, 0.8]);
-                    let [x0, y0] = offset(scale, one, drift);
-                    let [x1, y1] = offset(scale * 2.0, one, drift);
-                    let [x2, y2] = offset(scale, other, drift + 128.0);
-                    let [x3, y3] = offset(scale * 2.0, other, drift + 128.0);
+                let moving = speed > 0.0;
+                let one = [0.8 * drift, 0.6 * drift];
+                let other = [-0.6 * (drift + 128.0), 0.8 * (drift + 128.0)];
+                let [x, y] = offset(scale, one);
+                if anchor == NoiseAnchor::Adaptive {
+                    let [fine_x, fine_y] = offset(scale * 2.0, one);
+                    let second = if moving {
+                        let [x, y] = offset(scale, other);
+                        let [fine_x, fine_y] = offset(scale * 2.0, other);
+                        [x, y, fine_x, fine_y]
+                    } else {
+                        none
+                    };
+                    let op = if moving { 10.0 } else { 2.0 };
                     (
-                        [10.0, amount, fade, scale as f32],
-                        [x0, y0, x1, y1],
-                        [x2, y2, x3, y3],
+                        [op, amount, fade, scale as f32],
+                        [x, y, fine_x, fine_y],
+                        second,
                     )
                 } else {
-                    ([2.0, amount, fade, scale as f32], [x0, y0, x1, y1], none)
+                    let viewport = f32::from(u8::from(anchor == NoiseAnchor::Viewport));
+                    let [other_x, other_y] = offset(scale, other);
+                    (
+                        [13.0, amount, viewport, scale as f32],
+                        [x, y, f32::from(u8::from(moving)), 0.0],
+                        [other_x, other_y, 0.0, 0.0],
+                    )
                 }
             }
             Pointwise::Threshold { cutoff } => ([3.0, cutoff / 255.0, 0.0, 0.0], none, none),
@@ -1493,11 +1516,15 @@ fn uniform(step: &Step, frame: &FrameBlock, size: [u32; 2], precise: bool) -> [f
         words[at + 4..at + 8].copy_from_slice(&b);
         words[at + 8..at + 12].copy_from_slice(&c);
     }
-    if step
-        .pointwise
-        .iter()
-        .any(|p| matches!(p, Pointwise::Noise { .. }))
-    {
+    if step.pointwise.iter().any(|p| {
+        matches!(
+            p,
+            Pointwise::Noise {
+                anchor: NoiseAnchor::Adaptive | NoiseAnchor::Map { .. },
+                ..
+            }
+        )
+    }) {
         words[UNPROJECT_AT..RAMP_AT].copy_from_slice(&unproject(&frame.view_proj));
     }
     words[73] = step.ramp.len() as f32;
@@ -1581,6 +1608,7 @@ mod tests {
                 size: 2.0,
                 amount: 0.25,
                 speed: 0.0,
+                anchor: NoiseAnchor::Adaptive,
             },
             ProcessOp::Threshold { cutoff: 128.0 },
             ProcessOp::Blur { size: 0.0 },

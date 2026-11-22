@@ -1710,38 +1710,12 @@
       "dev.sargunv.orbis:operations": [
         {
           "type": "noise",
-          "size": [
-            "interpolate",
-            [
-              "exponential",
-              1
-            ],
-            [
-              "zoom"
-            ],
-            13,
-            90,
-            16,
-            180
-          ],
+          "size": 90,
           "amount": 0.75
         },
         {
           "type": "noise",
-          "size": [
-            "interpolate",
-            [
-              "exponential",
-              1
-            ],
-            [
-              "zoom"
-            ],
-            13,
-            22,
-            16,
-            44
-          ],
+          "size": 22,
           "amount": 0.24
         },
         {
@@ -1813,38 +1787,12 @@
       "dev.sargunv.orbis:operations": [
         {
           "type": "noise",
-          "size": [
-            "interpolate",
-            [
-              "exponential",
-              1
-            ],
-            [
-              "zoom"
-            ],
-            13,
-            4,
-            16,
-            5
-          ],
+          "size": 4,
           "amount": 0.42
         },
         {
           "type": "noise",
-          "size": [
-            "interpolate",
-            [
-              "exponential",
-              1
-            ],
-            [
-              "zoom"
-            ],
-            13,
-            14,
-            16,
-            18
-          ],
+          "size": 14,
           "amount": 0.18
         },
         {

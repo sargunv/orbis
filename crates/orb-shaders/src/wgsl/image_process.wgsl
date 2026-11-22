@@ -262,7 +262,10 @@ fn world_at(uv: vec2<f32>) -> vec2<f32> {
 // - gradient (11): `a.y` 1 for radial; `b.xy` a linear one's direction
 //   over its length in pixels, `b.z` a radial one's scale, one over its
 //   radius in pixels; `d.xy` its centre, in pixels from the view's;
-// - bands (12): `a.y` the count, `a.z` the width.
+// - bands (12): `a.y` the count, `a.z` the width;
+// - anchored noise (13): `a.y` the amount, `a.z` 1 for viewport,
+//   `a.w` lattice points per unit, `b.xy` and `d.xy` lattice offsets,
+//   `b.z` 1 for moving noise.
 // `centred` is the pixel's place from the view's centre, in pixels.
 fn pointwise(
     c: vec4<f32>,
@@ -324,6 +327,21 @@ fn pointwise(
             let x = c.a * a.y;
             let covered = bands(x, a.z, fwidth(x));
             return with_coverage(c, select(0.0, covered, c.a > 0.0));
+        }
+        case 13u: {
+            let p = select(world, uv * (2.0 * process.count.zw), a.z > 0.5) * a.w;
+            // Fade out when the lattice approaches the target's texel size.
+            // This also filters the receding part of a tilted view.
+            let footprint = max(length(dpdx(p)), length(dpdy(p)));
+            let weight = 1.0 - smoothstep(0.25, 0.5, footprint);
+            if !(weight > 0.0) {
+                return c;
+            }
+            var n = gradient_noise(p + b.xy);
+            if b.z > 0.5 {
+                n = (n + gradient_noise(p + d.xy)) * 0.70710678;
+            }
+            return with_coverage(c, c.a + a.y * weight * n);
         }
         default: {
             return c;

@@ -90,7 +90,7 @@ pub struct FrameBlock {
     /// Logical pixels.
     pub viewport: [f32; 2],
     /// World units per logical pixel at the camera target.
-    pub world_per_px: f32,
+    pub world_per_px: f64,
     /// Physical pixels per logical pixel.
     pub pixel_ratio: f32,
     /// Style zoom of the camera.
@@ -219,7 +219,10 @@ pub(crate) fn frame_words(frame: &FrameBlock) -> Vec<u32> {
     let depth = frame.view_proj.map(|column| (column[3] - column[2]) as f32);
     b.f(f::VIEW_DEPTH, &depth);
     b.f(f::VIEWPORT, &frame.viewport);
-    b.f(f::WORLD_PER_PX, &[frame.world_per_px, frame.pixel_ratio]);
+    b.f(
+        f::WORLD_PER_PX,
+        &[frame.world_per_px as f32, frame.pixel_ratio],
+    );
     b.f(f::ZOOM, &[frame.zoom as f32, frame.bearing]);
     b.f(f::ALIGN, &frame.align);
     b.f(f::EXTRUSION_SCALE, &[frame.extrusion_scale]);

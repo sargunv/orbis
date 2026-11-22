@@ -418,20 +418,9 @@
       "dev.sargunv.orbis:operations": [
         {
           "type": "noise",
-          "size": [
-            "interpolate",
-            [
-              "exponential",
-              1
-            ],
-            [
-              "zoom"
-            ],
-            11,
-            8,
-            16,
-            5
-          ],
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
+          "size": 7.04,
           "amount": [
             "interpolate",
             [
@@ -449,7 +438,9 @@
         },
         {
           "type": "noise",
-          "size": 2,
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
+          "size": 3,
           "amount": 0.05
         },
         {
@@ -658,20 +649,9 @@
       "dev.sargunv.orbis:operations": [
         {
           "type": "noise",
-          "size": [
-            "interpolate",
-            [
-              "exponential",
-              1
-            ],
-            [
-              "zoom"
-            ],
-            11,
-            72,
-            16,
-            140
-          ],
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
+          "size": 93.76,
           "amount": 0.012
         },
         {
@@ -739,20 +719,9 @@
         },
         {
           "type": "noise",
-          "size": [
-            "interpolate",
-            [
-              "exponential",
-              1
-            ],
-            [
-              "zoom"
-            ],
-            11,
-            72,
-            16,
-            140
-          ],
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
+          "size": 93.76,
           "amount": 0.012
         },
         {
@@ -783,20 +752,9 @@
       "dev.sargunv.orbis:operations": [
         {
           "type": "noise",
-          "size": [
-            "interpolate",
-            [
-              "exponential",
-              1
-            ],
-            [
-              "zoom"
-            ],
-            11,
-            60,
-            16,
-            120
-          ],
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
+          "size": 79.2,
           "amount": 0.035
         },
         {
@@ -864,20 +822,9 @@
         },
         {
           "type": "noise",
-          "size": [
-            "interpolate",
-            [
-              "exponential",
-              1
-            ],
-            [
-              "zoom"
-            ],
-            11,
-            60,
-            16,
-            120
-          ],
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
+          "size": 79.2,
           "amount": 0.035
         },
         {
@@ -944,20 +891,9 @@
         },
         {
           "type": "noise",
-          "size": [
-            "interpolate",
-            [
-              "exponential",
-              1
-            ],
-            [
-              "zoom"
-            ],
-            11,
-            48,
-            16,
-            100
-          ],
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
+          "size": 64.64,
           "amount": 0.035
         },
         {
@@ -981,20 +917,9 @@
       "dev.sargunv.orbis:operations": [
         {
           "type": "noise",
-          "size": [
-            "interpolate",
-            [
-              "exponential",
-              1
-            ],
-            [
-              "zoom"
-            ],
-            11,
-            48,
-            16,
-            100
-          ],
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
+          "size": 64.64,
           "amount": 0.035
         },
         {
@@ -1067,20 +992,9 @@
         },
         {
           "type": "noise",
-          "size": [
-            "interpolate",
-            [
-              "exponential",
-              1
-            ],
-            [
-              "zoom"
-            ],
-            11,
-            48,
-            16,
-            100
-          ],
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
+          "size": 64.64,
           "amount": 0.035
         },
         {
@@ -1147,20 +1061,9 @@
         },
         {
           "type": "noise",
-          "size": [
-            "interpolate",
-            [
-              "exponential",
-              1
-            ],
-            [
-              "zoom"
-            ],
-            11,
-            36,
-            16,
-            80
-          ],
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
+          "size": 50.08,
           "amount": 0.035
         },
         {
@@ -1184,20 +1087,9 @@
       "dev.sargunv.orbis:operations": [
         {
           "type": "noise",
-          "size": [
-            "interpolate",
-            [
-              "exponential",
-              1
-            ],
-            [
-              "zoom"
-            ],
-            11,
-            36,
-            16,
-            80
-          ],
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
+          "size": 50.08,
           "amount": 0.035
         },
         {
@@ -1270,20 +1162,9 @@
         },
         {
           "type": "noise",
-          "size": [
-            "interpolate",
-            [
-              "exponential",
-              1
-            ],
-            [
-              "zoom"
-            ],
-            11,
-            36,
-            16,
-            80
-          ],
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
+          "size": 50.08,
           "amount": 0.035
         },
         {
@@ -1392,12 +1273,16 @@
       "dev.sargunv.orbis:operations": [
         {
           "type": "noise",
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
           "size": 10,
           "amount": 0.5
         },
         {
           "type": "noise",
-          "size": 2,
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
+          "size": 3,
           "amount": 0.05
         },
         {
@@ -1443,11 +1328,15 @@
       "dev.sargunv.orbis:operations": [
         {
           "type": "noise",
-          "size": 1.4,
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
+          "size": 3,
           "amount": 0.45
         },
         {
           "type": "noise",
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
           "size": 150,
           "amount": 0.35
         },
@@ -1538,20 +1427,9 @@
         },
         {
           "type": "noise",
-          "size": [
-            "interpolate",
-            [
-              "exponential",
-              1
-            ],
-            [
-              "zoom"
-            ],
-            11,
-            1.2,
-            16,
-            1.8
-          ],
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
+          "size": 3,
           "amount": 0.18
         },
         {
@@ -4081,6 +3959,8 @@
       "dev.sargunv.orbis:operations": [
         {
           "type": "noise",
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
           "size": 6,
           "amount": 0.08
         },
@@ -4763,11 +4643,15 @@
       "dev.sargunv.orbis:operations": [
         {
           "type": "noise",
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
           "size": 60,
           "amount": 0.45
         },
         {
           "type": "noise",
+          "dev.sargunv.orbis:anchor": "map",
+          "dev.sargunv.orbis:reference-zoom": 12.6,
           "size": 9,
           "amount": 0.12
         },

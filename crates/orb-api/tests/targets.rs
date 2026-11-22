@@ -209,6 +209,53 @@ fn noise_moves_with_the_map() {
     );
 }
 
+#[test]
+fn noise_respects_its_anchor_across_zoom() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    // The centre pixel and every other pixel at the higher zoom sample
+    // exactly the same locations as pixels in the lower zoom view.
+    const SIDE: u32 = 129;
+    const MID: u32 = SIDE / 2;
+    let mut target = Target::texture(&runtime, SIDE, SIDE, 1.0);
+    let style = |anchor: &str, reference: &str| {
+        format!(
+            r##"{{"version": 8,
+                "dev.sargunv.orbis:targets": [{{"id": "half"}}],
+                "sources": {{}},
+                "layers": [
+                    {{"id": "half", "type": "background", "dev.sargunv.orbis:destination-target": "half",
+                      "paint": {{"background-color": "#000000", "background-opacity": 0.5}}}},
+                    {{"id": "paper", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+                    {{"id": "grain", "type": "dev.sargunv.orbis.image-process",
+                      "dev.sargunv.orbis:source-target": "half", "dev.sargunv.orbis:operations": [
+                        {{"type": "noise", "size": 12, "amount": 0.5,
+                          "dev.sargunv.orbis:anchor": "{anchor}"{reference}}}
+                      ]}}
+                ]}}"##
+        )
+    };
+    let thames = Geodetic::new(-0.1122, 51.5095);
+    let map = style("map", r#", "dev.sargunv.orbis:reference-zoom": 20"#);
+    let near = draw(&runtime, &mut target, &map, thames, 20.0);
+    let closer = draw(&runtime, &mut target, &map, thames, 21.0);
+    let pixel = |im: &[u8], x, y| im[((y * SIDE + x) * 4) as usize];
+    assert_ne!(near, closer, "map grain did not grow with the map");
+    for y in 0..=MID {
+        for x in 0..=MID {
+            let a = pixel(&near, x + MID / 2, y + MID / 2);
+            let b = pixel(&closer, x * 2, y * 2);
+            assert!(a.abs_diff(b) <= 1, "grain moved on the map at ({x}, {y})");
+        }
+    }
+
+    let viewport = style("viewport", "");
+    let london = draw(&runtime, &mut target, &viewport, thames, 14.2);
+    let tokyo = Geodetic::new(139.74, 35.687);
+    let tokyo = draw(&runtime, &mut target, &viewport, tokyo, 20.2);
+    assert_ne!(pixel(&london, 0, 0), pixel(&london, 5, 5));
+    assert_eq!(london, tokyo, "viewport grain moved with the map");
+}
+
 /// What an image-process layer's operations make of a triangle drawn into
 /// a target, drawn over the map: moved by an offset; nothing, multiplied by
 /// its own inverse; its colour from a ramp; grown by a dilation and shrunk

@@ -11,7 +11,7 @@ use orb_render::{
 use orb_tile::{GeometryType, LayerBuilder};
 
 const SIZE: u32 = 64;
-const WORLD_PER_PX: f32 = 2.0 / SIZE as f32;
+const WORLD_PER_PX: f64 = 2.0 / SIZE as f64;
 const RED: [u8; 4] = [255, 0, 0, 255];
 /// The layer extent the tests' meshes and placements are in.
 const EXTENT: u32 = 4096;

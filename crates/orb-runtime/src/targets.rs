@@ -240,10 +240,18 @@ pub(crate) fn ops_at(
                 size,
                 amount,
                 speed,
+                anchor,
             } => ProcessOp::Noise {
-                size: number(size).max(f32::MIN_POSITIVE),
+                size: number(size),
                 amount: number(amount),
                 speed: number(speed),
+                anchor: match *anchor {
+                    orb_style::NoiseAnchor::Adaptive => orb_render::NoiseAnchor::Adaptive,
+                    orb_style::NoiseAnchor::Map { reference_zoom } => {
+                        orb_render::NoiseAnchor::Map { reference_zoom }
+                    }
+                    orb_style::NoiseAnchor::Viewport => orb_render::NoiseAnchor::Viewport,
+                },
             },
             Operation::Threshold { cutoff } => ProcessOp::Threshold {
                 cutoff: number(cutoff),
