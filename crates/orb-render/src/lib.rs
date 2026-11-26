@@ -25,6 +25,7 @@ mod awaits;
 mod downsample;
 mod driver;
 mod extrusion;
+mod flip;
 mod heatmap;
 mod image;
 mod layer_composite;
@@ -418,6 +419,9 @@ pub struct Renderer {
     /// Whether 3D surfaces draw at four samples
     /// ([`set_antialias_3d`](Self::set_antialias_3d)).
     antialias_3d: bool,
+    /// While the map draws upside down ([`set_flip_y`](Self::set_flip_y)),
+    /// the canvas its passes draw into and the draw that turns it over.
+    flip: Option<flip::Flip>,
     /// What it draws otherwise than on WebGPU.
     gaps: Vec<Gap>,
     atmosphere: atmosphere::Atmosphere,
@@ -648,6 +652,7 @@ impl Renderer {
         (self.layers, self.composites, self.targets).release(gpu);
         stacks.collect::<Vec<_>>().release(gpu);
         (self.terrain, self.drape, self.no_terrain_depth).release(gpu);
+        self.flip.release(gpu);
         let samples = self.map_samples.map(|(texture, ..)| texture);
         (self.map_depth.map(|(depth, _)| depth), samples).release(gpu);
     }
@@ -789,6 +794,7 @@ impl Renderer {
             map_samples: None,
             depth_format,
             antialias_3d: false,
+            flip: None,
             gaps: Self::gaps_on(gpu.caps()),
             atmosphere,
             scene,
@@ -977,6 +983,21 @@ impl Renderer {
         // there either way.
         let samples = [1, self.host.sample_count, self.extrusions.samples];
         (self.pipeline_cache).retain(gpu, |a| samples.contains(&a.sample_count));
+    }
+
+    /// Draws the map upside down into the host's target when `flipped`, or
+    /// the right way up (the default): the picture drawn upright, mirrored
+    /// top to bottom ([`flip`]). It costs a canvas of the frame's size and
+    /// a full-screen draw while on.
+    pub fn set_flip_y(&mut self, gpu: &mut dyn Gpu, flipped: bool) {
+        match (flipped, self.flip.is_some()) {
+            (true, false) => {
+                let host = Attachments::from(self.host);
+                self.flip = Some(flip::Flip::new(gpu, &self.composites, host));
+            }
+            (false, true) => release::Release::release(self.flip.take(), gpu),
+            _ => {}
+        }
     }
 
     /// What the map's passes draw into while they have their depth, which
@@ -2723,12 +2744,14 @@ impl Renderer {
 
     /// Moves the pipelines of nodes with meshes in the scene ahead of the
     /// others still compiling: what the current view needs first. The
-    /// cull goes before everything, then labels ([`labels_first`]), then
-    /// the other nodes in draw order (the bottom layers cover most of the
-    /// view).
+    /// cull goes before everything, then the draw that turns an upside
+    /// down map over (without it nothing shows), then labels
+    /// ([`labels_first`]), then the other nodes in draw order (the bottom
+    /// layers cover most of the view).
     fn prioritize(&self, gpu: &mut dyn Gpu) {
         let mut wanted = Vec::new();
         wanted.extend(self.driver.pipelines());
+        wanted.extend(self.flip.as_ref().map(flip::Flip::pipeline));
         for labels in [true, false] {
             for (i, node) in self.nodes.iter().enumerate() {
                 if labels_first(node) == labels && self.scene.node_has_meshes(i as u32) {
@@ -3024,8 +3047,19 @@ impl Renderer {
         let start = passes.len();
         passes.extend(self.layers.passes(depth.map(|(depth, _)| depth)));
         Pass::group(&mut passes, start, "layers apart");
-        let map = (target, clear, size);
+        // Upside down, the map's passes draw into the canvas, which the
+        // last pass turns over into the target.
+        let canvas = (self.flip.as_mut())
+            .map(|f| f.canvas(gpu, &mut self.composites, self.host.color, size));
+        let map = (canvas.unwrap_or(target), clear, size);
         stats.draws += self.main_passes(gpu, map, terrain_on, three_d, &mut passes);
+        let mut flip_waited = false;
+        if let Some(flip) = &self.flip {
+            let (pass, drew) = flip.pass(gpu, target);
+            passes.push(pass);
+            stats.draws += u32::from(drew);
+            flip_waited = !drew;
+        }
         // What the frame wrote into data textures lands before it draws.
         #[cfg(cpu_driven)]
         self.scene.tables_mut().flush(gpu);
@@ -3044,7 +3078,8 @@ impl Renderer {
             || end.pending > 0
             || end.made != made
             || self.awaits.lacking()
-            || terrain_waited;
+            || terrain_waited
+            || flip_waited;
         // What a recording awaits arrives by a compile (a pipeline let go
         // counts as arrived): one that never compiles would leave it as
         // it is.

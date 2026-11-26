@@ -182,6 +182,8 @@ pub(crate) enum Mode {
     Solid,
     /// A render target's image, sampled to the map's pixels.
     Sampled,
+    /// The source upside down, a texel a pixel ([`crate::flip`]).
+    Flipped,
 }
 
 impl Mode {
@@ -194,6 +196,7 @@ impl Mode {
             Mode::Mask => 8.0,
             Mode::Solid => 9.0,
             Mode::Sampled => 10.0,
+            Mode::Flipped => 11.0,
         }
     }
 

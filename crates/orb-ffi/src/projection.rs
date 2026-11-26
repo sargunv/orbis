@@ -6,6 +6,11 @@
 // projection is the flat Web Mercator view of its camera, as Native's is. A
 // view whose style projection draws a globe is refused as unsupported, as
 // the header allows, until projections follow Orbis's globe.
+//
+// A flipped viewport (`MLN_VIEWPORT_MODE_FLIPPED_Y`) has the map draw
+// upside down, and every position the API exchanges is the picture's:
+// [`Screen`] turns them over to and from the map's own, which stay the
+// right way up, as Orbis draws the picture upright and turns it over last.
 
 use std::sync::{Arc, Mutex};
 
@@ -28,6 +33,62 @@ const EARTH_RADIUS_M: f64 = 6_378_137.0;
 
 fn mercator() -> &'static Projection {
     TileMatrixSet::web_mercator().projection()
+}
+
+/// How the API's screen positions, offsets and insets map onto the map's
+/// own: the same, or turned over top to bottom in a view `height` logical
+/// pixels tall while the viewport is flipped. Each conversion is its own
+/// inverse.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Screen {
+    flipped_height: Option<f64>,
+}
+
+impl Screen {
+    /// The screen of a view `height` logical pixels tall in `viewport`.
+    pub(crate) fn of(viewport: &mln_map_viewport, height: f64) -> Self {
+        let flipped = viewport.viewport_mode == MLN_VIEWPORT_MODE_FLIPPED_Y;
+        Self {
+            flipped_height: flipped.then_some(height),
+        }
+    }
+
+    /// A position, in logical pixels from the top left corner.
+    pub(crate) fn point(self, p: DVec2) -> DVec2 {
+        match self.flipped_height {
+            Some(height) => DVec2::new(p.x, height - p.y),
+            None => p,
+        }
+    }
+
+    /// A movement on the screen.
+    pub(crate) fn offset(self, v: DVec2) -> DVec2 {
+        match self.flipped_height {
+            Some(_) => DVec2::new(v.x, -v.y),
+            None => v,
+        }
+    }
+
+    /// A turn clockwise on the screen, in degrees: clockwise on the
+    /// picture turned over is counterclockwise on the map's own.
+    pub(crate) fn turn(self, degrees: f64) -> f64 {
+        match self.flipped_height {
+            Some(_) => -degrees,
+            None => degrees,
+        }
+    }
+
+    /// Insets from the edges: the top's are the bottom's turned over.
+    pub(crate) fn insets(self, p: Padding) -> Padding {
+        match self.flipped_height {
+            Some(_) => Padding {
+                top: p.bottom,
+                bottom: p.top,
+                ..p
+            },
+            None => p,
+        }
+    }
 }
 
 /// A projection's view, behind its handle.
@@ -121,6 +182,9 @@ fn check_view(v: &mln_map_view) -> Result {
             "viewport.north_orientation names no orientation",
         ));
     }
+    if v.viewport.viewport_mode > MLN_VIEWPORT_MODE_FLIPPED_Y {
+        return Err(Failure::argument("viewport.viewport_mode names no mode"));
+    }
     let p = v.projection;
     if p.from > MLN_PROJECTION_TYPE_GLOBE || p.to > MLN_PROJECTION_TYPE_GLOBE {
         return Err(Failure::argument(
@@ -145,9 +209,17 @@ fn draws_globe(p: mln_projection_definition) -> bool {
     (globe(p.from) && p.transition < 1.0) || (globe(p.to) && p.transition > 0.0)
 }
 
+/// A view as Orbis draws it, and its screen.
+struct Resolved {
+    view: View,
+    screen: Screen,
+}
+
 /// The camera and viewport Orbis draws a view with.
-fn resolve(v: &mln_map_view) -> View {
+fn resolve(v: &mln_map_view) -> Resolved {
     let c = v.camera;
+    let height = f64::from(v.extent.height);
+    let screen = Screen::of(&v.viewport, height);
     // North pointing right turns the picture a quarter clockwise, as a
     // bearing of -90° does.
     let turn = f64::from(v.viewport.north_orientation) * 90.0;
@@ -168,20 +240,21 @@ fn resolve(v: &mln_map_view) -> View {
     camera.roll = c.roll;
     camera.fov = c.field_of_view;
     camera.elevation = c.center_altitude;
-    camera.padding = padding;
+    camera.padding = screen.insets(padding);
     // An axonometric view centres the target in the whole extent.
     camera.axonometric = mode.axonometric.then_some(orb_api::Skew {
         x: mode.x_skew,
         y: mode.y_skew,
     });
-    View::new(
+    let view = View::new(
         &camera,
         Viewport {
             width: f64::from(v.extent.width),
-            height: f64::from(v.extent.height),
+            height,
         },
         &Surface::plane(*mercator()),
-    )
+    );
+    Resolved { view, screen }
 }
 
 fn projection(handle: mln_map_projection) -> Result<Arc<ProjectionHandle>> {
@@ -197,21 +270,22 @@ impl ProjectionHandle {
     }
 }
 
-fn pixel(view: &View, c: mln_lat_lng) -> Result<mln_screen_point> {
+fn pixel(view: &Resolved, c: mln_lat_lng) -> Result<mln_screen_point> {
     check_coordinate(c, "coordinate")?;
     let lat = c.latitude.clamp(-MAX_LATITUDE, MAX_LATITUDE);
     let world = mercator().forward(Geodetic::new(c.longitude, lat));
-    let p = view
+    let p = (view.view)
         .project(world)
         .ok_or_else(|| Failure::argument("the coordinate is behind the camera"))?;
+    let p = view.screen.point(p);
     Ok(mln_screen_point { x: p.x, y: p.y })
 }
 
-fn coordinate(view: &View, p: mln_screen_point, unwrapped: bool) -> Result<mln_lat_lng> {
+fn coordinate(view: &Resolved, p: mln_screen_point, unwrapped: bool) -> Result<mln_lat_lng> {
     finite(p.x, "point.x")?;
     finite(p.y, "point.y")?;
-    let world = view
-        .unproject(DVec2::new(p.x, p.y))
+    let world = (view.view)
+        .unproject(view.screen.point(DVec2::new(p.x, p.y)))
         .ok_or_else(|| Failure::argument("the point is above the horizon"))?;
     let mut g = mercator().inverse(world);
     if !unwrapped {
@@ -583,5 +657,68 @@ pub unsafe extern "C" fn mln_lat_lng_for_projected_meters(
                 "out_coordinate",
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pitched, turned view 200 × 100 logical pixels with 30 pixels of
+    /// top padding, in `mode`.
+    fn view(mode: mln_viewport_mode) -> mln_map_view {
+        // SAFETY: plain C data.
+        let mut v: mln_map_view = unsafe { std::mem::zeroed() };
+        v.size = std::mem::size_of::<mln_map_view>() as u32;
+        v.camera.center = mln_lat_lng {
+            latitude: 10.0,
+            longitude: 20.0,
+        };
+        v.camera.zoom = 9.0;
+        v.camera.bearing = 25.0;
+        v.camera.pitch = 40.0;
+        v.camera.field_of_view = 36.87;
+        v.camera.padding.top = 30.0;
+        v.extent.width = 200;
+        v.extent.height = 100;
+        v.extent.scale_factor = 1.0;
+        v.viewport.viewport_mode = mode;
+        v
+    }
+
+    /// A flipped view places each coordinate where the upright one does,
+    /// turned over top to bottom, and its padding is the picture's: the
+    /// center sits as far below the top of the flipped picture as below
+    /// the top of the upright one.
+    #[test]
+    fn a_flipped_view_places_coordinates_in_the_picture_upside_down() {
+        let (upright, flipped) = (
+            resolve(&view(MLN_VIEWPORT_MODE_DEFAULT)),
+            resolve(&view(MLN_VIEWPORT_MODE_FLIPPED_Y)),
+        );
+        let center = mln_lat_lng {
+            latitude: 10.0,
+            longitude: 20.0,
+        };
+        let (a, b) = (
+            pixel(&upright, center).unwrap(),
+            pixel(&flipped, center).unwrap(),
+        );
+        assert!(
+            (a.y - 65.0).abs() < 1e-6 && (b.y - 65.0).abs() < 1e-6,
+            "{a:?}, {b:?}"
+        );
+        let north = mln_lat_lng {
+            latitude: 10.05,
+            longitude: 20.02,
+        };
+        let (a, b) = (
+            pixel(&upright, north).unwrap(),
+            pixel(&flipped, north).unwrap(),
+        );
+        assert!(a.y < 65.0 && b.y > 65.0, "{a:?}, {b:?}");
+        let at = coordinate(&flipped, b, false).unwrap();
+        assert!((at.latitude - north.latitude).abs() < 1e-9, "{at:?}");
+        assert!((at.longitude - north.longitude).abs() < 1e-9, "{at:?}");
     }
 }

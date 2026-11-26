@@ -15,7 +15,11 @@
 // double tap read their modes as the pointer goes down; options that change
 // cancel the gesture under way, letting go of the camera without a glide;
 // and the recognizer reports no notches yet, though it checks the ones it
-// is given.
+// is given. In a flipped viewport the host's positions are the picture's,
+// upside down: the recognizer takes them turned the right way up, as the
+// map's own, a pinch's turn on the screen with them (the delta's bearing
+// is the camera's, so it stays), and its taps and box come back turned
+// over again.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -29,6 +33,7 @@ use orb_api::{
 use crate::base::{Failure, Result, boundary, fresh_out, lock, put, sized};
 use crate::handles::{self, Object};
 use crate::map::{Drawn, MapHandle};
+use crate::projection::Screen;
 use crate::sys::*;
 
 /// A recognizer and the map whose camera it moves.
@@ -431,7 +436,8 @@ fn modes(bits: mln_gesture_modes) -> Result<Modes> {
 
 /// What an input is to Orbis's recognizer: `None` for held keys' modes,
 /// which `held` takes.
-fn input(i: &mln_gesture_input, held: &mut Modes) -> Result<Option<Input>> {
+fn input(i: &mln_gesture_input, held: &mut Modes, screen: Screen) -> Result<Option<Input>> {
+    let point = |p, what| point(p, what).map(|p| screen.point(p));
     // SAFETY: the union's variant is the one `type_` names, each plain C data.
     unsafe {
         Ok(Some(match i.type_ {
@@ -478,7 +484,7 @@ fn input(i: &mln_gesture_input, held: &mut Modes) -> Result<Option<Input>> {
                 Input::Delta {
                     position: point(d.position, "the delta's position")?,
                     discrete: d.discrete,
-                    pan: point(d.pan, "the delta's pan")?,
+                    pan: screen.offset(self::point(d.pan, "the delta's pan")?),
                     zoom: d.zoom,
                     bearing: d.bearing,
                     pitch: d.pitch,
@@ -501,7 +507,7 @@ fn input(i: &mln_gesture_input, held: &mut Modes) -> Result<Option<Input>> {
                 Input::Pinch {
                     center: point(p.center, "the pinch's center")?,
                     scale: p.scale,
-                    rotation: p.rotation,
+                    rotation: screen.turn(p.rotation),
                     phase,
                 }
             }
@@ -521,7 +527,10 @@ fn tap_event(kind: mln_gesture_event_type, id: u32, at: DVec2) -> mln_gesture_ev
     }
 }
 
-fn event(e: InteractEvent) -> mln_gesture_event {
+/// An event of the recognizer's as the host takes it, its position on
+/// `screen`.
+fn event(e: InteractEvent, screen: Screen) -> mln_gesture_event {
+    let tap_event = |kind, id, at| tap_event(kind, id, screen.point(at));
     match e {
         InteractEvent::Click { id, position } => tap_event(MLN_GESTURE_EVENT_TAP, id, position),
         InteractEvent::DoubleClick { id, position } => {
@@ -537,6 +546,15 @@ fn event(e: InteractEvent) -> mln_gesture_event {
 }
 
 impl Recognizer {
+    /// The screen of the map as last published: positions turn over in a
+    /// flipped viewport.
+    fn screen(&self) -> Screen {
+        let view = self.map.snapshot().map(|s| s.view);
+        view.map_or_else(Screen::default, |v| {
+            Screen::of(&v.viewport, f64::from(v.extent.height))
+        })
+    }
+
     /// Sends the moves the last call made to the map, as one command.
     fn send(&self, state: &mut State) {
         let moves = state.gestures.take_moves();
@@ -553,7 +571,9 @@ impl Recognizer {
     /// reported.
     fn finish(&self, state: &mut State, handled: bool, result: &mut mln_gesture_result) {
         self.send(state);
-        let events = state.gestures.take_events().into_iter().map(event);
+        let screen = self.screen();
+        let events = state.gestures.take_events().into_iter();
+        let events = events.map(|e| event(e, screen));
         state.pending.extend(events);
         result.handled = handled;
         (result.next_tick, result.next_tick_ms) = match state.gestures.next_tick() {
@@ -562,7 +582,7 @@ impl Recognizer {
         };
         let corners = state.gestures.box_zoom();
         result.box_zoom_active = corners.is_some();
-        let [a, b] = corners.unwrap_or_default();
+        let [a, b] = corners.map_or_default(|c| c.map(|c| screen.point(c)));
         let (min, max) = (a.min(b), a.max(b));
         result.box_zoom = mln_screen_box {
             min: mln_screen_point { x: min.x, y: min.y },
@@ -689,7 +709,7 @@ pub unsafe extern "C" fn mln_gesture_recognizer_handle(
             let result = result(out_result)?;
             let mut state = lock(&recognizer.state);
             let state = &mut *state;
-            let handled = match self::input(i, &mut state.held)? {
+            let handled = match self::input(i, &mut state.held, recognizer.screen())? {
                 Some(input) => state.gestures.handle(input, now),
                 None => false,
             };

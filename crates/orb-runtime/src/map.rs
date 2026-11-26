@@ -806,6 +806,8 @@ pub struct Map {
     pub(crate) options: crate::MapOptions,
     /// The cull keeps every candidate ([`Map::set_keep_all_cull`]).
     keep_all_cull: bool,
+    /// Frames come out upside down ([`Map::set_flip_y`]).
+    flip_y: bool,
     /// The plane the map draws on and its sources' tile matrix sets: the
     /// style's, planned for its tiles.
     pub(crate) surface: Surface,
@@ -1061,6 +1063,7 @@ impl Map {
             retired: Retired::default(),
             options: crate::MapOptions::default(),
             keep_all_cull: false,
+            flip_y: false,
             nodes_stale: false,
             capacity: None,
             frame_budget: crate::Budget::DESKTOP,
@@ -1150,6 +1153,14 @@ impl Map {
     /// the cull saves. Off by default.
     pub fn set_keep_all_cull(&mut self, keep_all: bool) {
         self.keep_all_cull = keep_all;
+    }
+
+    /// Draws frames upside down into their targets when `flipped`
+    /// ([`Renderer::set_flip_y`]), still output too; off by default. Only
+    /// the picture turns over: the camera, gestures and every viewport
+    /// position stay the right way up.
+    pub fn set_flip_y(&mut self, flipped: bool) {
+        self.flip_y = flipped;
     }
 
     /// Sets how much the GPU scene holds, for renderers made after
@@ -2181,6 +2192,7 @@ impl Map {
     ) {
         renderer.set_antialias_3d(gpu, self.options.antialias);
         renderer.set_keep_all(gpu, self.keep_all_cull);
+        renderer.set_flip_y(gpu, self.flip_y);
         self.apply_arrivals_until(gpu, renderer, pixel_ratio, deadline);
     }
 

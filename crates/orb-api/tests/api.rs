@@ -2380,3 +2380,43 @@ fn layers_that_lay_out_alike_show_the_same_labels() {
     assert_eq!(a, panned[0], "with `b` gone, `a` places as before");
     assert!(b.is_empty());
 }
+
+/// A map drawn upside down draws the picture it draws the right way up,
+/// mirrored top to bottom: a pitched, turned box shows the walls and roof
+/// it shows upright, not the faces culled away from the camera. Turned
+/// back, it draws upright again.
+#[test]
+fn a_flipped_map_draws_its_upright_picture_upside_down() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let style = r##"{"version": 8, "center": [0, 0], "zoom": 15, "pitch": 60, "bearing": 30,
+      "sources": {"box": {"type": "geojson", "data": {"type": "Polygon",
+        "coordinates": [[[-0.001, -0.001], [0.001, -0.001], [0.001, 0.001], [-0.001, 0.001], [-0.001, -0.001]]]}}},
+      "layers": [
+        {"id": "background", "type": "background", "paint": {"background-color": "#ffffff"}},
+        {"id": "box", "type": "fill-extrusion", "source": "box",
+         "paint": {"fill-extrusion-color": "#d02060", "fill-extrusion-height": 200}}
+      ]}"##;
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(style).expect("style");
+    let (width, height) = (96, 64);
+    let mut draw = |flipped: bool| {
+        map.set_flip_y(flipped);
+        map.snapshot(width, height, 1.0).expect("snapshot").pixels
+    };
+    let upright = draw(false);
+    let upside_down = draw(true);
+    let turned_over = |pixels: &[u8]| -> Vec<u8> {
+        let row = width as usize * 4;
+        pixels.chunks_exact(row).rev().flatten().copied().collect()
+    };
+    assert_ne!(
+        upright,
+        turned_over(&upright),
+        "the box looks the same upside down"
+    );
+    assert!(
+        upright == turned_over(&upside_down),
+        "upside down isn't the upright picture turned over"
+    );
+    assert!(draw(false) == upright, "turned back, the map isn't upright");
+}

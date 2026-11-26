@@ -9,16 +9,17 @@
 // - mask: the source at an opacity through the coverage of a render
 //   target, which is a texel a logical pixel (a fill drawn through a
 //   target); solid: a colour so (one without a pattern); sampled: a render
-//   target's image over the map (an image-process layer's);
+//   target's image over the map (an image-process layer's); flipped: the
+//   source turned upside down (a map drawn upside down, into its target);
 // - replace: W3C Compositing 1's blend modes against the map beneath,
 //   read from the canvas it was drawn into, written over it in place
 //   (`*-layer-blend`, `blend.wgsl`).
 
 // x: the opacity; y: the mode (`Mode` in orb-render: 0 over, 1–6 the blend
-// modes, 7 ramp, 8 mask, 9 solid, 10 sampled); z: 1 where a blend mode
-// blends through the mask; w: 1 where it blends `color` rather than the
-// source (a fill in a colour drawn through a target); `color`: solid's
-// colour, premultiplied.
+// modes, 7 ramp, 8 mask, 9 solid, 10 sampled, 11 flipped); z: 1 where a
+// blend mode blends through the mask; w: 1 where it blends `color` rather
+// than the source (a fill in a colour drawn through a target); `color`:
+// solid's colour, premultiplied.
 struct Composite {
     params: vec4<f32>,
     color: vec4<f32>,
@@ -63,6 +64,11 @@ fn fs_over(in: CompositeOut) -> @location(0) vec4<f32> {
         }
         case 10u: {
             return textureSample(source, linear, in.uv) * opacity;
+        }
+        case 11u: {
+            let at = vec2<i32>(in.position.xy);
+            let rows = i32(textureDimensions(source).y);
+            return textureLoad(source, vec2<i32>(at.x, rows - 1 - at.y), 0) * opacity;
         }
         default: {
             return textureLoad(source, vec2<i32>(in.position.xy), 0) * opacity;

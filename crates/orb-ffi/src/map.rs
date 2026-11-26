@@ -15,6 +15,7 @@ use orb_api::{
 use crate::base::{Failure, Result, UserData, boundary, fresh_out, lock, put, sized, text};
 use crate::delivery::{self, Completion, Value};
 use crate::handles::{self, Object};
+use crate::projection::Screen;
 use crate::runtime::{Core, Event, Payload, RuntimeHandle, State};
 use crate::sys::*;
 
@@ -393,8 +394,14 @@ fn projection_definition(globe: f64) -> mln_projection_definition {
 }
 
 impl MapEntry {
+    /// How the API's screen positions map onto the map's own.
+    pub(crate) fn screen(&self) -> Screen {
+        Screen::of(&self.viewport, self.map.viewport().height)
+    }
+
     pub(crate) fn camera(&self) -> mln_camera {
         let c = self.map.camera();
+        let padding = self.screen().insets(c.padding);
         mln_camera {
             center: mln_lat_lng {
                 latitude: c.target.lat,
@@ -402,10 +409,10 @@ impl MapEntry {
             },
             center_altitude: c.elevation,
             padding: mln_edge_insets {
-                top: c.padding.top,
-                left: c.padding.left,
-                bottom: c.padding.bottom,
-                right: c.padding.right,
+                top: padding.top,
+                left: padding.left,
+                bottom: padding.bottom,
+                right: padding.right,
             },
             zoom: self.map.zoom(),
             bearing: c.bearing,
@@ -1477,8 +1484,31 @@ command!(
             if has(MLN_MAP_VIEWPORT_OPTION_CONSTRAIN_MODE) {
                 entry.viewport.constrain_mode = o.constrain_mode;
             }
-            if has(MLN_MAP_VIEWPORT_OPTION_VIEWPORT_MODE) {
+            if has(MLN_MAP_VIEWPORT_OPTION_VIEWPORT_MODE)
+                && o.viewport_mode != entry.viewport.viewport_mode
+            {
+                // The camera's padding stays the picture's, so the map's
+                // own turns over with it.
+                let padding = entry.camera().padding;
                 entry.viewport.viewport_mode = o.viewport_mode;
+                entry
+                    .map
+                    .set_flip_y(o.viewport_mode == MLN_VIEWPORT_MODE_FLIPPED_Y);
+                if padding.top != padding.bottom {
+                    let padding = entry.screen().insets(orb_api::Padding {
+                        top: padding.top,
+                        right: padding.right,
+                        bottom: padding.bottom,
+                        left: padding.left,
+                    });
+                    // The host sees no move, so it hears of none, as
+                    // Native's setViewportMode raises nothing.
+                    entry.map.jump_to(&CameraTarget {
+                        padding: Some(padding),
+                        ..CameraTarget::default()
+                    });
+                    entry.jumped = true;
+                }
             }
             if has(MLN_MAP_VIEWPORT_OPTION_FRUSTUM_OFFSET) {
                 entry.viewport.frustum_offset = o.frustum_offset;
@@ -1851,16 +1881,18 @@ fn target(entry: &MapEntry, camera: &mln_camera_options) -> Result<CameraTarget>
     }
     if has(MLN_CAMERA_OPTION_PADDING) {
         let p = camera.padding;
-        t.padding = Some(orb_api::Padding {
+        t.padding = Some(entry.screen().insets(orb_api::Padding {
             top: p.top,
             right: p.right,
             bottom: p.bottom,
             left: p.left,
-        });
+        }));
     }
     if has(MLN_CAMERA_OPTION_ANCHOR) && t.center.is_none() {
-        let a = camera.anchor;
-        t.around = entry.map.unproject(glam::DVec2::new(a.x, a.y));
+        let a = entry
+            .screen()
+            .point(glam::DVec2::new(camera.anchor.x, camera.anchor.y));
+        t.around = entry.map.unproject(a);
     }
     Ok(t)
 }
@@ -2094,17 +2126,18 @@ struct Delta {
 fn apply_delta(entry: &mut MapEntry, d: &Delta) -> Result {
     let has = |bit| d.fields & bit != 0;
     let animated = d.animation.fields & MLN_ANIMATION_OPTION_DURATION != 0;
+    let screen = entry.screen();
+    let at = screen.point(glam::DVec2::new(d.anchor.x, d.anchor.y));
     let mut pan = CameraTarget::default();
     if has(MLN_CAMERA_DELTA_OFFSET) && (d.offset.x != 0.0 || d.offset.y != 0.0) {
-        let offset = glam::DVec2::new(d.offset.x, d.offset.y);
+        let offset = screen.offset(glam::DVec2::new(d.offset.x, d.offset.y));
         let center = entry.map.camera().target;
         let middle = entry.map.project(center).unwrap_or_default();
         if entry.map.globe_free_bearing() && entry.globe_amount() > 0.0 {
             // The planet turns under the anchor where it is on it, else
             // under the middle, and the bearing turns with it.
-            let anchor = glam::DVec2::new(d.anchor.x, d.anchor.y);
-            let on_planet = has(MLN_CAMERA_DELTA_ANCHOR) && entry.map.unproject(anchor).is_some();
-            let grab = if on_planet { anchor } else { middle };
+            let on_planet = has(MLN_CAMERA_DELTA_ANCHOR) && entry.map.unproject(at).is_some();
+            let grab = if on_planet { at } else { middle };
             let turned = entry.map.panned(grab - offset, grab);
             pan.center = Some(turned.target);
             pan.bearing = Some(turned.bearing);
@@ -2131,7 +2164,6 @@ fn apply_delta(entry: &mut MapEntry, d: &Delta) -> Result {
     if !has(MLN_CAMERA_DELTA_ANCHOR) {
         return update_camera(entry, mode, &t, &d.animation);
     }
-    let at = glam::DVec2::new(d.anchor.x, d.anchor.y);
     if pan.center.is_none() {
         t.around = entry.map.unproject(at);
         return update_camera(entry, mode, &t, &d.animation);
@@ -2554,9 +2586,14 @@ fn camera_for(
             "the padding leaves no room for the bounds in the map",
         ));
     }
+    // Fitted within the padding turned onto the map, the right way up.
+    let turned = FitOptions {
+        padding: entry.screen().insets(fit.padding),
+        ..*fit
+    };
     let t = entry
         .map
-        .camera_for_bounds(bounds(b), fit)
+        .camera_for_bounds(bounds(b), &turned)
         .ok_or_else(|| Failure::argument("no camera shows these bounds"))?;
     let camera = entry.map.camera();
     let center = t.center.unwrap_or(camera.target);

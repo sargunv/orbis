@@ -273,6 +273,16 @@ impl Map {
         self.dirty = true;
     }
 
+    /// Draws frames upside down into their targets when `flipped`, as
+    /// maplibre-native-ffi's flipped viewport asks, still output too; off
+    /// by default. The picture is the upright one mirrored top to bottom:
+    /// the camera, gestures and every viewport position stay the right way
+    /// up. The next frame draws so.
+    pub fn set_flip_y(&mut self, flipped: bool) {
+        self.map.set_flip_y(flipped);
+        self.dirty = true;
+    }
+
     /// Per render node of the last frame, its family and the candidates
     /// (chunks in tile placements) its cull considered and kept: what the
     /// cull drops. Reads the cull's counters back from the GPU, so it

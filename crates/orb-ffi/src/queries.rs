@@ -9,6 +9,7 @@ use orb_expr::json::{self, Json, JsonValue};
 use crate::base::{Failure, Result, boundary, sized, text};
 use crate::delivery::{Completion, Value};
 use crate::handles;
+use crate::projection::Screen;
 use crate::sys::*;
 
 /// What a pending query reports when its answer arrives.
@@ -168,7 +169,7 @@ pub(crate) fn answer(query: Query, result: std::result::Result<String, String>) 
 fn submit(
     session: mln_render_session,
     completion: *const mln_completion,
-    start: impl FnOnce(&mut orb_api::Map) -> Result<(Vec<u64>, Pending)> + Send + 'static,
+    start: impl FnOnce(&mut orb_api::Map, Screen) -> Result<(Vec<u64>, Pending)> + Send + 'static,
 ) -> Result {
     let handle = handles::session(session.0)?;
     // SAFETY: the caller's pointer.
@@ -182,7 +183,8 @@ fn submit(
             );
             return Ok(());
         }
-        match start(&mut entry.map) {
+        let screen = entry.screen();
+        match start(&mut entry.map, screen) {
             Ok((ids, pending)) => {
                 let Some((&first, rest)) = ids.split_first() else {
                     completion.complete(Ok(Value::array::<u8>(&[], None)), 0);
@@ -316,7 +318,10 @@ pub unsafe extern "C" fn mln_render_session_query_rendered_features(
                 }
                 filter_text = filter(o.filter)?;
             }
-            submit(session, completion, move |map| {
+            submit(session, completion, move |map, screen| {
+                // The box the host's corners make on the map, the right way up.
+                let (a, b) = (screen.point(min), screen.point(max));
+                let (min, max) = (a.min(b), a.max(b));
                 let id = map.query_rendered_in(min, max, layers.as_deref(), filter_text.as_deref());
                 Ok((vec![id], Pending::Rendered))
             })
@@ -353,7 +358,7 @@ pub unsafe extern "C" fn mln_render_session_query_source_features(
                 }
                 filter_text = filter(o.filter)?;
             }
-            submit(session, completion, move |map| {
+            submit(session, completion, move |map, _| {
                 let ids: Vec<u64> = if layers.is_empty() {
                     vec![map.query_source(&source, None, filter_text.as_deref())]
                 } else {
@@ -398,7 +403,7 @@ unsafe fn cluster(
     handles::session(session.0)?;
     // SAFETY: the caller's view.
     let source = unsafe { source_id_of(source_id) }?;
-    submit(session, completion, move |map| {
+    submit(session, completion, move |map, _| {
         Ok((vec![map.query_cluster(&source, query)], pending))
     })
 }
