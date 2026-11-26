@@ -28,6 +28,14 @@ base64.workspace = true
 wasmparser.workspace = true
 # Function names in the linked core.wasm, as wasm-bindgen writes them (data.rs).
 rustc-demangle = "0.1.28"
+# orb-ffi's declarations from the mirrored C headers (`mln-ffi declarations`):
+# bindgen loads libclang when it runs, so building xtask needs none.
+bindgen = { version = "0.73.2", default-features = false, features = [
+  "runtime",
+  "prettyplease",
+] }
+syn = { version = "2.0.119", features = ["full"] }
+quote = "1.0.47"
 
 # A child's CPU and peak memory for `h2h`, where there's no `/usr/bin/time`.
 [target.'cfg(windows)'.dependencies]

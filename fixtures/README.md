@@ -1,12 +1,13 @@
 # Fixtures
 
-Two read-only mirrors of the reference engines' test suites, fetched, not
-committed:
+Read-only mirrors of the reference engines' test suites and of the C API Orbis
+implements, fetched, not committed:
 
 ```sh
-cargo xtask fixtures            # both
+cargo xtask fixtures            # all
 cargo xtask fixtures gl-js      # or one
 cargo xtask fixtures native
+cargo xtask fixtures mln-ffi
 ```
 
 - `fixtures/gl-js/`: the
@@ -17,6 +18,9 @@ cargo xtask fixtures native
   and expression tests (`metrics/integration/`), the platform expectations and
   ignore lists its macOS WebGPU manifest names, and the resources of its
   render-test cache as files.
+- `fixtures/mln-ffi/`: the C API's headers and C ABI suite from
+  [mln-rs](https://github.com/maplibre/mln-rs), which owns them, with Unity and
+  the Vulkan headers the suite builds with.
 
 Each mirror is built from the tarball of a pinned commit and checked against a
 pinned content hash: SHA-256 over every file's path, length and bytes, in path
@@ -51,17 +55,27 @@ resource and tile at a path its URL gives: `http://<path>`, the runner's
 spelling of `local://`, at `assets/<path>`; `https://` and `mapbox://` URLs
 under `assets/https/` and `assets/mapbox/`.
 
+## The C API
+
+Pinned in `xtask/src/mln_ffi.rs` (`COMMIT`, currently `e0c2a22b`, where mln-rs
+took maplibre-native-ffi `eae96a42`'s API). The task downloads mln-rs's, Unity's
+and the Vulkan headers' tarballs and writes about 4 MiB: `crates/mln_c/include`
+as `include/`, and the suite and its GPU fixtures from
+`tools/c-abi-test/testdata`. Moving the pin moves the API: run
+`cargo xtask mln-ffi declarations` after it to regenerate `orb-ffi`'s
+declarations and stubs.
+
 ## What reads them
 
-Only `cargo xtask rt` (`orb-fixtures`) and `web/scripts/render-fixtures.mjs`,
-which it drives. `cargo test --workspace` runs offline from a fresh clone, on
-small inputs committed next to each crate (see
+Only `cargo xtask rt` (`orb-fixtures`), `web/scripts/render-fixtures.mjs`, which
+it drives, and `cargo xtask mln-ffi`. `cargo test --workspace` runs offline from
+a fresh clone, on small inputs committed next to each crate (see
 [THIRD_PARTY.md](../THIRD_PARTY.md)).
 
 ## Licences
 
 The mirrors are not part of this repository's distribution. Their files keep
-their upstream terms: GL JS's tests are BSD-3-Clause and Native's BSD-2-Clause;
-some asset families (OpenStreetMap, JAXA, GEBCO and Mapterhorn tiles, Mapbox
-tiles, styles and imagery, the Arial Unicode MS glyphs and some sprites) carry
-their own or unclear terms upstream.
+their upstream terms: GL JS's tests are BSD-3-Clause, and Native's and the C
+API's BSD-2-Clause; some asset families (OpenStreetMap, JAXA, GEBCO and
+Mapterhorn tiles, Mapbox tiles, styles and imagery, the Arial Unicode MS glyphs
+and some sprites) carry their own or unclear terms upstream.

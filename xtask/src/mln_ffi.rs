@@ -1,18 +1,20 @@
-//! maplibre-native-ffi's C API on Orbis: the pinned mln-ffi mirror, the
-//! declarations `orb-ffi` takes from it, and its C ABI suite scored against
-//! Orbis's `maplibre-native-c`.
+//! maplibre-native-ffi's C API on Orbis: the pinned mirror of its headers
+//! and ABI suite, the declarations `orb-ffi` generates from those headers,
+//! and the suite scored against Orbis's `maplibre-native-c`.
 //!
-//! The mirror in `fixtures/mln-ffi/` is not committed. It holds the pinned
-//! commit's headers, its ABI suite and the GPU fixtures that suite drives
-//! (`tests/native`, `tests/graphics`), the Rust -sys crate's declarations
-//! (upstream's bindgen output from those headers), Unity, which the suite
-//! is written in, and the Vulkan headers `tests/graphics` includes.
+//! mln-rs owns the C API: maplibre/maplibre-native-ffi#1801 made
+//! maplibre-native-ffi build its library from mln-rs, whose
+//! `crates/mln_c/include` holds the headers and `tools/c-abi-test` the ABI
+//! suite. The mirror in `fixtures/mln-ffi/` comes from the pinned mln-rs
+//! commit and is not committed. It holds those headers, the suite and the
+//! GPU fixtures it drives (`tests/native`, `tests/graphics`), Unity, which
+//! the suite is written in, and the Vulkan headers `tests/graphics`
+//! includes.
 //!
-//! mln-ffi builds its suite only inside its own CMake project, against the
-//! library it builds there (maplibre/maplibre-native-ffi#1780), so this
-//! module compiles it the way `cmake/mln_ffi_tests.cmake` does: the same
-//! sources, file tags, registry and flags, linked against the shared
-//! library from `cargo build -p orb-ffi`.
+//! mln-rs builds the suite in a CMake project of its own, for Vulkan on
+//! Linux alone, so this module compiles it the way that project does: the
+//! same sources, file tags, registry and flags, for the platform's own
+//! backend, linked against the shared library from `cargo build -p orb-ffi`.
 //!
 //! `--asan` builds that library, and runs orb-ffi's own tests, under
 //! AddressSanitizer (`-Zsanitizer=address`, which the pinned stable
@@ -29,42 +31,44 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
+use quote::ToTokens;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::fixtures::{SOURCE_MD, entry_path, get, hex, install, open, unwrap_root};
 use crate::root;
 
-/// The upstream repository and the commit Orbis implements.
-const REPO: &str = "https://github.com/maplibre/maplibre-native-ffi";
-const COMMIT: &str = "eae96a42c493b41f04410264d3014faf548b434b";
+/// The repository that owns the C API, and the commit Orbis implements.
+const REPO: &str = "https://github.com/maplibre/mln-rs";
+const COMMIT: &str = "e0c2a22b65640bc164d13529cae452ab90d79f23";
 
 /// The mirror's content hash at [`COMMIT`], with [`UNITY`] and
 /// [`VULKAN_HEADERS`].
-const MIRROR_SHA256: &str = "fe5f3cfd29bad1eb00ae4cfed5181ebf6408f5058fa269cc357fe339c637fdfa";
+const MIRROR_SHA256: &str = "cb77cc76d24051386842e495b3c0e646deb47d7dae2ec6e40c1521d5d88c24ca";
 
-/// Unity, at the release and hash `cmake/mln_ffi_tests.cmake` pins.
+/// Unity, at the release and hash mln-rs's suite pins.
 const UNITY: (&str, &str) = (
     "https://github.com/ThrowTheSwitch/Unity/archive/refs/tags/v2.6.1.tar.gz",
     "b41a66d45a6b99758fb3202ace6178177014d52fc524bf1f72687d93e9867292",
 );
 
 /// The Vulkan headers `tests/graphics/graphics.c` includes on every
-/// platform (mln-ffi takes them from MapLibre Native's vendor tree).
+/// platform.
 const VULKAN_HEADERS: &str =
     "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.309.tar.gz";
 
-/// What the mirror keeps of the mln-ffi tarball, by path prefix.
-const KEPT: [&str; 6] = [
-    "include/",
+/// The C headers in the mln-rs tree, mirrored as `include/`.
+const HEADERS: &str = "crates/mln_c/include/";
+/// The ABI suite's tree in mln-rs, mirrored at the mirror's root.
+const SUITE: &str = "tools/c-abi-test/testdata/";
+/// What the mirror keeps of [`SUITE`], by path below it.
+const KEPT: [&str; 5] = [
     "tests/native/abi/",
     "tests/native/support/",
     "tests/native/plugin/",
     "tests/native/fixtures/",
     "tests/graphics/",
 ];
-/// The -sys crate's declarations, mirrored as `sys/generated.rs`.
-const SYS: &str = "bindings/rust/crates/maplibre-native-ffi-sys/src/generated.rs";
 
 /// The ABI suite's domains in the order its registry runs them
 /// (`MLN_NATIVE_ABI_DOMAINS`): plugin last, as a registration lasts for
@@ -143,9 +147,16 @@ pub(crate) fn ensure() -> Result<(), String> {
     )
 }
 
-/// Every regular file of a GitHub tarball, by its path below the root.
-fn files(archive: &[u8], root: Option<&str>) -> Result<BTreeMap<String, Vec<u8>>, String> {
-    let mut files = BTreeMap::new();
+/// Writes each regular file of a GitHub tarball that `place` maps, from its
+/// path below the root (`root`, when the tarball is a pinned commit's), to
+/// that path in `out`; how many it wrote.
+fn extract(
+    archive: &[u8],
+    root: Option<&str>,
+    out: &Path,
+    place: impl Fn(&str) -> Option<String>,
+) -> Result<usize, String> {
+    let mut written = 0;
     let mut entries = open(archive);
     for entry in entries.entries().map_err(|e| e.to_string())? {
         let mut entry = entry.map_err(|e| e.to_string())?;
@@ -157,43 +168,40 @@ fn files(archive: &[u8], root: Option<&str>) -> Result<BTreeMap<String, Vec<u8>>
             Some(root) => unwrap_root(&path, root)?,
             None => path.split_once('/').map(|(_, rest)| rest),
         };
-        let Some(rel) = rel else { continue };
+        let Some(target) = rel.and_then(&place) else {
+            continue;
+        };
         let mut bytes = Vec::new();
         entry
             .read_to_end(&mut bytes)
             .map_err(|e| format!("{path}: {e}"))?;
-        files.insert(rel.to_string(), bytes);
+        let target = out.join(target);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+        fs::write(&target, bytes).map_err(|e| format!("{}: {e}", target.display()))?;
+        written += 1;
     }
-    Ok(files)
-}
-
-fn write(out: &Path, rel: &str, bytes: &[u8]) -> Result<(), String> {
-    let path = out.join(rel);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-    }
-    fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))
+    Ok(written)
 }
 
 /// Downloads the pinned tarballs and writes the mirror into `out`.
 fn mirror(out: &Path) -> Result<(), String> {
     eprintln!("fetching {REPO} at {COMMIT}");
     let archive = get(&format!(
-        "https://codeload.github.com/maplibre/maplibre-native-ffi/tar.gz/{COMMIT}"
+        "https://codeload.github.com/maplibre/mln-rs/tar.gz/{COMMIT}"
     ))?;
-    let mut kept = 0;
-    for (rel, bytes) in files(&archive, Some(&format!("maplibre-native-ffi-{COMMIT}")))? {
-        if KEPT.iter().any(|prefix| rel.starts_with(prefix)) || rel == "LICENSE" {
-            write(out, &rel, &bytes)?;
-            kept += 1;
-        } else if rel == SYS {
-            write(out, "sys/generated.rs", &bytes)?;
-            kept += 1;
+    let kept = extract(&archive, Some(&format!("mln-rs-{COMMIT}")), out, |rel| {
+        if let Some(header) = rel.strip_prefix(HEADERS) {
+            return Some(format!("include/{header}"));
         }
-    }
-    if !out.join("sys/generated.rs").exists() || !out.join("include/maplibre_native_c.h").exists() {
+        let rel = rel.strip_prefix(SUITE)?;
+        (rel == "LICENSE" || KEPT.iter().any(|prefix| rel.starts_with(prefix)))
+            .then(|| rel.to_string())
+    })?;
+    if !out.join("include/maplibre_native_c.h").exists() || !out.join("tests/native/abi").exists() {
         return Err(format!(
-            "the tarball at {COMMIT} lacks {SYS} or the headers"
+            "the tarball at {COMMIT} lacks {HEADERS}maplibre_native_c.h or {SUITE}tests/native/abi"
         ));
     }
 
@@ -203,28 +211,24 @@ fn mirror(out: &Path) -> Result<(), String> {
     if hash != UNITY.1 {
         return Err(format!("Unity's tarball hashes to {hash}, not {}", UNITY.1));
     }
-    for (rel, bytes) in files(&unity, None)? {
-        if rel.starts_with("src/unity") || rel == "LICENSE.txt" {
-            write(out, &format!("unity/{rel}"), &bytes)?;
-        }
-    }
+    extract(&unity, None, out, |rel| {
+        (rel.starts_with("src/unity") || rel == "LICENSE.txt").then(|| format!("unity/{rel}"))
+    })?;
 
     eprintln!("fetching {VULKAN_HEADERS}");
-    for (rel, bytes) in files(&get(VULKAN_HEADERS)?, None)? {
+    extract(&get(VULKAN_HEADERS)?, None, out, |rel| {
         let header = rel.starts_with("include/vulkan/") || rel.starts_with("include/vk_video/");
-        if (header && rel.ends_with(".h")) || rel == "LICENSE.md" {
-            write(out, &format!("vulkan/{rel}"), &bytes)?;
-        }
-    }
+        ((header && rel.ends_with(".h")) || rel == "LICENSE.md").then(|| format!("vulkan/{rel}"))
+    })?;
 
     fs::write(
         out.join(SOURCE_MD),
         format!(
             "# maplibre-native-ffi's C API and ABI suite\n\n\
              Mirrored by `cargo xtask fixtures mln-ffi` from {REPO} at {COMMIT}: \
-             {kept} files of `include/`, `tests/native/` and `tests/graphics/`, and the \
-             Rust -sys crate's declarations as `sys/generated.rs`. `unity/` is {}, and \
-             `vulkan/` the headers of {VULKAN_HEADERS}.\n",
+             {kept} files, `include/` from `{HEADERS}` and the ABI suite's `tests/native/` \
+             and `tests/graphics/` from `{SUITE}`. `unity/` is {}, and `vulkan/` the \
+             headers of {VULKAN_HEADERS}.\n",
             UNITY.0
         ),
     )
@@ -239,118 +243,239 @@ fn crate_src() -> PathBuf {
     root().join("crates/orb-ffi/src")
 }
 
-/// `cargo xtask mln-ffi declarations [--check]`: copies the mirror's
-/// declarations into `orb-ffi` and generates its stubs, or checks that
-/// both are up to date.
+/// The first line of `sys/generated.rs`: the commit whose headers it was
+/// generated from.
+fn generated_header() -> String {
+    format!(
+        "// @generated by `cargo xtask mln-ffi declarations` from the C headers of {REPO} at \
+         {COMMIT}; do not edit.\n"
+    )
+}
+
+/// `cargo xtask mln-ffi declarations [--check]`: generates `orb-ffi`'s
+/// declarations from the mirror's headers and its stubs from those, or
+/// checks that both are up to date.
+///
+/// bindgen's output depends on the libclang it loads, so the check doesn't
+/// run it again: it checks that `sys/generated.rs` names the pinned commit,
+/// and that the stubs follow from it and from orb-ffi's exports. That needs
+/// neither libclang nor the mirror.
 pub(crate) fn declarations(check: bool) -> Result<(), String> {
-    ensure()?;
-    let generated = fs::read_to_string(mirror_dir().join("sys/generated.rs"))
-        .map_err(|e| format!("the mirror's sys/generated.rs: {e}"))?;
+    let generated_path = crate_src().join("sys/generated.rs");
+    let stubs_path = crate_src().join("stubs.rs");
+    let rel = |path: &Path| {
+        path.strip_prefix(root())
+            .unwrap_or(path)
+            .display()
+            .to_string()
+    };
+    let generated = if check {
+        let text = fs::read_to_string(&generated_path)
+            .map_err(|e| format!("{}: {e}", generated_path.display()))?;
+        if !text.starts_with(&generated_header()) {
+            return Err(format!(
+                "{} wasn't generated from the pinned headers; `cargo xtask mln-ffi \
+                 declarations` regenerates it and the stubs",
+                rel(&generated_path)
+            ));
+        }
+        text
+    } else {
+        ensure()?;
+        let text = bind(&mirror_dir().join("include"))?;
+        write_if_changed(&generated_path, &text)?;
+        text
+    };
     let stubs = stubs(&generated)?;
-    let outputs = [
-        (crate_src().join("sys/generated.rs"), generated),
-        (crate_src().join("stubs.rs"), stubs),
-    ];
-    let mut stale = Vec::new();
-    for (path, text) in &outputs {
-        if fs::read_to_string(path).ok().as_deref() != Some(text.as_str()) {
-            if check {
-                stale.push(
-                    path.strip_prefix(root())
-                        .unwrap_or(path)
-                        .display()
-                        .to_string(),
-                );
-            } else {
-                fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))?;
-                eprintln!("wrote {}", path.display());
+    if !check {
+        return write_if_changed(&stubs_path, &stubs);
+    }
+    if fs::read_to_string(&stubs_path).ok() != Some(stubs) {
+        return Err(format!(
+            "{} is out of date with the declarations and orb-ffi's exports; `cargo xtask \
+             mln-ffi declarations` regenerates it",
+            rel(&stubs_path)
+        ));
+    }
+    Ok(())
+}
+
+fn write_if_changed(path: &Path, text: &str) -> Result<(), String> {
+    if fs::read_to_string(path).ok().as_deref() != Some(text) {
+        fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+        eprintln!("wrote {}", path.display());
+    }
+    Ok(())
+}
+
+/// The headers under `include` as Rust, from bindgen, which loads libclang
+/// as it runs (`LIBCLANG_PATH` names its directory where bindgen's search
+/// misses it), with the options mln-rs's `tools/c-abi-gen` gives it and a
+/// type of its own for each kind of handle.
+fn bind(include: &Path) -> Result<String, String> {
+    let mut headers = Vec::new();
+    let mut handles = BTreeSet::new();
+    let mut stack = vec![include.join("maplibre_native_c")];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "h") {
+                let text =
+                    fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                handles.extend(handle_typedefs(&text));
+                let rel = path.strip_prefix(include).expect("under include");
+                headers.push(rel.to_string_lossy().replace('\\', "/"));
             }
         }
     }
-    if stale.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{} out of date with the mln-ffi pin; `cargo xtask mln-ffi declarations` \
-             regenerates them",
-            stale.join(" and ")
-        ))
+    // Sorted, so the output doesn't follow the file system's order.
+    headers.sort();
+    let wrapper: String = std::iter::once("maplibre_native_c.h")
+        .chain(headers.iter().map(String::as_str))
+        .map(|header| format!("#include <{header}>\n"))
+        .collect();
+    let include = include.to_str().ok_or("the include path isn't UTF-8")?;
+    let mut builder = bindgen::Builder::default()
+        .header_contents("orb_ffi_declarations.h", &wrapper)
+        // The headers are C23 (enums with fixed underlying types);
+        // MLN_BINDGEN leaves out their inline helpers for C callers.
+        .clang_args(["-std=c23", "-DMLN_BINDGEN", &format!("-I{include}")])
+        .allowlist_file(format!("{}/.*", regex_escape(include)))
+        // A C enum can hold any value of its underlying type, which a Rust
+        // enum can't, so a caller's unknown value is never undefined
+        // behaviour: constants of that type instead.
+        .default_enum_style(bindgen::EnumVariation::Consts)
+        .prepend_enum_name(false)
+        // Layout assertions would hold only for the target generated on.
+        .layout_tests(false)
+        .ctypes_prefix("std::ffi")
+        .generate_cstr(true)
+        .merge_extern_blocks(true)
+        .rust_target(bindgen::RustTarget::stable(85, 0).map_err(|e| e.to_string())?)
+        .rust_edition(bindgen::RustEdition::Edition2024);
+    // Each kind of handle a type of its own, so one can't pass for another.
+    for handle in &handles {
+        builder = builder.new_type_alias(format!("^{handle}$"));
+    }
+    let bindings = builder
+        .parse_callbacks(Box::new(Callbacks { handles }))
+        // Writes the headers' comments as doc comments, not `#[doc]`.
+        .formatter(bindgen::Formatter::Prettyplease)
+        .generate()
+        .map_err(|e| format!("bindgen: {e}"))?;
+    rustfmt(&format!("{}\n{bindings}", generated_header()))
+}
+
+/// The handle typedefs a header declares, which its binding contracts mark:
+/// `typedef uint64_t <name> MLN_BINDING("kind=handle;…")`.
+fn handle_typedefs(header: &str) -> Vec<String> {
+    header
+        .match_indices("typedef uint64_t ")
+        .filter_map(|(i, typedef)| {
+            let rest = &header[i + typedef.len()..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            let contract = rest[name.len()..]
+                .trim_start()
+                .strip_prefix("MLN_BINDING(")?;
+            contract
+                .trim_start()
+                .starts_with("\"kind=handle;")
+                .then_some(name)
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+struct Callbacks {
+    handles: BTreeSet<String>,
+}
+
+impl bindgen::callbacks::ParseCallbacks for Callbacks {
+    fn int_macro(&self, name: &str, _value: i64) -> Option<bindgen::callbacks::IntKind> {
+        // `UINT64_MAX`, which libclang reads as -1.
+        (name == "MLN_FRAME_DEMAND_TOKEN_STILL_IMAGE").then_some(bindgen::callbacks::IntKind::U64)
+    }
+
+    fn add_derives(&self, info: &bindgen::callbacks::DeriveInfo<'_>) -> Vec<String> {
+        if self.handles.contains(info.name) {
+            ["PartialEq", "Eq", "Hash"].map(String::from).to_vec()
+        } else {
+            Vec::new()
+        }
     }
 }
 
-/// `cargo xtask check`'s step: the declarations match the pin, when the
-/// mirror is there (fetching it needs the network).
-pub(crate) fn check_declarations() -> Result<(), String> {
-    if !mirror_dir().exists() {
-        eprintln!(
-            "check: no fixtures/mln-ffi (`cargo xtask fixtures mln-ffi`), so orb-ffi's \
-             declarations aren't checked against the pin"
-        );
-        return Ok(());
+fn regex_escape(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for c in text.chars() {
+        if "\\.+*?()|[]{}^$".contains(c) {
+            escaped.push('\\');
+        }
+        escaped.push(c);
     }
+    escaped
+}
+
+/// `cargo xtask check`'s step: the declarations match the pin.
+pub(crate) fn check_declarations() -> Result<(), String> {
     declarations(true)
 }
 
-/// One function of the -sys crate's extern block.
+/// One function of the declarations' extern block.
 struct Function {
     name: String,
-    /// Its declaration without `pub fn ` and the `;`.
+    /// Its declaration without `fn `: the name, parameters and return type.
     signature: String,
-    returns: Option<String>,
+    returns: Option<syn::Type>,
     diagnostic: bool,
 }
 
-/// The functions `generated.rs` declares, in its order.
+/// The functions `generated.rs` declares, by name.
 fn functions(generated: &str) -> Result<Vec<Function>, String> {
-    let start = generated
-        .find("unsafe extern \"C\" {\n")
-        .ok_or("generated.rs has no extern block")?;
-    let block = &generated[start..];
-    let block = &block[block.find('\n').unwrap_or(0) + 1..];
-    let end = block
-        .find("\n}\n")
-        .ok_or("generated.rs's extern block doesn't end")?;
+    let file = syn::parse_file(generated).map_err(|e| format!("generated.rs: {e}"))?;
     let mut functions = Vec::new();
-    for item in block[..end].split(';') {
-        let item = item.trim();
-        if item.is_empty() {
+    for item in &file.items {
+        let syn::Item::ForeignMod(block) = item else {
             continue;
+        };
+        for item in &block.items {
+            let syn::ForeignItem::Fn(function) = item else {
+                return Err(format!(
+                    "unexpected item in the extern block: {}",
+                    item.to_token_stream()
+                ));
+            };
+            let sig = &function.sig;
+            let returns = match &sig.output {
+                syn::ReturnType::Default => None,
+                syn::ReturnType::Type(_, ty) => Some((**ty).clone()),
+            };
+            let diagnostic = sig.inputs.iter().any(|input| {
+                matches!(input, syn::FnArg::Typed(typed)
+                    if typed.pat.to_token_stream().to_string() == "out_diagnostic")
+            });
+            functions.push(Function {
+                name: sig.ident.to_string(),
+                signature: format!(
+                    "{}({}) {}",
+                    sig.ident,
+                    sig.inputs.to_token_stream(),
+                    sig.output.to_token_stream()
+                ),
+                returns,
+                diagnostic,
+            });
         }
-        let signature = item
-            .strip_prefix("pub fn ")
-            .ok_or_else(|| format!("unexpected item in the extern block: {item}"))?
-            .to_string();
-        let name =
-            signature[..signature.find('(').ok_or("a function without parameters")?].to_string();
-        // The return type follows the parameters' closing parenthesis.
-        let mut depth = 0;
-        let mut close = None;
-        for (i, c) in signature.char_indices() {
-            match c {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        close = Some(i);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        let close = close.ok_or_else(|| format!("{name}'s parameters don't close"))?;
-        let returns = signature[close + 1..]
-            .trim()
-            .strip_prefix("->")
-            .map(|r| r.trim().to_string());
-        let diagnostic = signature[..close].contains("out_diagnostic: *mut mln_diagnostic");
-        functions.push(Function {
-            name,
-            signature,
-            returns,
-            diagnostic,
-        });
     }
+    if functions.is_empty() {
+        return Err("generated.rs declares no functions".into());
+    }
+    functions.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(functions)
 }
 
@@ -445,11 +570,23 @@ fn stubs(generated: &str) -> Result<String, String> {
                 f.name
             )
         } else {
-            match f.returns.as_deref() {
+            match &f.returns {
                 None => String::new(),
-                Some("mln_status") => "MLN_STATUS_UNSUPPORTED".into(),
-                Some(r) if r.starts_with("*mut ") => "std::ptr::null_mut()".into(),
-                Some(r) if r.starts_with("*const ") => "std::ptr::null()".into(),
+                Some(syn::Type::Path(path)) if path.path.is_ident("mln_status") => {
+                    "MLN_STATUS_UNSUPPORTED".into()
+                }
+                // Zero is the plugin status's success.
+                Some(syn::Type::Path(path)) if path.path.is_ident("mln_plugin_status") => {
+                    return Err(format!(
+                        "{} returns mln_plugin_status, whose failure the stubs don't know: \
+                         export it from orb-ffi by hand",
+                        f.name
+                    ));
+                }
+                Some(syn::Type::Ptr(ptr)) if ptr.mutability.is_some() => {
+                    "std::ptr::null_mut()".into()
+                }
+                Some(syn::Type::Ptr(_)) => "std::ptr::null()".into(),
                 Some(_) => "Default::default()".into(),
             }
         };
@@ -499,8 +636,8 @@ fn rustfmt(text: &str) -> Result<String, String> {
 
 // MARK: - The ABI suite
 
-/// The file tags this platform builds, as mln-ffi's preset for it does:
-/// Metal on Apple platforms, Vulkan elsewhere.
+/// The file tags this platform builds: Metal on Apple platforms, Vulkan
+/// elsewhere.
 fn active_tags() -> Vec<&'static str> {
     if cfg!(target_vendor = "apple") {
         vec!["metal", "apple"]

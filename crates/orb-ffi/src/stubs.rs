@@ -275,12 +275,6 @@ pub unsafe extern "C" fn mln_ohos_frame_pacer_create(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_ohos_frame_pacer_create") }
 }
 
-/// `mln_plugin_get_register_function_v1`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_plugin_get_register_function_v1() -> mln_plugin_register_function_v1 {
-    Default::default()
-}
-
 /// `mln_render_session_set_android_surface_target`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_render_session_set_android_surface_target(
@@ -1024,6 +1018,14 @@ const _: () = {
     let _ = [
         crate::sys::mln_open_gl_supported_context_provider_mask,
         crate::base::mln_open_gl_supported_context_provider_mask,
+    ];
+    let _ = [
+        crate::sys::mln_plugin_get_register_function_v1,
+        crate::plugin::mln_plugin_get_register_function_v1,
+    ];
+    let _ = [
+        crate::sys::mln_plugin_register_v1,
+        crate::plugin::mln_plugin_register_v1,
     ];
     let _ = [
         crate::sys::mln_projected_meters_for_lat_lng,

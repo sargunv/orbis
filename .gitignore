@@ -6,7 +6,7 @@
 /web/pkg/
 /web/node_modules/
 /web/dist/
-# The GL JS, MapLibre Native and maplibre-native-ffi mirrors, fetched by
+# The GL JS, MapLibre Native and C API (mln-rs) mirrors, fetched by
 # `cargo xtask fixtures`.
 /fixtures/gl-js/
 /fixtures/gl-js.partial/
