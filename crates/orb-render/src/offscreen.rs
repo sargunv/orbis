@@ -11,7 +11,7 @@ use orb_hal::*;
 use orb_shaders::{COMPOSITE_OVER_SHADER, COMPOSITE_REPLACE_SHADER, COMPOSITE_STACK_SHADER};
 
 use crate::Blend;
-use crate::pipeline::{Attachments, Draw};
+use crate::pipeline::{Attachments, Cache, Draw, Take};
 
 /// A colour attachment to draw into and sample.
 #[derive(Debug)]
@@ -209,13 +209,12 @@ pub(crate) struct Composites {
     layout: BindGroupLayoutId,
     /// Stacks' ([`Stack`]).
     stack_layout: BindGroupLayoutId,
-    /// Made for the first composite that needs each.
+    /// Into the map's passes as they are now (the [`Cache`] keeps those
+    /// for the others), made for the first composite that needs each.
     over: Option<RenderPipelineId>,
     replace: Option<RenderPipelineId>,
     /// Stacks' by size ([`STACK_SIZES`]).
     stacks: [Option<RenderPipelineId>; 3],
-    /// Those for the map's other kind of pass ([`retarget`](Self::retarget)).
-    kept: [Option<RenderPipelineId>; 5],
     target: Attachments,
     linear: SamplerId,
     /// Bound where a composite has no ramp or backdrop.
@@ -281,29 +280,45 @@ impl Composites {
             over: None,
             replace: None,
             stacks: [None; 3],
-            kept: [None; 5],
             target,
             linear,
             blank,
         }
     }
 
-    /// Lets the pipelines kept for the other kind of pass go: they were
-    /// made for passes the map's no longer are.
-    pub(crate) fn forget_kept(&mut self, gpu: &mut dyn Gpu) {
-        std::mem::take(&mut self.kept).release(gpu);
+    /// Composites into `target`'s passes from now on, the map's with or
+    /// without their depth: with the pipelines made for them before, if
+    /// any.
+    pub(crate) fn retarget(&mut self, cache: &Cache, target: Attachments) {
+        self.target = target;
+        let take = &mut Take::Find(cache);
+        self.over = self.composite_pipeline(take, false);
+        self.replace = self.composite_pipeline(take, true);
+        self.stacks = self.stack_pipelines(take);
     }
 
-    /// Composites into `target`'s passes from now on, the map's with or
-    /// without their depth: the pipelines for those, kept since it last
-    /// composited into them, take the place of these, which are kept in
-    /// turn.
-    pub(crate) fn retarget(&mut self, target: Attachments) {
-        let [a, b, c] = self.stacks;
-        let current = [self.over, self.replace, a, b, c];
-        let [over, replace, a, b, c] = std::mem::replace(&mut self.kept, current);
-        (self.over, self.replace, self.stacks) = (over, replace, [a, b, c]);
-        self.target = target;
+    /// The pipeline of composites that write over the map (`replace`) or
+    /// blend over it, as `take` takes it.
+    fn composite_pipeline(&self, take: &mut Take<'_>, replace: bool) -> Option<RenderPipelineId> {
+        let (shader, blend) = match replace {
+            true => (&COMPOSITE_REPLACE_SHADER, None),
+            false => (&COMPOSITE_OVER_SHADER, Some(BlendState::PremultipliedAlpha)),
+        };
+        take.pipeline(&Draw::new(shader, &[self.layout], self.target, blend))
+    }
+
+    /// The pipelines of stacks by size, as `take` takes them.
+    fn stack_pipelines(&self, take: &mut Take<'_>) -> [Option<RenderPipelineId>; 3] {
+        let layouts = [self.stack_layout];
+        let blend = Some(BlendState::PremultipliedAlpha);
+        let draw = Draw::new(&COMPOSITE_STACK_SHADER, &layouts, self.target, blend);
+        STACK_SIZES.map(|size| {
+            let constants: &[_] = &[(orb_shaders::STACK_LAYERS, size as f64)];
+            take.pipeline(&Draw {
+                constants: [&[], constants],
+                ..draw
+            })
+        })
     }
 
     /// A blank texture: the source of a composite that leaves the map
@@ -313,36 +328,22 @@ impl Composites {
     }
 
     /// Makes the pipeline of composites in `mode`, unless it is made.
-    pub(crate) fn make(&mut self, gpu: &mut dyn Gpu, mode: Mode) {
-        let target = self.target;
-        let (slot, shader, blend) = if mode.replaces() {
-            (&mut self.replace, &COMPOSITE_REPLACE_SHADER, None)
-        } else {
-            (
-                &mut self.over,
-                &COMPOSITE_OVER_SHADER,
-                Some(BlendState::PremultipliedAlpha),
-            )
-        };
-        if slot.is_none() {
-            *slot = Some(Draw::new(shader, &[self.layout], target, blend).make(gpu));
+    pub(crate) fn make(&mut self, (gpu, cache): (&mut dyn Gpu, &mut Cache), mode: Mode) {
+        let replace = mode.replaces();
+        if self.pipeline(mode).is_none() {
+            let made = self.composite_pipeline(&mut Take::Make(gpu, cache), replace);
+            *(if replace {
+                &mut self.replace
+            } else {
+                &mut self.over
+            }) = made;
         }
     }
 
     /// Makes the pipelines of stacks, unless they are made.
-    pub(crate) fn make_stack(&mut self, gpu: &mut dyn Gpu) {
-        let layouts = [self.stack_layout];
-        let blend = Some(BlendState::PremultipliedAlpha);
-        let draw = Draw::new(&COMPOSITE_STACK_SHADER, &layouts, self.target, blend);
-        for (slot, size) in self.stacks.iter_mut().zip(STACK_SIZES) {
-            slot.get_or_insert_with(|| {
-                let constants: &[_] = &[(orb_shaders::STACK_LAYERS, size as f64)];
-                Draw {
-                    constants: [&[], constants],
-                    ..draw
-                }
-                .make(gpu)
-            });
+    pub(crate) fn make_stack(&mut self, (gpu, cache): (&mut dyn Gpu, &mut Cache)) {
+        if self.stacks.iter().any(Option::is_none) {
+            self.stacks = self.stack_pipelines(&mut Take::Make(gpu, cache));
         }
     }
 
@@ -730,15 +731,6 @@ impl crate::release::Release for Composite {
 
 impl crate::release::Release for Composites {
     fn release(self, gpu: &mut dyn Gpu) {
-        (
-            (self.layout, self.stack_layout),
-            self.over,
-            self.replace,
-            self.stacks,
-            self.kept,
-            self.linear,
-            self.blank,
-        )
-            .release(gpu);
+        ((self.layout, self.stack_layout), self.linear, self.blank).release(gpu);
     }
 }

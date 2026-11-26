@@ -72,7 +72,7 @@ pub use tiles::{
 };
 
 use crate::awaits::{Awaits, Lacks};
-use crate::pipeline::{Attachments, Draw, Variants};
+use crate::pipeline::{Attachments, Cache, Draw, Variants};
 use crate::release::Release;
 
 #[cfg(cpu_driven)]
@@ -81,7 +81,7 @@ pub use driver::cpu::{Compared, DriverCheck};
 use orb_hal::*;
 use orb_shaders::{
     CIRCLE_SHADER, FILL_OUTLINE_SHADER, FILL_SHADER, LINE_PLANES_SHADER, LINE_SHADER,
-    LINE_STYLED_PLANES_SHADER, LINE_STYLED_SHADER,
+    LINE_STYLED_PLANES_SHADER, LINE_STYLED_SHADER, Shader,
 };
 use rustc_hash::FxHashMap;
 #[cfg(cpu_driven)]
@@ -383,11 +383,10 @@ pub struct Renderer {
     /// style has terrain, which draws in them, a depth attachment, and
     /// with antialiasing on, four samples a pixel (`fit_target`).
     target: Attachments,
-    /// What the pipelines kept for the other kind of pass were made for,
-    /// once the passes changed.
-    kept_target: Option<Attachments>,
-    /// The extrusions', the terrain's and the atmosphere's pipelines, in
-    /// every kind of pass they drew in.
+    /// The render pipelines that vary with the passes they draw in (the
+    /// map's, the 3D layers', the drape's), in every kind of pass they
+    /// drew in: what draws in them holds the ids for the passes it draws
+    /// in now.
     pipeline_cache: pipeline::Cache,
     /// That depth attachment, made for the frame's size: never stored.
     map_depth: Option<(TextureId, [u32; 2])>,
@@ -412,12 +411,9 @@ pub struct Renderer {
     driver: driver::Driver,
     draw_layout: BindGroupLayoutId,
     node_layout: BindGroupLayoutId,
-    /// The vector families' pipelines, each made for the family's first
-    /// node.
+    /// The vector families' pipelines into the map's passes, each made
+    /// for the family's first node.
     paint: PaintPipelines,
-    /// The vector families' pipelines for the map's other kind of pass,
-    /// with or without its depth ([`fit_target`](Self::fit_target)).
-    paint_kept: PaintPipelines,
     /// Symbol layers' pipelines, placement target and passes.
     symbols: symbol::Symbols,
     /// Whether the map's views may need the full projection
@@ -525,9 +521,10 @@ pub struct Renderer {
     terrain_layers: Vec<terrain::TerrainLayer>,
     /// Colour and slope stacks of the terrain layers.
     drape_stacks: [u32; 2],
-    /// Draped families' pipelines for the drape atlas, made for the first
-    /// terrain when the target's format isn't the atlas's.
-    drape_pipelines: Option<DrapePipelines>,
+    /// Draped families' pipelines into the drape atlas, each made for its
+    /// family's first draped node.
+    drape_paint: PaintPipelines,
+    drape_images: image::ImagePipelines,
     /// The DEM texture the scene groups bind.
     dem_bound: TextureId,
     /// Bound for symbols and circles without terrain.
@@ -612,15 +609,10 @@ impl Renderer {
         let layouts = (self.draw_layout, self.node_layout);
         self.driver.destroy(gpu);
         let groups = self.draw_groups;
-        let pipelines = (
-            (self.paint.pipelines, self.paint.untested),
-            (self.paint_kept.pipelines, self.paint_kept.untested),
-            self.symbols,
-        );
         (
             layouts,
             groups,
-            pipelines,
+            self.symbols,
             self.node_uniforms,
             self.bundles,
             self.nodes,
@@ -638,10 +630,7 @@ impl Renderer {
         let stacks = self.stacks.into_iter().map(|(stack, _)| stack);
         (self.layers, self.composites, self.targets).release(gpu);
         stacks.collect::<Vec<_>>().release(gpu);
-        let drape = self
-            .drape_pipelines
-            .map(|d| ((d.paint.pipelines, d.paint.untested), d.images.0));
-        (self.terrain, self.drape, drape, self.no_terrain_depth).release(gpu);
+        (self.terrain, self.drape, self.no_terrain_depth).release(gpu);
         let samples = self.map_samples.map(|(texture, ..)| texture);
         (self.map_depth.map(|(depth, _)| depth), samples).release(gpu);
     }
@@ -743,7 +732,12 @@ impl Renderer {
             None,
         );
 
-        let symbols = symbol::Symbols::new(gpu, backing, glyphs.textures(no_dem));
+        let symbols = symbol::Symbols::new(
+            gpu,
+            backing,
+            glyphs.textures(no_dem),
+            (target, (draw_layout, node_layout)),
+        );
         let downsampler = downsample::Downsampler::new(gpu);
         let heatmaps = heatmap::Heatmaps::new(draw_layout, node_layout);
         let composites = offscreen::Composites::new(gpu, target);
@@ -773,7 +767,6 @@ impl Renderer {
             id: RENDERERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             host,
             target,
-            kept_target: None,
             pipeline_cache: pipeline::Cache::default(),
             map_depth: None,
             map_samples: None,
@@ -786,8 +779,13 @@ impl Renderer {
             driver,
             draw_layout,
             node_layout,
-            paint: PaintPipelines::default(),
-            paint_kept: PaintPipelines::default(),
+            paint: PaintPipelines::new(gpu.caps(), target, [draw_layout, node_layout]),
+            drape_paint: PaintPipelines::new(
+                gpu.caps(),
+                drape_attachments(),
+                [draw_layout, node_layout],
+            ),
+            drape_images: image::ImagePipelines::new(drape_attachments()),
             symbols,
             full_projection: false,
             terrain_reachable: false,
@@ -830,7 +828,6 @@ impl Renderer {
             drape: None,
             terrain_layers: Vec::new(),
             drape_stacks: [0; 2],
-            drape_pipelines: None,
             dem_bound: no_dem,
             no_terrain_depth,
             terrain_depth_bound: no_terrain_depth,
@@ -1458,7 +1455,7 @@ impl Renderer {
         if self.target == target {
             return;
         }
-        self.swap_kind(gpu, target);
+        self.retarget(target);
         self.map_depth.take().map(|(depth, _)| depth).release(gpu);
         self.map_samples
             .take()
@@ -1467,33 +1464,37 @@ impl Renderer {
         self.pipelines_stale = true;
         self.set_stale = true;
         if self.targets.any() {
-            self.composites.make(gpu, offscreen::Mode::Over);
-            self.composites.make_stack(gpu);
+            self.make_composites(gpu, offscreen::Mode::Over);
+            self.make_stack(gpu);
         }
         self.invalidate_bundle(gpu);
         self.layers.clear(gpu);
     }
 
-    /// Draws into the map's passes as `target` from now on: the pipelines
-    /// for that kind, kept since the passes last were of it, take the
-    /// place of these, which are kept in turn; unless they were made for
-    /// other passes (the sample count changed since), which are let go.
-    fn swap_kind(&mut self, gpu: &mut dyn Gpu, target: Attachments) {
-        if self.kept_target != Some(target) {
-            let kept = std::mem::take(&mut self.paint_kept);
-            (kept.pipelines, kept.untested).release(gpu);
-            self.symbols.forget_kept(gpu);
-            self.images.forget_kept(gpu);
-            self.composites.forget_kept(gpu);
-        }
-        self.kept_target = Some(std::mem::replace(&mut self.target, target));
-        std::mem::swap(&mut self.paint, &mut self.paint_kept);
-        self.symbols.swap_draws();
+    /// Draws into the map's passes as `target` from now on: with the
+    /// pipelines made for passes of it before, if any, which the cache
+    /// kept.
+    fn retarget(&mut self, target: Attachments) {
+        self.target = target;
         let cache = &self.pipeline_cache;
+        self.paint.retarget(cache, target);
+        self.symbols.retarget(cache, target);
         self.extrusions.set_stencil(cache, target.depth.is_some());
-        self.images.retarget(target);
-        self.composites.retarget(target);
+        self.images.retarget(cache, target);
+        self.composites.retarget(cache, target);
         self.atmosphere.retarget(cache, target);
+    }
+
+    /// Makes the pipeline of composites in `mode` into the map's passes,
+    /// unless it is made.
+    fn make_composites(&mut self, gpu: &mut dyn Gpu, mode: offscreen::Mode) {
+        (self.composites).make((gpu, &mut self.pipeline_cache), mode);
+    }
+
+    /// Makes the pipelines of stacks into the map's passes, unless they
+    /// are made.
+    fn make_stack(&mut self, gpu: &mut dyn Gpu) {
+        (self.composites).make_stack((gpu, &mut self.pipeline_cache));
     }
 
     /// Whether every pipeline the map's frames draw with once its terrain
@@ -1510,7 +1511,7 @@ impl Renderer {
         self.terrain_reachable = on;
         let then = self.kind_target(on);
         if then != was {
-            self.swap_kind(gpu, then);
+            self.retarget(then);
         }
         self.full = on;
         self.request_set(gpu);
@@ -1532,13 +1533,13 @@ impl Renderer {
                     Blend::Normal if opacity < 1.0 => offscreen::Mode::Over,
                     blend => offscreen::Mode::Blend(blend),
                 };
-                self.composites.make(gpu, mode);
+                self.make_composites(gpu, mode);
             }
             self.node_pipelines(i, &mut wanted);
         }
         if self.targets.any() {
-            self.composites.make(gpu, offscreen::Mode::Over);
-            self.composites.make_stack(gpu);
+            self.make_composites(gpu, offscreen::Mode::Over);
+            self.make_stack(gpu);
             wanted.extend(self.targets.pipelines());
         }
         wanted.extend(self.composites.pipelines());
@@ -1551,7 +1552,7 @@ impl Renderer {
         }
         self.assign_stacks();
         if then != was {
-            self.swap_kind(gpu, was);
+            self.retarget(was);
         }
         self.extrusions.set_full(self.variants()[1]);
         wanted.into_iter().all(|id| gpu.pipeline_ready(id))
@@ -1873,8 +1874,8 @@ impl Renderer {
     pub fn set_targets(&mut self, gpu: &mut dyn Gpu, plan: TargetPlan) {
         if self.targets.set_plan(gpu, &self.composites, plan) {
             if self.targets.any() {
-                self.composites.make(gpu, offscreen::Mode::Over);
-                self.composites.make_stack(gpu);
+                self.make_composites(gpu, offscreen::Mode::Over);
+                self.make_stack(gpu);
             }
             self.restack(gpu);
         }
@@ -2327,7 +2328,7 @@ impl Renderer {
     /// pipeline it takes: a frame that would wait for it draws nothing,
     /// so what fades through it starts once it compiled.
     pub fn layer_composite_ready(&mut self, gpu: &mut dyn Gpu) -> bool {
-        self.composites.make(gpu, offscreen::Mode::Over);
+        self.make_composites(gpu, offscreen::Mode::Over);
         self.composites.ready(gpu, offscreen::Mode::Over)
     }
 
@@ -2399,7 +2400,7 @@ impl Renderer {
             self.make_for_node(gpu, i, false);
             let composite = self.nodes[i].composite;
             if let (Some(_), Some((.., blend))) = (composite_group(composite), composite) {
-                self.composites.make(gpu, offscreen::Mode::Blend(blend));
+                self.make_composites(gpu, offscreen::Mode::Blend(blend));
             }
         }
     }
@@ -2441,7 +2442,7 @@ impl Renderer {
             gpu.set_background_compiles(!first);
             self.request_group(gpu, &group.nodes, !first);
             if let Some(blend) = group.composite {
-                self.composites.make(gpu, offscreen::Mode::Blend(blend));
+                self.make_composites(gpu, offscreen::Mode::Blend(blend));
             }
         }
         gpu.set_background_compiles(false);
@@ -2479,8 +2480,7 @@ impl Renderer {
         if beneath {
             // Its group's composite carries the map over to the pass after
             // the split.
-            self.composites
-                .make(gpu, offscreen::Mode::Blend(Blend::Multiply));
+            self.make_composites(gpu, offscreen::Mode::Blend(Blend::Multiply));
         }
         self.terrain(gpu);
         let terrain = self.terrain.as_mut().expect("made");
@@ -2566,9 +2566,6 @@ impl Renderer {
     /// Makes node `i`'s pipelines as it draws now, or (`warm`) ahead of
     /// its drawing.
     fn make_for_node(&mut self, gpu: &mut dyn Gpu, i: usize, warm: bool) {
-        let layouts = [self.draw_layout, self.node_layout];
-        let drape_target = drape_attachments();
-        let own_drape = self.target != drape_target;
         let variants = self.variants();
         let node = &self.nodes[i];
         let (family, kind) = (node.family, node.paint_kind(&self.patterned, &self.rowed));
@@ -2586,31 +2583,23 @@ impl Renderer {
             self.images.make_slopes(gpu);
             return;
         }
-        if node.stack.is_none() && family.is_draped() && own_drape && self.terrain_ahead() {
+        let flat_drapes = self.target == drape_attachments();
+        if node.stack.is_none() && family.is_draped() && !flat_drapes && self.terrain_ahead() {
             // It drapes once the style's terrain is on: until then it waits
-            // for it, rather than for pipelines it would draw flat with.
+            // for it, rather than for pipelines it would draw flat with
+            // (unless those are the drape's).
             return;
         }
-        if node.stack.is_some() && own_drape {
-            // Into the drape atlas, with its format's pipelines.
-            let drape = self
-                .drape_pipelines
-                .get_or_insert_with(DrapePipelines::default);
+        if node.stack.is_some() {
+            // Into the drape atlas.
+            let cache = &mut self.pipeline_cache;
             if family.is_image() {
-                self.images.make_for(
-                    gpu,
-                    &mut drape.images,
-                    drape_target,
-                    self.draw_layout,
-                    family,
-                );
+                (self.images).make_into((gpu, cache), &mut self.drape_images, family);
                 if family == Family::Raster {
                     self.downsampler.make(gpu);
                 }
             } else {
-                drape
-                    .paint
-                    .make(gpu, drape_target, &layouts, kind, variants);
+                (self.drape_paint).make((gpu, cache), kind, variants);
             }
             return;
         }
@@ -2618,21 +2607,21 @@ impl Renderer {
     }
 
     fn make_node_pipeline(&mut self, gpu: &mut dyn Gpu, i: usize, warm: bool) {
-        let layouts = [self.draw_layout, self.node_layout];
         let family = self.nodes[i].family;
         let variants = self.variants();
+        let cache = &mut self.pipeline_cache;
         match family {
             Family::Fill | Family::FillOutline | Family::Line | Family::Circle => {
                 let kind = self.nodes[i].paint_kind(&self.patterned, &self.rowed);
-                self.paint.make(gpu, self.target, &layouts, kind, variants);
+                self.paint.make((gpu, cache), kind, variants);
             }
             Family::SymbolIcon | Family::SymbolText => {
                 let kinds = self.symbol_kinds(self.drawer(i));
-                let layouts = (self.draw_layout, self.node_layout);
-                (self.symbols).make(gpu, layouts, self.target, kinds, variants);
+                let cache = &mut self.pipeline_cache;
+                (self.symbols).make((gpu, cache), kinds, variants);
             }
             Family::Raster | Family::Hillshade | Family::ColorRelief => {
-                self.images.make(gpu, family);
+                self.images.make((gpu, cache), family);
                 if family == Family::Raster {
                     // Raster pages are mipmapped.
                     self.downsampler.make(gpu);
@@ -2641,13 +2630,12 @@ impl Renderer {
             Family::Heatmap => {
                 self.heatmaps.make(gpu);
                 // Its target's composite through the ramp.
-                self.composites.make(gpu, offscreen::Mode::Ramp);
+                self.make_composites(gpu, offscreen::Mode::Ramp);
             }
             Family::FillExtrusion => {
-                let cache = &mut self.pipeline_cache;
                 (self.extrusions).make((gpu, cache), self.nodes[i].shape.elevation, warm);
                 // Its target's composite.
-                self.composites.make(gpu, offscreen::Mode::Over);
+                self.make_composites(gpu, offscreen::Mode::Over);
             }
         }
     }
@@ -2662,16 +2650,13 @@ impl Renderer {
         }
         if node.shades_on_terrain() {
             out.extend(self.images.slopes_pipeline().map(PipelineId::from));
-        } else if node.stack.is_some()
-            && let Some(d) = self.drape_pipelines.as_ref()
-        {
+        } else if node.stack.is_some() {
             out.extend(
-                d.paint
+                (self.drape_paint)
                     .wanted(node.paint_kind(&self.patterned, &self.rowed), self.full)
                     .or_else(|| {
-                        node.family
-                            .is_image()
-                            .then(|| d.images.get(node.family))
+                        (node.family.is_image())
+                            .then(|| self.drape_images.get(node.family))
                             .flatten()
                     })
                     .map(PipelineId::from),
@@ -2688,7 +2673,7 @@ impl Renderer {
                 out.extend(self.symbols.wanted(kinds, self.full));
             }
             family if family.is_image() => {
-                out.extend(self.images.pipeline(family).map(PipelineId::from));
+                out.extend(self.images.pipelines().get(family).map(PipelineId::from));
                 if family == Family::Raster {
                     out.extend(self.downsampler.pipelines());
                 } else {
@@ -4320,31 +4305,26 @@ impl Renderer {
         if !lacks.is_empty() {
             return lacks;
         }
-        // Into the drape atlas, with its format's pipelines if the
-        // target's differs.
-        let drape = self
-            .drape_pipelines
-            .as_ref()
-            .filter(|_| !in_map && self.target != drape_attachments());
+        // Into the map's passes or the drape atlas, with their pipelines.
+        let (paint, images) = match in_map {
+            true => (&self.paint, self.images.pipelines()),
+            false => (&self.drape_paint, self.drape_images),
+        };
         let kind = node.paint_kind(&self.patterned, &self.rowed);
         // A split node's untested placements draw in a pipeline that tests
         // no fragment once it compiled, else in the tested one, which
         // stands in for it: lacked until it compiles.
         let split = second.is_some() && streams[0].is_some() && !node.shades_on_terrain();
         let full = self.full;
-        let untested = match (split, drape, family.is_image()) {
-            (false, ..) => None,
-            (true, Some(d), true) => lacks.need(gpu, d.images.untested(family)),
-            (true, Some(d), false) => d.paint.drawn_untested(gpu, kind, full, &mut lacks),
-            (true, None, true) => lacks.need(gpu, self.images.untested(family)),
-            (true, None, false) => self.paint.drawn_untested(gpu, kind, full, &mut lacks),
+        let untested = match (split, family.is_image()) {
+            (false, _) => None,
+            (true, true) => lacks.need(gpu, images.untested(family)),
+            (true, false) => paint.drawn_untested(gpu, kind, full, &mut lacks),
         };
-        let pipeline = match (drape, family.is_image()) {
+        let pipeline = match family.is_image() {
             _ if node.shades_on_terrain() => lacks.need(gpu, self.images.slopes_pipeline()),
-            (Some(d), true) => lacks.need(gpu, d.images.get(family)),
-            (Some(d), false) => d.paint.drawn(gpu, kind, full, &mut lacks),
-            (None, true) => lacks.need(gpu, self.images.pipeline(family)),
-            (None, false) => self.paint.drawn(gpu, kind, full, &mut lacks),
+            true => lacks.need(gpu, images.get(family)),
+            false => paint.drawn(gpu, kind, full, &mut lacks),
         };
         let Some(pipeline) = pipeline else {
             return lacks;
@@ -4425,8 +4405,7 @@ impl Renderer {
     }
 }
 
-/// The drape atlas's passes: draped nodes draw into them with the map's
-/// pipelines where the map's passes are of the same attachments.
+/// The drape atlas's passes.
 fn drape_attachments() -> Attachments {
     TargetFormat {
         color: DRAPE_FORMAT,
@@ -4667,14 +4646,6 @@ struct Ready {
     mips: Lacks,
 }
 
-/// Draped families' pipelines for the drape atlas's format, each made for
-/// its family's first draped node.
-#[derive(Debug, Default)]
-struct DrapePipelines {
-    paint: PaintPipelines,
-    images: image::ImagePipelines,
-}
-
 /// The drape pass: draped nodes' paint for the slots it redraws, and per
 /// page its frame, scene group and bundle.
 #[derive(Debug)]
@@ -4753,7 +4724,7 @@ impl Drape {
 }
 
 /// A paint node's pipeline ([`Node::paint_kind`]).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PaintKind {
     family: Family,
     /// The styled line's.
@@ -4764,30 +4735,58 @@ struct PaintKind {
     pattern: bool,
 }
 
+impl PaintKind {
+    /// Its shader and what it draws, `None` for a family not of
+    /// [`PaintPipelines`].
+    fn shader(self) -> Option<(&'static Shader, PrimitiveTopology)> {
+        let triangles = PrimitiveTopology::TriangleList;
+        Some(match self.family {
+            Family::Fill => (&FILL_SHADER, triangles),
+            Family::FillOutline => (&FILL_OUTLINE_SHADER, PrimitiveTopology::LineList),
+            Family::Line if self.styled => (&LINE_STYLED_SHADER, triangles),
+            Family::Line => (&LINE_SHADER, triangles),
+            Family::Circle => (&CIRCLE_SHADER, triangles),
+            _ => return None,
+        })
+    }
+}
+
 /// The vector families' pipelines (fill, fill outline, line, styled line,
-/// circle), each made for the family's first node, with property rows and
-/// without, and those that draw patterns with them and without; a fill's
-/// and a line's also untested ([`Untested`]): a fill's fragments testing
-/// nothing, a line's, where the device has clip distances
-/// (`LINE_PLANES_SHADER`), clipped by their placement's planes instead.
-#[derive(Clone, Copy, Debug, Default)]
+/// circle) into one kind of pass, each made for the first node of its
+/// [`PaintKind`] drawing there, tested and untested ([`Untested`]): a
+/// fill's fragments testing nothing, a line's, where the device has clip
+/// distances (`LINE_PLANES_SHADER`), clipped by their placement's planes
+/// instead.
+#[derive(Debug)]
 struct PaintPipelines {
-    pipelines: [Variants; 20],
-    untested: [Variants; 20],
+    target: Attachments,
+    layouts: [BindGroupLayoutId; 2],
+    /// Whether nodes draw untested placements apart
+    /// ([`untested_variants`]), and the device has clip distances.
+    untested: bool,
+    planes: bool,
+    /// By kind made, the tested pipeline and the untested one.
+    made: Vec<(PaintKind, [Variants; 2])>,
 }
 
 impl PaintPipelines {
-    /// The slot of a node's [`Node::paint_kind`].
-    fn index(kind: PaintKind) -> Option<usize> {
-        let shader = match kind.family {
-            Family::Fill => 0,
-            Family::FillOutline => 1,
-            Family::Line if kind.styled => 4,
-            Family::Line => 2,
-            Family::Circle => 3,
-            _ => return None,
-        };
-        Some(4 * shader + 2 * usize::from(kind.pattern) + usize::from(kind.rows))
+    /// None yet, into passes of `target`, on a device of `caps`, with the
+    /// scene's and the node's groups of `layouts`.
+    fn new(caps: &Caps, target: Attachments, layouts: [BindGroupLayoutId; 2]) -> Self {
+        Self {
+            target,
+            layouts,
+            untested: untested_variants(caps),
+            planes: caps.clip_distances,
+            made: Vec::new(),
+        }
+    }
+
+    /// The pipelines of `kind`, none until made.
+    fn variants(&self, kind: PaintKind) -> [Variants; 2] {
+        (self.made.iter())
+            .find(|(k, _)| *k == kind)
+            .map_or_else(Default::default, |&(_, v)| v)
     }
 
     /// What a frame draws a node of `kind` with, `lacks` gaining what it
@@ -4799,7 +4798,7 @@ impl PaintPipelines {
         full: bool,
         lacks: &mut Lacks,
     ) -> Option<RenderPipelineId> {
-        Self::drawn_of(&self.pipelines, gpu, kind, full, lacks)
+        self.drawn_of(0, gpu, kind, full, lacks)
     }
 
     /// What a frame draws a split node's untested placements of `kind`
@@ -4811,84 +4810,106 @@ impl PaintPipelines {
         full: bool,
         lacks: &mut Lacks,
     ) -> Option<RenderPipelineId> {
-        Self::drawn_of(&self.untested, gpu, kind, full, lacks)
+        self.drawn_of(1, gpu, kind, full, lacks)
     }
 
     fn drawn_of(
-        variants: &[Variants; 20],
+        &self,
+        untested: usize,
         gpu: &mut dyn Gpu,
         kind: PaintKind,
         full: bool,
         lacks: &mut Lacks,
     ) -> Option<RenderPipelineId> {
-        match Self::index(kind) {
-            Some(index) => variants[index].drawn(gpu, full, lacks),
-            None => {
-                lacks.push(None);
-                None
-            }
+        if kind.shader().is_none() {
+            lacks.push(None);
+            return None;
         }
+        self.variants(kind)[untested].drawn(gpu, full, lacks)
     }
 
     /// What a frame waits for to draw a node of `kind`
     /// ([`Variants::wanted`]).
     fn wanted(&self, kind: PaintKind, full: bool) -> Option<RenderPipelineId> {
-        self.pipelines[Self::index(kind)?].wanted(full)
+        self.variants(kind)[0].wanted(full)
     }
 
-    /// Makes the pipeline of a node of `kind` in each of the variants
+    /// Makes the pipelines of a node of `kind` in each of the variants
     /// `[plane, full]` asked for.
     fn make(
         &mut self,
-        gpu: &mut dyn Gpu,
-        target: Attachments,
-        layouts: &[BindGroupLayoutId],
+        (gpu, cache): (&mut dyn Gpu, &mut Cache),
         kind: PaintKind,
         variants: [bool; 2],
     ) {
-        let Some(index) = Self::index(kind) else {
+        let layouts = self.layouts;
+        let Some((tested, untested)) = self.draws(&layouts, kind) else {
             return;
         };
-        let (shader, topology) = match index / 4 {
-            0 => (&FILL_SHADER, PrimitiveTopology::TriangleList),
-            1 => (&FILL_OUTLINE_SHADER, PrimitiveTopology::LineList),
-            2 => (&LINE_SHADER, PrimitiveTopology::TriangleList),
-            4 => (&LINE_STYLED_SHADER, PrimitiveTopology::TriangleList),
-            _ => (&CIRCLE_SHADER, PrimitiveTopology::TriangleList),
+        let index = match self.made.iter().position(|(k, _)| *k == kind) {
+            Some(index) => index,
+            None => {
+                self.made.push((kind, Default::default()));
+                self.made.len() - 1
+            }
         };
-        let draw = Draw {
+        let made = &mut self.made[index].1;
+        made[0].make((gpu, cache), variants, tested);
+        if let Some(untested) = untested {
+            made[1].make((gpu, cache), variants, untested);
+        }
+    }
+
+    /// Draws into passes of `target` from now on: with the pipelines made
+    /// for them before, if any.
+    fn retarget(&mut self, cache: &Cache, target: Attachments) {
+        self.target = target;
+        let layouts = self.layouts;
+        for i in 0..self.made.len() {
+            let kind = self.made[i].0;
+            let (tested, untested) = self.draws(&layouts, kind).expect("made");
+            let untested = untested.map_or_else(Default::default, |d| Variants::find(cache, d));
+            self.made[i].1 = [Variants::find(cache, tested), untested];
+        }
+    }
+
+    /// The tested and untested draws of a node of `kind`, the untested
+    /// one where it has one: a fill's, and a line's where the device has
+    /// clip distances.
+    fn draws<'a>(
+        &self,
+        layouts: &'a [BindGroupLayoutId; 2],
+        kind: PaintKind,
+    ) -> Option<(Draw<'a>, Option<Draw<'a>>)> {
+        let (shader, topology) = kind.shader()?;
+        let tested = Draw {
             topology,
             rows: kind.rows,
             patterns: kind.pattern,
             ..Draw::new(
                 shader,
                 layouts,
-                target,
+                self.target,
                 Some(BlendState::PremultipliedAlpha),
             )
         };
-        self.pipelines[index].make(gpu, variants, draw);
-        let planes = gpu.caps().clip_distances;
-        let vertex = match index / 4 {
-            _ if !untested_variants(gpu.caps()) => None,
-            0 => Some(&FILL_SHADER),
-            2 if planes => Some(&LINE_PLANES_SHADER),
-            4 if planes => Some(&LINE_STYLED_PLANES_SHADER),
+        let vertex = match kind.family {
+            _ if !self.untested => None,
+            Family::Fill => Some(&FILL_SHADER),
+            Family::Line if self.planes && kind.styled => Some(&LINE_STYLED_PLANES_SHADER),
+            Family::Line if self.planes => Some(&LINE_PLANES_SHADER),
             _ => None,
         };
-        if let Some(vertex) = vertex {
-            let untested = Draw {
-                label: if index / 4 == 0 {
-                    "fill untested"
-                } else {
-                    vertex.label
-                },
-                vertex: (vertex, vertex.vertex),
-                constants: [&[], &[(orb_shaders::CLIP_FRAGMENTS, 0.0)]],
-                ..draw
-            };
-            self.untested[index].make(gpu, variants, untested);
-        }
+        let untested = vertex.map(|vertex| Draw {
+            label: match kind.family {
+                Family::Fill => "fill untested",
+                _ => vertex.label,
+            },
+            vertex: (vertex, vertex.vertex),
+            constants: [&[], &[(orb_shaders::CLIP_FRAGMENTS, 0.0)]],
+            ..tested
+        });
+        Some((tested, untested))
     }
 }
 

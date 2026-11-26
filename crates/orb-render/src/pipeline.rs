@@ -215,11 +215,13 @@ impl<'a> Draw<'a> {
 
 /// The render pipelines made through it, one for each pipeline a [`Draw`]
 /// describes: what draws into several kinds of pass (the map's with its
-/// depth and without, the 3D layers', at one sample or four) asks for its
-/// pipelines in the passes it draws in now, and finds those it made for
-/// passes it drew in before. Nothing makes a pipeline twice. It holds a
-/// few dozen at most, and is asked only as pipelines are, so a list
-/// serves.
+/// depth and without, the 3D layers', the drape atlas's, at one sample or
+/// four) asks for its pipelines in the passes it draws in now, and finds
+/// those it made for passes it drew in before. Nothing makes a pipeline
+/// twice, and what draws into passes of equal attachments (the drape's and
+/// the map's on a target of its format) shares it. Each user holds the ids
+/// for the passes it draws in now, so it is asked only as pipelines are
+/// made or the passes change: a list of a hundred or so serves.
 #[derive(Debug, Default)]
 pub(crate) struct Cache {
     made: Vec<(DrawKey, RenderPipelineId)>,
@@ -497,15 +499,28 @@ impl<P> Default for Variants<P> {
 
 impl Variants {
     /// Makes each of the variants `[plane, full]` asked for that isn't
-    /// made.
-    pub(crate) fn make(&mut self, gpu: &mut dyn Gpu, variants: [bool; 2], draw: Draw<'_>) {
+    /// made, through `cache`.
+    pub(crate) fn make(
+        &mut self,
+        (gpu, cache): (&mut dyn Gpu, &mut Cache),
+        variants: [bool; 2],
+        draw: Draw<'_>,
+    ) {
         self.make_with(variants, |full| {
-            Draw {
-                plane: !full,
-                ..draw
-            }
-            .make(gpu)
+            cache.get_or_make(gpu, &Self::variant(draw, full))
         });
+    }
+
+    /// `draw`'s variants made in `cache`, none where none were.
+    pub(crate) fn find(cache: &Cache, draw: Draw<'_>) -> Self {
+        Self([false, true].map(|full| cache.get(&Self::variant(draw, full))))
+    }
+
+    fn variant(draw: Draw<'_>, full: bool) -> Draw<'_> {
+        Draw {
+            plane: !full,
+            ..draw
+        }
     }
 }
 

@@ -17,10 +17,10 @@
 use orb_hal::*;
 #[cfg(cpu_driven)]
 use orb_shaders::SYMBOL_INLINE_SHADERS;
-use orb_shaders::{SYMBOL_PLACE_SHADERS, SYMBOL_SHADER};
+use orb_shaders::{SYMBOL_PLACE_SHADERS, SYMBOL_SHADER, Shader};
 
 use crate::awaits::Lacks;
-use crate::pipeline::{Attachments, Draw, Variants};
+use crate::pipeline::{Attachments, Cache, Draw, Variants};
 use crate::release::Release;
 use crate::scene::{Backing, PAGE_CHUNKS, PLACED_WIDTH, Tables};
 
@@ -98,7 +98,7 @@ enum Placing {
     /// By a dispatch before them.
     Dispatched(Box<Dispatch>),
     /// By each corner itself: the draw's pipelines by the layer's kind
-    /// ([`Symbols::make`]).
+    /// ([`Symbols::make`]), into the map's passes as they are now.
     #[cfg(cpu_driven)]
     Inline([Variants; 4]),
 }
@@ -106,8 +106,10 @@ enum Placing {
 /// The placement dispatch, its target and the draws that read it.
 #[derive(Debug)]
 struct Dispatch {
-    /// The draw's pipelines, without and with property rows, each made
-    /// for the first symbol layer that draws with it.
+    /// The draw's pipelines, without and with property rows, into the
+    /// map's passes as they are now (the renderer's [`Cache`] keeps those
+    /// for the others), each made for the first symbol layer that draws
+    /// with it.
     draws: [Variants; 2],
     /// The dispatch's pipelines, by their [`Placings`] kind; its layout,
     /// and by scene block slot its group with the scene's entries it was
@@ -136,18 +138,22 @@ pub(crate) struct Symbols {
     glyphs: [TextureId; PAGE_CHUNKS],
     /// [`QUAD_INDICES`], the index buffer the draws take.
     quad_indices: BufferId,
-    /// The draws' pipelines for the map's other kind of pass
-    /// ([`swap_draws`](Self::swap_draws)).
-    kept: [Variants; 4],
+    /// The draws' groups' layouts: the scene's, the node's and
+    /// [`pass_layout`](Self::pass_layout).
+    layouts: [BindGroupLayoutId; 3],
+    /// The map's passes.
+    target: Attachments,
 }
 
 impl Symbols {
     /// The symbols of a renderer whose tables are on `backing`, drawing
-    /// glyphs from the chunks of `glyphs`.
+    /// glyphs from the chunks of `glyphs` into the map's passes, `target`,
+    /// with the scene's and the node's groups of `(scene, node)`.
     pub(crate) fn new(
         gpu: &mut dyn Gpu,
         backing: Backing,
         glyphs: [TextureId; PAGE_CHUNKS],
+        (target, (scene, node)): (Attachments, (BindGroupLayoutId, BindGroupLayoutId)),
     ) -> Self {
         use BindGroupLayoutEntry as E;
         let placing = Placing::new(gpu, backing);
@@ -192,7 +198,8 @@ impl Symbols {
             passes,
             glyphs,
             quad_indices,
-            kept: Default::default(),
+            layouts: [scene, node, pass_layout],
+            target,
         }
     }
 
@@ -274,22 +281,51 @@ impl Symbols {
         }
     }
 
-    /// Lets the pipelines kept for the other kind of pass go: they were
-    /// made for passes the map's no longer are.
-    pub(crate) fn forget_kept(&mut self, gpu: &mut dyn Gpu) {
-        std::mem::take(&mut self.kept).release(gpu);
+    /// The draws' pipelines, by the slot [`draw`](Self::draw) gives.
+    fn draws(&self) -> &[Variants] {
+        match &self.placing {
+            Placing::Dispatched(dispatch) => &dispatch.draws,
+            #[cfg(cpu_driven)]
+            Placing::Inline(draws) => draws,
+        }
     }
 
-    /// Draws into the map's passes with or without their depth from now
-    /// on: its pipelines for the other kind, kept since it last drew into
-    /// those, take the place of these, which are kept in turn.
-    pub(crate) fn swap_draws(&mut self) {
-        let draws: &mut [Variants] = match &mut self.placing {
+    fn draws_mut(&mut self) -> &mut [Variants] {
+        match &mut self.placing {
             Placing::Dispatched(dispatch) => &mut dispatch.draws,
             #[cfg(cpu_driven)]
             Placing::Inline(draws) => draws,
+        }
+    }
+
+    /// The draw of a symbol layer of `kind` (as in [`make`](Self::make)),
+    /// and its slot among the draws' pipelines: one draw for every kind
+    /// after a dispatch placed them, with property rows and without, but
+    /// one for each where every corner places its quad itself.
+    fn draw(&self, kind: usize) -> (Draw<'_>, usize) {
+        let (shader, slot): (&Shader, _) = match &self.placing {
+            Placing::Dispatched(_) => (&SYMBOL_SHADER, kind % 2),
+            #[cfg(cpu_driven)]
+            Placing::Inline(_) => (&SYMBOL_INLINE_SHADERS[kind / 2], kind),
         };
-        draws.swap_with_slice(&mut self.kept[..draws.len()]);
+        let blend = Some(BlendState::PremultipliedAlpha);
+        let draw = Draw {
+            rows: kind % 2 == 1,
+            ..Draw::new(shader, &self.layouts, self.target, blend)
+        };
+        (draw, slot)
+    }
+
+    /// Draws into the map's passes as `target` from now on, with or
+    /// without their depth: with the pipelines made for them before, if
+    /// any.
+    pub(crate) fn retarget(&mut self, cache: &Cache, target: Attachments) {
+        self.target = target;
+        // Each slot's own index is a kind that draws with it.
+        let found: Vec<Variants> = (0..self.draws().len())
+            .map(|slot| Variants::find(cache, self.draw(slot).0))
+            .collect();
+        self.draws_mut().copy_from_slice(&found);
     }
 
     /// Makes the pipelines a symbol layer of `kind` draws with (along
@@ -298,21 +334,16 @@ impl Symbols {
     /// for.
     pub(crate) fn make(
         &mut self,
-        gpu: &mut dyn Gpu,
-        (scene, node): (BindGroupLayoutId, BindGroupLayoutId),
-        target: Attachments,
+        (gpu, cache): (&mut dyn Gpu, &mut Cache),
         (kind, placings): (usize, Placings),
         variants: [bool; 2],
     ) {
-        let layouts = [scene, node, self.pass_layout];
-        let blend = Some(BlendState::PremultipliedAlpha);
-        let draw = |shader| Draw {
-            rows: kind % 2 == 1,
-            ..Draw::new(shader, &layouts, target, blend)
-        };
+        let (draw, slot) = self.draw(kind);
+        let mut made = self.draws()[slot];
+        made.make((gpu, cache), variants, draw);
+        self.draws_mut()[slot] = made;
         match &mut self.placing {
             Placing::Dispatched(dispatch) => {
-                dispatch.draws[kind % 2].make(gpu, variants, draw(&SYMBOL_SHADER));
                 let layouts = [dispatch.layout];
                 if let Some(placing) = placings {
                     let shader = &SYMBOL_PLACE_SHADERS[placing / 2];
@@ -330,9 +361,7 @@ impl Symbols {
                 }
             }
             #[cfg(cpu_driven)]
-            Placing::Inline(draws) => {
-                draws[kind].make(gpu, variants, draw(&SYMBOL_INLINE_SHADERS[kind / 2]));
-            }
+            Placing::Inline(_) => {}
         }
     }
 
@@ -604,7 +633,6 @@ impl Release for Symbols {
         match self.placing {
             Placing::Dispatched(dispatch) => {
                 let Dispatch {
-                    draws,
                     pipelines,
                     layout,
                     groups,
@@ -613,12 +641,12 @@ impl Release for Symbols {
                 } = *dispatch;
                 let groups: Vec<BindGroupId> =
                     groups.into_iter().flatten().map(|(g, _)| g).collect();
-                (draws, pipelines, (layout, groups, target)).release(gpu);
+                (pipelines, (layout, groups, target)).release(gpu);
             }
             #[cfg(cpu_driven)]
-            Placing::Inline(draws) => draws.release(gpu),
+            Placing::Inline(_) => {}
         }
         (self.pass_layout, self.pass_buffer).release(gpu);
-        (self.passes, self.quad_indices, self.kept).release(gpu);
+        (self.passes, self.quad_indices).release(gpu);
     }
 }
