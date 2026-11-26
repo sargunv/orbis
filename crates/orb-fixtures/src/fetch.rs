@@ -76,13 +76,16 @@ mod tests {
     #[test]
     fn local_assets_queries_and_tilejson_templates() {
         let assets = Path::new("/fixtures/assets");
+        // The URL holds the path as the platform writes it: with
+        // backslashes between the parts joined on Windows.
+        let file = |path: PathBuf| format!("file://{}", path.display());
         assert_eq!(
             resolve(assets, "local://tiles/0-0-0.mvt?cache=1", Assets::GlJs).unwrap(),
-            "file:///fixtures/assets/tiles/0-0-0.mvt"
+            file(assets.join("tiles/0-0-0.mvt"))
         );
         assert_eq!(
             resolve(assets, "local://glyphs/Open%20Sans/0-255.pbf", Assets::GlJs).unwrap(),
-            "file:///fixtures/assets/glyphs/Open Sans/0-255.pbf"
+            file(assets.join("glyphs/Open Sans/0-255.pbf"))
         );
         assert_eq!(
             resolve(assets, "https://example.org/a", Assets::GlJs).unwrap(),
@@ -90,11 +93,11 @@ mod tests {
         );
         assert_eq!(
             resolve(assets, "https://example.org/a%2cb", Assets::Native).unwrap(),
-            "file:///fixtures/assets/https/example.org/a,b"
+            file(assets.join("https").join("example.org/a,b"))
         );
         assert_eq!(
             resolve(assets, "http://tiles/1.png", Assets::Native).unwrap(),
-            "file:///fixtures/assets/tiles/1.png"
+            file(assets.join("tiles/1.png"))
         );
         assert!(resolve(assets, "file:///etc/passwd", Assets::Native).is_none());
         for url in [
