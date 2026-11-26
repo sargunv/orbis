@@ -40,11 +40,11 @@ use crate::root;
 
 /// The repository that owns the C API, and the commit Orbis implements.
 const REPO: &str = "https://github.com/maplibre/mln-rs";
-const COMMIT: &str = "3830b54957b085d72fe5f1fccc2f05a5918e311d";
+const COMMIT: &str = "76c52acee7dff3a25306f00e00b4c92d4fd6adee";
 
 /// The mirror's content hash at [`COMMIT`], with [`UNITY`] and
 /// [`VULKAN_HEADERS`].
-const MIRROR_SHA256: &str = "10f9c21524d62b62a6847aaa4347e9abca76c7973fd192acaae62ef88969d950";
+const MIRROR_SHA256: &str = "1baab941b711a88b9ea59d2d01616109b934aa58fb67be5da2b70d534ad39fee";
 
 /// Unity, at the release and hash mln-rs's suite pins.
 const UNITY: (&str, &str) = (
