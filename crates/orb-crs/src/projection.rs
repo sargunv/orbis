@@ -357,43 +357,46 @@ impl Projection {
         }
     }
 
-    /// The position this plane's style zoom is measured at,
-    /// or `None` for Web Mercator, whose style zoom follows the target's
-    /// latitude as GL JS's does.
-    pub fn zoom_reference(&self) -> Option<Geodetic> {
-        self.plane
-            .zoom_reference()
-            .map(|(lon, lat)| Geodetic::new(lon.to_degrees(), lat.to_degrees()))
+    /// The position this plane's style zoom is measured at.
+    pub fn zoom_reference(&self) -> Geodetic {
+        let (lon, lat) = self.plane.zoom_reference();
+        Geodetic::new(lon.to_degrees(), lat.to_degrees())
     }
 
     /// The style zoom of a view of `world_per_px` on this plane: the zoom
     /// at which Web Mercator's ground resolution at the plane's reference
     /// latitude is the view's there. The same everywhere on the plane, so
-    /// panning keeps it. `None` for Web Mercator (see
-    /// [`zoom_reference`](Self::zoom_reference)).
-    pub fn zoom_at_scale(&self, world_per_px: f64) -> Option<f64> {
-        let reference = self.zoom_reference()?;
-        // Ground metres per pixel at the reference, from the plane's scale
-        // there (world units per ground metre).
-        let ground_per_px = world_per_px / self.scale_factor(reference);
-        Some(
-            (2.0 * std::f64::consts::PI
-                * wgs84::SEMI_MAJOR_M
-                * crate::style_parallel(reference.lat)
-                / (STYLE_TILE_PX * ground_per_px))
-                .log2(),
-        )
+    /// panning keeps it; in Web Mercator it is GL JS's, ground resolution
+    /// at any latitude against the parallel's length.
+    pub fn zoom_at_scale(&self, world_per_px: f64) -> f64 {
+        (self.zoom_scale() / world_per_px).log2()
     }
 
-    /// World units per pixel at a style zoom: [`zoom_at_scale`](Self::zoom_at_scale)'s
-    /// inverse.
-    pub fn scale_at_zoom(&self, zoom: f64) -> Option<f64> {
-        let reference = self.zoom_reference()?;
-        Some(
-            2.0 * std::f64::consts::PI * wgs84::SEMI_MAJOR_M * crate::style_parallel(reference.lat)
-                / (STYLE_TILE_PX * zoom.exp2())
-                * self.scale_factor(reference),
-        )
+    /// The style zoom of a view of `metres_per_px` ground resolution at
+    /// `g`: [`zoom_at_scale`](Self::zoom_at_scale) of the view's scale there.
+    pub fn zoom_at_resolution(&self, g: Geodetic, metres_per_px: f64) -> f64 {
+        (self.zoom_resolution(g) / metres_per_px).log2()
+    }
+
+    /// Ground metres per pixel at `g` at a style zoom:
+    /// [`zoom_at_resolution`](Self::zoom_at_resolution)'s inverse, exactly
+    /// so at whole zooms.
+    pub fn resolution_at_zoom(&self, g: Geodetic, zoom: f64) -> f64 {
+        self.zoom_resolution(g) / zoom.exp2()
+    }
+
+    /// Ground metres per pixel at `g` at style zoom 0.
+    fn zoom_resolution(&self, g: Geodetic) -> f64 {
+        self.zoom_scale() / self.scale_factor(g)
+    }
+
+    /// World units per pixel at style zoom 0: the reference parallel's
+    /// length over one style tile, in world units at the reference.
+    pub(crate) fn zoom_scale(&self) -> f64 {
+        let reference = self.zoom_reference();
+        2.0 * std::f64::consts::PI * wgs84::SEMI_MAJOR_M * crate::style_parallel(reference.lat)
+            / STYLE_TILE_PX
+            * self.scale_factor(reference)
     }
 
     /// World units per metre of v8 feature height at `g`. The style's height
@@ -684,7 +687,7 @@ mod tests {
         // prime vertical radius to the semi-major axis (as for transverse
         // Mercator below), up to the ellipsoids' difference.
         let rd = Projection::from_descriptor("EPSG:28992").unwrap();
-        let origin = rd.zoom_reference().unwrap();
+        let origin = rd.zoom_reference();
         let n = 1.0 / (1.0 - wgs84::E2 * origin.lat.to_radians().sin().powi(2)).sqrt();
         let k = rd.scale_factor(origin);
         assert!((k - 0.999_907_9 * n).abs() < 2e-4, "{k}");

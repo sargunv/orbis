@@ -119,12 +119,13 @@ impl Family {
     }
 
     /// The position whose scale style zoom is measured at:
-    /// where the family is true to scale, else its natural origin; `None`
-    /// for Web Mercator, whose style zoom is its own convention.
-    pub(crate) fn zoom_reference(&self) -> Option<(f64, f64)> {
-        Some(match self {
-            Self::WebMercator => return None,
-            Self::Geographic => (0.0, 0.0),
+    /// where the family is true to scale, else its natural origin. Web
+    /// Mercator's is the equator, where its zoom is GL JS's everywhere:
+    /// its scale `1/cos φ` cancels the parallel's length `cos φ` that GL
+    /// JS's zoom divides by.
+    pub(crate) fn zoom_reference(&self) -> (f64, f64) {
+        match self {
+            Self::WebMercator | Self::Geographic => (0.0, 0.0),
             Self::Equirectangular { lon0 } => (*lon0, 0.0),
             Self::TransverseMercator(f) => f.reference(),
             Self::PolarStereographic(f) => f.reference(),
@@ -133,7 +134,7 @@ impl Family {
             Self::Pseudo(f) => (f.lon0(), 0.0),
             Self::ObliqueStereographic(f) => f.reference(),
             Self::SwissObliqueMercator(f) => f.reference(),
-        })
+        }
     }
 
     /// The central meridian of a plane cut along its antimeridian, in
@@ -211,8 +212,8 @@ impl Plane {
         self.family.shows(lon, lat)
     }
 
-    pub(crate) fn zoom_reference(&self) -> Option<(f64, f64)> {
-        self.family.zoom_reference().map(|p| self.wgs84(p))
+    pub(crate) fn zoom_reference(&self) -> (f64, f64) {
+        self.wgs84(self.family.zoom_reference())
     }
 
     pub(crate) fn seam(&self) -> Option<f64> {

@@ -366,7 +366,18 @@ impl TileMatrixSet {
             }
         };
         let top_left = corner(first);
+        // Documents round their scale denominators (GeoServer writes
+        // WebMercatorQuad's first as 559082263.9508929, 1.4e-10 off), so a
+        // first matrix within round-off of a whole style zoom takes that
+        // zoom's span exactly: its tiles lay out at whole zooms, as a camera
+        // at one does.
         let span = cell0 * f64::from(first.tile_width);
+        let zoom = projection.zoom_at_scale(span / 512.0);
+        let span = if (zoom - zoom.round()).abs() < 1e-9 {
+            projection.zoom_scale() * 512.0 / zoom.round().exp2()
+        } else {
+            span
+        };
         let matrices = &def.matrices[..def.matrices.len().min(31 - usize::from(min_zoom))];
         let mut placed: Vec<Matrix> = Vec::with_capacity(matrices.len());
         let mut extent: Option<WorldRect> = None;
@@ -665,32 +676,11 @@ impl TileMatrixSet {
     }
 
     /// The style zoom a tile lays out at on its own plane: the zoom of a
-    /// view in which it spans 512 pixels. On a plane with a
-    /// zoom reference it is the plane's; in Web Mercator, ground resolution
-    /// at the tile's centre in GL JS's convention, which is the tile's own
-    /// zoom in `WebMercatorQuad`.
+    /// view in which it spans 512 pixels, which is the tile's own zoom in
+    /// `WebMercatorQuad`.
     pub fn style_zoom(&self, tile: TileIndex) -> f64 {
-        let zoom = match self
-            .projection
+        self.projection
             .zoom_at_scale(self.tile_span(tile.z) / 512.0)
-        {
-            Some(zoom) => zoom,
-            None => {
-                let center = self.projection.inverse(self.tile_bounds(tile).center());
-                let ground_span = self.tile_span(tile.z) / self.projection.scale_factor(center);
-                let parallel = 2.0
-                    * std::f64::consts::PI
-                    * crate::wgs84::SEMI_MAJOR_M
-                    * crate::style_parallel(center.lat);
-                (parallel / ground_span).log2()
-            }
-        };
-        // Snap the round-off of planes whose zooms are whole.
-        if (zoom - zoom.round()).abs() < 1e-9 {
-            zoom.round()
-        } else {
-            zoom
-        }
     }
 
     /// A tile's longitude and latitude extent, `[west, south, east, north]`
@@ -942,6 +932,35 @@ mod tests {
         let mercator = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
         for tile in [TileIndex::new(0, 0, 0), TileIndex::new(14, 14552, 6451)] {
             assert_eq!(mercator.style_zoom(tile), f64::from(tile.z));
+        }
+        // WorldCRS84Quad's zoom-0 tiles span half the equator: zoom 1.
+        let crs84 = TileMatrixSet::by_id("WorldCRS84Quad").unwrap();
+        for z in [0, 5, 17] {
+            assert_eq!(crs84.style_zoom(TileIndex::new(z, 0, 0)), f64::from(z + 1));
+        }
+        // Documents round their scale denominators: OGC's
+        // WebMercatorQuad and GeoServer's gridset still lay out at whole
+        // zooms.
+        for sd in [559_082_264.028_717_8, 559_082_263.950_892_9] {
+            let def = TileMatrixSetDefinition {
+                id: "WebMercatorQuad".into(),
+                crs: "http://www.opengis.net/def/crs/EPSG/0/3857".into(),
+                northing_first: None,
+                matrices: (0..15)
+                    .map(|z| {
+                        matrix(
+                            z,
+                            sd / f64::from(1u32 << z),
+                            [-20_037_508.342_789_2, 20_037_508.342_789_2],
+                            (1 << z, 1 << z),
+                        )
+                    })
+                    .collect(),
+            };
+            let set = TileMatrixSet::from_definition(&def).unwrap();
+            for z in [0, 1, 14] {
+                assert_eq!(set.style_zoom(TileIndex::new(z, 0, 0)), f64::from(z));
+            }
         }
         let b = mercator.geodetic_bounds(TileIndex::new(1, 1, 0));
         assert!((b[0] - 0.0).abs() < 1e-9 && (b[2] - 180.0).abs() < 1e-9);

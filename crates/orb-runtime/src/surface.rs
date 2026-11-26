@@ -199,19 +199,7 @@ impl Surface {
     ) -> f64 {
         match footprint {
             None => tms.style_zoom(tile),
-            Some(f) => self
-                .projection
-                .zoom_at_scale(f.span / 512.0)
-                .unwrap_or_else(|| {
-                    // Web Mercator's style zoom of a scale, at any latitude.
-                    (2.0 * std::f64::consts::PI
-                        * orb_crs::wgs84::SEMI_MAJOR_M
-                        * self
-                            .projection
-                            .scale_factor(orb_crs::Geodetic::new(0.0, 0.0))
-                        / f.span)
-                        .log2()
-                }),
+            Some(f) => self.projection.zoom_at_scale(f.span / 512.0),
         }
     }
 

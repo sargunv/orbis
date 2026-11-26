@@ -123,12 +123,11 @@ impl CameraState {
     /// JS's globe zoom normalized by `getZoomAdjustment`): what sets the
     /// sphere's size on screen.
     pub(crate) fn globe_zoom(&self) -> f64 {
-        (crate::equator_circumference_px_per_m(Geodetic::new(0.0, 0.0)) / self.resolution).log2()
+        (crate::EQUATOR_PX_PER_M / self.resolution).log2()
     }
 
     pub(crate) fn set_globe_zoom(&mut self, zoom: f64) {
-        self.resolution =
-            crate::equator_circumference_px_per_m(Geodetic::new(0.0, 0.0)) / zoom.exp2();
+        self.resolution = crate::EQUATOR_PX_PER_M / zoom.exp2();
     }
 
     /// The least style zoom `constraints` allow at the target. On the
