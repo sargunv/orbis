@@ -789,12 +789,12 @@ pub unsafe extern "C" fn mln_runtime_create_map(
         boundary(out_diagnostic, || {
             let runtime = handles::runtime(runtime.0)?;
             let options = *sized(options, "mln_map_options")?;
-            // Orbis has no system font matcher yet, so `system_fonts_enabled`
-            // changes nothing: a map draws its style's fonts and its
-            // `fallback_font_faces`.
+            // `system_fonts_enabled` changes nothing yet: a map draws local
+            // glyphs from the system's fonts either way.
             let known = MLN_MAP_OPTION_EVENT_MASK
                 | MLN_MAP_OPTION_TILE_CACHE_ENABLED
-                | MLN_MAP_OPTION_SYSTEM_FONTS_ENABLED;
+                | MLN_MAP_OPTION_SYSTEM_FONTS_ENABLED
+                | MLN_MAP_OPTION_LOCAL_IDEOGRAPHS_ENABLED;
             if options.fields & !known != 0 {
                 return Err(Failure::argument("mln_map_options.fields has unknown bits"));
             }
@@ -822,6 +822,14 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                     ))
                 })?,
             };
+            // Local ideographs draw CJK in the system's sans-serif, ahead of
+            // glyph PBFs (GL JS's `localIdeographFontFamily`); a style's
+            // and the map's font files still come first.
+            let local_ideographs = options.fields & MLN_MAP_OPTION_LOCAL_IDEOGRAPHS_ENABLED == 0
+                || options.local_ideographs_enabled;
+            let local_ideograph_font_family = local_ideographs
+                .then(|| orb_api::MapOptions::default().local_ideograph_font_family)
+                .flatten();
             fresh_out(out_map, "out_map")?;
             let completion = Completion::required(completion)?;
             let handle = Arc::new(MapHandle {
@@ -840,6 +848,7 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                     state.runtime(),
                     orb_api::MapOptions {
                         fallback_font_faces,
+                        local_ideograph_font_family,
                         ..orb_api::MapOptions::default()
                     },
                 );
