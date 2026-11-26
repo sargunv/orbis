@@ -524,7 +524,9 @@ unsafe fn answer(response: *const mln_resource_response) -> Result<NetworkAnswer
         std::str::from_utf8(etag).map_err(|_| Failure::argument("response.etag isn't UTF-8"))?;
     let etag = (!etag.is_empty()).then(|| etag.to_string());
     let has = |bit| r.fields & bit != 0;
-    let fresh_until = if r.must_revalidate {
+    // Stale at once, and never answering stale before it revalidates.
+    let must_revalidate = r.must_revalidate;
+    let fresh_until = if must_revalidate {
         Some(now())
     } else if has(MLN_RESOURCE_RESPONSE_EXPIRES) {
         Some(seconds(r.expires_unix_ms))
@@ -541,16 +543,21 @@ unsafe fn answer(response: *const mln_resource_response) -> Result<NetworkAnswer
                 unsafe { std::slice::from_raw_parts(r.bytes, r.byte_count) }.to_vec()
             },
             fresh_until,
+            must_revalidate,
             etag,
             modified,
         },
         MLN_RESOURCE_RESPONSE_STATUS_NO_CONTENT => NetworkAnswer::Body {
             bytes: Vec::new(),
             fresh_until,
+            must_revalidate,
             etag,
             modified,
         },
-        MLN_RESOURCE_RESPONSE_STATUS_NOT_MODIFIED => NetworkAnswer::NotModified { fresh_until },
+        MLN_RESOURCE_RESPONSE_STATUS_NOT_MODIFIED => NetworkAnswer::NotModified {
+            fresh_until,
+            must_revalidate,
+        },
         MLN_RESOURCE_RESPONSE_STATUS_ERROR => {
             // SAFETY: the caller's view.
             let message = unsafe { text(r.error_message, "response.error_message") }?;

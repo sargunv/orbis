@@ -2739,6 +2739,7 @@ impl Map {
             rank,
             asked_at: (self.services.clock.unix_ms() / 1000.0) as u64,
             reload: edit == Some(RELOAD),
+            takes_stale: edit.is_none() && self.mode == RenderMode::Continuous,
             ..TileRequest::whole(style.id, key, tile, location, endpoint.encoding)
         };
         // Symbol layout needs the sprites' metadata: while the sprites load,

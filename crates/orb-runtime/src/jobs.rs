@@ -453,6 +453,10 @@ pub struct TileResult {
     /// The reload brought the bytes drawn again: nothing is laid out, and
     /// the tile stays as drawn, fresh until `fresh_until` if it says.
     pub renewed: bool,
+    /// The reload renewed nothing: no server answered it, a cached copy
+    /// standing in ([`orb_host::Fetched::stale`]), so the tile stays as
+    /// drawn and loads again later.
+    pub stale: bool,
     /// The style revision the tile was laid out with.
     pub revision: u64,
     /// Keys of the nodes laid out; those without a mesh have no features.
@@ -724,6 +728,7 @@ impl From<TileBuild> for TileResult {
             fresh_until: build.fresh_until,
             reload: build.reload,
             renewed: build.renewed,
+            stale: build.stale,
             image: None,
             warp_grid: None,
             dem: None,

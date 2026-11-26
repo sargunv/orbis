@@ -62,6 +62,10 @@ pub struct TileBuild {
     ///
     /// [`TileResult::renewed`]: crate::TileResult::renewed
     pub(crate) renewed: bool,
+    /// No server answered the reload ([`TileResult::stale`]).
+    ///
+    /// [`TileResult::stale`]: crate::TileResult::stale
+    pub(crate) stale: bool,
 }
 
 /// What symbol layout reads beyond the tile: the worker's glyph metrics

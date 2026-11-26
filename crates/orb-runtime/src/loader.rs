@@ -25,10 +25,22 @@ type Archives = VecDeque<(String, Arc<Mutex<Reader>>)>;
 /// A shared fetch's answer, for each load that waits on it.
 type Shared = Result<Arc<Fetched>, FetchError>;
 type Waiter = Box<dyn FnOnce(Shared) + Send>;
-/// A fetch's URL and byte range.
-type FetchKey = (String, Option<Range>);
-/// Fetches in flight, by URL and byte range.
+/// A fetch's URL and what it reads of it.
+type FetchKey = (String, Read);
+/// Fetches in flight, by URL and what they read.
 type InFlight = HashMap<FetchKey, Sharing>;
+
+/// What a fetch reads of its URL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Read {
+    /// All of it, a stale cached copy too where `stale` says
+    /// ([`Fetch::get_or_stale`]): a fetch that revalidates never shares
+    /// one that may answer stale.
+    Whole {
+        stale: bool,
+    },
+    Range(Range),
+}
 
 /// A fetch in flight: the loads waiting on it, by number, and its abort.
 struct Sharing {
@@ -131,21 +143,21 @@ impl TileLoader {
         }
     }
 
-    /// Fetches `url` (`range` of it), or waits on the fetch of it already
-    /// under way. Aborted, `waiter` gets [`FetchError::Aborted`] at once
-    /// and the fetch goes on for the loads still waiting on it.
+    /// Fetches `read` of `url`, or waits on the fetch of it already under
+    /// way. Aborted, `waiter` gets [`FetchError::Aborted`] at once and the
+    /// fetch goes on for the loads still waiting on it.
     fn share(
         self: &Arc<Self>,
         kind: ResourceKind,
         url: &str,
-        range: Option<Range>,
+        read: Read,
         abort: &Abort,
         waiter: Waiter,
     ) {
         if abort.is_aborted() {
             return waiter(Err(FetchError::Aborted));
         }
-        let key = (url.to_string(), range);
+        let key = (url.to_string(), read);
         let number = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (id, shared) = {
             let mut in_flight = self.in_flight.lock().expect("fetches poisoned");
@@ -197,9 +209,10 @@ impl TileLoader {
                 waiter(result);
             }
         });
-        match range {
-            None => self.fetch.get(kind, url, &shared, done),
-            Some(range) => {
+        match read {
+            Read::Whole { stale: false } => self.fetch.get(kind, url, &shared, done),
+            Read::Whole { stale: true } => self.fetch.get_or_stale(kind, url, &shared, done),
+            Read::Range(range) => {
                 let (offset, length) = (range.offset, range.length);
                 self.fetch
                     .get_range(kind, url, offset, length, &shared, done)
@@ -229,13 +242,16 @@ impl TileLoader {
         }
     }
 
-    /// Loads a tile, unless `abort` fires first.
+    /// Loads a tile, unless `abort` fires first; from a URL, taking a
+    /// stale cached copy where `stale` says ([`Fetch::get_or_stale`]).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn load(
         self: &Arc<Self>,
         kind: ResourceKind,
         location: TileLocation,
         tile: TileIndex,
         encoding: Encoding,
+        stale: bool,
         abort: &Abort,
         done: LoadDone,
     ) {
@@ -255,7 +271,7 @@ impl TileLoader {
             TileLocation::Url(url) => self.share(
                 kind,
                 &url,
-                None,
+                Read::Whole { stale },
                 abort,
                 Box::new(move |r| done(r.map(|fetched| (owned(fetched), encoding)))),
             ),
@@ -332,7 +348,7 @@ impl TileLoader {
                 self.share(
                     ResourceKind::Tile,
                     &url,
-                    Some(range),
+                    Read::Range(range),
                     &abort,
                     Box::new(move |r| {
                         done(
@@ -350,7 +366,7 @@ impl TileLoader {
                 self.share(
                     ResourceKind::Source,
                     &url.clone(),
-                    Some(range),
+                    Read::Range(range),
                     &shared,
                     Box::new(move |r| {
                         let result = {
@@ -452,7 +468,7 @@ fn read_until<T: 'static>(
     loader.share(
         ResourceKind::Tile,
         &url.clone(),
-        Some(range),
+        Read::Range(range),
         &abort.clone(),
         Box::new(move |result| {
             let inserted = {
@@ -574,6 +590,7 @@ mod tests {
                 TileLocation::Pmtiles("a".into()),
                 tile,
                 Encoding::Mvt,
+                false,
                 &Abort::NEVER,
                 Box::new(move |r| got.lock().unwrap()[i] = r.unwrap().0.bytes),
             );
@@ -658,6 +675,7 @@ mod tests {
                 TileLocation::Pmtiles("a".into()),
                 TileIndex::new(9, 0, 0),
                 Encoding::Mvt,
+                false,
                 abort,
                 Box::new(move |r| got.lock().unwrap().push((i, r.map(|(b, _)| b)))),
             );
@@ -722,6 +740,7 @@ mod tests {
                 TileLocation::Mbtiles(url.clone()),
                 TileIndex::new(z, x, y),
                 Encoding::Mvt,
+                false,
                 &Abort::new(),
                 Box::new(move |r| tx.send(r).unwrap()),
             );

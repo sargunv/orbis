@@ -15,11 +15,12 @@ use std::time::Duration;
 
 use orb_host::Storage;
 
+use crate::http::Freshness;
 use crate::storage::wait;
 
 /// How often index changes are written.
 const FLUSH_EVERY: Duration = Duration::from_secs(2);
-const INDEX_VERSION: &str = "orbis-cache 2";
+const INDEX_VERSION: &str = "orbis-cache 3";
 
 /// Seconds since the Unix epoch.
 pub(crate) fn now() -> u64 {
@@ -56,9 +57,7 @@ struct State {
 struct Entry {
     id: u64,
     size: u64,
-    fresh_until: u64,
-    /// The response's headers gave `fresh_until` ([`crate::http::explicit`]).
-    explicit: bool,
+    freshness: Freshness,
     last_used: u64,
     etag: Option<String>,
     last_modified: Option<String>,
@@ -68,21 +67,40 @@ struct Entry {
 #[derive(Debug)]
 pub(crate) struct Cached {
     pub(crate) bytes: Vec<u8>,
-    /// Until when (Unix seconds) it stays fresh, if it is now.
-    pub(crate) fresh_until: Option<u64>,
-    /// The response's headers gave that lifetime ([`crate::http::explicit`]).
-    pub(crate) explicit: bool,
+    pub(crate) freshness: Freshness,
+    /// Its lifetime hadn't ended when it was looked up.
+    pub(crate) fresh: bool,
     pub(crate) etag: Option<String>,
     pub(crate) last_modified: Option<String>,
 }
 
 impl Cached {
-    /// The copy as a fetch's answer, with the lifetime its headers gave.
+    /// The copy as a fetch's answer, with the lifetime its headers gave if
+    /// it is fresh, else stale.
     pub(crate) fn fetched(self) -> orb_host::Fetched {
+        let Freshness {
+            until, explicit, ..
+        } = self.freshness;
         orb_host::Fetched {
             bytes: self.bytes,
-            fresh_until: self.fresh_until.filter(|_| self.explicit),
+            fresh_until: (self.fresh && explicit).then_some(until),
+            stale: !self.fresh,
         }
+    }
+
+    /// The copy, stale, as [`Fetch::get_or_stale`](orb_host::Fetch::get_or_stale)
+    /// answers before the server revalidates it: with the time it expired,
+    /// whoever guessed it. The copy itself when it is fresh, or its
+    /// response forbade that.
+    pub(crate) fn stale(self) -> Result<orb_host::Fetched, Self> {
+        if self.fresh || self.freshness.must_revalidate {
+            return Err(self);
+        }
+        Ok(orb_host::Fetched {
+            fresh_until: Some(self.freshness.until),
+            bytes: self.bytes,
+            stale: true,
+        })
     }
 }
 
@@ -151,11 +169,12 @@ impl HttpCache {
     }
 
     /// Keeps every entry but makes each one stale, so the next request
-    /// for it revalidates it with the server.
+    /// for it revalidates it with the server (which a stale copy may
+    /// answer first, [`orb_host::Fetch::get_or_stale`]).
     pub fn invalidate(&self) {
         let mut state = self.inner.lock();
         for entry in state.entries.values_mut() {
-            entry.fresh_until = 0;
+            entry.freshness.until = 0;
         }
         state.dirty = true;
         drop(state);
@@ -186,8 +205,8 @@ impl HttpCache {
         match wait(|done| self.inner.storage.read(&key_of_blob, None, done)) {
             Ok(Some(bytes)) if bytes.len() as u64 == entry.size => Some(Cached {
                 bytes,
-                fresh_until: Some(entry.fresh_until).filter(|&until| until > now),
-                explicit: entry.explicit,
+                freshness: entry.freshness,
+                fresh: entry.freshness.until > now,
                 etag: entry.etag,
                 last_modified: entry.last_modified,
             }),
@@ -202,7 +221,7 @@ impl HttpCache {
         &self,
         key: &str,
         bytes: &[u8],
-        (fresh_until, explicit): (u64, bool),
+        freshness: Freshness,
         etag: Option<&str>,
         last_modified: Option<&str>,
     ) {
@@ -230,8 +249,7 @@ impl HttpCache {
         let entry = Entry {
             id,
             size: bytes.len() as u64,
-            fresh_until,
-            explicit,
+            freshness,
             last_used: now(),
             etag: header(etag),
             last_modified: header(last_modified),
@@ -254,11 +272,10 @@ impl HttpCache {
     }
 
     /// Marks an entry fresh again after the server answered 304.
-    pub(crate) fn refresh(&self, key: &str, (fresh_until, explicit): (u64, bool)) {
+    pub(crate) fn refresh(&self, key: &str, freshness: Freshness) {
         let mut state = self.inner.lock();
         if let Some(entry) = state.entries.get_mut(key) {
-            entry.fresh_until = fresh_until;
-            entry.explicit = explicit;
+            entry.freshness = freshness;
             state.dirty = true;
             self.inner.changed.notify_one();
         }
@@ -397,19 +414,21 @@ fn blob(id: u64) -> String {
 }
 
 /// The index: a version line, the next blob id, then one line per entry of
-/// tab-separated id, size, freshness, whether the headers gave it (1 or
-/// 0), last use, ETag, Last-Modified and key (keys and headers with tabs
-/// or newlines aren't cached).
+/// tab-separated id, size, freshness, whether the headers gave it and
+/// whether a stale copy must revalidate (each 1 or 0), last use, ETag,
+/// Last-Modified and key (keys and headers with tabs or newlines aren't
+/// cached).
 fn index_text(state: &State) -> String {
     let mut text = format!("{INDEX_VERSION}\n{}\n", state.next_id);
     for (key, e) in &state.entries {
         let _ = writeln!(
             text,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{key}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{key}",
             e.id,
             e.size,
-            e.fresh_until,
-            u8::from(e.explicit),
+            e.freshness.until,
+            u8::from(e.freshness.explicit),
+            u8::from(e.freshness.must_revalidate),
             e.last_used,
             e.etag.as_deref().unwrap_or(""),
             e.last_modified.as_deref().unwrap_or(""),
@@ -429,18 +448,22 @@ fn parse_index(text: &str) -> Option<State> {
     };
     let text = |s: &str| (!s.is_empty()).then(|| s.to_owned());
     for line in lines {
-        let mut f = line.splitn(8, '\t');
+        let mut f = line.splitn(9, '\t');
         let mut number = || f.next()?.parse::<u64>().ok();
-        let (id, size, fresh_until) = (number()?, number()?, number()?);
-        let (explicit, last_used) = (number()? == 1, number()?);
+        let (id, size) = (number()?, number()?);
+        let freshness = Freshness {
+            until: number()?,
+            explicit: number()? == 1,
+            must_revalidate: number()? == 1,
+        };
+        let last_used = number()?;
         let (etag, last_modified, key) = (f.next()?, f.next()?, f.next()?);
         state.entries.insert(
             key.to_owned(),
             Entry {
                 id,
                 size,
-                fresh_until,
-                explicit,
+                freshness,
                 last_used,
                 etag: text(etag),
                 last_modified: text(last_modified),
@@ -462,47 +485,55 @@ mod tests {
         crate::Scratch::new(&format!("cache-{name}"))
     }
 
+    /// A lifetime: until when, whether the headers gave it, and whether a
+    /// stale copy must revalidate.
+    fn lifetime(until: u64, explicit: bool, must_revalidate: bool) -> Freshness {
+        Freshness {
+            until,
+            explicit,
+            must_revalidate,
+        }
+    }
+
     #[test]
     fn entries_survive_reopening_and_stale_ones_say_so() {
         let dir = dir("reopen");
         let now = now();
         {
             let cache = open(&dir, 1 << 20);
-            let one = (now + 60, true);
+            let one = lifetime(now + 60, true, false);
             cache.store("https://a/fresh", b"one", one, Some("\"e1\""), None);
             let modified = Some("Mon, 12 Jan 1970 13:46:40 GMT");
-            cache.store("https://a/stale", b"two", (now - 1, true), None, modified);
-            cache.store(
-                "https://a/guessed",
-                b"six",
-                (now + 60, false),
-                None,
-                modified,
-            );
+            let stale = lifetime(now - 1, true, false);
+            cache.store("https://a/stale", b"two", stale, None, modified);
+            let guessed = lifetime(now + 60, false, false);
+            cache.store("https://a/guessed", b"six", guessed, None, modified);
+            let checked = lifetime(now - 1, true, true);
+            cache.store("https://a/checked", b"ten", checked, None, None);
             assert_eq!(
                 cache.stats(),
                 CacheStats {
-                    entries: 3,
-                    bytes: 9
+                    entries: 4,
+                    bytes: 12
                 }
             );
         }
         let cache = open(&dir, 1 << 20);
         let fresh = cache.lookup("https://a/fresh").unwrap();
         assert_eq!(
-            (
-                fresh.bytes.as_slice(),
-                fresh.fresh_until.is_some(),
-                fresh.etag.as_deref()
-            ),
+            (fresh.bytes.as_slice(), fresh.fresh, fresh.etag.as_deref()),
             (&b"one"[..], true, Some("\"e1\""))
         );
         let stale = cache.lookup("https://a/stale").unwrap();
-        assert_eq!(stale.fresh_until, None);
+        assert!(!stale.fresh);
         assert!(stale.last_modified.is_some());
+        // Stale, it answers at once only as such, with when it expired.
+        assert_eq!(stale.stale().unwrap().fresh_until, Some(now - 1));
+        let checked = cache.lookup("https://a/checked").unwrap();
+        assert!(checked.stale().is_err(), "must revalidate first");
         // Fresh by a lifetime the cache guessed, which no reload follows.
         let guessed = cache.lookup("https://a/guessed").unwrap();
-        assert!(guessed.fresh_until.is_some());
+        assert!(guessed.fresh);
         assert_eq!(guessed.fetched().fresh_until, None);
         assert_eq!(fresh.fetched().fresh_until, Some(now + 60));
         assert!(cache.lookup("https://a/missing").is_none());
@@ -518,7 +549,7 @@ mod tests {
             cache.store(
                 &format!("https://a/{i}"),
                 &[i; 100],
-                (now + 60, true),
+                lifetime(now + 60, true, false),
                 None,
                 None,
             );
@@ -531,7 +562,8 @@ mod tests {
                 .unwrap()
                 .last_used = now + 10;
         }
-        cache.store("https://a/4", &[4; 100], (now + 60, true), None, None);
+        let lasting = lifetime(now + 60, true, false);
+        cache.store("https://a/4", &[4; 100], lasting, None, None);
         let stats = cache.stats();
         assert!(stats.bytes <= 360, "{stats:?}");
         assert!(cache.lookup("https://a/0").is_some());

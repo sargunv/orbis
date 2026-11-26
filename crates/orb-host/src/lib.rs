@@ -23,11 +23,19 @@ pub struct Fetched {
     /// Until when (Unix seconds) the resource stays fresh, as its
     /// response's caching headers said, when it came fresh: a map loads
     /// the tiles it draws from it again then (GL JS's reload timer,
-    /// MapLibre Native's revalidation). `None` when it came stale (a
-    /// cached copy standing in for a failure, `no-cache`, `max-age=0`)
-    /// or nothing gave it a lifetime (`no-store`, a file, no headers):
-    /// what it shows stays until it loads again for another reason.
+    /// MapLibre Native's revalidation). `None` when it came stale
+    /// (`no-cache`, `max-age=0`, a [`stale`](Self::stale) copy standing
+    /// in for a failure) or nothing gave it a lifetime (`no-store`, a
+    /// file, no headers): what it shows stays until it loads again for
+    /// another reason. A time already past answers
+    /// [`Fetch::get_or_stale`] alone: a cached copy that had expired
+    /// then, which the map loads again at once.
     pub fresh_until: Option<u64>,
+    /// A cached copy past its lifetime answered without the server's word
+    /// on it: offline, standing in for a failure, or as
+    /// [`Fetch::get_or_stale`] answers. A map loading a tile again to
+    /// revalidate it tries again later, as it does after a failure.
+    pub stale: bool,
 }
 
 impl From<Vec<u8>> for Fetched {
@@ -36,6 +44,7 @@ impl From<Vec<u8>> for Fetched {
         Self {
             bytes,
             fresh_until: None,
+            stale: false,
         }
     }
 }
@@ -101,6 +110,16 @@ pub enum ResourceKind {
 pub trait Fetch: Send + Sync {
     /// Starts loading `url`, a `kind` of resource; `done` gets the body.
     fn get(&self, kind: ResourceKind, url: &str, abort: &Abort, done: FetchDone);
+    /// As [`get`](Self::get), but a cached copy past its lifetime answers
+    /// at once rather than wait for the server to revalidate it, unless
+    /// its response forbade that (`must-revalidate`, `no-cache`): its
+    /// [`Fetched::fresh_until`] is then the time it expired, already past,
+    /// and the caller gets it again to revalidate it, as a map reloads a
+    /// tile whose data expired (MapLibre Native's cache answers so). A
+    /// host without such a cache answers as `get` does.
+    fn get_or_stale(&self, kind: ResourceKind, url: &str, abort: &Abort, done: FetchDone) {
+        self.get(kind, url, abort, done);
+    }
     /// Reads exactly `length` bytes at `offset` (at most 64 MiB). HTTP must
     /// answer 206 with a matching Content-Range. Reject 200 before reading
     /// its body, and bound streaming reads even without Content-Length.
@@ -167,10 +186,13 @@ pub struct Prior {
 #[derive(Clone, Debug)]
 pub enum NetworkAnswer {
     /// The resource. `fresh_until` (Unix seconds) says how long the cache
-    /// may answer with it; `None` keeps it out of the cache.
+    /// may answer with it; `None` keeps it out of the cache. With
+    /// `must_revalidate`, a copy past it never answers before the server
+    /// revalidates it ([`Fetch::get_or_stale`]).
     Body {
         bytes: Vec<u8>,
         fresh_until: Option<u64>,
+        must_revalidate: bool,
         etag: Option<String>,
         /// Unix seconds.
         modified: Option<u64>,
@@ -178,6 +200,7 @@ pub enum NetworkAnswer {
     /// The request's [`Prior`] copy is current.
     NotModified {
         fresh_until: Option<u64>,
+        must_revalidate: bool,
     },
     Failed(FetchError),
     /// The host's own network loads it, as `request`.

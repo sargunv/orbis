@@ -26,19 +26,42 @@ pub(crate) struct Headers<'a> {
     pub(crate) last_modified: Option<&'a str>,
 }
 
-/// Until when (Unix seconds) a response received at `now` is fresh, or
-/// `None` when it may not be stored (`no-store`).
-pub(crate) fn fresh_until(headers: Headers<'_>, now: u64) -> Option<u64> {
-    match orb_host::MaxAge::of(headers.cache_control.unwrap_or("")) {
+/// How long a response stays fresh in the cache, as its headers say.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Freshness {
+    /// Until when (Unix seconds).
+    pub(crate) until: u64,
+    /// The headers gave `until` (`max-age`, `no-cache` or `Expires`),
+    /// rather than the cache guessing it from `Last-Modified`: only a
+    /// given lifetime has a map load what it draws from the response
+    /// again ([`orb_host::Fetched::fresh_until`]), as the web host, GL JS
+    /// and MapLibre Native read only those.
+    pub(crate) explicit: bool,
+    /// Once stale, it answers nothing before the server revalidates it
+    /// (`must-revalidate`, `no-cache`), not even while a map revalidates
+    /// it ([`orb_host::Fetch::get_or_stale`]).
+    pub(crate) must_revalidate: bool,
+}
+
+/// How long a response received at `now` stays fresh, or `None` when it
+/// may not be stored (`no-store`).
+pub(crate) fn freshness(headers: Headers<'_>, now: u64) -> Option<Freshness> {
+    let cache_control = headers.cache_control.unwrap_or("");
+    let fresh = |until, explicit| Freshness {
+        until,
+        explicit,
+        must_revalidate: must_revalidate(cache_control),
+    };
+    match orb_host::MaxAge::of(cache_control) {
         orb_host::MaxAge::NoStore => return None,
-        orb_host::MaxAge::Seconds(age) => return Some(now.saturating_add(age)),
+        orb_host::MaxAge::Seconds(age) => return Some(fresh(now.saturating_add(age), true)),
         orb_host::MaxAge::Unsaid => {}
     }
     let date = headers.date.and_then(|d| http_date(d, now)).unwrap_or(now);
     if let Some(expires) = headers.expires {
         // An invalid date, such as "0", means already expired.
         let lifetime = http_date(expires, now).map_or(0, |e| e.saturating_sub(date));
-        return Some(now.saturating_add(lifetime));
+        return Some(fresh(now.saturating_add(lifetime), true));
     }
     let heuristic = headers
         .last_modified
@@ -46,20 +69,20 @@ pub(crate) fn fresh_until(headers: Headers<'_>, now: u64) -> Option<u64> {
         .map_or(0, |modified| {
             (date.saturating_sub(modified) / 10).min(HEURISTIC_MAX)
         });
-    Some(now.saturating_add(heuristic))
+    Some(fresh(now.saturating_add(heuristic), false))
 }
 
-/// Whether the response's headers give its lifetime (`max-age`,
-/// `no-cache` or `Expires`), rather than the cache guessing it from its
-/// `Last-Modified`: only a given lifetime has a map load what it draws
-/// from the response again ([`orb_host::Fetched::fresh_until`]), as the
-/// web host, GL JS and MapLibre Native read only those.
-pub(crate) fn explicit(headers: Headers<'_>) -> bool {
-    match orb_host::MaxAge::of(headers.cache_control.unwrap_or("")) {
-        orb_host::MaxAge::Seconds(_) => true,
-        orb_host::MaxAge::NoStore => false,
-        orb_host::MaxAge::Unsaid => headers.expires.is_some(),
-    }
+/// Whether `Cache-Control` forbids answering with a stale copy before the
+/// server revalidates it: `must-revalidate`, or `no-cache` (RFC 9111
+/// §5.2.2.2, §5.2.2.4).
+fn must_revalidate(cache_control: &str) -> bool {
+    cache_control.split(',').any(|directive| {
+        let name = directive
+            .split_once('=')
+            .map_or(directive, |(name, _)| name);
+        let name = name.trim();
+        name.eq_ignore_ascii_case("must-revalidate") || name.eq_ignore_ascii_case("no-cache")
+    })
 }
 
 /// Parses an HTTP date to Unix seconds, in any of the forms RFC 9110
@@ -206,8 +229,8 @@ mod tests {
     #[test]
     fn freshness_follows_rfc_9111() {
         let now = 1_000_000;
-        let fresh = |cache_control, expires, last_modified| {
-            fresh_until(
+        let freshness = |cache_control, expires, last_modified| {
+            super::freshness(
                 Headers {
                     cache_control,
                     expires,
@@ -217,6 +240,9 @@ mod tests {
                 now,
             )
         };
+        let fresh = |cache_control, expires, last_modified| {
+            freshness(cache_control, expires, last_modified).map(|f| f.until)
+        };
         assert_eq!(
             fresh(Some("public, max-age=600"), None, None),
             Some(now + 600)
@@ -225,16 +251,21 @@ mod tests {
         assert_eq!(fresh(Some("no-store"), None, None), None);
         // Only a lifetime the headers give is explicit.
         let explicit = |cache_control, expires, last_modified| {
-            super::explicit(Headers {
-                cache_control,
-                expires,
-                date: None,
-                last_modified,
-            })
+            freshness(cache_control, expires, last_modified).is_some_and(|f| f.explicit)
         };
         assert!(explicit(Some("max-age=60"), None, None));
         assert!(explicit(None, Some("Mon, 12 Jan 1970 14:46:40 GMT"), None));
         assert!(!explicit(None, None, Some("Mon, 12 Jan 1970 13:46:40 GMT")));
+        // A stale copy may stand in while it revalidates unless the
+        // server forbids it.
+        let must_revalidate = |cache_control| {
+            freshness(Some(cache_control), None, None).is_some_and(|f| f.must_revalidate)
+        };
+        assert!(must_revalidate("max-age=60, must-revalidate"));
+        assert!(must_revalidate("No-Cache"));
+        assert!(must_revalidate("no-cache=\"Set-Cookie\", max-age=60"));
+        assert!(!must_revalidate("max-age=60, proxy-revalidate"));
+        assert!(!must_revalidate("max-age=0"));
         // A private cache stores private responses and ignores s-maxage.
         assert_eq!(
             fresh(Some("private, max-age=60"), None, None),

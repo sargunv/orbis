@@ -470,6 +470,7 @@ async fn read(
             return Ok(Fetched {
                 bytes: Vec::new(),
                 fresh_until,
+                stale: false,
             });
         }
         200..=299 => {
@@ -525,7 +526,11 @@ async fn read(
     if range.is_some() && bytes.len() != limit {
         return Err(FetchError::Range("short range body".into()));
     }
-    Ok(Fetched { bytes, fresh_until })
+    Ok(Fetched {
+        bytes,
+        fresh_until,
+        stale: false,
+    })
 }
 
 /// The browser's monotonic clock, available on the page and workers.

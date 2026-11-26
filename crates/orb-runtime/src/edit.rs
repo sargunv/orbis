@@ -373,14 +373,15 @@ impl Map {
         };
         let mut build = match result {
             // A reload that brought the data drawn again: the tile stays,
-            // fresh as long as the fetch said. One that said nothing tries
-            // again when its reload was due to.
+            // fresh as long as the fetch said, for good if it gave no
+            // lifetime, as a new body without one does. One no server
+            // answered tries again when its reload was due to.
             Ok(TileOutcome::Built(build)) if build.renewed => {
                 let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
                     return;
                 };
                 if let Some(resident) = pyramid.get_mut(tile)
-                    && build.fresh_until.is_some()
+                    && !build.stale
                 {
                     resident.reload_at = build.fresh_until;
                     resident.reloads_tried = 0;

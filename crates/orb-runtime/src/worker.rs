@@ -71,9 +71,11 @@ fn digest(bytes: &[u8]) -> u64 {
 
 impl Frame {
     /// Whether a request made at `asked_at` takes it: its data hadn't
-    /// expired by then, or the request takes any ([`TileRequest::asked_at`]).
+    /// expired by then, or the request takes any ([`TileRequest::asked_at`],
+    /// [`TileRequest::takes_stale`]).
     fn fresh_for(&self, request: &TileRequest) -> bool {
         !request.loads_whole()
+            || request.takes_stale
             || self
                 .fresh_until
                 .is_none_or(|until| until > request.asked_at)
@@ -684,7 +686,8 @@ impl TileWorker {
     }
 
     /// Whether `request` can build without fetching bytes: its tile is
-    /// cached, still fresh if it loads whole, or its source is inline or
+    /// cached, still fresh if it loads whole and takes no stale data
+    /// ([`TileRequest::takes_stale`]), or its source is inline or
     /// already indexed GeoJSON. Job hosts use this to avoid fetching
     /// again; `build` ignores bytes then.
     pub(crate) fn has_data(&self, request: &TileRequest) -> bool {
@@ -1122,14 +1125,23 @@ pub struct TileRequest {
     /// ([`Executor::spawn_ranked`](orb_host::jobs::Executor::spawn_ranked)).
     pub rank: u64,
     /// When its map asked (Unix seconds): a whole load takes no cached
-    /// frame whose data had expired by then, and fetches its tile again
-    /// ([`TileWorker::has_data`]). 0, as queries ask, takes any.
+    /// frame whose data had expired by then, unless it takes stale data,
+    /// and fetches its tile again ([`TileWorker::has_data`]). 0, as
+    /// queries ask, takes any.
     pub(crate) asked_at: u64,
     /// Loads a drawn tile again whole because its data expired: the
     /// answer says so ([`TileResult::reload`](crate::TileResult::reload)),
     /// and bytes the same as those drawn renew it alone
     /// ([`TileWorker::renew`]).
     pub(crate) reload: bool,
+    /// Data that expired answers it at once, a frame kept or the HTTP
+    /// cache's stale copy ([`Fetch::get_or_stale`](orb_host::Fetch::get_or_stale)),
+    /// and the tile drawn from it loads again as soon as it draws, which
+    /// revalidates it (MapLibre Native shows a stale tile so): a
+    /// continuous map's first load of a tile. Still output asks the
+    /// server first: it waits for that reload anyway, so the stale copy's
+    /// layout would be work thrown away.
+    pub(crate) takes_stale: bool,
     /// Until when the bytes fetched for it stay fresh (Unix seconds), as
     /// the fetch said ([`orb_host::Fetched::fresh_until`]): set by the job
     /// host that fetched them, kept with the frame decoded from them and
@@ -1187,6 +1199,7 @@ impl TileRequest {
             rank: 0,
             asked_at: 0,
             reload: false,
+            takes_stale: false,
             fresh_until: None,
         }
     }
@@ -1838,9 +1851,13 @@ pub(crate) mod tests {
         assert_eq!(tiles, 1, "{gets:?}");
     }
 
-    /// Holds every tile fetch until the test answers it, with its abort.
+    /// Holds every tile fetch until the test answers it, with its abort,
+    /// and lists each URL fetched with whether it took a stale copy.
     #[derive(Default)]
-    struct HeldTiles(Mutex<Vec<(orb_host::FetchDone, orb_host::Abort)>>);
+    struct HeldTiles(
+        Mutex<Vec<(orb_host::FetchDone, orb_host::Abort)>>,
+        Mutex<Vec<(String, bool)>>,
+    );
 
     impl Fetch for HeldTiles {
         fn get_range(
@@ -1858,14 +1875,26 @@ pub(crate) mod tests {
         fn get(
             &self,
             _: orb_host::ResourceKind,
-            _: &str,
+            url: &str,
             abort: &orb_host::Abort,
             done: orb_host::FetchDone,
         ) {
+            self.1.lock().unwrap().push((url.into(), false));
             self.0
                 .lock()
                 .unwrap()
                 .push((abort.answer(done), abort.clone()));
+        }
+
+        fn get_or_stale(
+            &self,
+            kind: orb_host::ResourceKind,
+            url: &str,
+            abort: &orb_host::Abort,
+            done: orb_host::FetchDone,
+        ) {
+            self.get(kind, url, abort, done);
+            self.1.lock().unwrap().last_mut().unwrap().1 = true;
         }
     }
 
@@ -1979,6 +2008,7 @@ pub(crate) mod tests {
             done(Ok(orb_host::Fetched {
                 bytes: bytes.clone(),
                 fresh_until,
+                stale: false,
             }));
         };
         let tile = TileIndex::new(z, x, y);
@@ -2020,6 +2050,70 @@ pub(crate) mod tests {
         let built = ask(whole(300));
         fetched(None);
         assert_eq!(built().fresh_until, None, "fetched again, stale");
+    }
+
+    /// A continuous map's first load of a tile takes data expired, the
+    /// cache's stale copy or a frame kept, reporting when it expired so
+    /// that the map loads it again at once; that reload revalidates it.
+    #[test]
+    fn first_loads_take_stale_data_which_reloads_revalidate() {
+        let fetch = Arc::new(HeldTiles::default());
+        let host = crate::JobHost::new(fetch.clone(), Arc::new(orb_host::jobs::Inline));
+        // Circles, which lay out while the labels wait for their glyphs.
+        let style = SYMBOLS.replace(
+            r#""layers":["#,
+            r#""layers":[{"id":"c","type":"circle","source":"s","source-layer":"place"},"#,
+        );
+        host.set_style(1, Arc::new(TileWorker::new(&style).unwrap()));
+        let (z, x, y) = SYMBOL_TILE;
+        let bytes = std::fs::read(format!("{ASSETS}/tiles/{z}-{x}-{y}.mvt")).unwrap();
+        let ask = |request: TileRequest| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            host.load(request, None, Box::new(move |r| tx.send(r).unwrap()));
+            move || match rx.try_recv() {
+                Ok(Ok(crate::Loaded::Tile(build))) => build,
+                other => panic!("not built: {other:?}"),
+            }
+        };
+        let fetched = |fresh_until, stale| {
+            let (done, _) = fetch.0.lock().unwrap().pop().expect("a fetch");
+            done(Ok(orb_host::Fetched {
+                bytes: bytes.clone(),
+                fresh_until,
+                stale,
+            }));
+        };
+        let url = "local://tile";
+        let first = |asked_at, tile| TileRequest {
+            location: TileLocation::Url(url.into()),
+            asked_at,
+            takes_stale: true,
+            ..request(tile)
+        };
+        // The cache's copy expired at 90: not made to last a few seconds.
+        let built = ask(first(100, TileIndex::new(z, x, y)));
+        fetched(Some(90), true);
+        assert_eq!(built().fresh_until, Some(90));
+        // A sibling takes the frame, expired as it is.
+        let sibling = ask(TileRequest {
+            data_zoom: z,
+            ..first(150, TileIndex::new(z + 1, x * 2, y * 2))
+        })();
+        assert_eq!(sibling.fresh_until, Some(90));
+        let reload = ask(TileRequest {
+            reload: true,
+            takes_stale: false,
+            ..first(150, TileIndex::new(z, x, y))
+        });
+        fetched(Some(400), false);
+        let renewed = reload();
+        assert!(renewed.renewed && !renewed.stale);
+        assert_eq!(renewed.fresh_until, Some(400));
+        let tiles: Vec<_> = (fetch.1.lock().unwrap().iter())
+            .filter(|(fetched, _)| fetched == url)
+            .map(|&(_, stale)| stale)
+            .collect();
+        assert_eq!(tiles, [true, false], "a first load takes stale data");
     }
 
     /// A glyph range another context fetches for the job hosts: a tile

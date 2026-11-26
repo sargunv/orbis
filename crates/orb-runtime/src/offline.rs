@@ -1300,7 +1300,24 @@ impl std::fmt::Debug for RegionFetch {
 }
 
 /// A fetch waiting for the regions to be read.
-type Pending = (ResourceKind, String, Option<(u64, u64)>, Abort, FetchDone);
+type Pending = (ResourceKind, String, Read, Abort, FetchDone);
+
+/// What a fetch reads of its URL: all of it, a stale cached copy too
+/// where `stale` says ([`Fetch::get_or_stale`]), or a byte range.
+#[derive(Clone, Copy, Debug)]
+enum Read {
+    Whole { stale: bool },
+    Range(u64, u64),
+}
+
+impl Read {
+    fn range(self) -> Option<(u64, u64)> {
+        match self {
+            Self::Whole { .. } => None,
+            Self::Range(offset, length) => Some((offset, length)),
+        }
+    }
+}
 
 enum Served {
     Loading(Vec<Pending>),
@@ -1384,44 +1401,37 @@ impl RegionFetch {
                 Served::Ready(_) => Vec::new(),
             }
         };
-        for (kind, url, range, abort, done) in pending {
-            self.serve(kind, &url, range, &abort, done);
+        for (kind, url, read, abort, done) in pending {
+            self.serve(kind, &url, read, &abort, done);
         }
     }
 
-    fn serve(
-        &self,
-        kind: ResourceKind,
-        url: &str,
-        range: Option<(u64, u64)>,
-        abort: &Abort,
-        done: FetchDone,
-    ) {
+    fn serve(&self, kind: ResourceKind, url: &str, read: Read, abort: &Abort, done: FetchDone) {
         let regions = {
             let mut served = self.served.lock().expect("regions poisoned");
             match &mut *served {
                 Served::Loading(pending) => {
                     let pending_abort = abort.clone();
-                    return pending.push((kind, url.to_string(), range, pending_abort, done));
+                    return pending.push((kind, url.to_string(), read, pending_abort, done));
                 }
                 Served::Ready(regions) => regions.clone(),
             }
         };
-        let key = orb_host::cache::key(url, range);
+        let key = orb_host::cache::key(url, read.range());
         for region in regions.iter() {
             if let Some(&(at, length)) = region.resources.get(&key) {
                 let (inner, url, abort) = (self.inner.clone(), url.to_string(), abort.clone());
                 return self.storage.read(
                     &format!("{}/resources", region.dir),
                     Some((at, length)),
-                    Box::new(move |read| match read {
+                    Box::new(move |stored| match stored {
                         Ok(Some(bytes)) => done(Ok(bytes.into())),
-                        _ => pass(&*inner, kind, &url, range, &abort, done),
+                        _ => pass(&*inner, kind, &url, read, &abort, done),
                     }),
                 );
             }
         }
-        if range.is_none() {
+        if let Read::Whole { stale } = read {
             for region in regions.iter() {
                 for archive in &region.archives {
                     if let Some(tile) = archive.tile(url) {
@@ -1432,6 +1442,7 @@ impl RegionFetch {
                             reader: archive.reader.clone(),
                             url: url.to_string(),
                             kind,
+                            stale,
                             abort: abort.clone(),
                         };
                         return served.read(tile, 0, done);
@@ -1439,7 +1450,7 @@ impl RegionFetch {
                 }
             }
         }
-        pass(&*self.inner, kind, url, range, abort, done);
+        pass(&*self.inner, kind, url, read, abort, done);
     }
 }
 
@@ -1447,19 +1458,23 @@ fn pass(
     inner: &dyn Fetch,
     kind: ResourceKind,
     url: &str,
-    range: Option<(u64, u64)>,
+    read: Read,
     abort: &Abort,
     done: FetchDone,
 ) {
-    match range {
-        Some((offset, length)) => inner.get_range(kind, url, offset, length, abort, done),
-        None => inner.get(kind, url, abort, done),
+    match read {
+        Read::Whole { stale: false } => inner.get(kind, url, abort, done),
+        Read::Whole { stale: true } => inner.get_or_stale(kind, url, abort, done),
+        Read::Range(offset, length) => inner.get_range(kind, url, offset, length, abort, done),
     }
 }
 
 impl Fetch for RegionFetch {
     fn get(&self, kind: ResourceKind, url: &str, abort: &Abort, done: FetchDone) {
-        self.serve(kind, url, None, abort, done);
+        self.serve(kind, url, Read::Whole { stale: false }, abort, done);
+    }
+    fn get_or_stale(&self, kind: ResourceKind, url: &str, abort: &Abort, done: FetchDone) {
+        self.serve(kind, url, Read::Whole { stale: true }, abort, done);
     }
     fn get_range(
         &self,
@@ -1470,7 +1485,7 @@ impl Fetch for RegionFetch {
         abort: &Abort,
         done: FetchDone,
     ) {
-        self.serve(kind, url, Some((offset, length)), abort, done);
+        self.serve(kind, url, Read::Range(offset, length), abort, done);
     }
 }
 
@@ -1482,10 +1497,18 @@ struct Tile {
     reader: Arc<Mutex<Reader>>,
     url: String,
     kind: ResourceKind,
+    /// Passed to the network, it may answer stale.
+    stale: bool,
     abort: Abort,
 }
 
 impl Tile {
+    /// Leaves the tile to the network.
+    fn pass(&self, done: FetchDone) {
+        let read = Read::Whole { stale: self.stale };
+        pass(&*self.inner, self.kind, &self.url, read, &self.abort, done);
+    }
+
     fn read(self, tile: TileIndex, reads: u8, done: FetchDone) {
         let lookup = self.reader.lock().expect("reader poisoned").lookup(tile);
         match lookup {
@@ -1507,7 +1530,7 @@ impl Tile {
                         if again {
                             self.read(tile, reads + 1, done);
                         } else {
-                            pass(&*self.inner, self.kind, &self.url, None, &self.abort, done);
+                            self.pass(done);
                         }
                     }),
                 );
@@ -1519,12 +1542,12 @@ impl Tile {
                     Some((range.offset, range.length)),
                     Box::new(move |read| match read {
                         Ok(Some(bytes)) => done(Ok(bytes.into())),
-                        _ => pass(&*self.inner, self.kind, &self.url, None, &self.abort, done),
+                        _ => self.pass(done),
                     }),
                 );
             }
             // Not in the region: the network.
-            _ => pass(&*self.inner, self.kind, &self.url, None, &self.abort, done),
+            _ => self.pass(done),
         }
     }
 }

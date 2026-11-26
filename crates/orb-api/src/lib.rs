@@ -612,8 +612,9 @@ impl Runtime {
         }
     }
 
-    /// Keeps the HTTP cache's entries but has each revalidated with its
-    /// server before it is used again.
+    /// Keeps the HTTP cache's entries but makes each stale: each is
+    /// revalidated with its server when next asked for, a continuous map
+    /// drawing a tile's stale copy meanwhile.
     pub fn invalidate_http_cache(&self) {
         if let Some(cache) = self.shared.fetch.cache() {
             cache.invalidate();

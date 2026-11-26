@@ -433,7 +433,9 @@ impl GlyphLoads {
 
 /// The shortest time (seconds) a fetch's data stays fresh: a server sending
 /// `max-age=1` doesn't have every tile drawn from it fetched and laid out
-/// again each second.
+/// again each second. A stale copy's expiry, already past
+/// ([`Fetch::get_or_stale`](orb_host::Fetch::get_or_stale)), stands: its
+/// tile loads again as soon as it draws.
 const MIN_LIFETIME: u64 = 5;
 
 /// A fetch's outcome as a load's: a tile the source doesn't have (HTTP
@@ -652,6 +654,7 @@ impl JobHost {
                     request.location.clone(),
                     request.tile,
                     request.encoding,
+                    false,
                     &abort,
                     Box::new(move |bytes| {
                         drop(turn);
@@ -701,6 +704,7 @@ impl JobHost {
                 request.location.clone(),
                 data_tile,
                 request.encoding,
+                request.takes_stale,
                 &abort,
                 Box::new(move |bytes| {
                     drop(turn);
@@ -720,18 +724,26 @@ impl JobHost {
                                 done(Ok(Loaded::Missing))
                             }
                             Ok((fetched, encoding)) => {
-                                let fresh_until = (fetched.fresh_until)
-                                    .map(|until| until.max(request.asked_at + MIN_LIFETIME));
+                                let fresh_until =
+                                    (fetched.fresh_until).map(|until| match fetched.stale {
+                                        true => until,
+                                        false => until.max(request.asked_at + MIN_LIFETIME),
+                                    });
                                 let request = TileRequest {
                                     encoding,
                                     fresh_until,
                                     ..request
                                 };
-                                if request.reload && worker.renew(&request, &fetched.bytes) {
+                                // A reload no server answered, a cached copy
+                                // standing in, leaves the tile as drawn too.
+                                if request.reload
+                                    && (fetched.stale || worker.renew(&request, &fetched.bytes))
+                                {
                                     let build = TileBuild {
                                         fresh_until,
                                         reload: true,
                                         renewed: true,
+                                        stale: fetched.stale,
                                         ..TileBuild::default()
                                     };
                                     return done(Ok(Loaded::Tile(build)));
@@ -877,6 +889,7 @@ impl JobHost {
             tile.location.clone(),
             tile.data_tile(),
             tile.encoding,
+            false,
             &Abort::NEVER,
             Box::new(move |fetched| {
                 executor.spawn(Box::new(move || match fetched {
@@ -907,6 +920,7 @@ impl JobHost {
             tile.location.clone(),
             tile.data_tile(),
             tile.encoding,
+            false,
             &Abort::NEVER,
             Box::new(move |fetched| {
                 executor.spawn(Box::new(move || match fetched {

@@ -179,6 +179,7 @@ impl orb_api::NetworkHook for FlakyNetwork {
             orb_api::NetworkAnswer::Body {
                 bytes: full_tile(),
                 fresh_until: None,
+                must_revalidate: false,
                 etag: None,
                 modified: None,
             }

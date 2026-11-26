@@ -1599,6 +1599,194 @@ fn tiles_whose_data_expires_load_again_while_drawn() {
     assert_eq!(requests.load(Ordering::SeqCst), 3);
 }
 
+/// A continuous map draws a tile its HTTP cache holds stale at once and
+/// revalidates it behind, drawing the server's answer once it comes; a
+/// still waits for the server.
+#[test]
+fn stale_cached_tiles_draw_at_once_while_they_revalidate() {
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Each answer stale on arrival; all but the first held until released.
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = server.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&requests);
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        for stream in server.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut request = [0; 2048];
+            let _ = stream.read(&mut request);
+            let n = counted.fetch_add(1, Ordering::SeqCst);
+            if n > 0 && released.recv().is_err() {
+                return;
+            }
+            let body = covering_tile(n == 1);
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nCache-Control: max-age=0\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+        }
+    });
+    let dir = common::Scratch::new("api-stale");
+    let runtime = Runtime::new(&RuntimeOptions {
+        state_dir: Some(dir.to_path_buf()),
+        ..RuntimeOptions::default()
+    })
+    .expect("runtime");
+    let style = format!(
+        r##"{{"version": 8, "center": [0, 0], "zoom": 0,
+            "sources": {{"v": {{"type": "vector", "tiles": ["http://{address}/{{z}}/{{x}}/{{y}}.mvt"],
+                "maxzoom": 0}}}},
+            "layers": [
+                {{"id": "background", "type": "background", "paint": {{"background-color": "#ff0000"}}}},
+                {{"id": "shapes", "type": "fill", "source": "v", "source-layer": "shapes",
+                 "paint": {{"fill-color": ["case", ["has", "c"], "#00ff00", "#0000ff"]}}}}]}}"##
+    );
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let centre = |target: &Target| pixel(&target.read_pixels().unwrap(), SIZE / 2, SIZE / 2);
+    let (old, new) = ([0, 0, 255, 255], [0, 255, 0, 255]);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).expect("style");
+    settle(&mut map, &mut target);
+    assert_eq!(centre(&target), old, "the server's first answer");
+    drop(map);
+
+    // A new map draws the cached copy while the server holds its answer.
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).expect("style");
+    let started = std::time::Instant::now();
+    while centre(&target) != old || requests.load(Ordering::SeqCst) < 2 {
+        assert!(
+            started.elapsed().as_secs() < 10,
+            "the stale copy never drew"
+        );
+        map.render(&mut target, now()).unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(map.needs_frame(), "busy while it revalidates");
+    release.send(()).unwrap();
+    while !(centre(&target) == new && !map.needs_frame()) {
+        assert!(
+            started.elapsed().as_secs() < 20,
+            "the revalidated tile never drew"
+        );
+        map.render(&mut target, now()).unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    drop(map);
+
+    // A still draws what the server answers, not the stale copy.
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).expect("style");
+    let mut released = false;
+    for _ in 0..500 {
+        if requests.load(Ordering::SeqCst) == 3 && !released {
+            release.send(()).unwrap();
+            released = true;
+        }
+        if let Some(image) = map.snapshot_step(SIZE, SIZE, 1.0).unwrap() {
+            assert!(released, "a still drew before the server answered");
+            assert_eq!(pixel(&image.pixels, SIZE / 2, SIZE / 2), old);
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("the still never settled");
+}
+
+/// A stale tile the server confirms, with a 304 that gives it no
+/// lifetime, stays as drawn and loads no more, as on a map that loaded it
+/// fresh from the server.
+#[test]
+fn stale_cached_tiles_the_server_confirms_settle() {
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // The tile stale on arrival, then confirmed by a bare 304.
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = server.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&requests);
+    std::thread::spawn(move || {
+        for stream in server.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut request = [0; 2048];
+            let read = stream.read(&mut request).unwrap_or(0);
+            counted.fetch_add(1, Ordering::SeqCst);
+            let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+            let (head, body) = match request.contains("if-none-match") {
+                true => (
+                    "HTTP/1.1 304 Not Modified\r\nConnection: close\r\nETag: \"a\"\r\n\r\n"
+                        .to_string(),
+                    Vec::new(),
+                ),
+                false => {
+                    let body = covering_tile(false);
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nConnection: close\r\nCache-Control: max-age=0\r\nETag: \"a\"\r\nContent-Length: {}\r\n\r\n",
+                        body.len()
+                    );
+                    (head, body)
+                }
+            };
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+        }
+    });
+    let dir = common::Scratch::new("api-stale-confirmed");
+    let runtime = Runtime::new(&RuntimeOptions {
+        state_dir: Some(dir.to_path_buf()),
+        ..RuntimeOptions::default()
+    })
+    .expect("runtime");
+    let style = format!(
+        r##"{{"version": 8, "center": [0, 0], "zoom": 0,
+            "sources": {{"v": {{"type": "vector", "tiles": ["http://{address}/{{z}}/{{x}}/{{y}}.mvt"],
+                "maxzoom": 0}}}},
+            "layers": [
+                {{"id": "background", "type": "background", "paint": {{"background-color": "#ff0000"}}}},
+                {{"id": "shapes", "type": "fill", "source": "v", "source-layer": "shapes",
+                 "paint": {{"fill-color": "#0000ff"}}}}]}}"##
+    );
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).expect("style");
+    settle(&mut map, &mut target);
+    drop(map);
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).expect("style");
+    let started = std::time::Instant::now();
+    while requests.load(Ordering::SeqCst) < 2 || map.needs_frame() {
+        assert!(
+            started.elapsed().as_secs() < 10,
+            "the stale tile never revalidated"
+        );
+        map.render(&mut target, now()).unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let blue = [0, 0, 255, 255];
+    assert_eq!(
+        pixel(&target.read_pixels().unwrap(), SIZE / 2, SIZE / 2),
+        blue
+    );
+    // Past the reloads' first retries, nothing more is asked for.
+    let settled = std::time::Instant::now();
+    while settled.elapsed() < Duration::from_millis(3500) {
+        map.render(&mut target, now()).unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(requests.load(Ordering::SeqCst), 2, "reloaded again");
+}
+
 /// The answer of `query` once it arrives.
 fn query_answer(map: &mut Map, target: &mut Target, query: u64) -> String {
     let started = std::time::Instant::now();

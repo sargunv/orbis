@@ -17,6 +17,7 @@ pub use fonts::SystemFonts;
 pub use orb_host::FontFileFaces;
 pub use storage::{FileStorage, wait};
 
+use http::Freshness;
 use orb_host::jobs::{Executor, ThreadPool};
 use orb_host::{
     Abort, DecodedImage, Fetch, FetchDone, FetchError, Fetched, ImageDecode, ImageDone,
@@ -75,20 +76,30 @@ fn fetch_threads() -> usize {
 /// network's answer replaces or confirms.
 type Stale = (Option<String>, Option<cache::Cached>);
 
+/// How a request may be answered: the bytes it wants, whether the
+/// network may answer it, and whether a stale cached copy may before the
+/// network revalidates it ([`Fetch::get_or_stale`]).
+#[derive(Clone, Copy, Debug)]
+struct Ask {
+    range: Option<(u64, u64)>,
+    online: bool,
+    stale: bool,
+}
+
 /// What the network answered.
 enum Response {
     Body {
         bytes: Vec<u8>,
         /// `None` when the response may not be stored.
-        fresh_until: Option<u64>,
-        /// The headers gave `fresh_until` ([`http::explicit`]).
-        explicit: bool,
+        freshness: Option<Freshness>,
         etag: Option<String>,
         last_modified: Option<String>,
     },
     NotModified {
-        fresh_until: Option<u64>,
-        explicit: bool,
+        freshness: Option<Freshness>,
+        /// It said nothing of `Cache-Control`: the stored response's
+        /// directives stand (RFC 9111 §4.3.4).
+        directives_kept: bool,
     },
 }
 
@@ -98,7 +109,9 @@ impl NativeFetch {
     }
 
     /// Fetches through `cache`: fresh entries without the network, stale
-    /// ones revalidated, and either when the network fails.
+    /// ones revalidated, and either when the network fails. Through
+    /// [`Fetch::get_or_stale`], a stale entry answers at once, unless its
+    /// response said it must revalidate first.
     pub fn with_cache(cache: Option<Arc<HttpCache>>) -> Arc<Self> {
         Arc::new(Self {
             // Every thread's connection stays open for the next request.
@@ -158,11 +171,11 @@ impl NativeFetch {
         agent: &ureq::Agent,
         cache: Option<&HttpCache>,
         request: &Request,
-        range: Option<(u64, u64)>,
-        online: bool,
+        ask: Ask,
         abort: &Abort,
     ) -> Result<Fetched, FetchError> {
-        let (key, cached) = match Self::prepare(cache, &request.url, range, online, false) {
+        let range = ask.range;
+        let (key, cached) = match Self::prepare(cache, &request.url, ask, false) {
             Ok(answer) => return answer,
             Err(network) => network,
         };
@@ -174,13 +187,17 @@ impl NativeFetch {
     }
 
     /// What answers a request without the network: a file, or the cache
-    /// when it holds a fresh copy or the network is off. Otherwise the
-    /// cache key and the stale copy the network's answer goes with.
+    /// when it holds a fresh copy, a stale one the request takes, or the
+    /// network is off. Otherwise the cache key and the stale copy the
+    /// network's answer goes with.
     fn prepare(
         cache: Option<&HttpCache>,
         url: &str,
-        range: Option<(u64, u64)>,
-        online: bool,
+        Ask {
+            range,
+            online,
+            stale,
+        }: Ask,
         hooked: bool,
     ) -> Result<Result<Fetched, FetchError>, Stale> {
         if let Some(path) = url.strip_prefix("file://") {
@@ -192,11 +209,16 @@ impl NativeFetch {
         }
         let key = cacheable.then(|| orb_host::cache::key(url, range));
         let cached = cache.zip(key.as_deref()).and_then(|(c, k)| c.lookup(k));
-        match cached {
-            Some(cached) if !online || cached.fresh_until.is_some() => Ok(Ok(cached.fetched())),
-            None if !online => Ok(Err(FetchError::Network("offline".into()))),
-            cached => Err((key, cached)),
-        }
+        let cached = match cached {
+            Some(cached) if !online || cached.fresh => return Ok(Ok(cached.fetched())),
+            Some(cached) if stale => match cached.stale() {
+                Ok(fetched) => return Ok(Ok(fetched)),
+                Err(cached) => Some(cached),
+            },
+            None if !online => return Ok(Err(FetchError::Network("offline".into()))),
+            cached => cached,
+        };
+        Err((key, cached))
     }
 
     /// The network's answer, kept in the cache as it says, or the stale
@@ -210,31 +232,27 @@ impl NativeFetch {
         // A lifetime already over is none: the response came stale. One
         // the cache guessed keeps it fresh there, but isn't the map's.
         let now = cache::now();
-        let fresh =
-            |until: Option<u64>, explicit: bool| until.filter(|&until| explicit && until > now);
+        let fresh = |freshness: Option<Freshness>| {
+            freshness
+                .filter(|f| f.explicit && f.until > now)
+                .map(|f| f.until)
+        };
         let Some((cache, key)) = cache.zip(key) else {
             return match (response?, cached) {
                 (
                     Response::Body {
-                        bytes,
-                        fresh_until,
-                        explicit,
-                        ..
+                        bytes, freshness, ..
                     },
                     _,
                 ) => Ok(Fetched {
                     bytes,
-                    fresh_until: fresh(fresh_until, explicit),
+                    fresh_until: fresh(freshness),
+                    stale: false,
                 }),
-                (
-                    Response::NotModified {
-                        fresh_until,
-                        explicit,
-                    },
-                    Some(cached),
-                ) => Ok(Fetched {
+                (Response::NotModified { freshness, .. }, Some(cached)) => Ok(Fetched {
                     bytes: cached.bytes,
-                    fresh_until: fresh(fresh_until, explicit),
+                    fresh_until: fresh(freshness),
+                    stale: false,
                 }),
                 (Response::NotModified { .. }, None) => Err(FetchError::Status(304)),
             };
@@ -243,18 +261,17 @@ impl NativeFetch {
             (
                 Ok(Response::Body {
                     bytes,
-                    fresh_until,
-                    explicit,
+                    freshness,
                     etag,
                     last_modified,
                 }),
                 _,
             ) => {
-                match fresh_until {
-                    Some(until) => cache.store(
+                match freshness {
+                    Some(freshness) => cache.store(
                         &key,
                         &bytes,
-                        (until, explicit),
+                        freshness,
                         etag.as_deref(),
                         last_modified.as_deref(),
                     ),
@@ -262,20 +279,35 @@ impl NativeFetch {
                 }
                 Ok(Fetched {
                     bytes,
-                    fresh_until: fresh(fresh_until, explicit),
+                    fresh_until: fresh(freshness),
+                    stale: false,
                 })
             }
             (
                 Ok(Response::NotModified {
-                    fresh_until,
-                    explicit,
+                    freshness,
+                    directives_kept,
                 }),
                 Some(cached),
             ) => {
-                cache.refresh(&key, (fresh_until.unwrap_or(0), explicit));
+                // Without directives, those the stale copy came with stand.
+                let freshness = freshness.map(|f| Freshness {
+                    must_revalidate: match directives_kept {
+                        true => cached.freshness.must_revalidate,
+                        false => f.must_revalidate,
+                    },
+                    ..f
+                });
+                // Unstorable, it leaves the copy stale, its directives kept.
+                let stale = Freshness {
+                    until: 0,
+                    ..cached.freshness
+                };
+                cache.refresh(&key, freshness.unwrap_or(stale));
                 Ok(Fetched {
                     bytes: cached.bytes,
-                    fresh_until: fresh(fresh_until, explicit),
+                    fresh_until: fresh(freshness),
+                    stale: false,
                 })
             }
             (Ok(Response::NotModified { .. }), None) => Err(FetchError::Status(304)),
@@ -283,7 +315,11 @@ impl NativeFetch {
             (Err(FetchError::Aborted), _) => Err(FetchError::Aborted),
             // Offline, or the server failing or rate-limiting: the stale
             // copy.
-            (Err(error), Some(cached)) if error.transient() => Ok(cached.bytes.into()),
+            (Err(error), Some(cached)) if error.transient() => Ok(Fetched {
+                bytes: cached.bytes,
+                fresh_until: None,
+                stale: true,
+            }),
             (Err(error), _) => {
                 cache.remove(&key);
                 Err(error)
@@ -472,26 +508,22 @@ fn http(
         date: date.as_deref(),
         last_modified: last_modified.as_deref(),
     };
-    let (fresh_until, explicit) = (
-        http::fresh_until(headers, cache::now()),
-        http::explicit(headers),
-    );
+    let freshness = http::freshness(headers, cache::now());
     match response.status().as_u16() {
         200..=203 | 205..=299 => {}
         // No content: a valid, empty tile.
         204 => {
             return Ok(Response::Body {
                 bytes: Vec::new(),
-                fresh_until,
-                explicit,
+                freshness,
                 etag,
                 last_modified,
             });
         }
         304 => {
             return Ok(Response::NotModified {
-                fresh_until,
-                explicit,
+                freshness,
+                directives_kept: cache_control.is_none(),
             });
         }
         status => {
@@ -519,8 +551,7 @@ fn http(
     }
     Ok(Response::Body {
         bytes,
-        fresh_until,
-        explicit,
+        freshness,
         etag,
         last_modified,
     })
@@ -592,7 +623,10 @@ fn origin(url: &str) -> Option<(String, String, u16)> {
 
 impl Fetch for NativeFetch {
     fn get(&self, kind: ResourceKind, url: &str, abort: &Abort, done: FetchDone) {
-        self.get_range_opt(kind, url, None, abort, done);
+        self.fetch(kind, url, (None, false), abort, done);
+    }
+    fn get_or_stale(&self, kind: ResourceKind, url: &str, abort: &Abort, done: FetchDone) {
+        self.fetch(kind, url, (None, true), abort, done);
     }
     fn get_range(
         &self,
@@ -603,16 +637,18 @@ impl Fetch for NativeFetch {
         abort: &Abort,
         done: FetchDone,
     ) {
-        self.get_range_opt(kind, url, Some((offset, length)), abort, done);
+        self.fetch(kind, url, (Some((offset, length)), false), abort, done);
     }
 }
 
 impl NativeFetch {
-    fn get_range_opt(
+    /// Fetches `url` (the range given of it), taking a stale cached copy
+    /// if `stale` says.
+    fn fetch(
         &self,
         kind: ResourceKind,
         url: &str,
-        range: Option<(u64, u64)>,
+        (range, stale): (Option<(u64, u64)>, bool),
         abort: &Abort,
         done: FetchDone,
     ) {
@@ -633,7 +669,12 @@ impl NativeFetch {
             },
         };
         let hook = self.hook.read().expect("hook poisoned").clone();
-        let (agent, cache, online) = (self.agent().clone(), self.cache.clone(), self.online());
+        let (agent, cache) = (self.agent().clone(), self.cache.clone());
+        let ask = Ask {
+            range,
+            online: self.online(),
+            stale,
+        };
         let (pool, url) = (self.pool.clone(), url.to_string());
         self.pool.spawn(Box::new(move || {
             // Given up while it waited for a thread: `done` has its answer.
@@ -645,16 +686,14 @@ impl NativeFetch {
                     &agent,
                     cache.as_deref(),
                     &request,
-                    range,
-                    online,
+                    ask,
                     &abort,
                 ));
             };
-            let (key, cached) =
-                match Self::prepare(cache.as_deref(), &request.url, range, online, true) {
-                    Ok(answer) => return done(answer),
-                    Err(network) => network,
-                };
+            let (key, cached) = match Self::prepare(cache.as_deref(), &request.url, ask, true) {
+                Ok(answer) => return done(answer),
+                Err(network) => network,
+            };
             let prior = cached.as_ref().map(|c| Prior {
                 etag: c.etag.clone(),
                 modified: c
@@ -678,19 +717,21 @@ impl NativeFetch {
                         NetworkAnswer::Body {
                             bytes,
                             fresh_until,
+                            must_revalidate,
                             etag,
                             modified,
                         } => Ok(Response::Body {
                             bytes,
-                            fresh_until,
-                            // The host gave it.
-                            explicit: true,
+                            freshness: hooked(fresh_until, must_revalidate),
                             etag,
                             last_modified: modified.map(http::format_http_date),
                         }),
-                        NetworkAnswer::NotModified { fresh_until } => Ok(Response::NotModified {
+                        NetworkAnswer::NotModified {
                             fresh_until,
-                            explicit: true,
+                            must_revalidate,
+                        } => Ok(Response::NotModified {
+                            freshness: hooked(fresh_until, must_revalidate),
+                            directives_kept: false,
                         }),
                         NetworkAnswer::Failed(error) => Err(error),
                         // The host's network, on its own threads.
@@ -703,8 +744,7 @@ impl NativeFetch {
                                     if let Some(path) = request.url.strip_prefix("file://") {
                                         read_file(path, range).map(|bytes| Response::Body {
                                             bytes,
-                                            fresh_until: None,
-                                            explicit: false,
+                                            freshness: None,
                                             etag: None,
                                             last_modified: None,
                                         })
@@ -725,6 +765,15 @@ impl NativeFetch {
             );
         }));
     }
+}
+
+/// The lifetime a [`NetworkHook`]'s answer gives, which the host gave.
+fn hooked(fresh_until: Option<u64>, must_revalidate: bool) -> Option<Freshness> {
+    fresh_until.map(|until| Freshness {
+        until,
+        explicit: true,
+        must_revalidate,
+    })
 }
 
 /// Writes `data` to a file of its own beside `path`, then renames it over
@@ -861,6 +910,15 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::mpsc::channel;
 
+    /// A request online for `range`, taking no stale copy.
+    fn ask(range: Option<(u64, u64)>) -> Ask {
+        Ask {
+            range,
+            online: true,
+            stale: false,
+        }
+    }
+
     /// A request for `url` alone.
     fn plain(url: &str) -> Request {
         Request {
@@ -948,7 +1006,7 @@ mod tests {
         let agent = ureq::Agent::new_with_defaults();
         let get = |name: &str| {
             let url = format!("file://{}/{name}", dir.display());
-            NativeFetch::get_blocking(&agent, None, &plain(&url), None, true, &Abort::NEVER)
+            NativeFetch::get_blocking(&agent, None, &plain(&url), ask(None), &Abort::NEVER)
         };
         assert_eq!(get("a%20b%25.json").unwrap().bytes, b"{}");
         assert_eq!(get("a%20b%.json").unwrap().bytes, b"{}");
@@ -976,8 +1034,7 @@ mod tests {
             &ureq::Agent::new_with_defaults(),
             None,
             &plain(&url),
-            Some((2, 3)),
-            true,
+            ask(Some((2, 3))),
             &Abort::NEVER,
         );
         thread.join().unwrap();
@@ -1022,16 +1079,9 @@ mod tests {
         let url = format!("file://{}", path.display());
         let agent = ureq::Agent::new_with_defaults();
         assert_eq!(
-            NativeFetch::get_blocking(
-                &agent,
-                None,
-                &plain(&url),
-                Some((2, 3)),
-                true,
-                &Abort::NEVER
-            )
-            .unwrap()
-            .bytes,
+            NativeFetch::get_blocking(&agent, None, &plain(&url), ask(Some((2, 3))), &Abort::NEVER)
+                .unwrap()
+                .bytes,
             b"cde"
         );
         for range in [(4, 3), (0, 0), (0, MAX_BODY + 1), (u64::MAX, 2)] {
@@ -1040,8 +1090,7 @@ mod tests {
                     &agent,
                     None,
                     &plain(&url),
-                    Some(range),
-                    true,
+                    ask(Some(range)),
                     &Abort::NEVER
                 )
                 .is_err()
@@ -1108,14 +1157,7 @@ mod tests {
             format!("HTTP/1.1 304 Not Modified\r\n{close}Cache-Control: max-age=60\r\n\r\n"),
         ]);
         let get = || {
-            NativeFetch::get_blocking(
-                &agent,
-                Some(&cache),
-                &plain(&url),
-                None,
-                true,
-                &Abort::NEVER,
-            )
+            NativeFetch::get_blocking(&agent, Some(&cache), &plain(&url), ask(None), &Abort::NEVER)
         };
         // `no-cache`: it came stale, with no lifetime.
         assert_eq!(get().unwrap(), b"tile".to_vec().into());
@@ -1132,8 +1174,65 @@ mod tests {
             requests[1]
         );
         // Stale and the server gone: the stale copy, with no lifetime.
-        cache.refresh(&orb_host::cache::key(&url, None), (0, true));
-        assert_eq!(get().unwrap(), b"tile".to_vec().into());
+        cache.refresh(&orb_host::cache::key(&url, None), Freshness::default());
+        let fallback = get().unwrap();
+        assert_eq!(
+            (fallback.bytes, fallback.fresh_until),
+            (b"tile".to_vec(), None)
+        );
+        assert!(fallback.stale, "no server vouched for it");
+    }
+
+    #[test]
+    fn a_stale_entry_answers_at_once_where_asked_unless_it_must_revalidate() {
+        let dir = Scratch::new("fetch-stale");
+        let cache = HttpCache::open(Arc::new(FileStorage::new(&dir)), 1 << 20).unwrap();
+        let agent = ureq::Agent::new_with_defaults();
+        let close = "Connection: close\r\n";
+        let get = |url: &str, stale| {
+            let ask = Ask { stale, ..ask(None) };
+            NativeFetch::get_blocking(&agent, Some(&cache), &plain(url), ask, &Abort::NEVER)
+        };
+        let (url, server) = serve(vec![
+            format!(
+                "HTTP/1.1 200 OK\r\n{close}Cache-Control: max-age=0\r\nETag: \"v1\"\r\nContent-Length: 4\r\n\r\ntile"
+            ),
+            format!("HTTP/1.1 304 Not Modified\r\n{close}Cache-Control: max-age=60\r\n\r\n"),
+        ]);
+        assert_eq!(get(&url, true).unwrap(), b"tile".to_vec().into());
+        // Stale: at once, with a lifetime already over, and no request.
+        let stale = get(&url, true).unwrap();
+        assert_eq!(stale.bytes, b"tile");
+        assert!(stale.fresh_until.is_some_and(|until| until <= cache::now()));
+        // What revalidates it asks the server, with its validator.
+        let renewed = get(&url, false).unwrap();
+        assert!(
+            renewed
+                .fresh_until
+                .is_some_and(|until| until > cache::now())
+        );
+        let requests = server.join().unwrap();
+        assert!(
+            requests[1].contains("if-none-match: \"v1\""),
+            "{}",
+            requests[1]
+        );
+
+        // One that must revalidate waits for the server each time, though
+        // a 304 that says nothing of it renewed it.
+        let (url, server) = serve(vec![
+            format!(
+                "HTTP/1.1 200 OK\r\n{close}Cache-Control: max-age=0, must-revalidate\r\nETag: \"v1\"\r\nContent-Length: 4\r\n\r\ntile"
+            ),
+            format!("HTTP/1.1 304 Not Modified\r\n{close}\r\n"),
+            format!(
+                "HTTP/1.1 200 OK\r\n{close}Cache-Control: max-age=60\r\nContent-Length: 4\r\n\r\nnext"
+            ),
+        ]);
+        assert_eq!(get(&url, true).unwrap().bytes, b"tile");
+        assert_eq!(get(&url, true).unwrap().bytes, b"tile");
+        assert_eq!(get(&url, true).unwrap().bytes, b"next");
+        assert_eq!(server.join().unwrap().len(), 3);
     }
 
     #[test]
@@ -1150,14 +1249,7 @@ mod tests {
             format!("HTTP/1.1 408 Request Timeout\r\n{close}\r\n"),
         ]);
         let get = || {
-            NativeFetch::get_blocking(
-                &agent,
-                Some(&cache),
-                &plain(&url),
-                None,
-                true,
-                &Abort::NEVER,
-            )
+            NativeFetch::get_blocking(&agent, Some(&cache), &plain(&url), ask(None), &Abort::NEVER)
         };
         for _ in 0..3 {
             assert_eq!(get().unwrap().bytes, b"tile");
@@ -1182,7 +1274,7 @@ mod tests {
         ]);
         let agent = ureq::Agent::new_with_defaults();
         let get = || {
-            NativeFetch::get_blocking(&agent, None, &plain(&url), None, true, &Abort::NEVER)
+            NativeFetch::get_blocking(&agent, None, &plain(&url), ask(None), &Abort::NEVER)
                 .unwrap_err()
         };
         assert_eq!(get().retry_after(), Some(Duration::from_secs(120)));
@@ -1217,7 +1309,7 @@ mod tests {
         };
         let agent = ureq::Agent::new_with_defaults();
         assert_eq!(
-            NativeFetch::get_blocking(&agent, None, &request, None, true, &Abort::NEVER)
+            NativeFetch::get_blocking(&agent, None, &request, ask(None), &Abort::NEVER)
                 .unwrap()
                 .bytes,
             b"tile"
