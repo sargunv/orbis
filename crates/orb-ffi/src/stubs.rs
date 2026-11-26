@@ -45,6 +45,19 @@ pub unsafe extern "C" fn mln_binding_owner_token_create(handle: u64) -> *mut std
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_binding_owner_token_destroy(token: *mut std::ffi::c_void) {}
 
+/// `mln_map_add_custom_layer`: not implemented.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_map_add_custom_layer(
+    map: mln_map,
+    layer_id: mln_buffer_view,
+    before_layer_id: mln_buffer_view,
+    host: *const mln_custom_layer_host,
+    completion: *const mln_completion,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_add_custom_layer") }
+}
+
 /// `mln_map_add_image_source_image`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_map_add_image_source_image(
