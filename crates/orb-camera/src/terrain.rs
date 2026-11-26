@@ -164,7 +164,47 @@ impl View {
     }
 }
 
+/// How far from the target up to the eye, as a share of the way, the
+/// plane a move holds the ground under a pointer on may rise. Ground
+/// higher up stands so near the eye that holding it under a moving pointer
+/// would carry the camera a sliver as far, so a drag into a hill would all
+/// but stall; above this the ground slips from under the pointer instead.
+const GRIP_RISE: f64 = 0.9;
+
 impl CameraState {
+    /// The height of the level plane (on a globe, the sphere) on which a
+    /// move around `px` holds the ground under it: on `terrain`, the drawn
+    /// ground the pixel shows, no higher than [`GRIP_RISE`] of the way from
+    /// the target up to the eye; else, or where the pixel shows no ground,
+    /// the target's, as without terrain. Gestures pick it at each step's
+    /// starting pixel, which after a step shows the ground it held, so a
+    /// drag, a pinch or a turn keeps the ground it grabbed under the
+    /// pointer, a mountainside above a valley target included.
+    ///
+    /// On a globe the walk follows the plane's view ray, as
+    /// [`Camera::unproject`](crate::Camera::unproject)'s does, so pitched
+    /// views at the globe's higher zooms take the height of ground near,
+    /// not at, the pixel.
+    pub(crate) fn grip(
+        &self,
+        surface: &Surface,
+        viewport: Viewport,
+        px: DVec2,
+        terrain: Option<&dyn Elevation>,
+    ) -> Metres {
+        let target = Metres(self.elevation);
+        let Some(terrain) = terrain else {
+            return target;
+        };
+        let view = View::over(self, viewport, surface, terrain);
+        let Some((_, ground)) = view.unproject_terrain(px, terrain) else {
+            return target;
+        };
+        let eye = view.height_of(view.eye().z);
+        let ceiling = target + Metres(GRIP_RISE * (eye - target).0);
+        Metres(ground.0.min(ceiling.0))
+    }
+
     /// Puts the target on the terrain under it, GL JS's
     /// `clampCenterToGround`: where its DEM data is still loading the
     /// target keeps its elevation, so the camera moves once, when the data
@@ -468,6 +508,79 @@ mod tests {
             watch.check(&store, "flight");
         }
         assert!(watch.steps > 800);
+    }
+
+    /// Over a valley target, a drag, a zoom, a turn and a double click's
+    /// eased zoom that grab the mountainside behind it keep the point
+    /// grabbed under the pointer, where the plane through the target let
+    /// it slide by hundreds of pixels.
+    #[test]
+    fn gestures_hold_the_drawn_ground_under_the_pointer() {
+        let (projection, viewport, _) = setup();
+        // 6 km west of the summit, looking east at it over flat ground.
+        let mut state = CameraState::new(
+            projection.inverse(DVec2::new(-6000.0, 0.0)),
+            13.0,
+            &projection,
+        );
+        state.pitch = 60.0;
+        state.bearing = 90.0;
+        let mut store = Camera::new(state, Surface::from(projection), viewport);
+        store.set_terrain(Some(Arc::new(Peak)));
+        let mut pointer = DVec2::new(380.0, 60.0);
+        let grabbed = store.unproject(pointer).unwrap();
+        let height = Peak.at(projection.forward(grabbed)).unwrap();
+        assert!(height.0 > 1000.0, "the pointer grabs the slope: {height:?}");
+        let slip =
+            |store: &Camera, pointer: DVec2| store.project(grabbed).unwrap().distance(pointer);
+        store.hold();
+        for _ in 0..10 {
+            let to = pointer + DVec2::new(3.0, 6.0);
+            store.pan(pointer, to);
+            pointer = to;
+            assert!(
+                slip(&store, pointer) < 1.0,
+                "pan: {}",
+                slip(&store, pointer)
+            );
+        }
+        for _ in 0..10 {
+            store.zoom_by(pointer, 0.05);
+            assert!(
+                slip(&store, pointer) < 1.0,
+                "zoom: {}",
+                slip(&store, pointer)
+            );
+        }
+        for _ in 0..10 {
+            store.rotate_by(pointer, 2.0);
+            assert!(
+                slip(&store, pointer) < 1.0,
+                "turn: {}",
+                slip(&store, pointer)
+            );
+        }
+        store.release();
+        let target = CameraTarget {
+            zoom: Some(store.zoom() + 1.0),
+            around: Some(grabbed),
+            ..CameraTarget::default()
+        };
+        store.user_ease(&target, crate::EaseOptions::default(), 0.0);
+        let mut t = 0.0;
+        while store.frame(t) {
+            assert!(
+                slip(&store, pointer) < 1.0,
+                "ease at {t} ms: {}",
+                slip(&store, pointer)
+            );
+            t += 16.0;
+        }
+        assert!(
+            slip(&store, pointer) < 1.0,
+            "ease: {}",
+            slip(&store, pointer)
+        );
     }
 
     #[test]

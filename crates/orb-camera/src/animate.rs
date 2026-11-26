@@ -5,6 +5,7 @@
 use glam::DVec2;
 use orb_crs::{Geodetic, Metres, sphere};
 
+use crate::momentum::Stage;
 use crate::moves::wrap_bearing;
 use crate::{CameraState, Viewport};
 use orb_crs::Surface;
@@ -580,13 +581,10 @@ impl Motion {
     }
 
     /// Moves `camera` to the animation's state `elapsed` milliseconds in.
-    pub(crate) fn apply(
-        &mut self,
-        camera: &mut CameraState,
-        elapsed: f64,
-        surface: &Surface,
-        viewport: Viewport,
-    ) {
+    /// A glide's moves hold the drawn ground on `stage`'s terrain
+    /// ([`CameraState::grip`]).
+    pub(crate) fn apply(&mut self, camera: &mut CameraState, elapsed: f64, stage: &Stage) {
+        let (surface, viewport) = (stage.surface, stage.viewport);
         let projection = &surface.projection;
         let t = if self.duration() > 0.0 {
             elapsed / self.duration()
@@ -699,17 +697,22 @@ impl Motion {
                     progress(&glide.bearing, elapsed),
                     progress(&glide.pitch, elapsed),
                 ];
+                let grip =
+                    |camera: &CameraState, px| camera.grip(surface, viewport, px, stage.terrain);
                 if let Some(pan) = glide.pan {
                     let delta = pan.amount * (p[0] - done[0]);
-                    camera.pan(surface, viewport, center, center + delta);
+                    let plane = grip(camera, center);
+                    camera.pan_with(surface, viewport, center, center + delta, plane, None);
                 }
                 if let Some(zoom) = glide.zoom {
                     let to = camera.zoom(projection) + zoom.amount * (p[1] - done[1]);
-                    camera.zoom_around(surface, viewport, around, to);
+                    let plane = grip(camera, around);
+                    camera.zoom_on(surface, viewport, around, plane, to);
                 }
                 if let Some(bearing) = glide.bearing {
                     let to = camera.bearing + bearing.amount * (p[2] - done[2]);
-                    camera.rotate_around(surface, viewport, around, to);
+                    let plane = grip(camera, around);
+                    camera.rotate_on(surface, viewport, around, plane, to);
                 }
                 if let Some(pitch) = glide.pitch {
                     camera.pitch += pitch.amount * (p[3] - done[3]);

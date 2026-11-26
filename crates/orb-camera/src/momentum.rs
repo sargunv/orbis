@@ -12,7 +12,7 @@ use glam::DVec2;
 use crate::animate::Easing;
 use crate::moves::{Constraints, wrap_bearing};
 use crate::store::Fields;
-use crate::{CameraState, Surface, Viewport};
+use crate::{CameraState, Elevation, Surface, Viewport};
 
 /// How a part's speed falls from its release speed.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -394,6 +394,9 @@ pub(crate) struct Stage<'a> {
     pub constraints: &'a Constraints,
     /// Pans on the sphere turn the bearing with the planet.
     pub free_bearing: bool,
+    /// The map's terrain: moves hold the drawn ground under their pixel
+    /// ([`CameraState::grip`]).
+    pub terrain: Option<&'a dyn Elevation>,
 }
 
 impl Stage<'_> {
@@ -410,7 +413,9 @@ impl Stage<'_> {
         camera.constrain(self.constraints, self.surface, self.viewport);
     }
 
-    /// Moves the content `offset` pixels on screen, in drag-sized steps.
+    /// Moves the content `offset` pixels on screen, in drag-sized steps,
+    /// on the plane through the ground at the view's centre, found once a
+    /// frame: the steps carry that ground evenly.
     fn pan(&self, camera: &mut CameraState, offset: DVec2) {
         let distance = offset.length();
         if distance.is_nan() || distance <= 0.0 {
@@ -418,11 +423,18 @@ impl Stage<'_> {
         }
         let steps = (distance / PAN_STEP).ceil().min(MAX_PAN_STEPS);
         let step = offset / steps;
+        let center = camera.center(self.viewport);
+        let plane = camera.grip(self.surface, self.viewport, center, self.terrain);
         for _ in 0..steps as usize {
-            let center = camera.center(self.viewport);
-            let to = center + step;
             let free = self.free_bearing.then_some(self.constraints);
-            camera.pan_with(self.surface, self.viewport, center, to, free);
+            camera.pan_with(
+                self.surface,
+                self.viewport,
+                center,
+                center + step,
+                plane,
+                free,
+            );
             self.settle(camera);
         }
     }
@@ -430,20 +442,21 @@ impl Stage<'_> {
     fn step(&self, camera: &mut CameraState, part: usize, amount: f64, anchor: Option<DVec2>) {
         let (surface, viewport) = (self.surface, self.viewport);
         let at = anchor.unwrap_or_else(|| camera.center(viewport));
+        let plane = camera.grip(surface, viewport, at, self.terrain);
         match part {
             ZOOM => {
                 let least = camera.least_zoom(self.constraints, surface);
                 let zoom = (camera.zoom(&surface.projection) + amount)
                     .clamp(least, self.constraints.max_zoom.max(least));
-                camera.zoom_around(surface, viewport, at, zoom);
+                camera.zoom_on(surface, viewport, at, plane, zoom);
             }
-            BEARING => camera.rotate_around(surface, viewport, at, camera.bearing + amount),
+            BEARING => camera.rotate_on(surface, viewport, at, plane, camera.bearing + amount),
             _ => {
                 let (min, max) = (
                     self.constraints.min_pitch,
                     self.constraints.max_pitch.max(self.constraints.min_pitch),
                 );
-                camera.holding(surface, viewport, at, |c| {
+                camera.holding(surface, viewport, at, plane, |c| {
                     c.pitch = (c.pitch + amount).clamp(min, max);
                 });
             }

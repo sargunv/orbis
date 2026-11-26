@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use glam::DVec2;
-use orb_crs::Geodetic;
 use orb_crs::Projection;
+use orb_crs::{Geodetic, Metres};
 
 use crate::Skew;
 use crate::animate::{Around, CameraTarget, EaseOptions, FlyOptions, Glide, Motion};
@@ -558,7 +558,16 @@ impl Camera {
         start: Option<f64>,
         user: bool,
     ) -> AnimationId {
-        let (to, around) = self.resolve(&self.state, target, true);
+        let (mut to, around) = self.resolve(&self.state, target, true);
+        if let Some((ground, at, Some(height))) = around.filter(|_| {
+            user && self.clamped && target.elevation.is_none() && target.offset == DVec2::ZERO
+        }) {
+            // Input holds the elevation, as gestures do, and so the ground
+            // it turns about to the end; at rest the camera recentres on
+            // the terrain, keeping the picture.
+            to.elevation = self.state.elevation;
+            to.place(&self.surface, self.viewport, ground, height, at);
+        }
         let aims = self.aims(target);
         let (fields, coupled) = match user {
             // Input takes the whole camera.
@@ -711,6 +720,7 @@ impl Camera {
             viewport: self.viewport,
             constraints: &self.constraints,
             free_bearing: self.globe_free_bearing,
+            terrain: self.terrain.as_deref(),
         };
         let planned = Momentum::new(momentum, &mut next, &stage);
         let fields = match &planned {
@@ -828,7 +838,8 @@ impl Camera {
         self.is_animating() || self.active.contains(&true)
     }
 
-    /// Moves the ground under `from` to `to` (logical pixels).
+    /// Moves the ground under `from` to `to` (logical pixels): on the
+    /// terrain, the drawn ground ([`CameraState::grip`]).
     pub fn pan(&mut self, from: DVec2, to: DVec2) {
         let next = self.panned(from, to);
         self.user_write(next);
@@ -838,25 +849,34 @@ impl Camera {
     pub fn panned(&self, from: DVec2, to: DVec2) -> CameraState {
         let mut next = self.state;
         let free = self.globe_free_bearing.then_some(&self.constraints);
-        next.pan_with(&self.surface, self.viewport, from, to, free);
+        let plane = self.grip(from);
+        next.pan_with(&self.surface, self.viewport, from, to, plane, free);
         next
     }
 
-    /// Zooms by `delta` levels around a pixel.
+    /// Zooms by `delta` levels around a pixel, holding the ground under
+    /// it: on the terrain, the drawn ground.
     pub fn zoom_by(&mut self, at: DVec2, delta: f64) {
         let mut next = self.state;
         let least = next.least_zoom(&self.constraints, &self.surface);
         let zoom = (next.zoom(&self.surface.projection) + delta)
             .clamp(least, self.constraints.max_zoom.max(least));
-        next.zoom_around(&self.surface, self.viewport, at, zoom);
+        next.zoom_on(&self.surface, self.viewport, at, self.grip(at), zoom);
         self.user_write(next);
     }
 
-    /// Turns the map clockwise by `delta` degrees around a pixel.
+    /// Turns the map clockwise by `delta` degrees around a pixel, holding
+    /// the ground under it: on the terrain, the drawn ground.
     pub(crate) fn rotate_by(&mut self, at: DVec2, delta: f64) {
         let mut next = self.state;
-        next.rotate_around(&self.surface, self.viewport, at, next.bearing + delta);
+        let bearing = next.bearing + delta;
+        next.rotate_on(&self.surface, self.viewport, at, self.grip(at), bearing);
         self.user_write(next);
+    }
+
+    /// The plane a move around `px` holds the ground on.
+    fn grip(&self, px: DVec2) -> Metres {
+        (self.state).grip(&self.surface, self.viewport, px, self.terrain.as_deref())
     }
 
     /// Tilts by `delta` degrees around the viewport's middle.
@@ -881,6 +901,7 @@ impl Camera {
             viewport: self.viewport,
             constraints: &self.constraints,
             free_bearing: self.globe_free_bearing,
+            terrain: self.terrain.as_deref(),
         };
         for running in &mut self.running {
             // An app's move ends on the terrain under its destination,
@@ -901,12 +922,10 @@ impl Camera {
                 Motion::Momentum(momentum) => momentum.apply(&mut next, elapsed, &stage),
                 // A glide moves the camera on from where it is, and owns
                 // all of it.
-                motion @ Motion::Glide { .. } => {
-                    motion.apply(&mut next, elapsed, stage.surface, stage.viewport);
-                }
+                motion @ Motion::Glide { .. } => motion.apply(&mut next, elapsed, &stage),
                 motion => {
                     let mut at = next;
-                    motion.apply(&mut at, elapsed, stage.surface, stage.viewport);
+                    motion.apply(&mut at, elapsed, &stage);
                     take(&mut next, &at, running.fields, stage.surface);
                 }
             }
@@ -1127,7 +1146,7 @@ impl Camera {
                         change(&mut to);
                         to.place(surface, viewport, ground, height, at);
                     }
-                    None => to.holding(surface, viewport, at, change),
+                    None => to.holding(surface, viewport, at, Metres(to.elevation), change),
                 }
             }
             (None, None) => {

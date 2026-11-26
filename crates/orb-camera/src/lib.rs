@@ -629,9 +629,10 @@ impl View {
     }
 
     /// The world position under a point in logical pixels on the plane
-    /// through the target, level with it (the ground without terrain; on
-    /// terrain the plane gestures drag, as GL JS's do), or `None` above
-    /// its horizon.
+    /// through the target, level with it (the ground without terrain), or
+    /// `None` above its horizon. On terrain,
+    /// [`unproject_terrain`](Self::unproject_terrain) finds the drawn
+    /// ground.
     pub fn unproject(&self, px: DVec2) -> Option<DVec2> {
         self.unproject_at(px, self.elevation)
     }
@@ -724,11 +725,6 @@ impl View {
             inverse.project_point3(ndc.extend(0.0)),
             inverse.project_point3(ndc.extend(1.0)),
         )
-    }
-
-    /// The target's height (the camera's elevation).
-    pub(crate) fn elevation(&self) -> Metres {
-        self.elevation
     }
 
     /// GL JS's fog depth range in pixels along the view: from where the

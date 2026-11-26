@@ -190,10 +190,13 @@ impl CameraState {
     /// that far too. (MapLibre Native's `moveBy` moves the ground at the
     /// centre by a step's pixels wherever the pointer is.)
     pub fn pan(&mut self, surface: &Surface, viewport: Viewport, from: DVec2, to: DVec2) {
-        self.pan_with(surface, viewport, from, to, None);
+        let plane = Metres(self.elevation);
+        self.pan_with(surface, viewport, from, to, plane, None);
     }
 
-    /// [`pan`](Self::pan), turning the bearing with the planet on the
+    /// [`pan`](Self::pan) on the level plane (on a globe, the sphere)
+    /// `plane` above the datum, which [`grip`](Self::grip) finds for the
+    /// ground under `from`, turning the bearing with the planet on the
     /// sphere within `free_bearing`'s constraints, if given (MapLibre
     /// Native's globe free bearing).
     pub(crate) fn pan_with(
@@ -202,6 +205,7 @@ impl CameraState {
         viewport: Viewport,
         from: DVec2,
         to: DVec2,
+        plane: Metres,
         free_bearing: Option<&Constraints>,
     ) {
         let projection = &surface.projection;
@@ -210,17 +214,16 @@ impl CameraState {
         if view.globe().is_some() {
             // A drag that starts off the planet turns it as one from its
             // middle would, as GL JS's and MapLibre Native's do.
-            let elevation = view.elevation();
-            let held = match view.low_ground(from, elevation) {
+            let held = match view.low_ground(from, plane) {
                 Some(ground) => Some((ground, to)),
                 None => view
-                    .low_ground(center, elevation)
+                    .low_ground(center, plane)
                     .map(|ground| (ground, center + (to - from))),
             };
             let Some((ground, to)) = held else { return };
             if let Some(constraints) = free_bearing.filter(|_| view.low_plane().is_none()) {
                 let mut turned = *self;
-                turned.turn_under(surface, viewport, ground, to);
+                turned.turn_under(surface, viewport, ground, to, plane);
                 let mut kept = turned;
                 kept.constrain(constraints, surface, viewport);
                 // Past the latitude the constraints reach, the turn would
@@ -232,10 +235,11 @@ impl CameraState {
                     return;
                 }
             }
-            self.put_under(surface, viewport, ground, to, elevation);
+            self.put_under(surface, viewport, ground, to, plane);
             return;
         }
-        let span = |a: DVec2, b: DVec2| Some(view.unproject(b)? - view.unproject(a)?);
+        let span =
+            |a: DVec2, b: DVec2| Some(view.unproject_at(b, plane)? - view.unproject_at(a, plane)?);
         let steady = span(center - (to - from), center);
         let moved = match (span(from, to), steady) {
             (Some(grab), Some(steady)) => {
@@ -257,8 +261,22 @@ impl CameraState {
 
     /// Sets the zoom, keeping the ground under `at` in place.
     pub fn zoom_around(&mut self, surface: &Surface, viewport: Viewport, at: DVec2, zoom: f64) {
+        let plane = Metres(self.elevation);
+        self.zoom_on(surface, viewport, at, plane, zoom);
+    }
+
+    /// [`zoom_around`](Self::zoom_around), holding the ground on the level
+    /// plane `plane` above the datum ([`grip`](Self::grip)).
+    pub(crate) fn zoom_on(
+        &mut self,
+        surface: &Surface,
+        viewport: Viewport,
+        at: DVec2,
+        plane: Metres,
+        zoom: f64,
+    ) {
         let projection = &surface.projection;
-        self.holding(surface, viewport, at, |camera| {
+        self.holding(surface, viewport, at, plane, |camera| {
             camera.set_zoom(projection, zoom)
         });
     }
@@ -271,18 +289,34 @@ impl CameraState {
         at: DVec2,
         bearing: f64,
     ) {
-        self.holding(surface, viewport, at, |camera| {
+        let plane = Metres(self.elevation);
+        self.rotate_on(surface, viewport, at, plane, bearing);
+    }
+
+    /// [`rotate_around`](Self::rotate_around), holding the ground on the
+    /// level plane `plane` above the datum ([`grip`](Self::grip)).
+    pub(crate) fn rotate_on(
+        &mut self,
+        surface: &Surface,
+        viewport: Viewport,
+        at: DVec2,
+        plane: Metres,
+        bearing: f64,
+    ) {
+        self.holding(surface, viewport, at, plane, |camera| {
             camera.bearing = wrap_bearing(bearing);
         });
     }
 
     /// Applies `change`, then moves the target so the ground that was under
-    /// `at` is under it again.
+    /// `at` on the level plane (on a globe, the sphere) `plane` above the
+    /// datum is under it again.
     pub(crate) fn holding(
         &mut self,
         surface: &Surface,
         viewport: Viewport,
         at: DVec2,
+        plane: Metres,
         change: impl FnOnce(&mut Self),
     ) {
         let projection = &surface.projection;
@@ -296,17 +330,17 @@ impl CameraState {
         }
         let view = View::new(self, viewport, surface);
         if view.globe().is_some() {
-            let ground = view.low_ground(at, view.elevation());
+            let ground = view.low_ground(at, plane);
             change(self);
             if let Some(ground) = ground {
-                self.put_under(surface, viewport, ground, at, view.elevation());
+                self.put_under(surface, viewport, ground, at, plane);
             }
             return;
         }
-        let before = view.unproject(at);
+        let before = view.unproject_at(at, plane);
         change(self);
         let view = View::new(self, viewport, surface);
-        if let (Some(before), Some(after)) = (before, view.unproject(at)) {
+        if let (Some(before), Some(after)) = (before, view.unproject_at(at, plane)) {
             let world = view.camera_world() + (before - after);
             self.set_target_world(projection, world, view.world_per_px());
         }
@@ -435,8 +469,8 @@ impl CameraState {
         }
     }
 
-    /// On the sphere, turns the camera with the planet so `ground` shows
-    /// at `px`: the one rotation that brings what shows there now to
+    /// On the sphere, turns the camera with the planet so `ground`,
+    /// `height` up, shows at `px`: the one rotation that brings what shows there now to
     /// `ground`, applied to the camera's target and heading alike, so the
     /// bearing turns with the planet and a drag carries on over a pole
     /// (MapLibre Native's globe free bearing, GL JS's
@@ -444,9 +478,16 @@ impl CameraState {
     /// about the planet's centre moves every point on screen together, so
     /// this lands `ground` exactly, without [`put_under`](Self::put_under)'s
     /// steps.
-    fn turn_under(&mut self, surface: &Surface, viewport: Viewport, ground: Geodetic, px: DVec2) {
+    fn turn_under(
+        &mut self,
+        surface: &Surface,
+        viewport: Viewport,
+        ground: Geodetic,
+        px: DVec2,
+        height: Metres,
+    ) {
         let view = View::new(self, viewport, surface);
-        let Some(now) = view.low_ground(px, view.elevation()) else {
+        let Some(now) = view.low_ground(px, height) else {
             return;
         };
         let turn = glam::DQuat::from_rotation_arc(sphere::up(now), sphere::up(ground));
@@ -871,10 +912,17 @@ mod tests {
         let mut camera = CameraState::new(Geodetic::new(10.0, 60.0), 2.0, &mercator());
         let (from, to) = (DVec2::new(520.0, 330.0), DVec2::new(560.0, 360.0));
         let view = View::new(&camera, viewport, &surface);
-        let ground = view.low_ground(from, view.elevation()).unwrap();
-        camera.pan_with(&surface, viewport, from, to, Some(&Constraints::default()));
+        let ground = view.low_ground(from, Metres::ZERO).unwrap();
+        camera.pan_with(
+            &surface,
+            viewport,
+            from,
+            to,
+            Metres::ZERO,
+            Some(&Constraints::default()),
+        );
         let view = View::new(&camera, viewport, &surface);
-        let under = view.low_ground(to, view.elevation()).unwrap();
+        let under = view.low_ground(to, Metres::ZERO).unwrap();
         assert!(
             (under.lon - ground.lon).abs() < 1e-9 && (under.lat - ground.lat).abs() < 1e-9,
             "{under:?} {ground:?}"
@@ -887,7 +935,14 @@ mod tests {
         let mut camera = CameraState::new(Geodetic::new(10.0, 60.0), 2.0, &mercator());
         for _ in 0..20 {
             let (from, to) = (DVec2::new(400.0, 400.0), DVec2::new(400.0, 430.0));
-            camera.pan_with(&surface, viewport, from, to, Some(&Constraints::default()));
+            camera.pan_with(
+                &surface,
+                viewport,
+                from,
+                to,
+                Metres::ZERO,
+                Some(&Constraints::default()),
+            );
         }
         assert!(camera.target.lat < 75.0, "{:?}", camera.target);
         assert!(
@@ -1017,7 +1072,7 @@ mod tests {
                 let at = DVec2::new(520.0, 420.0);
                 for to in [DVec2::new(560.0, 380.0), DVec2::new(400.0, 470.0)] {
                     let view = View::new(&camera, VIEWPORT, &surface);
-                    let ground = view.low_ground(at, view.elevation()).unwrap();
+                    let ground = view.low_ground(at, Metres::ZERO).unwrap();
                     let mut moved = camera;
                     moved.pan(&surface, VIEWPORT, at, to);
                     let view = View::new(&moved, VIEWPORT, &surface);
@@ -1033,7 +1088,7 @@ mod tests {
                 }
                 // Zooming around a point keeps it in place.
                 let view = View::new(&camera, VIEWPORT, &surface);
-                let ground = view.low_ground(at, view.elevation()).unwrap();
+                let ground = view.low_ground(at, Metres::ZERO).unwrap();
                 let mut zoomed = camera;
                 zoomed.zoom_around(&surface, VIEWPORT, at, zoom + 0.3);
                 let view = View::new(&zoomed, VIEWPORT, &surface);
