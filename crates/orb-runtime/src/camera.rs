@@ -120,13 +120,25 @@ impl Map {
     /// pixels from the viewport's top-left corner. Returns whether the map
     /// used it, so hosts can stop the platform's default.
     pub fn input(&mut self, input: Input, time: f64) -> bool {
-        self.input.handle(&mut self.camera, input, time)
+        let used = self.input.handle(input, time);
+        self.apply_gestures(time);
+        used
+    }
+
+    /// Applies the moves the map's recognizer made.
+    fn apply_gestures(&mut self, time: f64) {
+        for mv in self.input.take_moves() {
+            self.camera.apply(mv, time);
+        }
     }
 
     /// What gestures may move, how releases continue, and the platform's
     /// thresholds; changing it cancels a gesture under way.
     pub fn set_gestures(&mut self, options: GestureOptions) {
-        self.input.set_options(&mut self.camera, options);
+        self.input.set_options(options);
+        // A change of options at most lets go of the camera, which starts
+        // nothing that would take a time.
+        self.apply_gestures(0.0);
     }
 
     pub fn gestures(&self) -> &GestureOptions {
@@ -235,7 +247,8 @@ impl Map {
         if self.camera.viewport() != viewport {
             self.camera.set_viewport(viewport);
         }
-        let gesture = self.input.frame(&mut self.camera, time);
+        let gesture = self.input.frame(time);
+        self.apply_gestures(time);
         let animating = self.camera.frame(time);
         // A camera that moved since the last frame makes the next rest a
         // new idle.

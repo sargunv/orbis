@@ -33,8 +33,17 @@ impl Rig {
         }
     }
 
-    fn send(&mut self, input: Input) {
-        self.input.handle(&mut self.camera, input, self.now);
+    fn send(&mut self, input: Input) -> bool {
+        let used = self.input.handle(input, self.now);
+        self.apply();
+        used
+    }
+
+    /// Applies the recognizer's moves to the camera.
+    fn apply(&mut self) {
+        for mv in self.input.take_moves() {
+            self.camera.apply(mv, self.now);
+        }
     }
 
     fn down(&mut self, id: u32, kind: PointerKind, x: f64, y: f64) {
@@ -87,7 +96,8 @@ impl Rig {
         let mut frames = 0;
         loop {
             self.now += 16.0;
-            let gesture = self.input.frame(&mut self.camera, self.now);
+            let gesture = self.input.frame(self.now);
+            self.apply();
             let moving = self.camera.frame(self.now);
             if !gesture && !moving {
                 return frames;
@@ -99,7 +109,8 @@ impl Rig {
 
     fn frame(&mut self) {
         self.now += 16.0;
-        self.input.frame(&mut self.camera, self.now);
+        self.input.frame(self.now);
+        self.apply();
         self.camera.frame(self.now);
     }
 }
@@ -546,7 +557,8 @@ fn shift_double_click_zooms_out() {
 impl Rig {
     fn with(options: GestureOptions) -> Self {
         let mut rig = Self::new();
-        rig.input.set_options(&mut rig.camera, options);
+        rig.input.set_options(options);
+        rig.apply();
         rig
     }
 
@@ -674,15 +686,11 @@ fn movements_turned_off_stay_put() {
     rig.fling(100.0, 10.0);
     rig.spread();
     rig.settle();
-    let used = rig.input.handle(
-        &mut rig.camera,
-        Input::Wheel {
-            position: DVec2::new(100.0, 100.0),
-            delta: WheelDelta::Notches(-1.0),
-            modifiers: Modifiers::default(),
-        },
-        rig.now,
-    );
+    let used = rig.send(Input::Wheel {
+        position: DVec2::new(100.0, 100.0),
+        delta: WheelDelta::Notches(-1.0),
+        modifiers: Modifiers::default(),
+    });
     assert!(!used, "the page scrolls instead");
     rig.send(Input::Key {
         key: Key::ZoomIn,
@@ -728,7 +736,8 @@ fn changing_the_options_cancels_a_gesture() {
         },
         ..GestureOptions::default()
     };
-    rig.input.set_options(&mut rig.camera, options);
+    rig.input.set_options(options);
+    rig.apply();
     assert!(!rig.camera.is_held());
     let state = *rig.camera.state();
     rig.now += 16.0;
@@ -894,7 +903,8 @@ fn changing_the_options_cancels_a_platform_pinch_until_it_ends() {
         },
         ..GestureOptions::default()
     };
-    rig.input.set_options(&mut rig.camera, options);
+    rig.input.set_options(options);
+    rig.apply();
     let (state, zoom) = (*rig.camera.state(), rig.camera.zoom());
     // The rest of the pinch moves nothing and glides nowhere.
     for _ in 0..5 {

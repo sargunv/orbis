@@ -215,6 +215,9 @@ pub struct Camera {
     next_id: u64,
     /// User input is moving the camera.
     held: bool,
+    /// How fast a momentum the first press of the gesture under way
+    /// stopped still moved, which its release adds to its own.
+    pub(crate) caught: Option<MomentumVelocity>,
     /// The state the last frame's events reported.
     reported: CameraState,
     /// Which changes have started and not ended, in [`CHANGES`] order.
@@ -254,6 +257,7 @@ impl Camera {
             running: Vec::new(),
             next_id: 0,
             held: false,
+            caught: None,
             reported: state,
             active: [false; 4],
             user: false,
