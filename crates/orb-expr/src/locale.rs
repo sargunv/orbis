@@ -192,7 +192,10 @@ mod builtin {
         } else {
             0
         };
-        let min = o.min_fraction_digits.unwrap_or(f64::from(default_min));
+        // An omitted minimum is at most the maximum, as in `Intl`.
+        let min = o.min_fraction_digits.unwrap_or_else(|| {
+            f64::from(default_min).min(o.max_fraction_digits.unwrap_or(f64::INFINITY))
+        });
         let max = o.max_fraction_digits.unwrap_or(if o.currency.is_some() {
             f64::from(currency_digits).max(min)
         } else {

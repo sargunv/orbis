@@ -461,6 +461,16 @@ fn number_format_rejects_out_of_range_digits() {
     );
 }
 
+#[test]
+fn number_format_takes_zero_fraction_digits() {
+    let e = Expression::parse(
+        &parse(r#"["number-format",12.3,{"currency":"USD","max-fraction-digits":0}]"#),
+        None,
+    )
+    .unwrap();
+    assert_eq!(e.constant(), Some(&Value::String("$12".into())));
+}
+
 /// A failing argument is parsed once however deep it is nested: when
 /// `all` had a two-argument overload beside its variadic one, each level
 /// parsed its failing child three times.

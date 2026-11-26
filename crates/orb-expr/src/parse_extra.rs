@@ -260,7 +260,12 @@ impl Parser<'_> {
         key: &str,
         default: Value<'static>,
     ) -> Option<NodeId> {
-        match options.get(name).filter(|j| Value::from_json(j).truthy()) {
+        // GL JS skips a falsy option, an explicit 0 fraction digits
+        // included; Native honors that 0, and so do we.
+        let given = |j: &&Json| {
+            Value::from_json(j).truthy() || (*ty == Type::Number && j.as_f64().is_some())
+        };
+        match options.get(name).filter(given) {
             Some(v) => self.parse(v, &child_key(key, 1), Some(ty), None),
             None => Some(self.literal(default, key, None)),
         }
