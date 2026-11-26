@@ -171,30 +171,11 @@ impl NativeFetch {
         self.cache.as_ref()
     }
 
-    /// One request through the cache and the network, on this thread.
-    fn get_blocking(
-        transport: &Transport,
-        cache: Option<&HttpCache>,
-        request: &Request,
-        ask: Ask,
-        abort: &Abort,
-    ) -> Result<Fetched, FetchError> {
-        let range = ask.range;
-        let (key, cached) = match Self::prepare(cache, &request.url, ask, false) {
-            Ok(answer) => return answer,
-            Err(network) => network,
-        };
-        let validators = cached
-            .as_ref()
-            .map(|c| (c.etag.as_deref(), c.last_modified.as_deref()));
-        let response = http(transport, request, range, validators, abort);
-        Self::finish(cache, key, cached, response)
-    }
-
     /// What answers a request without the network: a file, or the cache
     /// when it holds a fresh copy, a stale one the request takes, or the
     /// network is off. Otherwise the cache key and the stale copy the
-    /// network's answer goes with.
+    /// network's answer goes with: none for a URL the cache doesn't keep,
+    /// which a [`NetworkHook`] may serve and [`network`] refuses.
     fn prepare(
         cache: Option<&HttpCache>,
         url: &str,
@@ -203,16 +184,11 @@ impl NativeFetch {
             online,
             stale,
         }: Ask,
-        hooked: bool,
     ) -> Result<Result<Fetched, FetchError>, Stale> {
         if let Some(path) = url.strip_prefix("file://") {
             return Ok(read_file(path, range).map(Fetched::from));
         }
-        let cacheable = http::cacheable(url);
-        if !cacheable && !hooked {
-            return Ok(Err(FetchError::UnsupportedUrl(url.to_string())));
-        }
-        let key = cacheable.then(|| orb_host::cache::key(url, range));
+        let key = http::cacheable(url).then(|| orb_host::cache::key(url, range));
         let cached = cache.zip(key.as_deref()).and_then(|(c, k)| c.lookup(k));
         let cached = match cached {
             Some(cached) if !online || cached.fresh => return Ok(Ok(cached.fetched())),
@@ -422,6 +398,32 @@ fn read_from(
         return Err(FetchError::Range("short or oversized file".into()));
     }
     Ok(bytes)
+}
+
+/// What the network answers `request`, `range` of it when given: a
+/// `file://` URL's file (what a [`NetworkHook`] may hand back), or an HTTP
+/// GET, conditional on the stale copy `cached` when there is one. Other
+/// schemes are refused.
+fn network(
+    transport: &Transport,
+    request: &Request,
+    range: Option<(u64, u64)>,
+    cached: Option<&cache::Cached>,
+    abort: &Abort,
+) -> Result<Response, FetchError> {
+    if let Some(path) = request.url.strip_prefix("file://") {
+        return read_file(path, range).map(|bytes| Response::Body {
+            bytes,
+            freshness: None,
+            etag: None,
+            last_modified: None,
+        });
+    }
+    if !http::cacheable(&request.url) {
+        return Err(FetchError::UnsupportedUrl(request.url.clone()));
+    }
+    let validators = cached.map(|c| (c.etag.as_deref(), c.last_modified.as_deref()));
+    http(transport, request, range, validators, abort)
 }
 
 /// What sends a GET: ureq, or on Android the platform's
@@ -743,18 +745,13 @@ impl NativeFetch {
             if abort.is_aborted() {
                 return;
             }
-            let Some(hook) = hook else {
-                return done(Self::get_blocking(
-                    &transport,
-                    cache.as_deref(),
-                    &request,
-                    ask,
-                    &abort,
-                ));
-            };
-            let (key, cached) = match Self::prepare(cache.as_deref(), &request.url, ask, true) {
+            let (key, cached) = match Self::prepare(cache.as_deref(), &request.url, ask) {
                 Ok(answer) => return done(answer),
-                Err(network) => network,
+                Err(stale) => stale,
+            };
+            let Some(hook) = hook else {
+                let response = network(&transport, &request, range, cached.as_ref(), &abort);
+                return done(Self::finish(cache.as_deref(), key, cached, response));
             };
             let prior = cached.as_ref().map(|c| Prior {
                 etag: c.etag.clone(),
@@ -764,7 +761,7 @@ impl NativeFetch {
                     .and_then(|date| http::http_date(date, cache::now())),
                 bytes: c.bytes.clone(),
             });
-            let network = NetworkRequest {
+            let asked = NetworkRequest {
                 kind,
                 url,
                 request,
@@ -773,7 +770,7 @@ impl NativeFetch {
                 abort: abort.clone(),
             };
             hook.request(
-                network,
+                asked,
                 Box::new(move |answer| {
                     let response = match answer {
                         NetworkAnswer::Body {
@@ -803,21 +800,7 @@ impl NativeFetch {
                                     return;
                                 }
                                 let response =
-                                    if let Some(path) = request.url.strip_prefix("file://") {
-                                        read_file(path, range).map(|bytes| Response::Body {
-                                            bytes,
-                                            freshness: None,
-                                            etag: None,
-                                            last_modified: None,
-                                        })
-                                    } else if http::cacheable(&request.url) {
-                                        let validators = cached.as_ref().map(|c| {
-                                            (c.etag.as_deref(), c.last_modified.as_deref())
-                                        });
-                                        http(&transport, &request, range, validators, &abort)
-                                    } else {
-                                        Err(FetchError::UnsupportedUrl(request.url.clone()))
-                                    };
+                                    network(&transport, &request, range, cached.as_ref(), &abort);
                                 done(Self::finish(cache.as_deref(), key, cached, response));
                             }));
                         }
@@ -973,21 +956,40 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::mpsc::channel;
 
-    /// A request online for `range`, taking no stale copy.
-    fn ask(range: Option<(u64, u64)>) -> Ask {
-        Ask {
-            range,
-            online: true,
-            stale: false,
-        }
+    /// What a fetch `start` begins answers.
+    fn wait(start: impl FnOnce(FetchDone)) -> Result<Fetched, FetchError> {
+        let (send, receive) = channel();
+        start(Box::new(move |r| send.send(r).unwrap()));
+        receive.recv().unwrap()
     }
 
-    /// A request for `url` alone.
-    fn plain(url: &str) -> Request {
-        Request {
-            url: url.into(),
-            headers: Vec::new(),
-        }
+    /// What `fetch` answers for `url`.
+    fn get(fetch: &NativeFetch, url: &str) -> Result<Fetched, FetchError> {
+        wait(|done| fetch.get(ResourceKind::Unknown, url, &Abort::NEVER, done))
+    }
+
+    /// What `fetch` answers for `length` bytes of `url` from `offset`.
+    fn get_range(
+        fetch: &NativeFetch,
+        url: &str,
+        (offset, length): (u64, u64),
+    ) -> Result<Fetched, FetchError> {
+        wait(|done| {
+            fetch.get_range(
+                ResourceKind::Unknown,
+                url,
+                offset,
+                length,
+                &Abort::NEVER,
+                done,
+            )
+        })
+    }
+
+    /// A fetch through a cache of its own in `dir`.
+    fn cached(dir: &Scratch) -> (Arc<NativeFetch>, Arc<HttpCache>) {
+        let cache = HttpCache::open(Arc::new(FileStorage::new(dir)), 1 << 20).unwrap();
+        (NativeFetch::with_cache(Some(cache.clone())), cache)
     }
 
     #[test]
@@ -1055,11 +1057,8 @@ mod tests {
         assert_eq!(&*percent_decode("a%20b%2fc%zz%4"), b"a b/c%zz%4");
         let dir = Scratch::new("file-url");
         std::fs::write(dir.join("a b%.json"), b"{}").unwrap();
-        let agent = Transport::Ureq(ureq::Agent::new_with_defaults());
-        let get = |name: &str| {
-            let url = format!("file://{}/{name}", dir.display());
-            NativeFetch::get_blocking(&agent, None, &plain(&url), ask(None), &Abort::NEVER)
-        };
+        let fetch = NativeFetch::new();
+        let get = |name: &str| get(&fetch, &format!("file://{}/{name}", dir.display()));
         assert_eq!(get("a%20b%25.json").unwrap().bytes, b"{}");
         assert_eq!(get("a%20b%.json").unwrap().bytes, b"{}");
         assert_eq!(get("a b%.json").unwrap().bytes, b"{}");
@@ -1082,13 +1081,7 @@ mod tests {
             stream.write_all(reply.as_bytes()).unwrap();
             let _ = stream.write_all(&body);
         });
-        let result = NativeFetch::get_blocking(
-            &Transport::Ureq(ureq::Agent::new_with_defaults()),
-            None,
-            &plain(&url),
-            ask(Some((2, 3))),
-            &Abort::NEVER,
-        );
+        let result = get_range(&NativeFetch::new(), &url, (2, 3));
         thread.join().unwrap();
         result.map(|fetched| fetched.bytes)
     }
@@ -1129,24 +1122,10 @@ mod tests {
         let path = dir.join("abcdef");
         std::fs::write(&path, b"abcdef").unwrap();
         let url = format!("file://{}", path.display());
-        let agent = Transport::Ureq(ureq::Agent::new_with_defaults());
-        assert_eq!(
-            NativeFetch::get_blocking(&agent, None, &plain(&url), ask(Some((2, 3))), &Abort::NEVER)
-                .unwrap()
-                .bytes,
-            b"cde"
-        );
+        let fetch = NativeFetch::new();
+        assert_eq!(get_range(&fetch, &url, (2, 3)).unwrap().bytes, b"cde");
         for range in [(4, 3), (0, 0), (0, MAX_BODY + 1), (u64::MAX, 2)] {
-            assert!(
-                NativeFetch::get_blocking(
-                    &agent,
-                    None,
-                    &plain(&url),
-                    ask(Some(range)),
-                    &Abort::NEVER
-                )
-                .is_err()
-            );
+            assert!(get_range(&fetch, &url, range).is_err());
         }
     }
 
@@ -1199,8 +1178,7 @@ mod tests {
     #[test]
     fn revalidates_stale_entries_and_answers_offline() {
         let dir = Scratch::new("fetch-cache");
-        let cache = HttpCache::open(Arc::new(FileStorage::new(&dir)), 1 << 20).unwrap();
-        let agent = Transport::Ureq(ureq::Agent::new_with_defaults());
+        let (fetch, cache) = cached(&dir);
         let close = "Connection: close\r\n";
         let (url, server) = serve(vec![
             format!(
@@ -1208,9 +1186,7 @@ mod tests {
             ),
             format!("HTTP/1.1 304 Not Modified\r\n{close}Cache-Control: max-age=60\r\n\r\n"),
         ]);
-        let get = || {
-            NativeFetch::get_blocking(&agent, Some(&cache), &plain(&url), ask(None), &Abort::NEVER)
-        };
+        let get = || get(&fetch, &url);
         // `no-cache`: it came stale, with no lifetime.
         assert_eq!(get().unwrap(), b"tile".to_vec().into());
         let renewed = get().unwrap();
@@ -1238,12 +1214,11 @@ mod tests {
     #[test]
     fn a_stale_entry_answers_at_once_where_asked_unless_it_must_revalidate() {
         let dir = Scratch::new("fetch-stale");
-        let cache = HttpCache::open(Arc::new(FileStorage::new(&dir)), 1 << 20).unwrap();
-        let agent = Transport::Ureq(ureq::Agent::new_with_defaults());
+        let (fetch, _) = cached(&dir);
         let close = "Connection: close\r\n";
-        let get = |url: &str, stale| {
-            let ask = Ask { stale, ..ask(None) };
-            NativeFetch::get_blocking(&agent, Some(&cache), &plain(url), ask, &Abort::NEVER)
+        let get = |url: &str, stale| match stale {
+            true => wait(|done| fetch.get_or_stale(ResourceKind::Tile, url, &Abort::NEVER, done)),
+            false => get(&fetch, url),
         };
         let (url, server) = serve(vec![
             format!(
@@ -1290,8 +1265,7 @@ mod tests {
     #[test]
     fn rate_limited_requests_answer_with_the_stale_copy() {
         let dir = Scratch::new("fetch-limited");
-        let cache = HttpCache::open(Arc::new(FileStorage::new(&dir)), 1 << 20).unwrap();
-        let agent = Transport::Ureq(ureq::Agent::new_with_defaults());
+        let (fetch, _) = cached(&dir);
         let close = "Connection: close\r\n";
         let (url, server) = serve(vec![
             format!(
@@ -1300,11 +1274,8 @@ mod tests {
             format!("HTTP/1.1 429 Too Many Requests\r\n{close}Retry-After: 60\r\n\r\n"),
             format!("HTTP/1.1 408 Request Timeout\r\n{close}\r\n"),
         ]);
-        let get = || {
-            NativeFetch::get_blocking(&agent, Some(&cache), &plain(&url), ask(None), &Abort::NEVER)
-        };
         for _ in 0..3 {
-            assert_eq!(get().unwrap().bytes, b"tile");
+            assert_eq!(get(&fetch, &url).unwrap().bytes, b"tile");
         }
         server.join().unwrap();
     }
@@ -1324,11 +1295,8 @@ mod tests {
             format!("HTTP/1.1 404 Not Found\r\n{close}Content-Length: 4\r\n\r\ntile"),
             format!("HTTP/1.1 403 Forbidden\r\n{close}Content-Length: 4\r\n\r\ntile"),
         ]);
-        let agent = Transport::Ureq(ureq::Agent::new_with_defaults());
-        let get = || {
-            NativeFetch::get_blocking(&agent, None, &plain(&url), ask(None), &Abort::NEVER)
-                .unwrap_err()
-        };
+        let fetch = NativeFetch::new();
+        let get = || get(&fetch, &url).unwrap_err();
         assert_eq!(get().retry_after(), Some(Duration::from_secs(120)));
         let hour = get().retry_after().unwrap().as_secs();
         assert!((3598..=3600).contains(&hour), "{hour} s");
@@ -1355,17 +1323,14 @@ mod tests {
                 "HTTP/1.1 307 Temporary Redirect\r\n{close}Location: {other}\r\nContent-Length: 0\r\n\r\n"
             ),
         ]);
-        let request = Request {
-            url,
-            headers: vec![("X-Api-Key".into(), "secret".into())],
-        };
-        let agent = Transport::Ureq(ureq::Agent::new_with_defaults());
-        assert_eq!(
-            NativeFetch::get_blocking(&agent, None, &request, ask(None), &Abort::NEVER)
-                .unwrap()
-                .bytes,
-            b"tile"
-        );
+        let fetch = NativeFetch::new();
+        fetch.set_transform(Some(Arc::new(|url: &str| {
+            Some(Request {
+                url: url.into(),
+                headers: vec![("X-Api-Key".into(), "secret".into())],
+            })
+        })));
+        assert_eq!(get(&fetch, &url).unwrap().bytes, b"tile");
         let (origin, elsewhere) = (origin.join().unwrap(), elsewhere.join().unwrap());
         assert!(origin[0].contains("x-api-key: secret"), "{}", origin[0]);
         assert!(origin[1].starts_with("get /moved "), "{}", origin[1]);
@@ -1397,8 +1362,7 @@ mod tests {
     #[test]
     fn transforms_rewrite_and_sign_requests_and_offline_answers_from_the_cache() {
         let dir = Scratch::new("fetch-hooks");
-        let cache = HttpCache::open(Arc::new(FileStorage::new(&dir)), 1 << 20).unwrap();
-        let fetch = NativeFetch::with_cache(Some(cache));
+        let (fetch, _) = cached(&dir);
         let (url, server) = serve(vec![
             "HTTP/1.1 200 OK\r\nConnection: close\r\nCache-Control: max-age=0\r\nContent-Length: 4\r\n\r\ntile"
                 .into(),
@@ -1411,16 +1375,7 @@ mod tests {
                 headers: vec![("Authorization".into(), "Bearer token".into())],
             })
         })));
-        let get = |url: &str| {
-            let (send, receive) = std::sync::mpsc::channel();
-            fetch.get(
-                ResourceKind::Unknown,
-                url,
-                &Abort::NEVER,
-                Box::new(move |r| send.send(r).unwrap()),
-            );
-            receive.recv().unwrap()
-        };
+        let get = |url: &str| get(&fetch, url);
         assert_eq!(get("tiles://tile").unwrap().bytes, b"tile");
         let requests = server.join().unwrap();
         assert!(requests[0].starts_with("get /tile "), "{}", requests[0]);
@@ -1440,6 +1395,61 @@ mod tests {
             get("tiles://other"),
             Err(FetchError::Network("offline".into()))
         );
+    }
+
+    /// Hands every request back to the network, a `mem://` one as the file
+    /// it names, noting the cached copy's validator it was asked with.
+    struct Passing(std::sync::Mutex<Vec<Option<String>>>, String);
+
+    impl NetworkHook for Passing {
+        fn request(&self, asked: NetworkRequest, done: orb_host::NetworkDone) {
+            let etag = asked.prior.and_then(|prior| prior.etag);
+            self.0.lock().unwrap().push(etag);
+            let mut request = asked.request;
+            if let Some(name) = request.url.strip_prefix("mem://") {
+                request.url = format!("file://{}/{name}", self.1);
+            }
+            done(NetworkAnswer::Network(request));
+        }
+    }
+
+    #[test]
+    fn a_hook_handing_requests_back_fetches_as_the_network_would() {
+        let files = Scratch::new("fetch-passing-files");
+        std::fs::write(files.join("style.json"), b"{}").unwrap();
+        let dir = Scratch::new("fetch-passing");
+        let (fetch, _) = cached(&dir);
+        let hook = Arc::new(Passing(Default::default(), files.display().to_string()));
+        fetch.set_network_hook(Some(hook.clone()));
+        let close = "Connection: close\r\n";
+        let (url, server) = serve(vec![
+            format!(
+                "HTTP/1.1 200 OK\r\n{close}Cache-Control: no-cache\r\nETag: \"v1\"\r\nContent-Length: 4\r\n\r\ntile"
+            ),
+            format!("HTTP/1.1 304 Not Modified\r\n{close}Cache-Control: max-age=60\r\n\r\n"),
+        ]);
+        assert_eq!(get(&fetch, &url).unwrap().bytes, b"tile");
+        // Revalidated with the stale copy's validator, then fresh.
+        assert!(get(&fetch, &url).unwrap().fresh_until.is_some());
+        assert!(get(&fetch, &url).unwrap().fresh_until.is_some());
+        let requests = server.join().unwrap();
+        assert!(
+            requests[1].contains("if-none-match: \"v1\""),
+            "{}",
+            requests[1]
+        );
+        assert_eq!(get(&fetch, "mem://style.json").unwrap().bytes, b"{}");
+        assert!(matches!(
+            get(&fetch, "mem://missing"),
+            Err(FetchError::NotFound)
+        ));
+        assert!(matches!(
+            get(&fetch, "ftp://x"),
+            Err(FetchError::UnsupportedUrl(_))
+        ));
+        let asked = hook.0.lock().unwrap().clone();
+        assert_eq!(asked[..2], [None, Some("\"v1\"".into())]);
+        assert_eq!(asked.len(), 5, "the fresh copy answered without the hook");
     }
 
     /// An abort answers at once, and a body being read stops: the server
