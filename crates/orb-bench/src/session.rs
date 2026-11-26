@@ -28,7 +28,9 @@
 //! as `load.html` designs it (its `mapStyle`). `--dump prefix` writes each
 //! session's frames to `<prefix>-<session>.tsv`. `--filter` picks them by name;
 //! `--warm` runs each once untimed first and keeps its state directory
-//! and shaders, as a user's later launch.
+//! and shaders, as a user's later launch; `--stale` as well, its HTTP
+//! cache made stale, as a launch after the servers' lifetimes lapsed
+//! (what a cache revalidates before it answers waits for the server).
 //!
 //! It reports the frame intervals while input moves the camera, each
 //! frame's CPU and GPU time, the time to centre (the first frame whose
@@ -416,7 +418,8 @@ struct Frame {
 pub(crate) struct SessionResult {
     name: &'static str,
     style: String,
-    warm: bool,
+    /// How it launched: "" cold, else " (warm)" or " (warm, stale)".
+    launch: &'static str,
     device_ms: f64,
     first_ms: Option<f64>,
     frames: Vec<Frame>,
@@ -485,15 +488,29 @@ pub(crate) fn run(
         let nonce = Some(std::process::id() ^ clock::now().subsec_nanos());
         if settings.warm {
             progress(&format!("{}: once untimed", session.name));
-            run_session(settings, session, style, (&state, nonce), &mut warnings)?;
+            run_session(
+                settings,
+                session,
+                style,
+                (&state, nonce, false),
+                &mut warnings,
+            )?;
         }
-        progress(&format!(
-            "{}: {}",
-            session.name,
-            if settings.warm { "warm" } else { "cold" }
-        ));
-        let mut result = run_session(settings, session, style, (&state, nonce), &mut warnings)?;
-        result.warm = settings.warm;
+        let launch = match (settings.warm, settings.stale) {
+            (false, _) => "",
+            (true, false) => " (warm)",
+            (true, true) => " (warm, stale)",
+        };
+        progress(&format!("{}:{}", session.name, launch));
+        let stale = settings.stale;
+        let mut result = run_session(
+            settings,
+            session,
+            style,
+            (&state, nonce, stale),
+            &mut warnings,
+        )?;
+        result.launch = launch;
         results.push(result);
     }
     if results.is_empty() {
@@ -513,7 +530,7 @@ fn run_session(
     settings: &Settings,
     session: &Session,
     style: &str,
-    (state, nonce): (&StateDir, Option<u32>),
+    (state, nonce, stale): (&StateDir, Option<u32>, bool),
     warnings: &mut Vec<String>,
 ) -> Result<SessionResult, String> {
     let made = Instant::now();
@@ -522,6 +539,9 @@ fn run_session(
         ..RuntimeOptions::default()
     })
     .map_err(|e| e.to_string())?;
+    if stale {
+        runtime.invalidate_http_cache();
+    }
     runtime.set_shader_nonce(nonce);
     let device_ms = made.elapsed().as_secs_f64() * 1000.0;
     let (width, height) = settings.physical_size();
@@ -728,7 +748,7 @@ fn run_session(
             (true, _) => format!("{style} on the globe, with the Globe entry's terrain"),
             (false, _) => style.to_string(),
         },
-        warm: false,
+        launch: "",
         device_ms,
         first_ms,
         camera: map.camera(),
@@ -827,7 +847,8 @@ impl SessionReport {
         writeln!(
             out,
             "- {w}×{h} @{ratio} offscreen, a 60 Hz beat; each session on a fresh runtime with an \
-             empty state directory and shaders unique to it (`--warm`: its second run), input \
+             empty state directory and shaders unique to it (`--warm`: its second run, \
+             `--stale`: with its HTTP cache made stale), input \
              from {START:.0} ms after the first frame drawing tiles"
         )?;
         writeln!(out)?;
@@ -864,7 +885,7 @@ impl SessionReport {
                 out,
                 "| {}{} | {} | {} | {} / {}{} | {} | {} | {} | {} | {} | {} | {:.0} |",
                 r.name,
-                if r.warm { " (warm)" } else { "" },
+                r.launch,
                 opt_ms(r.first_ms),
                 opt_ms(centre),
                 opt_ms(known.get((known.len().max(1) - 1) / 2).copied()),

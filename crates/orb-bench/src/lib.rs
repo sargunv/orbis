@@ -166,6 +166,9 @@ pub struct Settings {
     /// Each session once untimed first, its state and shaders kept for
     /// the timed run (`session`).
     pub warm: bool,
+    /// With `warm`, the timed run's HTTP cache made stale first, as a
+    /// launch after the server's lifetimes lapsed (`session`).
+    pub stale: bool,
     /// Where each session writes its frames, one a line
     /// (`<prefix>-<session>.tsv`; `session`).
     pub dump: Option<String>,
@@ -189,6 +192,7 @@ impl Default for Settings {
             antialias: MapOptions::default().antialias,
             legs: None,
             warm: false,
+            stale: false,
             dump: None,
         }
     }

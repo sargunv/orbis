@@ -3,7 +3,7 @@
 //! [--frames N] [--warmup N] [--rounds N] [--samples N] [--size WxH]
 //! [--ratio R] [--at lon,lat] [--view zoom,pitch,bearing]... [--views file]
 //! [--filter s] [--nudge] [--antialias on|off] [--legs N] [--capture N]
-//! [--warm] [--dump prefix]`.
+//! [--warm] [--stale] [--dump prefix]`.
 //!
 //! Without a style URL it loads the committed Tokyo extract; `alps` is the
 //! Alps terrain style (live tiles) at its view. `stutter` is `--experiment
@@ -59,6 +59,8 @@ fn run() -> Result<(), String> {
             settings.nudge = true;
         } else if arg == "--warm" {
             settings.warm = true;
+        } else if arg == "--stale" {
+            (settings.warm, settings.stale) = (true, true);
         } else if let Some(name) = arg.strip_prefix("--") {
             let value = args.next().ok_or(format!("{arg} needs a value"))?;
             match name {
