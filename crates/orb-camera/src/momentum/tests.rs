@@ -142,7 +142,7 @@ fn eased_glides_follow_their_curve() {
 #[test]
 fn anchors_stay_in_place() {
     let anchor = DVec2::new(800.0, 300.0);
-    for part in [ZOOM, BEARING, PITCH] {
+    for part in Part::ALL {
         let mut camera = camera(CameraTarget {
             pitch: Some(20.0),
             ..Default::default()
@@ -150,15 +150,15 @@ fn anchors_stay_in_place() {
         let ground = camera.unproject(anchor).unwrap();
         let mut momentum = GestureMomentum::default();
         let slot = match part {
-            ZOOM => &mut momentum.zoom,
-            BEARING => &mut momentum.bearing,
-            _ => &mut momentum.pitch,
+            Part::Zoom => &mut momentum.zoom,
+            Part::Bearing => &mut momentum.bearing,
+            Part::Pitch => &mut momentum.pitch,
         };
         *slot = Some(AnchoredMomentum::pitch(Some(20.0)).with_anchor(Some(anchor)));
         camera.start_momentum(&momentum, Some(0.0));
         camera.frame(5000.0);
         let at = camera.project(ground).unwrap();
-        assert!((at - anchor).length() < 1e-3, "part {part}: {at}");
+        assert!((at - anchor).length() < 1e-3, "{part:?}: {at}");
     }
 }
 

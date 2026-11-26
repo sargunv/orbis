@@ -961,6 +961,91 @@ fn notches_add_up_within_the_zoom_range() {
     assert!((rig.camera.zoom() - (14.0 - 1.0 / 3.0)).abs() < 1e-6);
 }
 
+/// A notch during another's ease carries on at the speed the zoom had:
+/// restarting `ease` from rest would slow it to its start slope, 0.4× its
+/// average speed.
+#[test]
+fn a_notch_during_another_keeps_its_speed() {
+    let at = DVec2::new(100.0, 100.0);
+    let notch = |rig: &mut Rig| {
+        rig.send(Input::Wheel {
+            position: at,
+            delta: WheelDelta::Notches(-1.0),
+            modifiers: Modifiers::default(),
+        });
+    };
+    for into in [20.0, 50.0, 80.0] {
+        let mut rig = Rig::new();
+        let (from, start) = (rig.camera.zoom(), rig.now);
+        let ground = rig.camera.unproject(at).unwrap();
+        notch(&mut rig);
+        // Levels per 0.1 ms on either side of the second notch.
+        let frame = |rig: &mut Rig, t: f64| {
+            rig.now = start + t;
+            rig.camera.frame(rig.now);
+            rig.camera.zoom()
+        };
+        let before = frame(&mut rig, into - 0.1);
+        let now = frame(&mut rig, into);
+        let speed = now - before;
+        notch(&mut rig);
+        let after = frame(&mut rig, into + 0.1) - now;
+        assert!(
+            (after / speed - 1.0).abs() < 0.02,
+            "{into} ms in: {speed} then {after} levels per 0.1 ms"
+        );
+        rig.settle();
+        assert!(
+            (rig.camera.zoom() - (from + 2.0 / 3.0)).abs() < 1e-9,
+            "and zooms both"
+        );
+        let under = rig.camera.project(ground).unwrap();
+        assert!(under.distance(at) < 1e-6, "about the pointer: {under}");
+    }
+}
+
+/// A discrete delta's parts each ease within the camera's limits, stopping
+/// where one holds them, and one that follows another before it ends moves
+/// what that one had left of every part, its own or not.
+#[test]
+fn discrete_deltas_compose_within_the_limits() {
+    let mut rig = Rig::new();
+    rig.camera.set_constraints(crate::Constraints {
+        max_pitch: 60.0,
+        ..crate::Constraints::default()
+    });
+    let pitch = |rig: &mut Rig, degrees: f64| {
+        rig.send(Input::Delta {
+            position: DVec2::new(400.0, 300.0),
+            discrete: true,
+            pan: DVec2::ZERO,
+            zoom: 0.0,
+            bearing: 0.0,
+            pitch: degrees,
+        })
+    };
+    // A tilt past the greatest pitch ends once the limit holds it, before
+    // its ease would have.
+    assert!(pitch(&mut rig, 90.0));
+    let frames = rig.settle();
+    assert!((rig.camera.state().pitch - 60.0).abs() < 1e-9);
+    assert!(
+        f64::from(frames + 1) * 16.0 < super::rates::NOTCH_DURATION,
+        "{frames} frames"
+    );
+    rig.camera.pitch_by(-60.0);
+    rig.settle();
+    let (zoom, bearing) = (rig.camera.zoom(), rig.camera.state().bearing);
+    assert!(rig.delta(true, DVec2::ZERO, 0.5, 10.0));
+    rig.frame();
+    // Only a tilt, during a zoom and turn that still finish.
+    assert!(pitch(&mut rig, 90.0));
+    rig.settle();
+    assert!((rig.camera.state().pitch - 60.0).abs() < 1e-9);
+    assert!((rig.camera.zoom() - (zoom + 0.5)).abs() < 1e-9);
+    assert!((rig.camera.state().bearing - (bearing + 10.0)).abs() < 1e-9);
+}
+
 #[test]
 fn a_drag_toward_a_tilted_horizon_moves_a_bounded_way_and_on_past_it() {
     let mut rig = Rig::new();

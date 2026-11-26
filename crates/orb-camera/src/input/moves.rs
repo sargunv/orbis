@@ -6,8 +6,9 @@
 
 use glam::DVec2;
 
+use super::rates::NOTCH_DURATION;
 use super::{GestureOptions, Movement, Release};
-use crate::animate::Glide;
+use crate::momentum::Delta;
 use crate::{
     AnchoredMomentum, Camera, CameraTarget, EaseOptions, Easing, GestureMomentum, MomentumVelocity,
     PanMomentum,
@@ -45,7 +46,8 @@ pub(super) enum Step {
         degrees: f64,
     },
     PitchBy(f64),
-    Glide(Box<Glide>),
+    /// A discrete delta, eased.
+    Delta(Box<Delta>),
     /// A double tap's zoom around a point, eased (GL JS, 300 ms).
     TapZoom {
         at: DVec2,
@@ -194,8 +196,8 @@ impl Camera {
                 self.rotate_by(around, degrees);
             }
             Step::PitchBy(degrees) => self.pitch_by(degrees),
-            Step::Glide(glide) => {
-                self.glide(*glide, now);
+            Step::Delta(delta) => {
+                self.ease_delta(&delta, NOTCH_DURATION, Easing::DEFAULT, now);
                 return true;
             }
             Step::TapZoom { at, levels } => {

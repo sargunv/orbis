@@ -9,9 +9,9 @@ use orb_crs::Projection;
 use orb_crs::{Geodetic, Metres};
 
 use crate::Skew;
-use crate::animate::{Around, CameraTarget, EaseOptions, FlyOptions, Glide, Motion};
+use crate::animate::{Around, CameraTarget, EaseOptions, Easing, FlyOptions, Motion, Path};
 use crate::fit::FitOptions;
-use crate::momentum::{GestureMomentum, Momentum, MomentumVelocity, Stage};
+use crate::momentum::{Delta, GestureMomentum, Momentum, MomentumVelocity, Part, Stage};
 use crate::moves::{Bounds, Constraints, wrap_bearing};
 use crate::{CameraState, Elevation, FreeCamera, Surface, View, Viewport};
 
@@ -575,8 +575,8 @@ impl Camera {
             false => Self::claims(target, around.is_some(), aims),
         };
         self.yield_fields(fields);
-        let motion = Motion::ease(self.state, to, around, options, &self.surface);
-        self.start(motion, fields, coupled, start, user, aims)
+        let path = Path::ease(self.state, to, around, options, &self.surface);
+        self.start(Motion::Path(path), fields, coupled, start, user, aims)
     }
 
     /// The properties a move to `target` takes, and those of them that go
@@ -612,7 +612,7 @@ impl Camera {
                 taken |= running.coupled;
             }
             running.fields = running.fields.without(taken);
-            if let Motion::Momentum(momentum) = &mut running.motion {
+            if let Motion::Momentum(momentum) | Motion::Delta(momentum) = &mut running.motion {
                 running.fields = momentum.retain(running.fields);
             }
             if running.fields.is_empty() {
@@ -642,7 +642,7 @@ impl Camera {
         };
         let fields = Fields::of(target, aims) | path;
         self.yield_fields(fields);
-        let motion = Motion::fly(
+        let motion = Path::fly(
             self.state,
             to,
             options,
@@ -650,7 +650,7 @@ impl Camera {
             &self.surface,
             self.viewport,
         );
-        self.start(motion, fields, path, start, false, aims)
+        self.start(Motion::Path(motion), fields, path, start, false, aims)
     }
 
     /// The camera that shows `bounds` (GL JS `cameraForBounds`), for
@@ -676,31 +676,35 @@ impl Camera {
         Some(target)
     }
 
-    /// Continues a user's move with a glide (smooth wheel zoom). A
-    /// glide started during another adds what that one had left, and
-    /// starts at the speed it had. Its zoom stops at the zoom range, as GL
-    /// JS's wheel target does: levels past a limit would hold the zoom
-    /// there once the scroll turned back, until as many came back.
-    pub(crate) fn glide(&mut self, mut glide: Glide, now: f64) -> AnimationId {
-        if let Some(rest) = self
-            .running
-            .iter()
-            .find_map(|r| r.motion.glide_rest(r.elapsed))
-        {
-            glide.continue_from(&rest);
-        }
-        if let Some(track) = &mut glide.zoom {
-            let zoom = self.state.zoom(&self.surface.projection);
-            let least = self.state.least_zoom(&self.constraints, &self.surface);
-            let most = self.constraints.max_zoom.max(least);
-            // A zoom outside the range may still move toward it.
-            track.amount = track
-                .amount
-                .clamp((least - zoom).min(0.0), (most - zoom).max(0.0));
-        }
+    /// Eases a discrete delta (a wheel notch) over `duration`
+    /// milliseconds from host time `now`, stepping it as momentum steps,
+    /// within the camera's limits. Input takes the camera, stopping its
+    /// animations; a delta's step still running hands on what it had left
+    /// at the speed it had ([`Momentum::delta`]).
+    pub(crate) fn ease_delta(
+        &mut self,
+        delta: &Delta,
+        duration: f64,
+        easing: Easing,
+        now: f64,
+    ) -> Option<AnimationId> {
+        let previous = self.running.iter().find_map(|r| match &r.motion {
+            Motion::Delta(momentum) => Some(momentum),
+            _ => None,
+        });
+        let planned = Momentum::delta(
+            delta,
+            duration,
+            easing,
+            previous,
+            &self.state,
+            &self.stage(),
+        );
         self.stop();
-        let motion = Motion::glide(glide);
-        self.start(motion, Fields::ALL, Fields::ALL, Some(now), true, false)
+        let planned = planned?;
+        let fields = planned.fields();
+        let motion = Motion::Delta(planned);
+        Some(self.start(motion, fields, Fields::NONE, Some(now), true, false))
     }
 
     /// Continues a gesture with `momentum` from host time `start`
@@ -715,14 +719,7 @@ impl Camera {
         start: Option<f64>,
     ) -> Option<AnimationId> {
         let mut next = self.state;
-        let stage = Stage {
-            surface: &self.surface,
-            viewport: self.viewport,
-            constraints: &self.constraints,
-            free_bearing: self.globe_free_bearing,
-            terrain: self.terrain.as_deref(),
-        };
-        let planned = Momentum::new(momentum, &mut next, &stage);
+        let planned = Momentum::new(momentum, &mut next, &self.stage());
         let fields = match &planned {
             Some(planned) => planned.fields(),
             None => Fields::between(&self.state, &next),
@@ -731,7 +728,7 @@ impl Camera {
         if next != self.state {
             self.user_write(next);
         }
-        let motion = Motion::Momentum(Box::new(planned?));
+        let motion = Motion::Momentum(planned?);
         Some(self.start(motion, fields, Fields::NONE, start, true, false))
     }
 
@@ -783,8 +780,8 @@ impl Camera {
         !self.running.is_empty()
     }
 
-    /// Whether an animation input started runs: a glide, a snap, a tap's
-    /// or a key's eased step.
+    /// Whether an animation input started runs: a gesture's momentum, a
+    /// tap's, a key's or a discrete delta's eased step.
     pub fn is_user_animating(&self) -> bool {
         self.running.iter().any(|r| r.user)
     }
@@ -857,20 +854,24 @@ impl Camera {
     /// Zooms by `delta` levels around a pixel, holding the ground under
     /// it: on the terrain, the drawn ground.
     pub fn zoom_by(&mut self, at: DVec2, delta: f64) {
-        let mut next = self.state;
-        let least = next.least_zoom(&self.constraints, &self.surface);
-        let zoom = (next.zoom(&self.surface.projection) + delta)
-            .clamp(least, self.constraints.max_zoom.max(least));
-        next.zoom_on(&self.surface, self.viewport, at, self.grip(at), zoom);
-        self.user_write(next);
+        self.step(Part::Zoom, delta, Some(at));
     }
 
     /// Turns the map clockwise by `delta` degrees around a pixel, holding
     /// the ground under it: on the terrain, the drawn ground.
     pub(crate) fn rotate_by(&mut self, at: DVec2, delta: f64) {
+        self.step(Part::Bearing, delta, Some(at));
+    }
+
+    /// Tilts by `delta` degrees around the viewport's middle.
+    pub(crate) fn pitch_by(&mut self, delta: f64) {
+        self.step(Part::Pitch, delta, None);
+    }
+
+    /// Steps `part` by `amount` within its limits, as user input.
+    fn step(&mut self, part: Part, amount: f64, at: Option<DVec2>) {
         let mut next = self.state;
-        let bearing = next.bearing + delta;
-        next.rotate_on(&self.surface, self.viewport, at, self.grip(at), bearing);
+        self.stage().step(&mut next, part, amount, at);
         self.user_write(next);
     }
 
@@ -879,11 +880,15 @@ impl Camera {
         (self.state).grip(&self.surface, self.viewport, px, self.terrain.as_deref())
     }
 
-    /// Tilts by `delta` degrees around the viewport's middle.
-    pub(crate) fn pitch_by(&mut self, delta: f64) {
-        let mut next = self.state;
-        next.pitch += delta;
-        self.user_write(next);
+    /// The camera's limits and frame, which steps keep to.
+    fn stage(&self) -> Stage<'_> {
+        Stage {
+            surface: &self.surface,
+            viewport: self.viewport,
+            constraints: &self.constraints,
+            free_bearing: self.globe_free_bearing,
+            terrain: self.terrain.as_deref(),
+        }
     }
 
     /// Advances the running animations to `now`, then queues this frame's
@@ -911,21 +916,23 @@ impl Camera {
                 .terrain
                 .as_deref()
                 .filter(|_| !running.user && running.aims)
-                && let Some(ground) = running.motion.destination().and_then(|w| terrain.at(w))
+                && let Motion::Path(path) = &mut running.motion
+                && let Some(ground) = terrain.at(path.destination())
             {
-                running.motion.aim_elevation(ground.0, running.elapsed);
+                path.aim_elevation(ground.0, running.elapsed);
             }
             let elapsed = now - *running.started.get_or_insert(now);
             running.elapsed = elapsed;
             user |= running.user;
             match &mut running.motion {
-                Motion::Momentum(momentum) => momentum.apply(&mut next, elapsed, &stage),
-                // A glide moves the camera on from where it is, and owns
-                // all of it.
-                motion @ Motion::Glide { .. } => motion.apply(&mut next, elapsed, &stage),
-                motion => {
+                // Steps move the camera on from where it is, each part
+                // within the properties it holds.
+                Motion::Momentum(momentum) | Motion::Delta(momentum) => {
+                    momentum.apply(&mut next, elapsed, &stage);
+                }
+                Motion::Path(path) => {
                     let mut at = next;
-                    motion.apply(&mut at, elapsed, &stage);
+                    path.apply(&mut at, elapsed, stage.surface, stage.viewport);
                     take(&mut next, &at, running.fields, stage.surface);
                 }
             }
@@ -1206,7 +1213,6 @@ mod tests {
     }
 
     use super::*;
-    use crate::animate::{Easing, Track};
     use orb_crs::TileMatrixSet;
 
     fn camera() -> Camera {
@@ -1931,84 +1937,6 @@ mod tests {
             assert!(!camera.frame(0.0), "{options:?} lands at once");
             assert!((camera.state().target.lon - to.lon).abs() < 1e-9);
             assert!((camera.state().zoom(&mercator()) - 10.0).abs() < 1e-9);
-        }
-    }
-
-    #[test]
-    fn glides_continue_and_compose() {
-        let mut camera = camera();
-        let start = camera.state().zoom(&mercator());
-        let track = Track {
-            amount: 1.0,
-            duration: 200.0,
-            easing: Easing::DEFAULT,
-        };
-        camera.glide(
-            Glide {
-                zoom: Some(track),
-                around: Some(DVec2::new(100.0, 100.0)),
-                ..Glide::default()
-            },
-            0.0,
-        );
-        camera.frame(100.0);
-        // A second wheel step adds to what's left.
-        camera.glide(
-            Glide {
-                zoom: Some(track),
-                around: Some(DVec2::new(100.0, 100.0)),
-                ..Glide::default()
-            },
-            100.0,
-        );
-        let mut t = 100.0;
-        while camera.frame(t) {
-            t += 16.0;
-        }
-        assert!((camera.state().zoom(&mercator()) - (start + 2.0)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn a_retargeted_glide_keeps_its_speed() {
-        let track = Track {
-            amount: 1.0,
-            duration: 200.0,
-            easing: Easing::DEFAULT,
-        };
-        let glide = Glide {
-            zoom: Some(track),
-            around: Some(DVec2::new(100.0, 100.0)),
-            ..Glide::default()
-        };
-        // A second wheel notch 20, 50 or 80 ms into the first: restarting
-        // `ease` from rest would slow the zoom to its start slope, 0.4×
-        // its average speed (2.21 levels per 200 ms down to 0.64 at 50 ms).
-        for at in [20.0, 50.0, 80.0] {
-            let mut camera = camera();
-            let zoom = |camera: &Camera| camera.state().zoom(&mercator());
-            let from = zoom(&camera);
-            camera.glide(glide, 0.0);
-            // Levels per 0.1 ms on either side.
-            camera.frame(at - 0.1);
-            let before = zoom(&camera);
-            camera.frame(at);
-            let speed = zoom(&camera) - before;
-            camera.glide(glide, at);
-            let start = zoom(&camera);
-            camera.frame(at + 0.1);
-            let after = zoom(&camera) - start;
-            assert!(
-                (after / speed - 1.0).abs() < 0.02,
-                "{at} ms in: {speed} then {after} levels per 0.1 ms"
-            );
-            let mut t = at + 0.1;
-            while camera.frame(t) {
-                t += 16.0;
-            }
-            assert!(
-                (zoom(&camera) - (from + 2.0)).abs() < 1e-6,
-                "and zooms both"
-            );
         }
     }
 

@@ -1,11 +1,11 @@
-//! Camera animations: `easeTo` and `flyTo` after GL JS, glides (smooth
-//! wheel zoom) whose properties ease independently, and gesture momentum
-//! (`crate::momentum`).
+//! Camera animations: `easeTo` and `flyTo` after GL JS, and the moves
+//! frames step on by deltas, a gesture's momentum and a discrete delta's
+//! eased step (`crate::momentum`).
 
 use glam::DVec2;
 use orb_crs::{Geodetic, Metres, sphere};
 
-use crate::momentum::Stage;
+use crate::momentum::Momentum;
 use crate::moves::wrap_bearing;
 use crate::{CameraState, Viewport};
 use orb_crs::Surface;
@@ -160,142 +160,39 @@ impl Default for FlyOptions {
     }
 }
 
-/// One property's share of a glide: a total change spread over time.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Track<T> {
-    pub amount: T,
-    /// Milliseconds.
-    pub duration: f64,
-    pub easing: Easing,
-}
-
-/// How far a retargeted track's curve reaches toward its start speed: the
-/// length of its first control point from the origin, as GL JS's
-/// `_smoothOutEasing` keeps it (and as `ease`'s (0.25, 0.1) is long).
-const RETARGET_HANDLE: f64 = 0.27;
-
-/// A track's amount, for matching speeds along it.
-pub(crate) trait Amount:
-    Copy + std::ops::AddAssign + std::ops::Mul<f64, Output = Self>
-{
-    fn dot(self, other: Self) -> f64;
-}
-
-impl Amount for f64 {
-    fn dot(self, other: Self) -> f64 {
-        self * other
-    }
-}
-
-impl Amount for DVec2 {
-    fn dot(self, other: Self) -> f64 {
-        DVec2::dot(self, other)
-    }
-}
-
-impl<T: Amount> Track<T> {
-    /// What the track has left `elapsed` milliseconds in, and how fast it
-    /// moves then, per millisecond.
-    fn rest(&self, elapsed: f64) -> (T, T) {
-        if self.duration <= 0.0 {
-            return (self.amount * 0.0, self.amount * 0.0);
-        }
-        let t = elapsed / self.duration;
-        (
-            self.amount * (1.0 - self.easing.at(t)),
-            self.amount * (self.easing.slope(t) / self.duration),
-        )
-    }
-
-    /// Takes over from a track interrupted with `rest` left to move at
-    /// `velocity` per millisecond: this one moves the rest as well, and
-    /// starts at that speed, so the motion doesn't stall. Its curve's
-    /// first control point turns to the start slope that speed needs (a
-    /// Bézier leaves its start toward that point) and its second stays.
-    fn continue_from(&mut self, (rest, velocity): (T, T)) {
-        self.amount += rest;
-        let length = self.amount.dot(self.amount);
-        // The start slope, in the curve's units: the velocity along the
-        // new amount, over the amount's average speed.
-        let slope = match length > 0.0 && self.duration > 0.0 {
-            true => velocity.dot(self.amount) / length * self.duration,
-            false => 0.0,
-        };
-        let (x2, y2) = match self.easing {
-            Easing::Bezier([_, _, x2, y2]) => (x2, y2),
-            Easing::Linear => (2.0 / 3.0, 2.0 / 3.0),
-        };
-        let x1 = RETARGET_HANDLE / slope.mul_add(slope, 1.0).sqrt();
-        self.easing = Easing::Bezier([x1, slope * x1, x2, y2]);
-    }
-}
-
-/// What a running glide has left of each track, and how fast it moves
-/// it, per millisecond.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct GlideRest {
-    pan: Option<(DVec2, DVec2)>,
-    zoom: Option<(f64, f64)>,
-    bearing: Option<(f64, f64)>,
-    pitch: Option<(f64, f64)>,
-}
-
-/// A move continued over time by deltas: a smooth wheel zoom. Each
-/// property eases on its own schedule.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct Glide {
-    /// Pixels the ground moves on screen.
-    pub pan: Option<Track<DVec2>>,
-    /// Zoom levels.
-    pub zoom: Option<Track<f64>>,
-    /// Degrees clockwise.
-    pub bearing: Option<Track<f64>>,
-    pub pitch: Option<Track<f64>>,
-    /// The pixel zoom and rotation keep in place; the viewport's middle if
-    /// unset.
-    pub around: Option<DVec2>,
-}
-
-impl Glide {
-    fn duration(&self) -> f64 {
-        let d = |t: Option<f64>| t.unwrap_or(0.0);
-        d(self.pan.map(|t| t.duration))
-            .max(d(self.zoom.map(|t| t.duration)))
-            .max(d(self.bearing.map(|t| t.duration)))
-            .max(d(self.pitch.map(|t| t.duration)))
-    }
-
-    /// Takes over from an interrupted glide: each track both move adds
-    /// what that one had left and starts at its speed (as GL JS's
-    /// `_smoothOutEasing` approximates for its wheel zoom).
-    pub(crate) fn continue_from(&mut self, rest: &GlideRest) {
-        fn take<T: Amount>(track: &mut Option<Track<T>>, rest: Option<(T, T)>) {
-            if let (Some(track), Some(rest)) = (track, rest) {
-                track.continue_from(rest);
-            }
-        }
-        take(&mut self.pan, rest.pan);
-        take(&mut self.zoom, rest.zoom);
-        take(&mut self.bearing, rest.bearing);
-        take(&mut self.pitch, rest.pitch);
-    }
-}
-
-fn progress<T>(track: &Option<Track<T>>, elapsed: f64) -> f64 {
-    match track {
-        Some(t) if t.duration > 0.0 => t.easing.at(elapsed / t.duration),
-        _ => 1.0,
-    }
-}
-
 /// The ground point a move turns about, the pixel it stays under and, on
 /// terrain, the ground's own height there (else it stands level with the
 /// target).
 pub(crate) type Around = (Geodetic, DVec2, Option<Metres>);
 
-/// A running animation's path.
+/// A running animation.
 #[derive(Clone, Debug)]
 pub(crate) enum Motion {
+    /// A path to a camera, which each frame samples.
+    Path(Path),
+    /// A gesture's momentum, which each frame steps on within the
+    /// camera's limits.
+    Momentum(Momentum),
+    /// A discrete delta's eased step (a wheel notch), stepped as momentum
+    /// is.
+    Delta(Momentum),
+}
+
+impl Motion {
+    pub(crate) fn duration(&self) -> f64 {
+        match self {
+            Self::Path(path) => path.duration(),
+            Self::Momentum(momentum) | Self::Delta(momentum) => match momentum.active() {
+                true => f64::INFINITY,
+                false => 0.0,
+            },
+        }
+    }
+}
+
+/// An animation's path from one camera to another.
+#[derive(Clone, Debug)]
+pub(crate) enum Path {
     Ease {
         from: CameraState,
         to: CameraState,
@@ -318,13 +215,6 @@ pub(crate) enum Motion {
         easing: Easing,
         sphere: bool,
     },
-    Glide {
-        glide: Glide,
-        /// Each track's progress so far.
-        done: [f64; 4],
-    },
-    /// A gesture's momentum, which the store steps within its limits.
-    Momentum(Box<crate::momentum::Momentum>),
 }
 
 /// van Wijk and Nuij's "Smooth and efficient zooming and panning", as GL JS
@@ -430,7 +320,7 @@ fn over_sphere(from: Geodetic, to: Geodetic, t: f64) -> Geodetic {
     Geodetic::new(from.lon + d_lon * k, lat).wrapped()
 }
 
-impl Motion {
+impl Path {
     pub(crate) fn ease(
         from: CameraState,
         to: CameraState,
@@ -515,30 +405,17 @@ impl Motion {
         }
     }
 
-    pub(crate) fn glide(glide: Glide) -> Self {
-        Self::Glide {
-            glide,
-            done: [0.0; 4],
-        }
-    }
-
     pub(crate) fn duration(&self) -> f64 {
         match self {
             Self::Ease { options, .. } => options.duration,
             Self::Fly { duration, .. } => *duration,
-            Self::Glide { glide, .. } => glide.duration(),
-            Self::Momentum(momentum) => match momentum.active() {
-                true => f64::INFINITY,
-                false => 0.0,
-            },
         }
     }
 
-    /// Where an ease or a flight ends, in world coordinates.
-    pub(crate) fn destination(&self) -> Option<DVec2> {
+    /// Where the path ends, in world coordinates.
+    pub(crate) fn destination(&self) -> DVec2 {
         match self {
-            Self::Ease { to_world, .. } | Self::Fly { to_world, .. } => Some(*to_world),
-            Self::Glide { .. } | Self::Momentum(_) => None,
+            Self::Ease { to_world, .. } | Self::Fly { to_world, .. } => *to_world,
         }
     }
 
@@ -556,7 +433,6 @@ impl Motion {
             Self::Fly {
                 from, to, easing, ..
             } => (from, to, easing.at(t)),
-            Self::Glide { .. } | Self::Momentum(_) => return,
         };
         if ground == to.elevation || !(0.0..1.0).contains(&k) {
             return;
@@ -566,34 +442,22 @@ impl Motion {
         to.elevation = ground;
     }
 
-    /// What a glide `elapsed` milliseconds in has still to move, and how
-    /// fast, for a glide that continues it.
-    pub(crate) fn glide_rest(&self, elapsed: f64) -> Option<GlideRest> {
-        let Self::Glide { glide, .. } = self else {
-            return None;
-        };
-        Some(GlideRest {
-            pan: glide.pan.map(|t| t.rest(elapsed)),
-            zoom: glide.zoom.map(|t| t.rest(elapsed)),
-            bearing: glide.bearing.map(|t| t.rest(elapsed)),
-            pitch: glide.pitch.map(|t| t.rest(elapsed)),
-        })
-    }
-
-    /// Moves `camera` to the animation's state `elapsed` milliseconds in.
-    /// A glide's moves hold the drawn ground on `stage`'s terrain
-    /// ([`CameraState::grip`]).
-    pub(crate) fn apply(&mut self, camera: &mut CameraState, elapsed: f64, stage: &Stage) {
-        let (surface, viewport) = (stage.surface, stage.viewport);
+    /// Moves `camera` to the path's state `elapsed` milliseconds in.
+    pub(crate) fn apply(
+        &self,
+        camera: &mut CameraState,
+        elapsed: f64,
+        surface: &Surface,
+        viewport: Viewport,
+    ) {
         let projection = &surface.projection;
         let t = if self.duration() > 0.0 {
             elapsed / self.duration()
         } else {
             1.0
         };
-        if t >= 1.0
-            && let Self::Ease { to, .. } | Self::Fly { to, .. } = self
-        {
+        if t >= 1.0 {
+            let (Self::Ease { to, .. } | Self::Fly { to, .. }) = self;
             *camera = *to;
             return;
         }
@@ -616,16 +480,7 @@ impl Motion {
                         lerp(from.zoom(projection), to.zoom(projection), k),
                     );
                 }
-                next.bearing = wrap_bearing(lerp(
-                    from.bearing,
-                    nearest_bearing(from.bearing, to.bearing),
-                    k,
-                ));
-                next.pitch = lerp(from.pitch, to.pitch, k);
-                next.roll = wrap_bearing(lerp(from.roll, nearest_bearing(from.roll, to.roll), k));
-                next.elevation = lerp(from.elevation, to.elevation, k);
-                next.fov = lerp(from.fov, to.fov, k);
-                next.padding = from.padding.lerp(to.padding, k);
+                lerp_orientation(&mut next, from, to, k);
                 match around {
                     Some((ground, at, height)) if *sphere => {
                         let height = height.unwrap_or(Metres(next.elevation));
@@ -665,16 +520,7 @@ impl Motion {
                 } else {
                     next.set_zoom(projection, from.zoom(projection) + (1.0 / w).log2());
                 }
-                next.bearing = wrap_bearing(lerp(
-                    from.bearing,
-                    nearest_bearing(from.bearing, to.bearing),
-                    k,
-                ));
-                next.pitch = lerp(from.pitch, to.pitch, k);
-                next.roll = wrap_bearing(lerp(from.roll, nearest_bearing(from.roll, to.roll), k));
-                next.elevation = lerp(from.elevation, to.elevation, k);
-                next.fov = lerp(from.fov, to.fov, k);
-                next.padding = from.padding.lerp(to.padding, k);
+                lerp_orientation(&mut next, from, to, k);
                 if *sphere {
                     next.target = over_sphere(from.target, to.target, u);
                 } else {
@@ -688,40 +534,23 @@ impl Motion {
                 }
                 *camera = next;
             }
-            Self::Glide { glide, done } => {
-                let center = camera.center(viewport);
-                let around = glide.around.unwrap_or(center);
-                let p = [
-                    progress(&glide.pan, elapsed),
-                    progress(&glide.zoom, elapsed),
-                    progress(&glide.bearing, elapsed),
-                    progress(&glide.pitch, elapsed),
-                ];
-                let grip =
-                    |camera: &CameraState, px| camera.grip(surface, viewport, px, stage.terrain);
-                if let Some(pan) = glide.pan {
-                    let delta = pan.amount * (p[0] - done[0]);
-                    let plane = grip(camera, center);
-                    camera.pan_with(surface, viewport, center, center + delta, plane, None);
-                }
-                if let Some(zoom) = glide.zoom {
-                    let to = camera.zoom(projection) + zoom.amount * (p[1] - done[1]);
-                    let plane = grip(camera, around);
-                    camera.zoom_on(surface, viewport, around, plane, to);
-                }
-                if let Some(bearing) = glide.bearing {
-                    let to = camera.bearing + bearing.amount * (p[2] - done[2]);
-                    let plane = grip(camera, around);
-                    camera.rotate_on(surface, viewport, around, plane, to);
-                }
-                if let Some(pitch) = glide.pitch {
-                    camera.pitch += pitch.amount * (p[3] - done[3]);
-                }
-                *done = p;
-            }
-            Self::Momentum(_) => unreachable!("the store steps momentum"),
         }
     }
+}
+
+/// Sets `camera`'s orientation, elevation, field of view and padding `k`
+/// of the way from `from`'s to `to`'s, turning the short way round.
+fn lerp_orientation(camera: &mut CameraState, from: &CameraState, to: &CameraState, k: f64) {
+    camera.bearing = wrap_bearing(lerp(
+        from.bearing,
+        nearest_bearing(from.bearing, to.bearing),
+        k,
+    ));
+    camera.pitch = lerp(from.pitch, to.pitch, k);
+    camera.roll = wrap_bearing(lerp(from.roll, nearest_bearing(from.roll, to.roll), k));
+    camera.elevation = lerp(from.elevation, to.elevation, k);
+    camera.fov = lerp(from.fov, to.fov, k);
+    camera.padding = from.padding.lerp(to.padding, k);
 }
 
 #[cfg(test)]

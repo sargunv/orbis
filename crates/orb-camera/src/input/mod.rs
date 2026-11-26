@@ -40,8 +40,7 @@ pub use options::{Fling, GestureOptions, Movement, Thresholds};
 use rates::*;
 use velocity::VelocityTracker;
 
-use crate::Easing;
-use crate::animate::{Glide, Track};
+use crate::momentum::Delta;
 #[cfg(doc)]
 use crate::{Camera, GestureMomentum};
 use glam::DVec2;
@@ -1137,19 +1136,12 @@ impl Interaction {
             return false;
         }
         if discrete {
-            fn track<T>(amount: T) -> Track<T> {
-                Track {
-                    amount,
-                    duration: NOTCH_DURATION,
-                    easing: Easing::DEFAULT,
-                }
-            }
-            self.camera(Step::Glide(Box::new(Glide {
-                pan: pan.map(track),
-                zoom: zoom.map(track),
-                bearing: bearing.map(track),
-                pitch: pitch.map(track),
-                around: Some(position),
+            self.camera(Step::Delta(Box::new(Delta {
+                pan: pan.unwrap_or_default(),
+                zoom: zoom.unwrap_or_default(),
+                bearing: bearing.unwrap_or_default(),
+                pitch: pitch.unwrap_or_default(),
+                anchor: position,
             })));
             return true;
         }

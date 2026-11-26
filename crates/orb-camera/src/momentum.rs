@@ -6,6 +6,11 @@
 //! its own [`MomentumDecay`], and may settle on a [`MomentumSnap`]. Steps
 //! apply to the camera as it stands, so bounds and limits that hold a part
 //! in place stop it.
+//!
+//! A discrete delta's eased step (a wheel notch) runs as a momentum too:
+//! each part eases its amount, and one that follows another before it
+//! ends takes over what that one had left at the speed it had
+//! ([`Momentum::delta`]).
 
 use glam::DVec2;
 
@@ -270,38 +275,36 @@ impl Plan {
             return None;
         }
         let speed = speed.min(decay.max_speed);
-        let (distance, duration, rate, easing) = match decay.model {
+        let (half_life, stop_speed) = match decay.model {
             DecayModel::Friction {
                 half_life,
                 stop_speed,
-            } => {
-                let half_life = half_life / 1000.0;
-                if half_life.is_nan()
-                    || half_life <= 0.0
-                    || stop_speed.is_nan()
-                    || stop_speed <= 0.0
-                {
-                    return None;
-                }
-                let rate = std::f64::consts::LN_2 / half_life;
-                let speed = speed.min(stop_speed + rate * decay.max_distance);
-                if speed <= stop_speed {
-                    return None;
-                }
-                let seconds = (speed / stop_speed).ln() / rate;
-                ((speed - stop_speed) / rate, seconds, rate, None)
-            }
+            } => (half_life / 1000.0, stop_speed),
             DecayModel::Ease {
                 distance,
                 duration,
                 easing,
-            } => (
-                distance.min(decay.max_distance),
-                duration / 1000.0,
-                0.0,
-                Some(easing),
-            ),
+            } => return Self::eased(distance.min(decay.max_distance), duration, easing),
         };
+        if half_life.is_nan() || half_life <= 0.0 || stop_speed.is_nan() || stop_speed <= 0.0 {
+            return None;
+        }
+        let rate = std::f64::consts::LN_2 / half_life;
+        let speed = speed.min(stop_speed + rate * decay.max_distance);
+        if speed <= stop_speed {
+            return None;
+        }
+        let seconds = (speed / stop_speed).ln() / rate;
+        Self::checked((speed - stop_speed) / rate, seconds, rate, None)
+    }
+
+    /// Moves `distance` over `duration` milliseconds along `easing`, or
+    /// nothing when it doesn't move.
+    fn eased(distance: f64, duration: f64, easing: Easing) -> Option<Self> {
+        Self::checked(distance, duration / 1000.0, 0.0, Some(easing))
+    }
+
+    fn checked(distance: f64, duration: f64, rate: f64, easing: Option<Easing>) -> Option<Self> {
         (distance > 0.0 && duration > 0.0 && duration.is_finite()).then_some(Self {
             distance,
             duration,
@@ -358,6 +361,16 @@ impl Scalar {
     fn active(&self) -> bool {
         self.moving || self.snap_pending || self.settling.is_some()
     }
+
+    /// What the part has left to move `t` seconds in and how fast it
+    /// moves then, per second, while it moves.
+    fn rest(&self, t: f64) -> Option<(f64, f64)> {
+        let glide = self.glide.filter(|_| self.moving)?;
+        Some((
+            self.total * (1.0 - glide.progress(t)),
+            self.total * glide.speed(t),
+        ))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -368,9 +381,71 @@ struct Pan {
     moving: bool,
 }
 
-const ZOOM: usize = 0;
-const BEARING: usize = 1;
-const PITCH: usize = 2;
+impl Pan {
+    /// What the pan has left to move `t` seconds in and how fast it moves
+    /// then, per second, while it moves.
+    fn rest(&self, t: f64) -> Option<(DVec2, DVec2)> {
+        self.moving.then(|| {
+            (
+                self.total * (1.0 - self.glide.progress(t)),
+                self.total * self.glide.speed(t),
+            )
+        })
+    }
+}
+
+/// A discrete delta's amounts, which [`Momentum::delta`] eases: logical
+/// pixels the map's content moves on screen, zoom levels, and degrees
+/// clockwise of bearing and of pitch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Delta {
+    pub pan: DVec2,
+    pub zoom: f64,
+    pub bearing: f64,
+    pub pitch: f64,
+    /// The logical pixel the zoom and the bearing keep in place.
+    pub anchor: DVec2,
+}
+
+/// How far a retargeted part's curve reaches toward its start speed: the
+/// length of its first control point from the origin, as GL JS's
+/// `_smoothOutEasing` keeps it (and as `ease`'s (0.25, 0.1) is long).
+const RETARGET_HANDLE: f64 = 0.27;
+
+/// `easing` turned to leave its start at `slope`, in the curve's units
+/// (the start speed over the average): a Bézier leaves its start toward
+/// its first control point, which turns to that slope, and its second
+/// stays.
+fn starting_at(easing: Easing, slope: f64) -> Easing {
+    let (x2, y2) = match easing {
+        Easing::Bezier([_, _, x2, y2]) => (x2, y2),
+        Easing::Linear => (2.0 / 3.0, 2.0 / 3.0),
+    };
+    let x1 = RETARGET_HANDLE / slope.mul_add(slope, 1.0).sqrt();
+    Easing::Bezier([x1, slope * x1, x2, y2])
+}
+
+/// A property a camera steps by an amount, about a pixel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Part {
+    Zoom,
+    Bearing,
+    Pitch,
+}
+
+impl Part {
+    /// The scalar parts, in the order a momentum holds them.
+    const ALL: [Self; 3] = [Self::Zoom, Self::Bearing, Self::Pitch];
+
+    /// The property it moves.
+    fn field(self) -> Fields {
+        match self {
+            Self::Zoom => Fields::ZOOM,
+            Self::Bearing => Fields::BEARING,
+            Self::Pitch => Fields::PITCH,
+        }
+    }
+}
 
 /// A momentum under way, which the camera store runs frame by frame.
 #[derive(Clone, Debug)]
@@ -383,9 +458,6 @@ pub(crate) struct Momentum {
     /// which stopped that part.
     replaced: bool,
 }
-
-/// The property each scalar part moves.
-const PART_FIELDS: [Fields; 3] = [Fields::ZOOM, Fields::BEARING, Fields::PITCH];
 
 /// The camera's limits and frame, which each step keeps to.
 pub(crate) struct Stage<'a> {
@@ -400,12 +472,19 @@ pub(crate) struct Stage<'a> {
 }
 
 impl Stage<'_> {
-    fn value(&self, camera: &CameraState, part: usize) -> f64 {
+    fn value(&self, camera: &CameraState, part: Part) -> f64 {
         match part {
-            ZOOM => camera.zoom(&self.surface.projection),
-            BEARING => camera.bearing,
-            _ => camera.pitch,
+            Part::Zoom => camera.zoom(&self.surface.projection),
+            Part::Bearing => camera.bearing,
+            Part::Pitch => camera.pitch,
         }
+    }
+
+    /// The zoom range, which may be empty above: the least zoom the
+    /// bounds and the view allow, and the greatest.
+    fn zoom_range(&self, camera: &CameraState) -> (f64, f64) {
+        let least = camera.least_zoom(self.constraints, self.surface);
+        (least, self.constraints.max_zoom.max(least))
     }
 
     fn settle(&self, camera: &mut CameraState) {
@@ -439,19 +518,31 @@ impl Stage<'_> {
         }
     }
 
-    fn step(&self, camera: &mut CameraState, part: usize, amount: f64, anchor: Option<DVec2>) {
+    /// Steps `part` of `camera` by `amount` within its limits, holding
+    /// the ground under `anchor` (the view's centre without one) in
+    /// place: on the terrain, the drawn ground ([`CameraState::grip`]).
+    /// Every move by an amount steps through here: a gesture's, its
+    /// momentum's, and a discrete delta's eased step.
+    pub(crate) fn step(
+        &self,
+        camera: &mut CameraState,
+        part: Part,
+        amount: f64,
+        anchor: Option<DVec2>,
+    ) {
         let (surface, viewport) = (self.surface, self.viewport);
         let at = anchor.unwrap_or_else(|| camera.center(viewport));
         let plane = camera.grip(surface, viewport, at, self.terrain);
         match part {
-            ZOOM => {
-                let least = camera.least_zoom(self.constraints, surface);
-                let zoom = (camera.zoom(&surface.projection) + amount)
-                    .clamp(least, self.constraints.max_zoom.max(least));
+            Part::Zoom => {
+                let (least, most) = self.zoom_range(camera);
+                let zoom = (camera.zoom(&surface.projection) + amount).clamp(least, most);
                 camera.zoom_on(surface, viewport, at, plane, zoom);
             }
-            BEARING => camera.rotate_on(surface, viewport, at, plane, camera.bearing + amount),
-            _ => {
+            Part::Bearing => {
+                camera.rotate_on(surface, viewport, at, plane, camera.bearing + amount);
+            }
+            Part::Pitch => {
                 let (min, max) = (
                     self.constraints.min_pitch,
                     self.constraints.max_pitch.max(self.constraints.min_pitch),
@@ -500,12 +591,12 @@ impl Momentum {
                 }
             })
         });
-        for (i, part) in parts.iter_mut().enumerate() {
+        for (i, part) in Part::ALL.into_iter().zip(&mut parts) {
             if let Some(part) = part {
                 let value = stage.value(camera, i);
                 part.snap_pending = part
                     .snap
-                    .is_some_and(|s| part.moving || s.delta(value, i == BEARING) != 0.0);
+                    .is_some_and(|s| part.moving || s.delta(value, i == Part::Bearing) != 0.0);
             }
         }
         let moving = pan.is_some() || parts.iter().flatten().any(|p| p.moving);
@@ -516,10 +607,10 @@ impl Momentum {
                 .all(|p| p.snap.is_some_and(|s| s.duration <= 0.0))
         {
             // Nothing moves, and what settles does so at once.
-            for (i, part) in parts.iter().enumerate() {
+            for (i, part) in Part::ALL.into_iter().zip(parts) {
                 if let Some(part) = part.filter(|p| p.snap_pending) {
                     let snap = part.snap.expect("pending snaps have one");
-                    let delta = snap.delta(stage.value(camera, i), i == BEARING);
+                    let delta = snap.delta(stage.value(camera, i), i == Part::Bearing);
                     stage.step(camera, i, delta, part.anchor);
                 }
             }
@@ -533,12 +624,84 @@ impl Momentum {
         })
     }
 
+    /// Eases `delta` over `duration` milliseconds along `easing`, or
+    /// `None` when nothing moves. Following `previous`, a delta's step
+    /// still running, each part also moves what that one had left, and
+    /// starts at the speed it had (as GL JS's `_smoothOutEasing`
+    /// approximates for its wheel zoom), so a quick run of notches speeds
+    /// up instead of stalling at each. The zoom stops at the zoom range,
+    /// as GL JS's wheel target does: levels past a limit would hold the
+    /// zoom there once the scroll turned back, until as many came back.
+    pub(crate) fn delta(
+        delta: &Delta,
+        duration: f64,
+        easing: Easing,
+        previous: Option<&Self>,
+        camera: &CameraState,
+        stage: &Stage,
+    ) -> Option<Self> {
+        let t = previous.map_or(0.0, |p| p.elapsed);
+        let seconds = duration / 1000.0;
+        // A part continuing another starts at its speed: the velocity
+        // along the new amount, over the amount's average speed.
+        let curve = |slope: Option<f64>| slope.map_or(easing, |s| starting_at(easing, s));
+        let pan = {
+            let rest = previous.and_then(|p| p.pan?.rest(t));
+            let total = delta.pan + rest.map_or(DVec2::ZERO, |(left, _)| left);
+            let length = total.length_squared();
+            let slope = rest.map(|(_, v)| match length > 0.0 {
+                true => v.dot(total) / length * seconds,
+                false => 0.0,
+            });
+            Plan::eased(total.length(), duration, curve(slope)).map(|glide| Pan {
+                glide,
+                total,
+                applied: 0.0,
+                moving: true,
+            })
+        };
+        let amounts = [delta.zoom, delta.bearing, delta.pitch];
+        let mut parts = [None; 3];
+        for ((part, amount), slot) in Part::ALL.into_iter().zip(amounts).zip(&mut parts) {
+            let rest = previous.and_then(|p| p.parts[part as usize]?.rest(t));
+            let mut total = amount + rest.map_or(0.0, |(left, _)| left);
+            if part == Part::Zoom {
+                // A zoom outside the range may still move toward it.
+                let zoom = stage.value(camera, part);
+                let (least, most) = stage.zoom_range(camera);
+                total = total.clamp((least - zoom).min(0.0), (most - zoom).max(0.0));
+            }
+            let slope = rest.map(|(_, v)| match total != 0.0 {
+                true => v / total * seconds,
+                false => 0.0,
+            });
+            let glide = Plan::eased(total.abs(), duration, curve(slope));
+            *slot = glide.map(|glide| Scalar {
+                glide: Some(glide),
+                total,
+                applied: 0.0,
+                moving: true,
+                // A tilt holds the view's centre, as a continuous one does.
+                anchor: (part != Part::Pitch).then_some(delta.anchor),
+                snap: None,
+                snap_pending: false,
+                settling: None,
+            });
+        }
+        (pan.is_some() || parts.iter().any(Option::is_some)).then_some(Self {
+            pan,
+            parts,
+            elapsed: 0.0,
+            replaced: false,
+        })
+    }
+
     /// The properties a part needs: its own, and the center when it turns
     /// about an anchor.
-    fn part_fields(i: usize, part: &Scalar) -> Fields {
+    fn part_fields(i: Part, part: &Scalar) -> Fields {
         match part.anchor {
-            Some(_) => PART_FIELDS[i] | Fields::CENTER,
-            None => PART_FIELDS[i],
+            Some(_) => i.field() | Fields::CENTER,
+            None => i.field(),
         }
     }
 
@@ -548,7 +711,7 @@ impl Momentum {
         if self.pan.is_some_and(|p| p.moving) {
             fields |= Fields::CENTER;
         }
-        for (i, part) in self.parts.iter().enumerate() {
+        for (i, part) in Part::ALL.into_iter().zip(self.parts) {
             if let Some(part) = part.filter(Scalar::active) {
                 fields |= Self::part_fields(i, &part);
             }
@@ -565,7 +728,7 @@ impl Momentum {
             pan.moving = false;
             self.replaced = true;
         }
-        for (i, slot) in self.parts.iter_mut().enumerate() {
+        for (i, slot) in Part::ALL.into_iter().zip(&mut self.parts) {
             let Some(part) = slot.as_mut().filter(|p| p.active()) else {
                 continue;
             };
@@ -606,9 +769,9 @@ impl Momentum {
                 Some(pan) if pan.moving => pan.total * pan.glide.speed(t),
                 _ => DVec2::ZERO,
             },
-            zoom: speed(&self.parts[ZOOM]),
-            bearing: speed(&self.parts[BEARING]),
-            pitch: speed(&self.parts[PITCH]),
+            zoom: speed(&self.parts[Part::Zoom as usize]),
+            bearing: speed(&self.parts[Part::Bearing as usize]),
+            pitch: speed(&self.parts[Part::Pitch as usize]),
         }
     }
 
@@ -630,7 +793,7 @@ impl Momentum {
                 }
             }
         }
-        for (i, part) in self.parts.iter_mut().enumerate() {
+        for (i, part) in Part::ALL.into_iter().zip(&mut self.parts) {
             let Some(part) = part else { continue };
             if let Some(glide) = part.glide.filter(|_| part.moving) {
                 let progress = glide.progress(t);
@@ -641,7 +804,7 @@ impl Momentum {
                     let before = stage.value(camera, i);
                     stage.step(camera, i, part.total * fraction, part.anchor);
                     // Limits that hold the part stop it; bearing has none.
-                    if i != BEARING && stage.value(camera, i) == before {
+                    if i != Part::Bearing && stage.value(camera, i) == before {
                         part.moving = false;
                     }
                 }
@@ -651,7 +814,7 @@ impl Momentum {
             if part.snap_pending && !part.moving {
                 part.snap_pending = false;
                 let snap = part.snap.expect("pending snaps have one");
-                let delta = snap.delta(stage.value(camera, i), i == BEARING);
+                let delta = snap.delta(stage.value(camera, i), i == Part::Bearing);
                 if delta != 0.0 {
                     part.settling = Some((delta, t, 0.0));
                 }
