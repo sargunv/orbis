@@ -1339,7 +1339,8 @@ impl Map {
     /// data, load, idle, errors, the camera's moves and clicks, then the
     /// warnings since, each once per style revision.
     pub fn take_events(&mut self) -> Vec<MapEvent> {
-        // Animations a command stopped since the last frame end now.
+        // Jumps, and animations a command stopped, since the last frame
+        // report now.
         for event in self.camera.take_events() {
             self.events.push(MapEvent::Camera(event));
         }

@@ -337,8 +337,8 @@ impl Map {
     }
 
     /// Whether an animation or a glide moves the camera on its own: a jump
-    /// that ends the last one makes it false at once, before the frame
-    /// that reports the move's end.
+    /// that ends the last one makes it false at once, and reports the
+    /// move's end as it does.
     pub fn is_animating(&self) -> bool {
         self.map.is_animating()
     }
@@ -653,7 +653,8 @@ impl Map {
     /// Moves the camera at once. Each move takes only the properties it
     /// sets from the animations running, which go on moving the others,
     /// as in MapLibre Native; one left with nothing to move ends
-    /// interrupted.
+    /// interrupted. Its camera events come out as it moves, not with the
+    /// next frame.
     pub fn jump_to(&mut self, target: &CameraTarget) {
         self.map.jump_to(target);
         self.dirty = true;

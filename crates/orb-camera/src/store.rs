@@ -218,7 +218,7 @@ pub struct Camera {
     /// How fast a momentum the first press of the gesture under way
     /// stopped still moved, which its release adds to its own.
     pub(crate) caught: Option<MomentumVelocity>,
-    /// The state the last frame's events reported.
+    /// The state the last events reported.
     reported: CameraState,
     /// Which changes have started and not ended, in [`CHANGES`] order.
     active: [bool; 4],
@@ -506,7 +506,9 @@ impl Camera {
     /// none running, those come from the camera last asked for while
     /// nothing has moved it since, before the limits, so they don't
     /// depend on whether the style came first; an ease, even of no
-    /// duration, moves from the camera on screen.
+    /// duration, moves from the camera on screen. It reports its change
+    /// as it makes it, as GL JS's does: at rest it starts, moves and ends
+    /// before the next frame, which reports nothing of it.
     pub fn jump_to(&mut self, target: &CameraTarget) {
         let (asked, to, around) = self.jump_target(target);
         self.yield_fields(Self::claims(target, around.is_some(), self.aims(target)).0);
@@ -515,6 +517,7 @@ impl Camera {
         self.write(to);
         // Animations left moving the rest move it on from here.
         self.asked = self.running.is_empty().then_some(asked);
+        self.report();
     }
 
     /// Moves to `state` at once, as [`jump_to`](Self::jump_to) does, for
@@ -525,6 +528,7 @@ impl Camera {
         self.user = false;
         self.write(state);
         self.asked = Some(state);
+        self.report();
     }
 
     /// Animates to `target` (GL JS `easeTo`), starting at `start` on the
@@ -924,7 +928,8 @@ impl Camera {
         !self.running.is_empty()
     }
 
-    /// The events queued by frames since the last call.
+    /// The events queued by frames, jumps and stopped animations since
+    /// the last call.
     pub fn take_events(&mut self) -> Vec<CameraEvent> {
         std::mem::take(&mut self.events)
     }
@@ -1162,13 +1167,12 @@ mod tests {
     }
 
     #[test]
-    fn a_jump_starts_moves_and_ends_in_one_frame() {
+    fn a_jump_starts_moves_and_ends_as_it_is_made() {
         let mut camera = camera();
         camera.jump_to(&CameraTarget {
             zoom: Some(12.0),
             ..CameraTarget::default()
         });
-        assert!(!camera.frame(0.0));
         assert_eq!(
             changes(&camera.take_events()),
             [
@@ -1180,9 +1184,54 @@ mod tests {
                 (Change::Move, Phase::End),
             ]
         );
-        // Nothing changes, nothing is reported.
-        assert!(!camera.frame(16.0));
+        // The frame that shows it reports nothing more.
+        assert!(!camera.frame(0.0));
         assert!(camera.take_events().is_empty());
+        // A jump that changes nothing reports nothing.
+        camera.jump_to(&CameraTarget {
+            zoom: Some(12.0),
+            ..CameraTarget::default()
+        });
+        assert!(camera.take_events().is_empty());
+    }
+
+    /// An ease asked for after a jump, before a frame, is a move of its
+    /// own: the jump's change has ended by the time it starts.
+    #[test]
+    fn a_jump_ends_before_an_ease_after_it_starts() {
+        let mut camera = camera();
+        camera.jump_to(&CameraTarget {
+            bearing: Some(30.0),
+            ..CameraTarget::default()
+        });
+        camera.ease_to(
+            &CameraTarget {
+                zoom: Some(12.0),
+                ..CameraTarget::default()
+            },
+            EaseOptions {
+                duration: 100.0,
+                easing: Easing::Linear,
+            },
+            None,
+        );
+        camera.frame(0.0);
+        camera.frame(50.0);
+        assert_eq!(
+            changes(&camera.take_events()),
+            [
+                (Change::Move, Phase::Start),
+                (Change::Rotate, Phase::Start),
+                (Change::Move, Phase::Progress),
+                (Change::Rotate, Phase::Progress),
+                (Change::Rotate, Phase::End),
+                (Change::Move, Phase::End),
+                (Change::Move, Phase::Start),
+                (Change::Zoom, Phase::Start),
+                (Change::Move, Phase::Progress),
+                (Change::Zoom, Phase::Progress),
+            ]
+        );
     }
 
     #[test]

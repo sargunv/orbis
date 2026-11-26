@@ -277,16 +277,23 @@ pub(crate) struct MapEntry {
     pub(crate) groups: u32,
     /// How the camera's latest change was made, for its camera events.
     change: (mln_camera_change_mode, mln_camera_change_source),
-    /// An immediate move raised its camera events with its command, so
-    /// the frame that shows it reports none: Orbis's report of it is
-    /// dropped up to its end. Changes the map makes on its own (a style's
-    /// camera, constraints) report as they show.
+    /// An immediate move raised Native's camera events itself, so its
+    /// command's settle drops the camera changes Orbis reports in it: a
+    /// jump reports as it moves, so that is where its report lands. Moves
+    /// folded into that report go with it: a running animation's step in
+    /// the settle, and a limit's or a resize's since the last report.
+    /// Every other change (a style's camera, a limit) reports as Orbis
+    /// does.
     jumped: bool,
+    /// How the change was made that Orbis's report raised will-change for
+    /// and not yet did-change, so the two alternate though a jump's own
+    /// pair stands apart: an animation whose start a jump's settle
+    /// dropped raises will-change with its next frame, and one a jump
+    /// ends raises did-change.
+    open: Option<(mln_camera_change_mode, mln_camera_change_source)>,
     /// Transitions a command ended, whose handlers run after its change
     /// is published, with its generation.
     ended: Vec<(EndHandler, mln_camera_transition_outcome)>,
-    /// Camera events of immediate moves, for the next settle.
-    camera_events: Vec<(mln_runtime_event_type, Payload, String)>,
     /// What the C API keeps of the style beyond Orbis's document.
     pub(crate) style: crate::style::StyleState,
     /// Feature queries waiting for Orbis's answer, by its query id, and
@@ -421,7 +428,6 @@ impl MapEntry {
                 t.outcome = Some(MLN_CAMERA_TRANSITION_OUTCOME_CANCELLED);
             }
         }
-        self.jumped = false;
         self.change = match self.map.gesture_motion() {
             orb_api::GestureMotion::Gliding => (
                 MLN_CAMERA_CHANGE_MODE_ANIMATED,
@@ -553,12 +559,10 @@ fn take_events(entry: &mut MapEntry) -> Vec<Box<dyn FnOnce()>> {
     let mut ended = Vec::new();
     let mut waiters = Vec::new();
     {
-        let mut camera_phases = [false; 3];
-        // The report of an immediate move ends with its end phases.
-        let mut jump_ended = false;
-        // The camera events of immediate moves, raised by their commands,
-        // and the transitions they ended.
-        out.append(&mut entry.camera_events);
+        // Is-changing goes out once a settle.
+        let mut progressed = false;
+        let jumped = std::mem::take(&mut entry.jumped);
+        // The transitions commands ended.
         ended.append(&mut entry.ended);
         while let Some(event) = entry.map.poll_event() {
             let event = match event {
@@ -674,28 +678,54 @@ fn take_events(entry: &mut MapEntry) -> Vec<Box<dyn FnOnce()>> {
                 }
                 E::Error { message } => crate::logging::log(MLN_LOG_SEVERITY_ERROR, &message),
                 E::Warning { message } => crate::logging::log(MLN_LOG_SEVERITY_WARNING, &message),
-                // An immediate move raised its events with its command; Orbis
-                // reports it again with the frame that shows it.
-                E::Camera(orb_api::CameraEvent::Changed { phase, .. })
-                    if entry.jumped && !(jump_ended && phase != Phase::End) =>
-                {
-                    jump_ended |= phase == Phase::End;
+                // An immediate move raised Native's events itself, but an
+                // animation's step in its settle may end what an earlier
+                // will-change began.
+                E::Camera(orb_api::CameraEvent::Changed { phase, .. }) if jumped => {
+                    if phase == Phase::End
+                        && let Some((mode, source)) = entry.open.take()
+                    {
+                        let payload = Payload::CameraChange(mode, source);
+                        out.push((
+                            MLN_RUNTIME_EVENT_MAP_CAMERA_DID_CHANGE,
+                            payload,
+                            String::new(),
+                        ));
+                    }
                 }
                 E::Camera(orb_api::CameraEvent::Changed { phase, .. }) => {
-                    if std::mem::take(&mut jump_ended) {
-                        entry.jumped = false;
-                    }
-                    let (kind, i) = match phase {
-                        Phase::Start => (MLN_RUNTIME_EVENT_MAP_CAMERA_WILL_CHANGE, 0),
-                        Phase::Progress => (MLN_RUNTIME_EVENT_MAP_CAMERA_IS_CHANGING, 1),
-                        Phase::End => (MLN_RUNTIME_EVENT_MAP_CAMERA_DID_CHANGE, 2),
-                    };
-                    if !std::mem::replace(&mut camera_phases[i], true) {
+                    // A change whose start a jump's settle dropped starts
+                    // with the frame that next moves it; one that ends
+                    // without moving again raised nothing to end.
+                    if entry.open.is_none() && phase != Phase::End {
+                        entry.open = Some(entry.change);
                         let payload = Payload::CameraChange(entry.change.0, entry.change.1);
-                        if i == 1 {
-                            out.push((kind, Payload::None, String::new()));
-                        } else {
-                            out.push((kind, payload, String::new()));
+                        out.push((
+                            MLN_RUNTIME_EVENT_MAP_CAMERA_WILL_CHANGE,
+                            payload,
+                            String::new(),
+                        ));
+                    }
+                    match phase {
+                        Phase::Start => {}
+                        Phase::Progress => {
+                            if !std::mem::replace(&mut progressed, true) {
+                                out.push((
+                                    MLN_RUNTIME_EVENT_MAP_CAMERA_IS_CHANGING,
+                                    Payload::None,
+                                    String::new(),
+                                ));
+                            }
+                        }
+                        Phase::End => {
+                            if let Some((mode, source)) = entry.open.take() {
+                                let payload = Payload::CameraChange(mode, source);
+                                out.push((
+                                    MLN_RUNTIME_EVENT_MAP_CAMERA_DID_CHANGE,
+                                    payload,
+                                    String::new(),
+                                ));
+                            }
                         }
                     }
                 }
@@ -720,9 +750,6 @@ fn take_events(entry: &mut MapEntry) -> Vec<Box<dyn FnOnce()>> {
                 }
                 _ => {}
             }
-        }
-        if jump_ended {
-            entry.jumped = false;
         }
         // Transitions whose animations ended unreported end with the
         // camera at rest.
@@ -917,13 +944,13 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                     style_waiters: Vec::new(),
                     transitions: Vec::new(),
                     groups: 0,
-                    camera_events: Vec::new(),
                     ended: Vec::new(),
                     change: (
                         MLN_CAMERA_CHANGE_MODE_IMMEDIATE,
                         MLN_CAMERA_CHANGE_SOURCE_COMMAND,
                     ),
                     jumped: false,
+                    open: None,
                     style: Default::default(),
                     queries: Default::default(),
                     query_aliases: Default::default(),
@@ -1880,32 +1907,15 @@ fn update_camera(
     } else {
         mode
     };
-    entry.change = (
-        if immediate {
-            MLN_CAMERA_CHANGE_MODE_IMMEDIATE
-        } else {
-            MLN_CAMERA_CHANGE_MODE_ANIMATED
-        },
-        MLN_CAMERA_CHANGE_SOURCE_COMMAND,
-    );
-    if immediate {
-        // Native reports an immediate move as it makes it.
-        for kind in [
-            MLN_RUNTIME_EVENT_MAP_CAMERA_WILL_CHANGE,
-            MLN_RUNTIME_EVENT_MAP_CAMERA_DID_CHANGE,
-        ] {
-            let payload = Payload::CameraChange(entry.change.0, entry.change.1);
-            entry.camera_events.push((kind, payload, String::new()));
-        }
+    if !immediate {
+        entry.change = (
+            MLN_CAMERA_CHANGE_MODE_ANIMATED,
+            MLN_CAMERA_CHANGE_SOURCE_COMMAND,
+        );
     }
-    // An animation reports its own changes, and an earlier jump's with
-    // them.
-    entry.jumped &= immediate;
     let animation_id = match mode {
         MLN_CAMERA_UPDATE_MODE_JUMP => {
-            let before = entry.map.camera();
-            entry.map.jump_to(t);
-            entry.jumped |= entry.map.camera() != before;
+            jump(entry, |map| map.jump_to(t));
             None
         }
         MLN_CAMERA_UPDATE_MODE_EASE => {
@@ -1941,6 +1951,42 @@ fn update_camera(
     };
     track(entry, animation_id, animation);
     Ok(())
+}
+
+/// Moves the camera at once for a command, reporting it as Native reports
+/// an immediate update, as it makes it, whether it moves the camera or
+/// not: will-change then did-change, with no is-changing, which
+/// animations' frames raise. A change it ends that raised will-change
+/// raises did-change first; animations it leaves running keep their
+/// change for their later events.
+fn jump(entry: &mut MapEntry, to: impl FnOnce(&mut orb_api::Map)) {
+    let before = entry.change;
+    entry.change = (
+        MLN_CAMERA_CHANGE_MODE_IMMEDIATE,
+        MLN_CAMERA_CHANGE_SOURCE_COMMAND,
+    );
+    to(&mut entry.map);
+    if !entry.map.is_moving()
+        && let Some((mode, source)) = entry.open.take()
+    {
+        let payload = Payload::CameraChange(mode, source);
+        entry.event(
+            MLN_RUNTIME_EVENT_MAP_CAMERA_DID_CHANGE,
+            payload,
+            String::new(),
+        );
+    }
+    for kind in [
+        MLN_RUNTIME_EVENT_MAP_CAMERA_WILL_CHANGE,
+        MLN_RUNTIME_EVENT_MAP_CAMERA_DID_CHANGE,
+    ] {
+        let payload = Payload::CameraChange(entry.change.0, entry.change.1);
+        entry.event(kind, payload, String::new());
+    }
+    entry.jumped = true;
+    if entry.map.is_animating() {
+        entry.change = before;
+    }
 }
 
 /// Keeps a command's animation for its end handler and its transition
@@ -2290,23 +2336,7 @@ command!(
             if has(MLN_FREE_CAMERA_OPTION_ORIENTATION) {
                 (free.bearing, free.pitch, free.roll) = bearing_pitch_roll(q.normalize());
             }
-            entry.change = (
-                MLN_CAMERA_CHANGE_MODE_IMMEDIATE,
-                MLN_CAMERA_CHANGE_SOURCE_COMMAND,
-            );
-            let before = entry.map.camera();
-            entry.map.jump_to_free(&free);
-            if entry.map.camera() != before {
-                // Native reports an immediate move as it makes it.
-                for kind in [
-                    MLN_RUNTIME_EVENT_MAP_CAMERA_WILL_CHANGE,
-                    MLN_RUNTIME_EVENT_MAP_CAMERA_DID_CHANGE,
-                ] {
-                    let payload = Payload::CameraChange(entry.change.0, entry.change.1);
-                    entry.camera_events.push((kind, payload, String::new()));
-                }
-                entry.jumped = true;
-            }
+            jump(entry, |map| map.jump_to_free(&free));
             Ok(())
         }))
     }
@@ -2744,5 +2774,252 @@ pub unsafe extern "C" fn mln_camera_for_tile(
             out_camera.write(camera);
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::c_void;
+    use std::sync::mpsc::{Receiver, Sender, channel};
+    use std::time::Duration;
+
+    use super::*;
+    use crate::delivery::testing::{Report, completion};
+    use crate::runtime::{mln_runtime_create, mln_runtime_release, mln_runtime_set_event_handler};
+
+    const WAIT: Duration = Duration::from_secs(10);
+
+    /// Sends each camera event's type on the sender `user_data` holds.
+    unsafe extern "C" fn record(user_data: *mut c_void, batch: *const mln_event_batch_view) {
+        // SAFETY: the sender `listen` lent, and the batch for the call.
+        let (tx, batch) = unsafe { (&*user_data.cast::<Sender<u32>>(), &*batch) };
+        for i in 0..batch.event_count {
+            // SAFETY: `event_count` events, `event_size` bytes apart.
+            let event = unsafe {
+                &*(batch.events.cast::<u8>())
+                    .add(i * batch.event_size as usize)
+                    .cast::<mln_runtime_event>()
+            };
+            if (MLN_RUNTIME_EVENT_MAP_CAMERA_WILL_CHANGE..=MLN_RUNTIME_EVENT_MAP_CAMERA_DID_CHANGE)
+                .contains(&event.type_)
+            {
+                let _ = tx.send(event.type_);
+            }
+        }
+    }
+
+    unsafe extern "C" fn drop_sender(user_data: *mut c_void) {
+        // SAFETY: the sender `listen` leaked, released once.
+        drop(unsafe { Box::from_raw(user_data.cast::<Sender<u32>>()) });
+    }
+
+    /// The runtime's camera events, by type.
+    fn listen(runtime: mln_runtime) -> Receiver<u32> {
+        let (tx, rx) = channel();
+        let handler = mln_runtime_event_handler {
+            size: size_of::<mln_runtime_event_handler>() as u32,
+            callback: Some(record),
+            user_data: Box::into_raw(Box::new(tx)).cast(),
+            release_user_data: Some(drop_sender),
+            queue: mln_delivery_queue(0),
+        };
+        let (c, set) = completion();
+        // SAFETY: a live runtime, a sized handler, a valid completion.
+        let status =
+            unsafe { mln_runtime_set_event_handler(runtime, &handler, &c, std::ptr::null_mut()) };
+        assert_eq!(status, MLN_STATUS_OK);
+        assert_eq!(
+            set.recv_timeout(WAIT).unwrap(),
+            Report::Result(MLN_STATUS_OK, String::new())
+        );
+        rx
+    }
+
+    fn update(map: mln_map, mode: mln_camera_update_mode, camera: mln_camera_options, ms: f64) {
+        // SAFETY: plain C data.
+        let mut update: mln_camera_update = unsafe { std::mem::zeroed() };
+        update.size = size_of::<mln_camera_update>() as u32;
+        update.mode = mode;
+        update.camera = camera;
+        update.animation.fields = MLN_ANIMATION_OPTION_DURATION;
+        update.animation.duration_ms = ms;
+        let (c, applied) = completion();
+        // SAFETY: a live map, a sized update, a valid completion.
+        let status = unsafe { mln_map_update_camera(map, &update, &c, std::ptr::null_mut()) };
+        assert_eq!(status, MLN_STATUS_OK);
+        assert_eq!(
+            applied.recv_timeout(WAIT).unwrap(),
+            Report::Result(MLN_STATUS_OK, String::new())
+        );
+    }
+
+    fn camera(fields: mln_camera_option_fields, zoom: f64, bearing: f64) -> mln_camera_options {
+        // SAFETY: plain C data.
+        let mut camera: mln_camera_options = unsafe { std::mem::zeroed() };
+        camera.size = size_of::<mln_camera_options>() as u32;
+        camera.fields = fields;
+        camera.zoom = zoom;
+        camera.bearing = bearing;
+        camera
+    }
+
+    /// A camera event's type, shortly.
+    fn name(event: u32) -> &'static str {
+        match event {
+            MLN_RUNTIME_EVENT_MAP_CAMERA_WILL_CHANGE => "will",
+            MLN_RUNTIME_EVENT_MAP_CAMERA_IS_CHANGING => "is",
+            _ => "did",
+        }
+    }
+
+    /// The next camera event `rx` sends.
+    fn next(rx: &Receiver<u32>) -> &'static str {
+        name(rx.recv_timeout(WAIT).expect("a camera event arrives"))
+    }
+
+    /// A jump while an ease runs reports itself as Native does, will-change
+    /// then did-change, and the ease goes on reporting its frames and its
+    /// end, will-change and did-change balanced; a jump that ends the ease
+    /// ends its change first; a jump at rest reports that pair alone,
+    /// whether it moves the camera or not.
+    #[test]
+    fn a_jump_reports_its_own_change_and_leaves_an_ease_reporting() {
+        let mut runtime = mln_runtime(0);
+        // SAFETY: default options, a fresh out handle.
+        let status =
+            unsafe { mln_runtime_create(std::ptr::null(), &mut runtime, std::ptr::null_mut()) };
+        assert_eq!(status, MLN_STATUS_OK);
+        let events = listen(runtime);
+        // SAFETY: plain C data.
+        let mut options: mln_map_options = unsafe { std::mem::zeroed() };
+        options.size = size_of::<mln_map_options>() as u32;
+        options.initial_extent = mln_logical_extent {
+            width: 800,
+            height: 600,
+            scale_factor: 1.0,
+        };
+        let (c, made) = completion();
+        let mut map = mln_map(0);
+        // SAFETY: a live runtime, sized options, a fresh out handle.
+        let status = unsafe {
+            mln_runtime_create_map(runtime, &options, &mut map, &c, std::ptr::null_mut())
+        };
+        assert_eq!(status, MLN_STATUS_OK);
+        assert_eq!(
+            made.recv_timeout(WAIT).unwrap(),
+            Report::Result(MLN_STATUS_OK, String::new())
+        );
+        // The map's own placing of its camera.
+        assert_eq!([next(&events), next(&events)], ["will", "did"]);
+
+        // A jump the ease goes on beside, moving another field, whether
+        // or not the ease moved before it: its pair, then the ease's
+        // frames and its end.
+        let mut center = camera(MLN_CAMERA_OPTION_CENTER, 0.0, 0.0);
+        center.center = mln_lat_lng {
+            latitude: 10.0,
+            longitude: 10.0,
+        };
+        for ease in [camera(MLN_CAMERA_OPTION_ZOOM, 4.0, 0.0), center] {
+            let jump = camera(MLN_CAMERA_OPTION_BEARING, 0.0, 30.0);
+            let seen = ease_then_jump(map, &events, ease, jump);
+            let jump = seen
+                .windows(2)
+                .position(|w| w == ["will", "did"])
+                .unwrap_or_else(|| panic!("the jump reports its change: {seen:?}"));
+            let after = &seen[jump + 2..];
+            assert!(after.contains(&"is"), "the ease goes on: {seen:?}");
+            assert_eq!(after.last(), Some(&"did"), "the ease ends: {seen:?}");
+            let count = |kind| seen.iter().filter(|e| **e == kind).count();
+            assert_eq!((count("will"), count("did")), (2, 2), "{seen:?}");
+            update(
+                map,
+                MLN_CAMERA_UPDATE_MODE_JUMP,
+                camera(MLN_CAMERA_OPTION_BEARING, 0.0, 0.0),
+                0.0,
+            );
+            assert_eq!([next(&events), next(&events)], ["will", "did"]);
+        }
+        let view = until_at_rest(map);
+        assert!((view.zoom - 4.0).abs() < 1e-9, "{view:?}");
+        assert!((view.center.latitude - 10.0).abs() < 1e-9, "{view:?}");
+        // A jump that takes every field the ease moves ends it: whatever
+        // the ease began ends before the jump's pair.
+        let ease = camera(MLN_CAMERA_OPTION_ZOOM, 6.0, 0.0);
+        let jump = camera(MLN_CAMERA_OPTION_ZOOM, 5.0, 0.0);
+        let seen = ease_then_jump(map, &events, ease, jump);
+        let changes = changes(&seen);
+        assert!(changes.ends_with(&["will", "did"]), "{seen:?}");
+        assert!(changes.chunks(2).all(|c| c == ["will", "did"]), "{seen:?}");
+        assert_eq!(until_at_rest(map).zoom, 5.0);
+
+        for bearing in [60.0, 60.0] {
+            update(
+                map,
+                MLN_CAMERA_UPDATE_MODE_JUMP,
+                camera(MLN_CAMERA_OPTION_BEARING, 0.0, bearing),
+                0.0,
+            );
+            assert_eq!([next(&events), next(&events)], ["will", "did"]);
+        }
+        assert!(events.recv_timeout(Duration::from_millis(100)).is_err());
+
+        let (c, released) = completion();
+        // SAFETY: a live map, a valid completion.
+        let status = unsafe { mln_map_release(map, &c, std::ptr::null_mut()) };
+        assert_eq!(status, MLN_STATUS_OK);
+        assert_eq!(
+            released.recv_timeout(WAIT).unwrap(),
+            Report::Result(MLN_STATUS_OK, String::new())
+        );
+        let (c, released) = completion();
+        // SAFETY: a live runtime without maps, a valid completion.
+        let status = unsafe { mln_runtime_release(runtime, &c, std::ptr::null_mut()) };
+        assert_eq!(status, MLN_STATUS_OK);
+        assert_eq!(
+            released.recv_timeout(WAIT).unwrap(),
+            Report::Result(MLN_STATUS_OK, String::new())
+        );
+    }
+
+    /// The camera events of an ease of a second, then a jump right after
+    /// it, until the camera rests.
+    fn ease_then_jump(
+        map: mln_map,
+        events: &Receiver<u32>,
+        ease: mln_camera_options,
+        jump: mln_camera_options,
+    ) -> Vec<&'static str> {
+        update(map, MLN_CAMERA_UPDATE_MODE_EASE, ease, 1000.0);
+        update(map, MLN_CAMERA_UPDATE_MODE_JUMP, jump, 0.0);
+        until_at_rest(map);
+        std::iter::from_fn(|| {
+            let event = events.recv_timeout(Duration::from_millis(200)).ok()?;
+            Some(name(event))
+        })
+        .collect()
+    }
+
+    /// Will-change and did-change in `seen`, without is-changing.
+    fn changes(seen: &[&'static str]) -> Vec<&'static str> {
+        seen.iter().copied().filter(|e| *e != "is").collect()
+    }
+
+    /// The map's camera once no transition moves it.
+    fn until_at_rest(map: mln_map) -> mln_camera {
+        let start = std::time::Instant::now();
+        loop {
+            // SAFETY: plain C data, sized for the call.
+            let mut s: mln_map_snapshot = unsafe { std::mem::zeroed() };
+            s.size = size_of::<mln_map_snapshot>() as u32;
+            // SAFETY: a live map and a sized out struct.
+            let status = unsafe { mln_map_get_snapshot(map, &mut s, std::ptr::null_mut()) };
+            assert_eq!(status, MLN_STATUS_OK);
+            if !s.transition_in_progress {
+                return s.view.camera;
+            }
+            assert!(start.elapsed() < WAIT, "the camera never came to rest");
+            std::thread::yield_now();
+        }
     }
 }
