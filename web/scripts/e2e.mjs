@@ -62,6 +62,12 @@
 //   one macOS logs as WebKit's GPU process aborting a command buffer after
 //   its low-memory handler, which no page prevents: the map must then
 //   start again and draw each size there.
+// - `ratio`: boot.html's map at a fractional pixel ratio (5/3), its box
+//   resized to fractional CSS sizes: its canvas's buffer covers the box
+//   to within a device pixel, and the canvas's own box covers exactly the
+//   buffer's device pixels, so the browser draws the map unresampled, and
+//   a snapshot at the map's size is the buffer's; in Chromium, again once
+//   the display's ratio changes (to 2.625) under it.
 // - `compare`: the comparison on the Tokyo extract: the plain page fetches
 //   no other engine and isn't isolated; each pair of engines (Orbis, GL JS
 //   and MapLibre Native, Orbis and GL JS twice too) loads only its engines,
@@ -125,7 +131,7 @@
 //   call GL rejected (the emulator's Chrome logs them), or failing with
 //   what the map was doing.
 //
-//   pnpm e2e [--browsers=chromium,firefox,webkit] [--only=scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,compare,gestures,readback,boot,split,regions,android,offline]
+//   pnpm e2e [--browsers=chromium,firefox,webkit] [--only=scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,ratio,compare,gestures,readback,boot,split,regions,android,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -154,7 +160,7 @@ const arg = (name, fallback) =>
     ?.slice(name.length + 3) ?? fallback;
 const only = arg(
   "only",
-  "scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,compare,gestures,readback,boot,split,regions,android",
+  "scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,ratio,compare,gestures,readback,boot,split,regions,android",
 ).split(",");
 const browsers = arg("browsers", "chromium,firefox,webkit").split(",");
 const writes = Number(arg("writes", 500));
@@ -285,10 +291,10 @@ async function mapIdle(page, what, timeout = 60_000) {
 
 /**
  * A page of `browser` (or of a context, whose own viewport it keeps) that
- * collects its errors and warnings.
+ * collects its errors and warnings; `options` are the page's others.
  */
-async function open(browser, viewport) {
-  const page = await browser.newPage({ viewport });
+async function open(browser, viewport, options = {}) {
+  const page = await browser.newPage({ viewport, ...options });
   const errors = [];
   onPageError(page, (m) => errors.push(m));
   page.on("console", (m) => {
@@ -2689,6 +2695,92 @@ async function resize(browser, server) {
   );
 }
 
+async function ratio(browser, server) {
+  const viewport = { width: 640, height: 480 };
+  const { page, errors } = await open(browser, viewport, {
+    deviceScaleFactor: 5 / 3,
+  });
+  await page.goto(`${server.url}boot.html`);
+  const booted = await page.evaluate(() => window.booted);
+  assert.ok(!booted.error, booted.error);
+  // The map's box at `size` CSS pixels, once its resize has drawn: the
+  // device pixels the box, the canvas's buffer and the canvas's box
+  // cover. (Under an emulated ratio, as here, browsers report a box's
+  // `devicePixelContentBoxSize` at the screen's own ratio.)
+  const covered = (size) =>
+    page.evaluate(async ([width, height]) => {
+      const frame = document.getElementById("map");
+      Object.assign(frame.style, {
+        width: `${width}px`,
+        height: `${height}px`,
+      });
+      await new Promise((r) =>
+        requestAnimationFrame(() => requestAnimationFrame(r)),
+      );
+      const canvas = frame.querySelector("canvas");
+      const ratio = devicePixelRatio;
+      const device = (rect) => [rect.width * ratio, rect.height * ratio];
+      return {
+        ratio,
+        frame: device(frame.getBoundingClientRect()),
+        buffer: [canvas.width, canvas.height],
+        canvas: device(canvas.getBoundingClientRect()),
+      };
+    }, size);
+  const check = async (size, ratio) => {
+    const at = `at ${size.join("×")} CSS pixels`;
+    const got = await covered(size);
+    // Browsers keep the ratio in single precision.
+    assert.ok(
+      Math.abs(got.ratio - ratio) < 1e-6,
+      `${at}: the page's pixel ratio is ${got.ratio}`,
+    );
+    for (const axis of [0, 1]) {
+      const buffer = got.buffer[axis];
+      assert.ok(
+        Math.abs(buffer - got.frame[axis]) < 1,
+        `${at}: a buffer of ${got.buffer} for a box of ${got.frame} device pixels`,
+      );
+      // To layout's precision (WebKit's is 1/64 CSS pixel).
+      assert.ok(
+        Math.abs(buffer - got.canvas[axis]) < 0.05,
+        `${at}: a buffer of ${got.buffer} in a canvas of ${got.canvas} device pixels`,
+      );
+    }
+    // The map's size is the buffer over the ratio, fractional: the
+    // snapshot's pixels are still the buffer's.
+    const snapshot = await page.evaluate(async () => {
+      const { width, height } = await window.map.snapshot();
+      return [width, height];
+    });
+    assert.deepEqual(
+      snapshot,
+      got.buffer,
+      `${at}: a snapshot of ${snapshot} for a buffer of ${got.buffer}`,
+    );
+  };
+  await check([333.3, 200.7], 5 / 3);
+  await check([401.45, 250.15], 5 / 3);
+  if (browser.browserType().name() === "chromium") {
+    // The window moved to a denser display, the map's box keeping its CSS
+    // size. (Chromium re-evaluates media queries for an emulated ratio
+    // only as the viewport changes too.)
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: viewport.width + 1,
+      height: viewport.height,
+      deviceScaleFactor: 2.625,
+      mobile: false,
+    });
+    await check([401.45, 250.15], 2.625);
+  }
+  assert.deepEqual(errors, []);
+  await page.close();
+  console.log(
+    "ratio: at fractional pixel ratios the canvas covers exactly its buffer's device pixels",
+  );
+}
+
 async function offline(browser, server) {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
   const errors = [];
@@ -4286,6 +4378,7 @@ const CHECKS = {
   recovery,
   options,
   resize,
+  ratio,
   compare,
   gestures,
   readback,

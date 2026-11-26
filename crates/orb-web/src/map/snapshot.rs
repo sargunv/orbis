@@ -25,12 +25,14 @@ pub(crate) struct Snapshot {
 #[wasm_bindgen]
 impl OrbisMap {
     /// Starts a snapshot of the camera's view, `width × height` CSS pixels
-    /// at `scale` device pixels each. The page draws no frames of its own
-    /// until it ends.
+    /// at `scale` device pixels each, its texture each side times the scale,
+    /// rounded, as the page reads it back. The sizes may be fractional, as
+    /// the canvas's buffer divided by its ratio is. The page draws no frames
+    /// of its own until it ends.
     #[wasm_bindgen(js_name = beginSnapshot)]
-    pub fn begin_snapshot(&mut self, width: u32, height: u32, scale: f64) {
+    pub fn begin_snapshot(&mut self, width: f64, height: f64, scale: f64) {
         self.cancel_snapshot();
-        let px = |v: u32| ((f64::from(v) * scale).round() as u32).max(1);
+        let px = |v: f64| ((v * scale).round() as u32).max(1);
         let format = self.canvas.format();
         let texture = self.canvas.gpu().create_texture(&TextureDesc {
             label: "snapshot",
@@ -49,10 +51,7 @@ impl OrbisMap {
         self.map.retry_failed_tiles();
         self.snapshot = Some(Snapshot {
             texture,
-            viewport: Viewport {
-                width: f64::from(width),
-                height: f64::from(height),
-            },
+            viewport: Viewport { width, height },
             scale: scale as f32,
             settle: orb_runtime::Settle::default(),
         });

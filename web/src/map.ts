@@ -241,7 +241,7 @@ export class OrbisMap {
   readonly annotations: Annotations;
   #engine: Engine;
   #restart: Restart;
-  /** The input and resize observer on the canvas, to move with it. */
+  /** The input on the canvas, to move with it. */
   #canvasDetach: (() => void)[] = [];
   /** `load` fired: a map started again on WebGL 2 doesn't fire it again. */
   #loaded = false;
@@ -262,6 +262,11 @@ export class OrbisMap {
   /** The device pixels per CSS pixel the map draws with; the display's
    * when undefined. */
   #pixelRatio: number | undefined;
+  /** The canvas's drawing buffer and the ratio it was drawn at, as the
+   * map last heard them. */
+  #size: Size;
+  /** The frame's CSS size as its resize observer last reported it. */
+  #cssSize: [number, number] | undefined;
   #showBox: ((corners: number[] | null) => void) | undefined;
   #allow: ((allowed: Allowed) => void) | undefined;
   #removed = false;
@@ -277,6 +282,7 @@ export class OrbisMap {
     engine: Engine,
     reports: Reports,
     restart: Restart,
+    size: Size,
     pixelRatio?: number,
   ) {
     this.container = container;
@@ -285,6 +291,7 @@ export class OrbisMap {
     this.#engine = engine;
     this.#restart = restart;
     this.#pixelRatio = pixelRatio;
+    this.#size = size;
     const fail = (e: unknown) => this.#error(e);
     this.#videos = new Videos(
       () =>
@@ -312,6 +319,7 @@ export class OrbisMap {
       }, fail);
     });
     this.#attachCanvas();
+    this.#followSize();
     // Tiles that failed while offline load again when the network returns.
     const online = () => {
       this.#call("retryFailedTiles").catch(fail);
@@ -321,7 +329,37 @@ export class OrbisMap {
     reports.listen((report) => this.#receive(report));
   }
 
-  /** Takes the canvas's input and follows its size. */
+  /** Resizes the map with its frame, and with the display's pixel ratio
+   * unless the map has its own. */
+  #followSize(): void {
+    const observer = new ResizeObserver((entries) => {
+      const box = entries.at(-1)?.contentBoxSize[0];
+      if (!box) return;
+      this.#cssSize = [box.inlineSize, box.blockSize];
+      this.#resize();
+    });
+    observer.observe(this.#frame);
+    this.#detach.push(() => observer.disconnect());
+    if (this.#pixelRatio !== undefined) return;
+    // A window moved to a display of another density: the query for the
+    // ratio it had changes, and one for the new ratio takes its place.
+    let query: MediaQueryList;
+    const watch = () => {
+      query = matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
+      query.addEventListener("change", changed, { once: true });
+    };
+    const changed = () => {
+      watch();
+      // A zoomed page changes the frame's CSS size too, which its observer
+      // reports only later: measure it now.
+      this.#cssSize = undefined;
+      this.#resize();
+    };
+    watch();
+    this.#detach.push(() => query.removeEventListener("change", changed));
+  }
+
+  /** Takes the canvas's input. */
   #attachCanvas(): void {
     const canvas = this.#canvas;
     if (this.#restart.interactive) {
@@ -334,9 +372,6 @@ export class OrbisMap {
       if (this.#restart.gestures) allow(allowed(this.#restart.gestures));
       this.#canvasDetach.push(input.detach);
     }
-    const observer = new ResizeObserver(() => this.#resize());
-    observer.observe(canvas);
-    this.#canvasDetach.push(() => observer.disconnect());
   }
 
   #call: Call = (method, ...args) => {
@@ -413,6 +448,7 @@ export class OrbisMap {
     this.#canvas.replaceWith(canvas);
     for (const detach of this.#canvasDetach.splice(0)) detach();
     this.#canvas = canvas;
+    const size = this.#bufferSize();
     const held = reports();
     let engine: Engine;
     try {
@@ -433,7 +469,7 @@ export class OrbisMap {
           },
           constraints: restart.constraints,
         },
-        this.#pixelRatio ?? devicePixelRatio,
+        size,
         restart.jobWorkers,
         held.deliver,
         [...old.modules()],
@@ -455,7 +491,10 @@ export class OrbisMap {
     old.remove();
     this.#engine = engine;
     this.#fallingBack = false;
+    this.#size = size;
     this.#attachCanvas();
+    // What the frame did while the map started again.
+    this.#resize();
     if (!clamped) {
       engine.setCenterClampedToGround(false);
       engine.jumpTo({ elevation: camera.elevation });
@@ -509,16 +548,16 @@ export class OrbisMap {
   }
 
   /**
-   * The camera's view, `width × height` CSS pixels (the canvas's by
-   * default) at `scale` device pixels each, drawn offscreen once everything
+   * The camera's view, `width × height` CSS pixels at `scale` device
+   * pixels each (the map's by default), drawn offscreen once everything
    * in it has loaded and nothing fades: the same style, data and camera
    * always draw the same pixels. The map draws no frames of its own
    * meanwhile. Rejects after a minute.
    */
   async snapshot(
-    width = this.#canvas.clientWidth,
-    height = this.#canvas.clientHeight,
-    scale = this.#pixelRatio ?? devicePixelRatio,
+    width = this.#size[0] / this.#size[2],
+    height = this.#size[1] / this.#size[2],
+    scale = this.#size[2],
   ): Promise<ImageData> {
     return imageData(await this.#call("snapshot", width, height, scale));
   }
@@ -646,7 +685,7 @@ export class OrbisMap {
   ): Promise<Feature[]> {
     const box =
       geometry === undefined
-        ? [0, 0, this.canvas.clientWidth, this.canvas.clientHeight]
+        ? [0, 0, this.#size[0] / this.#size[2], this.#size[1] / this.#size[2]]
         : typeof geometry[0] === "number"
           ? ([geometry[0], geometry[1], geometry[0], geometry[1]] as number[])
           : [
@@ -937,16 +976,25 @@ export class OrbisMap {
     });
   }
 
+  /** The canvas's buffer and box, and the map, at the frame's size and
+   * ratio now; a map starting again on WebGL 2 resizes once it has. */
   #resize(): void {
-    if (this.#removed) return;
-    const ratio = this.#pixelRatio ?? devicePixelRatio;
-    const [w, h] = [
-      Math.round(this.canvas.clientWidth * ratio),
-      Math.round(this.canvas.clientHeight * ratio),
-    ];
-    this.canvas.width = w;
-    this.canvas.height = h;
+    if (this.#removed || this.#fallingBack) return;
+    const size = this.#bufferSize();
+    const [w, h, ratio] = size;
+    if (size.every((v, i) => v === this.#size[i])) return;
+    this.#size = size;
+    fitCanvas(this.#canvas, size);
     this.#send(this.#call("resize", w, h, ratio));
+  }
+
+  /** The buffer that covers the frame at the map's ratio now. */
+  #bufferSize(): Size {
+    return bufferSize(
+      this.#frame,
+      this.#pixelRatio ?? devicePixelRatio,
+      this.#cssSize,
+    );
   }
 
   /** What the map reports: its frame's counters, events and annotations. */
@@ -1070,6 +1118,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
   let canvas = newCanvas();
   frame.append(canvas, overlay);
   options.container.append(frame);
+  const size = bufferSize(frame, ratio);
   // The style's first fetches start, the build is picked, downloads and
   // compiles, and the workers load.
   preloadStyle(
@@ -1095,14 +1144,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
   let held = reports();
   let engine: Engine;
   try {
-    engine = await launch(
-      build,
-      canvas,
-      setup,
-      ratio,
-      jobWorkers,
-      held.deliver,
-    );
+    engine = await launch(build, canvas, setup, size, jobWorkers, held.deliver);
   } catch (e) {
     // WebGPU gave an adapter, yet its map didn't start on it (no device,
     // say): WebGL 2 in a new canvas, as a canvas that had a WebGPU context
@@ -1124,7 +1166,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
         fallbackBuild(why),
         canvas,
         setup,
-        ratio,
+        size,
         jobWorkers,
         held.deliver,
       );
@@ -1148,41 +1190,70 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
       constraints: options.constraints,
       images: new Map(),
     },
+    size,
     options.pixelRatio,
   );
   if (options.gestures) map.setGestures(options.gestures);
   return map;
 }
 
-/** A canvas filling the map's frame. */
+/** A canvas for the map's frame; {@link fitCanvas} sizes it. */
 function newCanvas(): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
-  Object.assign(canvas.style, {
-    display: "block",
-    width: "100%",
-    height: "100%",
-  });
+  canvas.style.display = "block";
   return canvas;
 }
 
-/** The map drawing into `canvas`, in the page, at `ratio` device pixels a
- * CSS pixel, once `build` has compiled, with `jobWorkers` job workers
- * and `modules` fetched at once; `deliver` hears its reports. */
+/** A canvas's drawing buffer in device pixels and the device pixels per
+ * CSS pixel it is drawn at. */
+type Size = [width: number, height: number, ratio: number];
+
+/** The drawing buffer that covers `frame` at `ratio`: its CSS size
+ * (`css`, fractional as layout leaves it, as its resize observer reported
+ * it; else its used size, which as the observer's ignores transforms)
+ * times the ratio, rounded. */
+function bufferSize(
+  frame: HTMLElement,
+  ratio: number,
+  css?: [number, number],
+): Size {
+  let [width, height] = css ?? [];
+  if (width === undefined || height === undefined) {
+    const style = getComputedStyle(frame);
+    // Not laid out (in no document, or not displayed): no size yet.
+    const used = (v: string) => (v.endsWith("px") ? parseFloat(v) : 0);
+    [width, height] = [used(style.width), used(style.height)];
+  }
+  const px = (v: number) => Math.max(1, Math.round(v * ratio));
+  return [px(width), px(height), ratio];
+}
+
+/** Gives `canvas` a buffer of `size` and a box of exactly that many device
+ * pixels, as GL JS does: a box of the frame's CSS size would cover a
+ * fractional number of device pixels at a fractional ratio (125% or 150%
+ * on Windows, 2.625 on phones, a zoomed page), and the browser would
+ * resample the map into it, blurring it, its labels most. The box is
+ * within half a device pixel of the frame, which clips any overhang. */
+function fitCanvas(canvas: HTMLCanvasElement, [width, height, ratio]: Size) {
+  canvas.width = width;
+  canvas.height = height;
+  canvas.style.width = `${width / ratio}px`;
+  canvas.style.height = `${height / ratio}px`;
+}
+
+/** The map drawing into `canvas`, in the page, at `size` (fitted to it),
+ * once `build` has compiled, with `jobWorkers` job workers and `modules`
+ * fetched at once; `deliver` hears its reports. */
 function launch(
   build: Promise<Build>,
   canvas: HTMLCanvasElement,
   setup: Omit<EngineSetup, "canvas" | "size">,
-  ratio: number,
+  size: Size,
   jobWorkers: number,
   deliver: (report: Report) => void,
   modules: ModuleName[] = [],
 ): Promise<Engine> {
-  const size: [number, number, number] = [
-    Math.round(canvas.clientWidth * ratio),
-    Math.round(canvas.clientHeight * ratio),
-    ratio,
-  ];
-  [canvas.width, canvas.height] = size;
+  fitCanvas(canvas, size);
   build.catch(() => {});
   void build.then(
     ({ backend }) =>

@@ -17,7 +17,7 @@
   // `pnpm -C web e2e --only=boot`'s page: a map on an empty style.
   // `window.booted` resolves, once it has drawn a frame, to the backend it
   // drew with (`?backend=webgl2|webgpu` asks for one), or to why it
-  // couldn't start.
+  // couldn't start; `window.map` is the map.
   import { createMap } from "orbis";
 
   const params = new URLSearchParams(location.search);
@@ -27,6 +27,7 @@
       style: { version: 8, sources: {}, layers: [] },
       backend: params.get("backend") ?? undefined,
     });
+    window.map = map;
     await new Promise((resolve) => {
       const drawn = () =>
         map.stats ? resolve() : requestAnimationFrame(drawn);

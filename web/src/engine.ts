@@ -711,6 +711,8 @@ export class Engine {
           await new Promise((resolve) => setTimeout(resolve, 16));
         }
         const pixels: Uint8Array = await core.endSnapshot();
+        // The texture beginSnapshot made, sized from the same fractional
+        // sizes the same way.
         const px = (v: number) => Math.max(1, Math.round(v * scale));
         return { pixels, width: px(width), height: px(height) };
       } catch (e) {

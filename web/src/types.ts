@@ -223,7 +223,8 @@ export interface MapOptions {
   /** What its gestures may move; see {@link OrbisMap.setGestures}. */
   gestures?: GestureOptions;
   /** Device pixels per CSS pixel to draw with; the display's
-   * (`devicePixelRatio`) by default. */
+   * (`devicePixelRatio`) by default, followed as it changes (a window moved
+   * to another display, a page zoomed). */
   pixelRatio?: number;
   /** How long labels fade in and out, ms; 300 by default. */
   fadeDuration?: number;
