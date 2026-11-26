@@ -275,6 +275,53 @@ impl UserData {
     }
 }
 
+/// A retain of one of the caller's Objective-C objects (a layer, a device),
+/// which outlives what the library made on it.
+pub(crate) struct Retained(
+    #[cfg_attr(
+        not(target_vendor = "apple"),
+        expect(dead_code, reason = "only Apple objects take a retain")
+    )]
+    UserData,
+);
+
+#[cfg(target_vendor = "apple")]
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFRetain(object: *const std::ffi::c_void) -> *const std::ffi::c_void;
+    fn CFRelease(object: *const std::ffi::c_void);
+}
+
+impl Retained {
+    pub(crate) fn new(object: UserData) -> Self {
+        // SAFETY: a live Objective-C object, by the C API's contract.
+        #[cfg(target_vendor = "apple")]
+        unsafe {
+            CFRetain(object.get());
+        }
+        Self(object)
+    }
+
+    /// The object.
+    #[cfg_attr(
+        not(target_vendor = "apple"),
+        expect(dead_code, reason = "only Apple objects take a retain")
+    )]
+    pub(crate) fn get(&self) -> *mut std::ffi::c_void {
+        self.0.get()
+    }
+}
+
+impl Drop for Retained {
+    fn drop(&mut self) {
+        // SAFETY: the retain that `new` took.
+        #[cfg(target_vendor = "apple")]
+        unsafe {
+            CFRelease(self.0.get());
+        }
+    }
+}
+
 /// Set by the exit handler [`watch_exit`] registers, once the process has
 /// begun to exit (`exit`, or a return from `main`).
 static EXITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

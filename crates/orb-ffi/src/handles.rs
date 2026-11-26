@@ -68,9 +68,7 @@ pub(crate) enum Object {
         Arc<Vec<mln_render_frame_result>>,
     ),
     Queue(Arc<DeliveryQueue>),
-    /// Orbis owns the device of its runtime, so a GPU device is only a
-    /// token that attaches accept.
-    GpuDevice,
+    GpuDevice(Arc<crate::gpu_device::GpuDevice>),
     #[cfg_attr(
         not(target_os = "macos"),
         expect(dead_code, reason = "only macOS makes a pacer")
@@ -91,7 +89,7 @@ impl Object {
             Object::Frame(_) => Kind::Frame,
             Object::Batch(_) => Kind::Batch,
             Object::Queue(_) => Kind::Queue,
-            Object::GpuDevice => Kind::GpuDevice,
+            Object::GpuDevice(_) => Kind::GpuDevice,
             Object::Pacer(_) => Kind::Pacer,
         }
     }
@@ -261,6 +259,9 @@ pub(crate) fn pacer(handle: u64) -> Result<Arc<FramePacer>> {
     }
 }
 
-pub(crate) fn gpu_device(handle: u64) -> Result<()> {
-    lookup(handle, Kind::GpuDevice).map(|_| ())
+pub(crate) fn gpu_device(handle: u64) -> Result<Arc<crate::gpu_device::GpuDevice>> {
+    match lookup(handle, Kind::GpuDevice)? {
+        Object::GpuDevice(d) => Ok(d),
+        _ => unreachable!(),
+    }
 }

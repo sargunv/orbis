@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::base::{Failure, Result, UserData, boundary, lock, put, sized};
 use crate::delivery::Completion;
 use crate::handles::{self, Object};
-use crate::session::{SessionHandle, TargetSpec};
+use crate::session::SessionHandle;
 use crate::sys::*;
 
 /// One of the host's textures.
@@ -253,56 +253,25 @@ fn frame(frame: mln_acquired_frame) -> Result<Arc<FrameHandle>> {
     handles::frame(frame.0)
 }
 
-/// Validates the host's ring of Metal textures, as every Metal attach and
-/// replacement gives it.
-///
-/// # Safety
-/// `textures` is null or holds `count` entries.
-unsafe fn metal_ring(
+/// The host's Metal textures, which `target.rs` checked for the rules every
+/// ring shares, as slots of a ring of this physical size: each a 2D render
+/// target of that size, all of one device and pixel format.
+pub(crate) fn metal_slots(
+    textures: &[UserData],
     logical: mln_logical_size,
-    physical_width: u32,
-    physical_height: u32,
-    textures: *const mln_metal_borrowed_texture,
-    count: usize,
+    physical: (u32, u32),
 ) -> Result<Vec<SlotInfo>> {
-    if logical.width == 0 || logical.height == 0 {
-        return Err(Failure::argument(
-            "the logical size's width and height must be positive",
-        ));
-    }
-    if physical_width == 0 || physical_height == 0 {
-        return Err(Failure::argument(
-            "the physical texture dimensions must be positive",
-        ));
-    }
-    if textures.is_null() || count == 0 {
-        return Err(Failure::argument("a ring takes at least one texture"));
-    }
-    if count > MLN_TEXTURE_RING_MAX_DEPTH as usize {
-        return Err(Failure::argument(format!(
-            "a ring holds at most MLN_TEXTURE_RING_MAX_DEPTH ({MLN_TEXTURE_RING_MAX_DEPTH}) textures"
-        )));
-    }
-    // SAFETY: the caller's contract.
-    let textures = unsafe { std::slice::from_raw_parts(textures, count) };
-    for (i, t) in textures.iter().enumerate() {
-        if t.texture.is_null() {
-            return Err(Failure::argument(format!("textures[{i}].texture is null")));
-        }
-        if textures[..i].iter().any(|u| u.texture == t.texture) {
-            return Err(Failure::argument("a ring takes distinct textures"));
-        }
-    }
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
-        let mut slots: Vec<SlotInfo> = Vec::with_capacity(count);
+        let (physical_width, physical_height) = physical;
+        let mut slots: Vec<SlotInfo> = Vec::with_capacity(textures.len());
         for (i, t) in textures.iter().enumerate() {
-            let texture = std::ptr::NonNull::new(t.texture).expect("checked above");
+            let texture = std::ptr::NonNull::new(t.get()).expect("checked as the target was");
             // SAFETY: the C API's contract: a live MTLTexture.
             let info = unsafe { orb_api::metal_texture(texture) };
             if (info.width, info.height) != (physical_width, physical_height) {
                 return Err(Failure::argument(format!(
-                    "textures[{i}] is {}x{}: its size must match descriptor physical size \
+                    "textures[{i}] is {}x{}: its size must match the target's physical size \
                      {physical_width}x{physical_height}",
                     info.width, info.height
                 )));
@@ -322,7 +291,7 @@ unsafe fn metal_ring(
                 )));
             }
             slots.push(SlotInfo {
-                texture: UserData(t.texture),
+                texture: *t,
                 device: UserData(info.device.as_ptr()),
                 pixel_format: info.pixel_format,
                 width: info.width,
@@ -333,9 +302,12 @@ unsafe fn metal_ring(
         Ok(slots)
     }
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-    Err(Failure::unsupported(
-        "Metal textures are not supported by this build: Metal is only on Apple platforms",
-    ))
+    {
+        let _ = (textures, logical, physical);
+        Err(Failure::unsupported(
+            "Metal textures are not supported by this build: Metal is only on Apple platforms",
+        ))
+    }
 }
 
 /// One of the host's textures as a target of the runtime's device.
@@ -360,95 +332,46 @@ pub(crate) fn import(runtime: &orb_api::Runtime, slot: &SlotInfo) -> Result<orb_
     }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_attach_metal_borrowed_texture(
-    map: mln_map,
-    descriptor: *const mln_metal_borrowed_texture_descriptor,
-    options: *const mln_render_session_attach_options,
-    out_session: *mut mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    // SAFETY: the caller's pointers.
-    unsafe {
-        boundary(out_diagnostic, || {
-            let d = sized(descriptor, "descriptor")?;
-            let slots = metal_ring(
-                d.logical_size,
-                d.physical_width,
-                d.physical_height,
-                d.textures,
-                d.texture_count,
-            )?;
-            crate::session::attach(
-                map,
-                d.logical_size,
-                Ok(TargetSpec::Ring(slots)),
-                options,
-                out_session,
-                completion,
-            )
-        })
+/// Gives a ring session the host's new textures, once the frames it holds
+/// are back.
+pub(crate) fn replace_ring(
+    handle: &SessionHandle,
+    logical: mln_logical_size,
+    slots: Vec<SlotInfo>,
+    completion: Option<Completion>,
+) -> Result {
+    let depth = handle.ring_depth();
+    if depth == 0 {
+        return Err(Failure::unsupported(
+            if crate::session::renders_offscreen(handle) {
+                "an offscreen session renders into a texture of its own and takes no target"
+            } else {
+                "a native surface session takes a surface, not a caller-owned texture"
+            },
+        ));
     }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_set_metal_borrowed_texture_target(
-    session: mln_render_session,
-    replacement: *const mln_metal_borrowed_texture_replacement,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    // SAFETY: the caller's pointers.
-    unsafe {
-        boundary(out_diagnostic, || {
-            let r = sized(replacement, "replacement")?;
-            let slots = metal_ring(
-                r.logical_size,
-                r.physical_width,
-                r.physical_height,
-                r.textures,
-                r.texture_count,
-            )?;
-            let handle = handles::session(session.0)?;
-            handle.usable()?;
-            let depth = handle.ring_depth();
-            if depth == 0 {
-                return Err(Failure::unsupported(
-                    if crate::session::renders_offscreen(&handle) {
-                        "an offscreen session renders into a texture of its own and takes no target"
-                    } else {
-                        "a native surface session takes a surface, not a caller-owned texture"
-                    },
-                ));
-            }
-            if slots.len() != depth as usize {
-                return Err(Failure::argument(format!(
-                    "a replacement keeps the ring depth: give it {depth} textures, as the ring \
-                     attached with"
-                )));
-            }
-            let device = lock(&handle.ring)
-                .slots
-                .first()
-                .map(|s| s.info.device.get());
-            if device != Some(slots[0].device.get()) {
-                return Err(Failure::argument(
-                    "the ring keeps its device: give it textures of the same MTLDevice",
-                ));
-            }
-            if handle.lifecycle() == MLN_RENDER_SESSION_STATE_ATTACHING {
-                return Err(Failure::state("the session is still attaching"));
-            }
-            crate::session::no_frames_held(&handle)?;
-            let logical = r.logical_size;
-            crate::session::command(
-                &handle,
-                Completion::from_c(completion)?,
-                move |entry, map| crate::session::retarget_ring(entry, map, logical, slots),
-            )
-        })
+    if slots.len() != depth as usize {
+        return Err(Failure::argument(format!(
+            "a replacement keeps the ring depth: give it {depth} textures, as the ring \
+             attached with"
+        )));
     }
+    let device = lock(&handle.ring)
+        .slots
+        .first()
+        .map(|s| s.info.device.get());
+    if device != Some(slots[0].device.get()) {
+        return Err(Failure::argument(
+            "the ring keeps its device: give it textures of the same MTLDevice",
+        ));
+    }
+    if handle.lifecycle() == MLN_RENDER_SESSION_STATE_ATTACHING {
+        return Err(Failure::state("the session is still attaching"));
+    }
+    crate::session::no_frames_held(handle)?;
+    crate::session::command(handle, completion, move |entry, map| {
+        crate::session::retarget_ring(entry, map, logical, slots)
+    })
 }
 
 #[unsafe(no_mangle)]

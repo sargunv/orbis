@@ -23,12 +23,14 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::ThreadId;
 use std::time::Duration;
 
-use crate::base::{Failure, Result, UserData, boundary, lock, put, sized};
+use crate::base::{Failure, Result, Retained, UserData, boundary, lock, put, sized};
 use crate::delivery::{self, Completion, Value, Wake};
+use crate::gpu_device::GpuDevice;
 use crate::handles::{self, Object};
 use crate::map::{MapCell, MapEntry, MapHandle, settle};
 use crate::runtime::{Core, Payload, RuntimeHandle};
 use crate::sys::*;
+use crate::target::describe;
 
 /// What a session's thread is asked to do.
 enum Msg {
@@ -357,6 +359,9 @@ fn lost_target(completion: Option<Completion>) {
 pub(crate) struct SessionEntry {
     handle: Arc<SessionHandle>,
     runtime: orb_api::Runtime,
+    /// The device the session attached with, holding what it wraps until
+    /// the session ends, as the device's API promises.
+    _device: Option<Arc<GpuDevice>>,
     /// None once the target is released.
     target: Option<Target>,
     logical: mln_logical_size,
@@ -411,44 +416,6 @@ fn physical(logical: mln_logical_size, scale: f64) -> Result<(u32, u32)> {
     })
 }
 
-/// A retain of the caller's layer, which an accepted attach takes so the
-/// layer outlives the surface on it.
-struct Retained(
-    #[cfg_attr(
-        not(target_vendor = "apple"),
-        expect(dead_code, reason = "only Apple layers take a retain")
-    )]
-    UserData,
-);
-
-#[cfg(target_vendor = "apple")]
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFRetain(object: *const std::ffi::c_void) -> *const std::ffi::c_void;
-    fn CFRelease(object: *const std::ffi::c_void);
-}
-
-impl Retained {
-    fn new(object: UserData) -> Self {
-        // SAFETY: a live Objective-C object, by the C API's contract.
-        #[cfg(target_vendor = "apple")]
-        unsafe {
-            CFRetain(object.get());
-        }
-        Self(object)
-    }
-}
-
-impl Drop for Retained {
-    fn drop(&mut self) {
-        // SAFETY: the retain that `new` took.
-        #[cfg(target_vendor = "apple")]
-        unsafe {
-            CFRelease(self.0.get());
-        }
-    }
-}
-
 /// A session's target.
 enum Target {
     /// A surface, with the layer it draws into released after it, or an
@@ -482,6 +449,26 @@ fn metal_target(
     })
 }
 
+/// Refuses a device that wraps an MTLDevice other than the runtime's:
+/// Orbis renders on its runtime's own device.
+fn same_device(runtime: &orb_api::Runtime, device: Option<&GpuDevice>) -> Result {
+    let Some(metal) = device.and_then(|d| d.metal.as_ref()) else {
+        return Ok(());
+    };
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    if runtime
+        .with_device(|gpu| gpu.metal_device())?
+        .map(|d| d.as_ptr())
+        == Some(metal.get())
+    {
+        return Ok(());
+    }
+    let _ = (runtime, metal);
+    Err(Failure::unsupported(
+        "Orbis renders on its runtime's own MTLDevice, not the one the device wraps",
+    ))
+}
+
 /// The host's textures as targets of the runtime's device.
 fn ring_target(runtime: &orb_api::Runtime, slots: &[crate::frames::SlotInfo]) -> Result<Target> {
     let targets = slots
@@ -498,123 +485,6 @@ pub(crate) enum TargetSpec {
     Ring(Vec<crate::frames::SlotInfo>),
 }
 
-/// An `mln_render_target`, checked as every build checks it, whatever kinds
-/// it renders to: its kind, its logical size and the objects its kind names.
-struct Described {
-    kind: mln_render_target_kind,
-    logical: mln_logical_size,
-    /// The CAMetalLayer of a Metal layer target.
-    layer: UserData,
-}
-
-/// Checks the target `target` points at.
-///
-/// # Safety
-/// `target` is null or a readable `mln_render_target`.
-unsafe fn describe(target: *const mln_render_target) -> Result<Described> {
-    // SAFETY: the caller's pointer.
-    let t = unsafe { sized(target, "target")? };
-    let required = |object: *mut std::ffi::c_void, what: &str| match object.is_null() {
-        true => Err(Failure::argument(format!("target.{what} must not be null"))),
-        false => Ok(()),
-    };
-    let mut layer = UserData(std::ptr::null_mut());
-    // SAFETY: `kind` tags the union's variant, by the C API's contract.
-    let logical = unsafe {
-        let data = &t.data;
-        match t.kind {
-            MLN_RENDER_TARGET_KIND_OFFSCREEN => data.offscreen.logical_size,
-            MLN_RENDER_TARGET_KIND_METAL_LAYER => {
-                let d = data.metal_layer;
-                required(d.layer, "metal_layer.layer")?;
-                layer = UserData(d.layer);
-                d.logical_size
-            }
-            MLN_RENDER_TARGET_KIND_WIN32_WINDOW => {
-                let d = data.win32_window;
-                required(d.window, "win32_window.window")?;
-                d.logical_size
-            }
-            MLN_RENDER_TARGET_KIND_XLIB_WINDOW => {
-                let d = data.xlib_window;
-                required(d.display, "xlib_window.display")?;
-                if d.window == 0 {
-                    return Err(Failure::argument(
-                        "target.xlib_window.window must not be null",
-                    ));
-                }
-                d.logical_size
-            }
-            MLN_RENDER_TARGET_KIND_WAYLAND_SURFACE => {
-                let d = data.wayland_surface;
-                required(d.display, "wayland_surface.display")?;
-                required(d.surface, "wayland_surface.surface")?;
-                d.logical_size
-            }
-            MLN_RENDER_TARGET_KIND_ANDROID_WINDOW => {
-                let d = data.android_window;
-                required(d.window, "android_window.window")?;
-                d.logical_size
-            }
-            MLN_RENDER_TARGET_KIND_OHOS_WINDOW => {
-                let d = data.ohos_window;
-                required(d.window, "ohos_window.window")?;
-                d.logical_size
-            }
-            MLN_RENDER_TARGET_KIND_WEB_GPU_SURFACE => {
-                let d = data.web_gpu_surface;
-                required(d.surface, "web_gpu_surface.surface")?;
-                if d.format == 0 {
-                    return Err(Failure::argument(
-                        "target.web_gpu_surface.format must name a texture format",
-                    ));
-                }
-                d.logical_size
-            }
-            MLN_RENDER_TARGET_KIND_HTML_CANVAS => {
-                let d = data.html_canvas;
-                if d.selector.data.is_null() || d.selector.size == 0 {
-                    return Err(Failure::argument(
-                        "target.html_canvas.selector must name a canvas",
-                    ));
-                }
-                d.logical_size
-            }
-            _ => {
-                return Err(Failure::argument("target.kind names no render target kind"));
-            }
-        }
-    };
-    if logical.width == 0 || logical.height == 0 {
-        return Err(Failure::argument(
-            "the target's logical width and height must be positive",
-        ));
-    }
-    Ok(Described {
-        kind: t.kind,
-        logical,
-        layer,
-    })
-}
-
-impl Described {
-    /// What a session renders into, or why no device of this build renders
-    /// to the target's kind.
-    fn spec(&self) -> Result<TargetSpec> {
-        if crate::gpu_device::TARGET_KINDS & crate::gpu_device::kind_flag(self.kind) == 0 {
-            return Err(Failure::unsupported(format!(
-                "this build's devices render to no target of kind {}: their \
-                 mln_gpu_device_capabilities.target_kinds lack it",
-                self.kind
-            )));
-        }
-        Ok(match self.kind {
-            MLN_RENDER_TARGET_KIND_OFFSCREEN => TargetSpec::Offscreen,
-            _ => TargetSpec::Metal(self.layer),
-        })
-    }
-}
-
 /// The attach of every target kind.
 ///
 /// # Safety
@@ -623,6 +493,7 @@ pub(crate) unsafe fn attach(
     map: mln_map,
     logical: mln_logical_size,
     spec: Result<TargetSpec>,
+    device: Option<Arc<GpuDevice>>,
     options: *const mln_render_session_attach_options,
     out_session: *mut mln_render_session,
     completion: *const mln_completion,
@@ -638,27 +509,6 @@ pub(crate) unsafe fn attach(
             "options.driver names no render driver kind",
         ));
     }
-    if options.driver != MLN_RENDER_DRIVER_CORE_WORKER {
-        return Err(Failure::unsupported(
-            "Orbis sessions render on threads of their own (MLN_RENDER_DRIVER_CORE_WORKER)",
-        ));
-    }
-    let lock = &options.queue_lock;
-    if lock.lock.is_some() != lock.unlock.is_some() {
-        return Err(Failure::argument(
-            "options.queue_lock sets one of lock and unlock: set both or neither",
-        ));
-    }
-    if lock.lock.is_none() && (lock.release_user_data.is_some() || !lock.user_data.is_null()) {
-        return Err(Failure::argument(
-            "options.queue_lock names user data but no lock and unlock",
-        ));
-    }
-    if lock.lock.is_some() {
-        return Err(Failure::unsupported(
-            "Orbis sessions submit to their runtime's own queue, which no caller shares",
-        ));
-    }
     // A target's pixels follow from its logical size at the map's scale.
     let scale = (map_handle.snapshot()).map_or(1.0, |s| s.view.extent.scale_factor);
     physical(logical, scale)?;
@@ -668,13 +518,6 @@ pub(crate) unsafe fn attach(
             "options.producer_sync_kinds sets a bit that names no gpu sync kind",
         ));
     }
-    if options.producer_sync_kinds != 0
-        && options.producer_sync_kinds & MLN_GPU_SYNC_KIND_FLAG_CPU_COMPLETE == 0
-    {
-        return Err(Failure::unsupported(
-            "Orbis sessions have no GPU sync objects to share",
-        ));
-    }
     // SAFETY: as above.
     unsafe { crate::base::fresh_out(out_session, "out_session")? };
     let frame_wake = Wake::from_c(&options.frame_wake, "options.frame_wake")?;
@@ -682,9 +525,20 @@ pub(crate) unsafe fn attach(
     Wake::from_c(&options.driver_work_wake, "options.driver_work_wake")?;
     // SAFETY: as above.
     let completion = unsafe { Completion::required(completion)? };
-    // A well-formed target of a kind this build lacks, once every argument
-    // checks out.
+    // What this build lacks, once every argument checks out.
     let spec = spec?;
+    if options.driver != MLN_RENDER_DRIVER_CORE_WORKER {
+        return Err(Failure::unsupported(
+            "Orbis sessions render on threads of their own (MLN_RENDER_DRIVER_CORE_WORKER)",
+        ));
+    }
+    if options.producer_sync_kinds != 0
+        && options.producer_sync_kinds & MLN_GPU_SYNC_KIND_FLAG_CPU_COMPLETE == 0
+    {
+        return Err(Failure::unsupported(
+            "Orbis sessions have no GPU sync objects to share",
+        ));
+    }
     if map_handle.snapshot().is_none() {
         return Err(Failure::state("the map isn't made yet"));
     }
@@ -739,6 +593,7 @@ pub(crate) unsafe fn attach(
         state.sessions.insert(id, Link(handle.clone()));
         let start = Start {
             spec,
+            device,
             logical,
             redraw_wake,
             completion,
@@ -761,6 +616,8 @@ pub(crate) unsafe fn attach(
 /// What a session's thread starts from.
 struct Start {
     spec: TargetSpec,
+    /// The device the session attached with.
+    device: Option<Arc<GpuDevice>>,
     logical: mln_logical_size,
     redraw_wake: Option<Wake>,
     completion: Completion,
@@ -856,13 +713,16 @@ impl Session {
     ) -> Option<Self> {
         let runtime = core.runtime.clone();
         let scale = cell.lock().extent.scale_factor;
-        let target = crate::base::catch(|| match start.spec {
-            TargetSpec::Offscreen => physical(start.logical, scale).map(|(w, h)| Target::One {
-                target: orb_api::Target::texture(&runtime, w, h, scale),
-                _layer: None,
-            }),
-            TargetSpec::Metal(layer) => metal_target(&runtime, layer, start.logical, scale),
-            TargetSpec::Ring(slots) => ring_target(&runtime, &slots),
+        let target = crate::base::catch(|| {
+            same_device(&runtime, start.device.as_deref())?;
+            match start.spec {
+                TargetSpec::Offscreen => physical(start.logical, scale).map(|(w, h)| Target::One {
+                    target: orb_api::Target::texture(&runtime, w, h, scale),
+                    _layer: None,
+                }),
+                TargetSpec::Metal(layer) => metal_target(&runtime, layer, start.logical, scale),
+                TargetSpec::Ring(slots) => ring_target(&runtime, &slots),
+            }
         });
         let mut map = cell.lock();
         let target = target.and_then(|target| match map.released {
@@ -888,6 +748,7 @@ impl Session {
         let entry = SessionEntry {
             handle: handle.clone(),
             runtime,
+            _device: start.device,
             target: Some(target),
             logical: start.logical,
             scale,
@@ -902,7 +763,13 @@ impl Session {
             generation: 1,
             still: None,
         };
-        lock(&handle.state).state = MLN_RENDER_SESSION_STATE_ATTACHED;
+        // An abandon sent while the session attached has already marked it
+        // abandoned, which attaching doesn't undo.
+        let mut state = lock(&handle.state);
+        if state.state != MLN_RENDER_SESSION_STATE_ABANDONED {
+            state.state = MLN_RENDER_SESSION_STATE_ATTACHED;
+        }
+        drop(state);
         entry.sync_state();
         start.completion.complete(Ok(Value::None), 0);
         Some(Self {
@@ -1156,11 +1023,20 @@ pub unsafe extern "C" fn mln_map_attach(
     // SAFETY: the caller's pointers.
     unsafe {
         boundary(out_diagnostic, || {
-            if device.0 != 0 {
-                handles::gpu_device(device.0)?;
-            }
+            let device = match device.0 {
+                0 => None,
+                id => Some(handles::gpu_device(id)?),
+            };
             let d = describe(target)?;
-            attach(map, d.logical, d.spec(), options, out_session, completion)
+            attach(
+                map,
+                d.logical,
+                d.spec(),
+                device,
+                options,
+                out_session,
+                completion,
+            )
         })
     }
 }
@@ -1184,33 +1060,46 @@ pub unsafe extern "C" fn mln_render_session_set_target(
             }
             let handle = handles::session(session.0)?;
             handle.usable()?;
-            let TargetSpec::Metal(layer) = d.spec()? else {
-                unreachable!("an offscreen target was refused above")
-            };
-            handle.no_frames_held()?;
-            if handle.ring_depth() > 0 {
-                return Err(Failure::unsupported(
-                    "a borrowed ring takes caller-owned textures, not a native surface",
-                ));
+            let completion = Completion::from_c(completion)?;
+            match d.spec()? {
+                TargetSpec::Ring(slots) => {
+                    crate::frames::replace_ring(&handle, d.logical, slots, completion)
+                }
+                TargetSpec::Metal(layer) => replace_layer(&handle, d.logical, layer, completion),
+                TargetSpec::Offscreen => unreachable!("an offscreen target was refused above"),
             }
-            if handle.readback {
-                return Err(Failure::unsupported(
-                    "an offscreen session renders into a texture of its own and takes no target",
-                ));
-            }
-            let logical = d.logical;
-            handle.command(Completion::from_c(completion)?, move |entry, map| {
-                // The old surface goes before the new one is made on its layer.
-                entry.target = None;
-                entry.target = Some(metal_target(&entry.runtime, layer, logical, entry.scale)?);
-                entry.logical = logical;
-                entry.sync_state();
-                (map.extent.width, map.extent.height) = (logical.width, logical.height);
-                force_redraw(map);
-                Ok(Value::None)
-            })
         })
     }
+}
+
+/// Gives a session that presents a new layer to present to.
+fn replace_layer(
+    handle: &SessionHandle,
+    logical: mln_logical_size,
+    layer: UserData,
+    completion: Option<Completion>,
+) -> Result {
+    handle.no_frames_held()?;
+    if handle.ring_depth() > 0 {
+        return Err(Failure::unsupported(
+            "a borrowed ring takes caller-owned textures, not a native surface",
+        ));
+    }
+    if handle.readback {
+        return Err(Failure::unsupported(
+            "an offscreen session renders into a texture of its own and takes no target",
+        ));
+    }
+    handle.command(completion, move |entry, map| {
+        // The old surface goes before the new one is made on its layer.
+        entry.target = None;
+        entry.target = Some(metal_target(&entry.runtime, layer, logical, entry.scale)?);
+        entry.logical = logical;
+        entry.sync_state();
+        (map.extent.width, map.extent.height) = (logical.width, logical.height);
+        force_redraw(map);
+        Ok(Value::None)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2289,6 +2178,10 @@ pub(crate) fn abandon(handle: &Arc<SessionHandle>, keep: bool) -> Result<u32> {
             "a session can't be abandoned from inside the runtime's own work",
         ));
     }
+    // The session is abandoned from here on: what its thread is doing (a
+    // frame wake that opens a view, say) finds its frames gone while the
+    // thread finishes and lets go of its graphics objects.
+    lock(&handle.state).state = MLN_RENDER_SESSION_STATE_ABANDONED;
     let (done, kept) = mpsc::sync_channel(1);
     handle.send(Msg::End(Ending::Abandon { keep, done }));
     Ok(kept.recv().unwrap_or(0))
