@@ -29,14 +29,9 @@ pub(crate) struct StyleState {
     volatile: HashSet<String>,
     /// Whether symbols fade as they're placed; `None` is the default, on.
     pub(crate) placement_transitions: Option<bool>,
-    /// The feature state the map keeps, set through the API, whether or
-    /// not the style has the source yet.
-    feature_states: std::collections::BTreeMap<FeatureKey, FeatureState>,
     /// The custom sources' callbacks, by source.
     custom: HashMap<String, CustomSource>,
 }
-
-type FeatureState = Vec<(String, orb_expr::Value<'static>)>;
 
 impl StyleState {
     /// Forgets what belonged to the style a new one replaces.
@@ -340,7 +335,6 @@ fn add_source(entry: &mut MapEntry, id: &str, json: &str) -> Result {
             source,
         }],
     )?;
-    replay_state(entry, id);
     Ok(())
 }
 
@@ -372,11 +366,6 @@ command!(
             )?;
             entry.style.volatile.remove(&source_id);
             entry.style.custom.remove(&source_id);
-            // A source added again starts with no state.
-            entry
-                .style
-                .feature_states
-                .retain(|(source, ..), _| *source != source_id);
             Ok(())
         }))
     }
@@ -1861,10 +1850,6 @@ command!(
 
 // MARK: - Feature state
 
-/// A feature a state selector names: its source, source layer (empty for
-/// none) and ID as text, Native's key for it.
-type FeatureKey = (String, String, String);
-
 /// A feature state selector, checked.
 struct Selector {
     source: String,
@@ -1971,49 +1956,6 @@ unsafe fn selector(
     })
 }
 
-/// Hands state the map keeps to Orbis's style, when it has the source: a
-/// source added later takes it then.
-fn push_state(entry: &mut MapEntry, op: Op) {
-    let source = match &op {
-        Op::SetFeatureState { target, .. } | Op::RemoveFeatureState { target, .. } => {
-            target.source.clone()
-        }
-        _ => return,
-    };
-    if entry
-        .map
-        .style()
-        .is_some_and(|d| d.source(&source).is_some())
-        && let Err(e) = edit(entry, vec![op])
-    {
-        crate::logging::log(MLN_LOG_SEVERITY_WARNING, &e.message);
-    }
-}
-
-/// Gives a source just added the state the map keeps for it.
-fn replay_state(entry: &mut MapEntry, source: &str) {
-    let states: Vec<(FeatureKey, FeatureState)> = entry
-        .style
-        .feature_states
-        .iter()
-        .filter(|((s, ..), _)| s == source)
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    for ((source, layer, id), state) in states {
-        push_state(
-            entry,
-            Op::SetFeatureState {
-                target: orb_api::FeatureTarget {
-                    source,
-                    source_layer: (!layer.is_empty()).then_some(layer),
-                    id: Some(id),
-                },
-                state,
-            },
-        );
-    }
-}
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_map_set_feature_state(
     map: mln_map,
@@ -2039,26 +1981,8 @@ pub unsafe extern "C" fn mln_map_set_feature_state(
             };
             let members = members.into_owned();
             post::change(map, completion, move |entry| {
-                let key = (
-                    s.source.clone(),
-                    s.layer.clone(),
-                    s.id.clone().unwrap_or_default(),
-                );
-                let kept = entry.style.feature_states.entry(key).or_default();
-                let mut changed = false;
-                for (k, v) in &members {
-                    changed |= !kept.iter().any(|(old, value)| old == k && value == v);
-                    kept.retain(|(old, _)| old != k);
-                    kept.push((k.clone(), v.clone()));
-                }
-                push_state(
-                    entry,
-                    Op::SetFeatureState {
-                        target: s.target(),
-                        state: members,
-                    },
-                );
                 // State the features already hold draws nothing new.
+                let changed = entry.map.set_feature_state(&s.target(), &members);
                 Ok(Drawn::new_if(changed))
             })
         })
@@ -2077,13 +2001,7 @@ pub unsafe extern "C" fn mln_map_get_feature_state(
         boundary(out_diagnostic, || {
             let s = self::selector(selector, true)?;
             post::query(map, completion, move |entry| {
-                let key = (s.source, s.layer, s.id.unwrap_or_default());
-                let members = entry
-                    .style
-                    .feature_states
-                    .get(&key)
-                    .cloned()
-                    .unwrap_or_default();
+                let members = entry.map.feature_state(&s.target());
                 Ok(Value::Text(
                     orb_expr::Value::Object(members.into()).to_json_string(),
                 ))
@@ -2104,40 +2022,9 @@ pub unsafe extern "C" fn mln_map_remove_feature_state(
         boundary(out_diagnostic, || {
             let s = self::selector(selector, false)?;
             post::change(map, completion, move |entry| {
-                let states = &mut entry.style.feature_states;
-                let count = |states: &std::collections::BTreeMap<FeatureKey, FeatureState>| {
-                    states.values().map(Vec::len).sum::<usize>()
-                };
-                let before = count(states);
-                match (&s.id, &s.key) {
-                    (Some(fid), Some(key)) => {
-                        let k = (s.source.clone(), s.layer.clone(), fid.clone());
-                        if let Some(kept) = states.get_mut(&k) {
-                            kept.retain(|(name, _)| name != key);
-                            if kept.is_empty() {
-                                states.remove(&k);
-                            }
-                        }
-                    }
-                    (Some(fid), None) => {
-                        states.remove(&(s.source.clone(), s.layer.clone(), fid.clone()));
-                    }
-                    (None, _) => {
-                        states.retain(|(source, layer, _), _| {
-                            !(*source == s.source && *layer == s.layer)
-                        });
-                    }
-                }
                 // Removing state no feature holds draws nothing new.
-                let drawn = Drawn::new_if(count(&entry.style.feature_states) != before);
-                push_state(
-                    entry,
-                    Op::RemoveFeatureState {
-                        target: s.target(),
-                        key: s.key.clone(),
-                    },
-                );
-                Ok(drawn)
+                let changed = (entry.map).remove_feature_state(&s.target(), s.key.as_deref());
+                Ok(Drawn::new_if(changed))
             })
         })
     }

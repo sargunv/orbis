@@ -75,9 +75,9 @@ impl Map {
             let patch = waiting.doc.apply(tx).map_err(|d| d.to_string())?;
             self.warnings
                 .extend(patch.warnings.iter().map(ToString::to_string));
-            waiting.states.extend(patch.feature_state);
             let needed = crate::modules::of_style(waiting.doc.style());
             self.modules_wanted |= needed.without(self.modules);
+            self.take_state_edits(&patch);
             self.events.wake();
             return Ok(self.version + 1);
         }
@@ -85,9 +85,8 @@ impl Map {
         let patch = style.doc.apply(tx).map_err(|d| d.to_string())?;
         self.warnings
             .extend(patch.warnings.iter().map(ToString::to_string));
-        for op in &patch.feature_state {
-            style.states.apply(op);
-        }
+        self.take_state_edits(&patch);
+        let style = self.style.as_mut().expect("checked above");
         self.events.wake();
         if patch.changes.is_empty() {
             let generation = self.generation();

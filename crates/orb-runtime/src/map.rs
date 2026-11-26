@@ -731,11 +731,9 @@ impl StyleLoad {
 }
 
 /// A style waiting for the feature modules it needs ([`crate::modules`]):
-/// the document asked for last, which edits go to meanwhile, and the
-/// feature states they set.
+/// the document asked for last, which edits go to meanwhile.
 pub(crate) struct WaitingStyle {
     pub(crate) doc: StyleDoc,
-    pub(crate) states: Vec<orb_style::FeatureStateOp>,
 }
 
 /// Work that waits for feature modules, taken again once they're in.
@@ -832,6 +830,9 @@ pub struct Map {
     pub(crate) modules_wanted: Modules,
     /// A style waiting for its modules, installed once they're in.
     pub(crate) waiting_style: Option<WaitingStyle>,
+    /// The feature state the app set, which the style's state table
+    /// mirrors ([`crate::feature_state`]).
+    pub(crate) feature_state: crate::feature_state::FeatureStateStore,
     /// Work waiting for modules, and the modules each waits for.
     pub(crate) for_modules: Vec<(Modules, ModuleWait)>,
     /// Gives up what the style generation fetches (TileJSON, archive
@@ -1050,6 +1051,7 @@ impl Map {
             modules: Modules::ALL,
             modules_wanted: Modules::NONE,
             waiting_style: None,
+            feature_state: Default::default(),
             for_modules: Vec::new(),
             style_loads: Abort::new(),
             generation: 0,
@@ -1505,12 +1507,8 @@ impl Map {
         if !ready {
             return;
         }
-        let WaitingStyle { doc, states } = self.waiting_style.take().expect("waiting");
+        let WaitingStyle { doc } = self.waiting_style.take().expect("waiting");
         self.install_revision(doc, None);
-        let style = self.style.as_mut().expect("installed");
-        for op in &states {
-            style.states.apply(op);
-        }
     }
 
     /// Replaces the style with a v8 document. Its tiles load as frames
@@ -1533,6 +1531,8 @@ impl Map {
         self.style_load.replace(StyleLoad::Settled);
         self.transitions = Default::default();
         self.root = Default::default();
+        // A new style starts with no feature state.
+        self.clear_feature_state();
         self.install(doc);
         Ok(())
     }
@@ -1566,15 +1566,11 @@ impl Map {
         self.cancel_tile_loads();
         if let Some(style) = self.style.take() {
             self.next_generation();
-            // What the host set at run time comes back with it.
-            let states = style.states.carried();
+            // What the host set at run time comes back with it, feature
+            // state as every install takes it.
             self.install_revision(style.doc, Some((style.id, &style.worker)));
             for (name, image) in style.added_images {
                 let _ = self.add_image(&name, Arc::unwrap_or_clone(image));
-            }
-            let style = self.style.as_mut().expect("installed");
-            for op in &states {
-                style.states.apply(op);
             }
         }
         // What the old renderer held went with it.
@@ -1589,10 +1585,7 @@ impl Map {
         let needed = crate::modules::of_style(doc.style());
         if !self.modules.contains(needed) {
             self.modules_wanted |= needed.without(self.modules);
-            self.waiting_style = Some(WaitingStyle {
-                doc,
-                states: Vec::new(),
-            });
+            self.waiting_style = Some(WaitingStyle { doc });
             self.events.wake();
             return;
         }
@@ -1662,6 +1655,10 @@ impl Map {
         let sources = (0..plan.sources.len())
             .map(|index| self.start_source(plan, index))
             .collect();
+        // The feature state kept for its sources, through restyles and
+        // device losses alike.
+        let mut states = FeatureStates::default();
+        self.seed_states(&doc, &mut states);
         self.style = Some(LoadedStyle {
             nodes: (plan.nodes.iter())
                 .map(|n| (n.key, NodeState::new(plan, n, 0)))
@@ -1684,7 +1681,7 @@ impl Map {
             added_images: Default::default(),
             reported_missing: Default::default(),
             background: None,
-            states: FeatureStates::default(),
+            states,
             symbol_tiles: Vec::new(),
             draws: Vec::new(),
             coarse: Vec::new(),
@@ -3472,6 +3469,9 @@ impl Map {
         tx.push(orb_style::v8::Op::set_style(root));
         let id = self.style_id;
         self.edit(&tx)?;
+        // A style that loads takes every source's feature state with it,
+        // as in Native, even one whose sources the diff kept.
+        self.clear_feature_state();
         // A diff that needed a reload installed the document, which said so.
         if self.style_id == id {
             self.events.push(MapEvent::StyleLoad);

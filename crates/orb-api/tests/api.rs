@@ -7,9 +7,9 @@ mod common;
 use std::time::Duration;
 
 use orb_api::{
-    Button, CameraEvent, CameraTarget, Constraints, EaseOptions, Error, Event, Input, Map,
-    MapEvent, MapOptions, Modifiers, Op, PointerKind, Runtime, RuntimeOptions, StyleImage, Target,
-    Transaction, json,
+    Button, CameraEvent, CameraTarget, Constraints, EaseOptions, Error, Event, FeatureTarget,
+    Input, Map, MapEvent, MapOptions, Modifiers, Op, PointerKind, Runtime, RuntimeOptions,
+    StyleImage, Target, Transaction, Value, json,
 };
 
 /// A red background and a blue box around the origin, with feature ids.
@@ -785,6 +785,146 @@ fn pitch_scales_feature_data_and_state() {
     let state = width(&mut map, &mut target);
     assert!(state.abs_diff(40) <= 2, "{state} px from its state");
     assert_eq!(radius(&mut map, &mut target), 20.0);
+}
+
+fn feature(source: &str, layer: Option<&str>, id: Option<&str>) -> FeatureTarget {
+    FeatureTarget {
+        source: source.into(),
+        source_layer: layer.map(Into::into),
+        id: id.map(Into::into),
+    }
+}
+
+/// A feature's state as JSON, keys sorted.
+fn state_of(map: &Map, target: &FeatureTarget) -> String {
+    let mut state = map.feature_state(target).to_vec();
+    state.sort_by(|a, b| a.0.cmp(&b.0));
+    Value::Object(state.into()).to_json_string()
+}
+
+fn state(json: &str) -> Vec<(String, Value<'static>)> {
+    match Value::from_json(&json::parse(json).unwrap()) {
+        Value::Object(members) => members.into_owned(),
+        other => panic!("{other:?} is no object"),
+    }
+}
+
+/// The map keeps feature state for any source, before a style too: set
+/// merges, reports whether it changed anything, and removal by key, by
+/// feature and by source layer takes exactly what it names. The first
+/// style starts with none.
+#[test]
+fn feature_state_is_kept_whatever_the_style() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut map = Map::new(&runtime, MapOptions::default());
+    let one = feature("tiles", Some("roads"), Some("1"));
+    assert_eq!(state_of(&map, &one), "{}");
+    assert!(map.set_feature_state(&one, &state(r#"{"hover": true}"#)));
+    assert!(map.set_feature_state(&one, &state(r#"{"n": 3}"#)));
+    assert!(
+        !map.set_feature_state(&one, &state(r#"{"n": 3}"#)),
+        "unchanged"
+    );
+    assert_eq!(state_of(&map, &one), r#"{"hover":true,"n":3}"#);
+    assert!(map.remove_feature_state(&one, Some("hover")));
+    assert!(
+        !map.remove_feature_state(&one, Some("hover")),
+        "already gone"
+    );
+    assert_eq!(state_of(&map, &one), r#"{"n":3}"#);
+
+    let two = feature("tiles", Some("roads"), Some("2"));
+    let water = feature("tiles", Some("water"), Some("1"));
+    let bare = feature("tiles", None, Some("1"));
+    for target in [&two, &water, &bare] {
+        map.set_feature_state(target, &state(r#"{"n": 1}"#));
+    }
+    assert!(map.remove_feature_state(&feature("tiles", Some("roads"), None), None));
+    assert_eq!(state_of(&map, &one), "{}");
+    assert_eq!(state_of(&map, &two), "{}");
+    assert_eq!(state_of(&map, &water), r#"{"n":1}"#);
+    assert_eq!(state_of(&map, &bare), r#"{"n":1}"#);
+    // No source layer selects the features without one.
+    assert!(map.remove_feature_state(&feature("tiles", None, None), None));
+    assert_eq!(state_of(&map, &bare), "{}");
+    assert_eq!(state_of(&map, &water), r#"{"n":1}"#);
+    // Without an id, a key is ignored: the whole layer's state goes.
+    map.set_feature_state(&two, &state(r#"{"n": 1, "m": 2}"#));
+    assert!(map.remove_feature_state(&feature("tiles", Some("roads"), None), Some("n")));
+    assert_eq!(state_of(&map, &two), "{}");
+
+    map.set_style_json(STYLE).expect("style");
+    assert_eq!(state_of(&map, &water), "{}", "a style load clears it");
+}
+
+/// State set for a source the style lacks draws once a transaction adds
+/// it, a transaction's state reads back through the same store, and a
+/// source removed takes its state with it.
+#[test]
+fn feature_state_follows_the_styles_sources() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(
+        r##"{"version": 8, "center": [0, 0], "zoom": 0, "sources": {},
+          "layers": [{"id": "background", "type": "background",
+            "paint": {"background-color": "#ff0000"}}]}"##,
+    )
+    .expect("style");
+    let seven = feature("box", None, Some("7"));
+    map.set_feature_state(&seven, &state(r#"{"on": true}"#));
+    let add = r##"[["addSource", "box", {"type": "geojson", "data": {"type": "Feature",
+          "id": 7, "properties": {}, "geometry": {"type": "Polygon",
+          "coordinates": [[[-10, -10], [10, -10], [10, 10], [-10, 10], [-10, -10]]]}}}],
+        ["addLayer", {"id": "box", "type": "fill", "source": "box", "paint": {"fill-color":
+          ["case", ["boolean", ["feature-state", "on"], false], "#00ff00", "#0000ff"]}}]]"##;
+    let centre = |map: &mut Map, target: &mut Target| {
+        settle(map, target);
+        pixel(&target.read_pixels().unwrap(), SIZE / 2, SIZE / 2)
+    };
+    map.edit(&commands(add)).expect("add");
+    assert_eq!(
+        centre(&mut map, &mut target),
+        [0, 255, 0, 255],
+        "kept state draws"
+    );
+
+    map.edit(&commands(
+        r#"[["setFeatureState", {"source": "box", "id": 7}, {"on": false}]]"#,
+    ))
+    .expect("state");
+    assert_eq!(state_of(&map, &seven), r#"{"on":false}"#);
+    assert_eq!(centre(&mut map, &mut target), [0, 0, 255, 255]);
+    map.set_feature_state(&seven, &state(r#"{"on": true}"#));
+    assert_eq!(centre(&mut map, &mut target), [0, 255, 0, 255]);
+
+    map.edit(&commands(
+        r#"[["removeLayer", "box"], ["removeSource", "box"]]"#,
+    ))
+    .expect("remove");
+    assert_eq!(state_of(&map, &seven), "{}");
+    map.edit(&commands(add)).expect("add again");
+    assert_eq!(
+        centre(&mut map, &mut target),
+        [0, 0, 255, 255],
+        "starts with none"
+    );
+
+    // A style URL's arrival clears it, though the diff keeps the source.
+    map.set_feature_state(&seven, &state(r#"{"on": true}"#));
+    assert_eq!(centre(&mut map, &mut target), [0, 255, 0, 255]);
+    let dir = common::Scratch::new("api-feature-state");
+    let path = dir.join("style.json");
+    let style = map.style().expect("style").to_json();
+    std::fs::write(&path, style).unwrap();
+    map.load_style_url(&format!("file://{}", path.display()));
+    let events = settle(&mut map, &mut target);
+    assert!(
+        (events.iter()).any(|e| matches!(e, Event::Map(MapEvent::StyleLoad))),
+        "the style arrived"
+    );
+    assert_eq!(state_of(&map, &seven), "{}");
+    assert_eq!(centre(&mut map, &mut target), [0, 0, 255, 255]);
 }
 
 /// A dashed line whose width the camera scales (beyond the spec) sizes

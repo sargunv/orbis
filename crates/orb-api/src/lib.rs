@@ -46,7 +46,7 @@ pub use orb_runtime::{
     Activity, CameraState, ClusterQuery, FeatureTarget, FetchCounts, FrameReport, FrameTimes,
     GestureMotion, HOST_TILES, Hit, HostElevations, HostTile, MapEvent, MapOptions, Memory,
     MissingTiles, Op, PoolMemory, Preview, Previews, Progress, Resized, StyleDoc, StyleImage,
-    Transaction, VideoRequest, json,
+    Transaction, Value, VideoRequest, json,
 };
 pub use regions::{RegionDefinition, RegionEvent, RegionInfo};
 pub use target::Target;

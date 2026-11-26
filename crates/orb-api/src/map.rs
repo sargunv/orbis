@@ -15,8 +15,8 @@ use orb_camera::{
 use orb_crs::Geodetic;
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_runtime::{
-    CameraState, ClusterQuery, FrameReport, GridTile, Hit, HostTile, MapEvent, MapOptions,
-    RenderMode, StyleImage, Transaction, VideoRequest, Viewport,
+    CameraState, ClusterQuery, FeatureTarget, FrameReport, GridTile, Hit, HostTile, MapEvent,
+    MapOptions, RenderMode, StyleImage, Transaction, Value, VideoRequest, Viewport,
 };
 
 use crate::{Activity, Error, GestureMotion, Move, Runtime, Skew, Target};
@@ -438,6 +438,41 @@ impl Map {
         self.styled()?;
         self.dirty = true;
         self.map.edit(tx).map_err(Error::InvalidArgument)
+    }
+
+    /// The state of `target`'s feature (GL JS `getFeatureState`): empty
+    /// when it has none, or `target` names no feature.
+    pub fn feature_state(&self, target: &FeatureTarget) -> &[(String, Value<'static>)] {
+        self.map.feature_state(target)
+    }
+
+    /// Merges `state` into the state of `target`'s feature, as MapLibre
+    /// Native's `setFeatureState`: whatever its source, which the style
+    /// may add later. The state lasts until it's removed, its source
+    /// leaves the style, or a style loads (a style URL's arrival too, even
+    /// over the same style); state set before any style reads back until
+    /// the first style loads.
+    /// Returns whether it changed anything; a target without an id sets
+    /// nothing. A transaction's `setFeatureState` sets the same state but
+    /// checks its target as GL JS does.
+    pub fn set_feature_state(
+        &mut self,
+        target: &FeatureTarget,
+        state: &[(String, Value<'static>)],
+    ) -> bool {
+        let changed = self.map.set_feature_state(target, state);
+        self.dirty |= changed;
+        changed
+    }
+
+    /// Removes `key` of the state of `target`'s feature, or its whole
+    /// state; without an id, the whole state of every feature of its
+    /// source layer (or of its source's features without one), whatever
+    /// `key`, as MapLibre Native does. Returns whether it removed anything.
+    pub fn remove_feature_state(&mut self, target: &FeatureTarget, key: Option<&str>) -> bool {
+        let changed = self.map.remove_feature_state(target, key);
+        self.dirty |= changed;
+        changed
     }
 
     /// Adds an image to the style for icons, text and patterns (GL JS
