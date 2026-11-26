@@ -176,26 +176,24 @@ pub struct SymbolStream {
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable, orb_wire::Wire)]
 #[repr(C)]
 pub struct AnchorOffset {
-    /// GL JS `TextAnchorEnum`: 1 center, 2 left, 3 right, 4 top, 5 bottom,
-    /// 6 top-left, 7 top-right, 8 bottom-left, 9 bottom-right.
-    pub anchor: u32,
+    /// [`Anchor::code`].
+    anchor: u32,
     /// Layout units.
     pub offset: [f32; 2],
 }
 
 impl AnchorOffset {
-    pub fn text_anchor(&self) -> Anchor {
-        match self.anchor {
-            2 => Anchor::Left,
-            3 => Anchor::Right,
-            4 => Anchor::Top,
-            5 => Anchor::Bottom,
-            6 => Anchor::TopLeft,
-            7 => Anchor::TopRight,
-            8 => Anchor::BottomLeft,
-            9 => Anchor::BottomRight,
-            _ => Anchor::Center,
+    pub fn new(anchor: Anchor, offset: [f32; 2]) -> Self {
+        Self {
+            anchor: anchor.code().into(),
+            offset,
         }
+    }
+
+    pub fn text_anchor(&self) -> Anchor {
+        let anchor = u8::try_from(self.anchor).ok().and_then(Anchor::from_code);
+        debug_assert!(anchor.is_some(), "anchor code {}", self.anchor);
+        anchor.unwrap_or_default()
     }
 }
 

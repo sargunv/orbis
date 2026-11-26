@@ -17,11 +17,13 @@ pub const ONE_EM: f64 = 24.0;
 /// GL JS `SHAPING_DEFAULT_OFFSET`.
 pub const DEFAULT_OFFSET: f64 = -17.0;
 
-/// `text-anchor`, `icon-anchor`.
+/// `text-anchor`, `icon-anchor`, numbered as GL JS `TextAnchorEnum`
+/// numbers them for its tables ([`Anchor::code`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Anchor {
     #[default]
-    Center,
+    Center = 1,
     Left,
     Right,
     Top,
@@ -33,6 +35,29 @@ pub enum Anchor {
 }
 
 impl Anchor {
+    /// Every anchor, in code order.
+    pub const ALL: [Self; 9] = [
+        Self::Center,
+        Self::Left,
+        Self::Right,
+        Self::Top,
+        Self::Bottom,
+        Self::TopLeft,
+        Self::TopRight,
+        Self::BottomLeft,
+        Self::BottomRight,
+    ];
+
+    /// Its code in a table: 1 for center up to 9 for bottom-right.
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// The anchor of a [`code`](Self::code).
+    pub fn from_code(code: u8) -> Option<Self> {
+        Self::ALL.get(usize::from(code).checked_sub(1)?).copied()
+    }
+
     /// Horizontal and vertical alignment, 0 to 1 (GL JS
     /// `getAnchorAlignment`).
     pub fn alignment(self) -> (f64, f64) {

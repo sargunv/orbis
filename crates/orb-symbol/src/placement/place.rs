@@ -124,16 +124,68 @@ pub struct SymbolFlags {
 impl SymbolFlags {
     /// [`instance_flags::OWN_PLACEMENT`] and the bits after it hold them.
     const SHIFT: u32 = 9;
+    /// Each field's code takes this many instance bits, in field order.
+    const WIDTH: u32 = 2;
 
     /// `text-overlap` (after `text-allow-overlap`), as a bit of
-    /// [`LayerParams::own_flags`]; the rest likewise.
-    pub const TEXT_OVERLAP: u8 = 1;
-    pub const ICON_OVERLAP: u8 = 2;
-    pub const TEXT_OPTIONAL: u8 = 4;
-    pub const ICON_OPTIONAL: u8 = 8;
-    pub const TEXT_IGNORE_PLACEMENT: u8 = 16;
-    pub const ICON_IGNORE_PLACEMENT: u8 = 32;
-    pub const AVOID_EDGES: u8 = 64;
+    /// [`LayerParams::own_flags`]; the rest likewise, bit `i` for field
+    /// `i` of [`codes`](Self::codes).
+    pub const TEXT_OVERLAP: u8 = 1 << 0;
+    pub const ICON_OVERLAP: u8 = 1 << 1;
+    pub const TEXT_OPTIONAL: u8 = 1 << 2;
+    pub const ICON_OPTIONAL: u8 = 1 << 3;
+    pub const TEXT_IGNORE_PLACEMENT: u8 = 1 << 4;
+    pub const ICON_IGNORE_PLACEMENT: u8 = 1 << 5;
+    pub const AVOID_EDGES: u8 = 1 << 6;
+
+    /// Each field as a code, in the order of the [`LayerParams::own_flags`]
+    /// bits: an overlap 0 never, 1 always, 2 cooperative; a flag 0 or 1.
+    fn codes(self) -> [u32; 7] {
+        let overlap = |o: Overlap| match o {
+            Overlap::Never => 0,
+            Overlap::Always => 1,
+            Overlap::Cooperative => 2,
+        };
+        [
+            overlap(self.text_overlap),
+            overlap(self.icon_overlap),
+            self.text_optional.into(),
+            self.icon_optional.into(),
+            self.text_ignore_placement.into(),
+            self.icon_ignore_placement.into(),
+            self.avoid_edges.into(),
+        ]
+    }
+
+    /// The flags of [`codes`](Self::codes).
+    fn from_codes(codes: [u32; 7]) -> Self {
+        let overlap = |code| {
+            debug_assert!(code <= 2, "overlap code {code}");
+            match code {
+                1 => Overlap::Always,
+                2 => Overlap::Cooperative,
+                _ => Overlap::Never,
+            }
+        };
+        let [
+            text_overlap,
+            icon_overlap,
+            text_optional,
+            icon_optional,
+            text_ignore,
+            icon_ignore,
+            avoid_edges,
+        ] = codes;
+        Self {
+            text_overlap: overlap(text_overlap),
+            icon_overlap: overlap(icon_overlap),
+            text_optional: text_optional != 0,
+            icon_optional: icon_optional != 0,
+            text_ignore_placement: text_ignore != 0,
+            icon_ignore_placement: icon_ignore != 0,
+            avoid_edges: avoid_edges != 0,
+        }
+    }
 
     /// These, but for those of `own` the instance's, where its feature
     /// gives them (beyond the spec: GL JS and Native read them per layer).
@@ -142,54 +194,22 @@ impl SymbolFlags {
             return self;
         }
         let bits = instance.flags >> Self::SHIFT;
-        let mine = |flag: u8| own & flag != 0;
-        let overlap = |flag: u8, b: u32, layer: Overlap| {
-            if !mine(flag) {
-                return layer;
+        let mut codes = self.codes();
+        for (i, code) in (0..).zip(&mut codes) {
+            if own & 1 << i != 0 {
+                *code = bits >> (i * Self::WIDTH) & ((1 << Self::WIDTH) - 1);
             }
-            match b & 3 {
-                1 => Overlap::Always,
-                2 => Overlap::Cooperative,
-                _ => Overlap::Never,
-            }
-        };
-        let flag = |flag: u8, bit: u32, layer: bool| {
-            if mine(flag) { bits & bit != 0 } else { layer }
-        };
-        Self {
-            text_overlap: overlap(Self::TEXT_OVERLAP, bits, self.text_overlap),
-            icon_overlap: overlap(Self::ICON_OVERLAP, bits >> 2, self.icon_overlap),
-            text_optional: flag(Self::TEXT_OPTIONAL, 16, self.text_optional),
-            icon_optional: flag(Self::ICON_OPTIONAL, 32, self.icon_optional),
-            text_ignore_placement: flag(
-                Self::TEXT_IGNORE_PLACEMENT,
-                64,
-                self.text_ignore_placement,
-            ),
-            icon_ignore_placement: flag(
-                Self::ICON_IGNORE_PLACEMENT,
-                128,
-                self.icon_ignore_placement,
-            ),
-            avoid_edges: flag(Self::AVOID_EDGES, 256, self.avoid_edges),
         }
+        Self::from_codes(codes)
     }
 
     /// Their instance flags, which [`of`](Self::of) reads.
     pub(crate) fn instance_bits(self) -> u32 {
-        let overlap = |o: Overlap| match o {
-            Overlap::Never => 0,
-            Overlap::Always => 1,
-            Overlap::Cooperative => 2,
-        };
-        let bits = overlap(self.text_overlap)
-            | overlap(self.icon_overlap) << 2
-            | u32::from(self.text_optional) << 4
-            | u32::from(self.icon_optional) << 5
-            | u32::from(self.text_ignore_placement) << 6
-            | u32::from(self.icon_ignore_placement) << 7
-            | u32::from(self.avoid_edges) << 8;
-        instance_flags::OWN_PLACEMENT | bits << Self::SHIFT
+        (0..)
+            .zip(self.codes())
+            .fold(instance_flags::OWN_PLACEMENT, |bits, (i, code)| {
+                bits | code << (Self::SHIFT + i * Self::WIDTH)
+            })
     }
 
     /// Whether text and icon show whatever else collides (GL JS
@@ -2273,11 +2293,8 @@ mod tests {
         for (i, instance) in t.instances.iter_mut().enumerate() {
             let start = t.anchor_offsets.len() as u32;
             // Label 2 would sit on label 1 centred; `top` moves it down.
-            for anchor in [1, 4] {
-                t.anchor_offsets.push(AnchorOffset {
-                    anchor,
-                    offset: [0.0; 2],
-                });
+            for anchor in [Anchor::Center, Anchor::Top] {
+                t.anchor_offsets.push(AnchorOffset::new(anchor, [0.0; 2]));
             }
             instance.anchor_offsets = [start, start + 2];
             let _ = i;
@@ -2521,6 +2538,92 @@ mod tests {
         assert!(shown(word(&states, 0)));
     }
 
+    /// A symbol's own collision settings read back from its instance
+    /// flags, for every combination: each field of `own` its own, the
+    /// layer's for the rest, whatever else the flags hold.
+    #[test]
+    fn own_symbol_flags_round_trip() {
+        let overlaps = [Overlap::Never, Overlap::Always, Overlap::Cooperative];
+        let every = overlaps.iter().flat_map(|&text_overlap| {
+            overlaps.iter().flat_map(move |&icon_overlap| {
+                (0..32).map(move |b: u32| SymbolFlags {
+                    text_overlap,
+                    icon_overlap,
+                    text_optional: b & 1 != 0,
+                    icon_optional: b & 2 != 0,
+                    text_ignore_placement: b & 4 != 0,
+                    icon_ignore_placement: b & 8 != 0,
+                    avoid_edges: b & 16 != 0,
+                })
+            })
+        });
+        let next = |o: Overlap| match o {
+            Overlap::Never => Overlap::Always,
+            Overlap::Always => Overlap::Cooperative,
+            Overlap::Cooperative => Overlap::Never,
+        };
+        for mine in every {
+            // A layer whose every setting differs from the symbol's.
+            let layer = SymbolFlags {
+                text_overlap: next(mine.text_overlap),
+                icon_overlap: next(mine.icon_overlap),
+                text_optional: !mine.text_optional,
+                icon_optional: !mine.icon_optional,
+                text_ignore_placement: !mine.text_ignore_placement,
+                icon_ignore_placement: !mine.icon_ignore_placement,
+                avoid_edges: !mine.avoid_edges,
+            };
+            let mut instance = SymbolInstance::zeroed();
+            instance.flags = mine.instance_bits()
+                | instance_flags::TEXT_BOX
+                | instance_flags::RUNTIME_COLLISION_CIRCLES;
+            for own in 0..=u8::MAX >> 1 {
+                let pick = |bit: u8| own & bit != 0;
+                let want = SymbolFlags {
+                    text_overlap: if pick(SymbolFlags::TEXT_OVERLAP) {
+                        mine.text_overlap
+                    } else {
+                        layer.text_overlap
+                    },
+                    icon_overlap: if pick(SymbolFlags::ICON_OVERLAP) {
+                        mine.icon_overlap
+                    } else {
+                        layer.icon_overlap
+                    },
+                    text_optional: if pick(SymbolFlags::TEXT_OPTIONAL) {
+                        mine.text_optional
+                    } else {
+                        layer.text_optional
+                    },
+                    icon_optional: if pick(SymbolFlags::ICON_OPTIONAL) {
+                        mine.icon_optional
+                    } else {
+                        layer.icon_optional
+                    },
+                    text_ignore_placement: if pick(SymbolFlags::TEXT_IGNORE_PLACEMENT) {
+                        mine.text_ignore_placement
+                    } else {
+                        layer.text_ignore_placement
+                    },
+                    icon_ignore_placement: if pick(SymbolFlags::ICON_IGNORE_PLACEMENT) {
+                        mine.icon_ignore_placement
+                    } else {
+                        layer.icon_ignore_placement
+                    },
+                    avoid_edges: if pick(SymbolFlags::AVOID_EDGES) {
+                        mine.avoid_edges
+                    } else {
+                        layer.avoid_edges
+                    },
+                };
+                assert_eq!(layer.of(own, &instance), want, "{mine:?} own {own:#b}");
+            }
+            // An instance without settings of its own takes the layer's.
+            instance.flags &= !instance_flags::OWN_PLACEMENT;
+            assert_eq!(layer.of(u8::MAX >> 1, &instance), layer);
+        }
+    }
+
     /// Overzoom slices laid out in one ancestor place merged in its order,
     /// along each feature's anchors, as one overscaled tile does: the
     /// first anchor along the line wins, whichever slice holds it.
@@ -2611,11 +2714,8 @@ mod tests {
     /// the first, then at `block` (or gone) in the second. `None`: hidden.
     fn second_anchor(stable: bool, pitch: f64, block: Option<i16>) -> Option<f32> {
         let mut t = labels(&[(2, [4096, 4112])]);
-        t.anchor_offsets = [1, 4]
-            .map(|anchor| AnchorOffset {
-                anchor,
-                offset: [0.0; 2],
-            })
+        t.anchor_offsets = [Anchor::Center, Anchor::Top]
+            .map(|anchor| AnchorOffset::new(anchor, [0.0; 2]))
             .to_vec();
         t.instances[0].anchor_offsets = [0, 2];
         let mut placer = Placer::default();

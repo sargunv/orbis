@@ -458,7 +458,7 @@ impl Case<'_> {
             );
             for (g, w) in got_offsets.iter().zip(want_offsets) {
                 let [a, x, y]: [f64; 3] = nums(w);
-                assert_eq!(f64::from(g.anchor), a, "{what} anchor offset");
+                assert_eq!(f64::from(g.text_anchor().code()), a, "{what} anchor offset");
                 assert_same(
                     f64::from(g.offset[0]),
                     x,

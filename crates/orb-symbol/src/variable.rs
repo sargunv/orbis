@@ -89,18 +89,3 @@ pub(crate) fn from_anchors(
         out.push((anchor, variable_offset(anchor, offset)));
     }
 }
-
-/// GL JS `TextAnchorEnum`.
-pub(crate) fn anchor_code(anchor: Anchor) -> u32 {
-    match anchor {
-        Anchor::Center => 1,
-        Anchor::Left => 2,
-        Anchor::Right => 3,
-        Anchor::Top => 4,
-        Anchor::Bottom => 5,
-        Anchor::TopLeft => 6,
-        Anchor::TopRight => 7,
-        Anchor::BottomLeft => 8,
-        Anchor::BottomRight => 9,
-    }
-}

@@ -25,7 +25,7 @@ use crate::lines::{Lines, clip_line_rounding};
 use crate::merge_lines::merge_lines;
 use crate::pole::pole_of_inaccessibility;
 use crate::quads::{GlyphQuadContext, SymbolQuad, Texture, glyph_quads, icon_quads};
-use crate::variable::{self, TextOffset, anchor_code};
+use crate::variable::{self, TextOffset};
 
 /// GL JS `SIZE_PACK_FACTOR`.
 const SIZE_PACK_FACTOR: f64 = 128.0;
@@ -1229,10 +1229,10 @@ impl<'a> Builder<'a> {
 
         let offsets_start = self.bucket.anchor_offsets.len() as u32;
         for &(anchor, offset) in s.anchor_offsets {
-            self.bucket.anchor_offsets.push(AnchorOffset {
-                anchor: anchor_code(anchor),
-                offset: [offset[0] as f32, offset[1] as f32],
-            });
+            (self.bucket.anchor_offsets).push(AnchorOffset::new(
+                anchor,
+                [offset[0] as f32, offset[1] as f32],
+            ));
         }
         let offsets_end = self.bucket.anchor_offsets.len() as u32;
 

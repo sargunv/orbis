@@ -218,18 +218,9 @@ fn variable_anchors_shape_once_per_justification() {
     assert_eq!(
         offsets,
         [
-            AnchorOffset {
-                anchor: 2,
-                offset: [24.0, 0.0]
-            },
-            AnchorOffset {
-                anchor: 3,
-                offset: [-24.0, 0.0]
-            },
-            AnchorOffset {
-                anchor: 4,
-                offset: [0.0, 17.0]
-            },
+            AnchorOffset::new(Anchor::Left, [24.0, 0.0]),
+            AnchorOffset::new(Anchor::Right, [-24.0, 0.0]),
+            AnchorOffset::new(Anchor::Top, [0.0, 17.0]),
         ]
     );
     assert_eq!(instance.anchor_offsets, [0, 3]);
