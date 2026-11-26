@@ -222,6 +222,44 @@ impl GlobeView {
         (p + self.target).dot(eye) >= sphere::RADIUS * sphere::RADIUS
     }
 
+    /// How large the sphere's surface at a camera-relative point shows:
+    /// the square root of the clip-space area a square metre of it there
+    /// covers, so ground turned away one way counts for half. `None` at or
+    /// behind the eye.
+    fn surface_scale(&self, p: DVec3) -> Option<f64> {
+        self.scale_in(p, sphere::frame(sphere::geodetic(p + self.target)))
+    }
+
+    /// How large flat ground through the target shows where the line from
+    /// the eye to a camera-relative point crosses it, as
+    /// [`surface_scale`](Self::surface_scale) measures: what the view
+    /// would show there were the world the plane tangent at the target.
+    /// A point on the sphere lies below that plane, so the line always
+    /// crosses it.
+    fn flat_scale(&self, p: DVec3) -> Option<f64> {
+        let up = self.target.normalize();
+        let ray = p - self.eye;
+        let along = -self.eye.dot(up) / ray.dot(up);
+        if !(along > 0.0 && along.is_finite()) {
+            return None;
+        }
+        let frame = sphere::frame(sphere::geodetic(self.target));
+        self.scale_in(self.eye + ray * along, frame)
+    }
+
+    /// How large ground through a camera-relative point, along `frame`'s
+    /// first two axes, shows there.
+    fn scale_in(&self, p: DVec3, frame: DMat3) -> Option<f64> {
+        let clip = self.view_proj * p.extend(1.0);
+        // The rate at which a step along `v` moves the point in clip space.
+        let rate = |v: DVec3| {
+            let step = self.view_proj * v.extend(0.0);
+            let (a, b) = (step.truncate().truncate(), clip.truncate().truncate());
+            (a * clip.w - b * step.w) / (clip.w * clip.w)
+        };
+        (clip.w > 0.0).then(|| rate(frame.x_axis).perp_dot(rate(frame.y_axis)).abs().sqrt())
+    }
+
     /// The angle from the point under the eye to the lowest ground's
     /// horizon, in radians.
     #[cfg(test)]
@@ -1012,12 +1050,15 @@ impl View {
     /// The tiles of `tms` that cover a globe view: those on the eye's side
     /// of the horizon and in the frustum. While the covering zoom (the
     /// target's tile zoom) is 4 or less, every tile takes it, as GL JS's
-    /// globe gives them. Past that each tile takes the zoom whose tiles
-    /// span `tile_px` pixels at the target's distance where it lies (being
-    /// smaller on the sphere toward the poles), coarsening with distance
-    /// by the [`TileLod`] as on the plane: distances along the sphere from
-    /// the target, or from the eye with each tile's angle from straight
-    /// down.
+    /// globe gives them, less those small on screen. Past that each tile
+    /// takes the zoom whose tiles span `tile_px` pixels at the target's
+    /// distance where it lies (being smaller on the sphere toward the
+    /// poles), coarsening with distance by the [`TileLod`] as on the
+    /// plane: distances along the sphere from the target, or from the eye
+    /// with each tile's angle from straight down. Either way, a tile the sphere makes small on screen, toward a
+    /// pole or the limb, stops there: a zoom coarser than the target's
+    /// tiles for each time, rounded, it shows half their size and half
+    /// what flat ground would show there, after mln-rs's globe.
     ///
     /// Each tile stands on the ground between the lowest and highest
     /// elevations under it on `terrain`, where known (else between sea
@@ -1040,6 +1081,8 @@ impl View {
         let eye_dir = eye.normalize();
         let height = height.max(0.0);
         let elevation = globe.target.length() - sphere::RADIUS;
+        // Takes points at sea level to the target's elevation.
+        let lift = 1.0 + elevation / sphere::RADIUS;
         // Where the terrain's ranges are unknown, between sea level and the
         // target, or the highest ground could stand on terrain.
         let ceiling = terrain.map_or(0.0, |t| t.ceiling().0);
@@ -1050,16 +1093,41 @@ impl View {
         // factor is `scale`, at the target's distance.
         let zoom_at =
             |scale: f64| (tms.tile_span(0) / (globe.metres_per_px * scale * tile_px)).log2();
-        let covering = zoom_at(projection.scale_factor(sphere::geodetic(globe.target)));
+        let center_zoom = zoom_at(projection.scale_factor(sphere::geodetic(globe.target)));
         // (A set whose plane doesn't reach the target has no covering zoom.)
-        let fixed = covering.is_finite() && tile_zoom(covering) <= GLOBE_FIXED_ZOOM;
-        let covering = tile_zoom(covering);
+        let fixed = center_zoom.is_finite() && tile_zoom(center_zoom) <= GLOBE_FIXED_ZOOM;
+        let covering = tile_zoom(center_zoom);
         let (lod, weight) = match detail {
             Detail::Lod(lod) => (lod, lod.weight(self.pitch)),
             // GL JS's terms, at any pitch.
             Detail::Terrain => (TileLod::default(), 1.0),
         };
         let (behavior, fov_scale, penalty) = self.gl_js_terms();
+        let gl_js = matches!(detail, Detail::Terrain);
+        let by_arc = !gl_js && (lod.mode == TileLodMode::Default || weight == 0.0);
+        // The levels detail by distance adds a tile whose nearest point
+        // lies `distance` from the eye, at `tile_pitch` from straight down
+        // at the eye.
+        let distance_levels = |distance: f64, tile_pitch: f64| {
+            if gl_js {
+                // GL JS's distance, behaviour, FOV scale and penalty.
+                (center_distance / distance / fov_scale).log2()
+                    + behavior * tile_pitch.cos().max(1e-6).log2() / 2.0
+                    - penalty
+            } else {
+                lod.levels(distance / center_distance, tile_pitch.cos(), weight)
+            }
+        };
+        // The zoom the tile under the target takes, which tiles small on
+        // screen come coarser than.
+        let target_zoom = if fixed {
+            covering
+        } else if by_arc {
+            tile_zoom(center_zoom + lod.zoom_shift)
+        } else {
+            let levels = distance_levels(center_distance, globe.eye.angle_between(eye));
+            tile_zoom(center_zoom + lod.zoom_shift + levels)
+        };
         // The points under the eye and the target on the set's plane, for
         // tiles' nearest points.
         let under = projection.forward(sphere::geodetic(eye_dir));
@@ -1067,7 +1135,10 @@ impl View {
         let target = projection.forward(sphere::geodetic(target_dir));
         let period = projection.wrap_period();
         let frustum = GlobeFrustum::new(globe);
-        tms.cover_with(0..=0, None, max_zoom, |index, _| {
+        let target_scale = globe.surface_scale(DVec3::ZERO);
+        // A tile's grid of points on the sphere and the poles past its
+        // edges, or `None` where it is out of view.
+        let seen = |index: TileIndex| -> Option<([DVec3; 27], usize, usize)> {
             let b = tms.tile_area(index);
             // The heights its ground and the content on it span, in metres.
             let (base, top) = (terrain.and_then(|t| t.range(b, index.z)))
@@ -1095,7 +1166,7 @@ impl View {
             }
             let center = points[n * n / 2];
             if !center.is_finite() {
-                return CoverDecision::Skip;
+                return None;
             }
             // A tile on the world's edge also draws the cap out to the
             // pole past it.
@@ -1106,8 +1177,9 @@ impl View {
                     count += 1;
                 }
             }
-            let grid = &points[..n * n];
-            let points = &points[..count];
+            let all = points;
+            let grid = &all[..n * n];
+            let points = &all[..count];
             let finite = || points.iter().copied().filter(|p| p.is_finite());
             // Those points at the bottom and top of what stands on them.
             let (low, high) = (1.0 + base / sphere::RADIUS, 1.0 + top / sphere::RADIUS);
@@ -1134,7 +1206,7 @@ impl View {
                 .fold(0.0, f64::max)
                 + gap;
             if center.angle_between(eye_dir) - radius > horizon {
-                return CoverDecision::Skip;
+                return None;
             }
             // Its box in the east, north and up frame at its centre, padded
             // by the sagitta: far tighter than a box on the sphere's axes,
@@ -1164,7 +1236,7 @@ impl View {
                     DVec2::ZERO,
                 )
             {
-                return CoverDecision::Skip;
+                return None;
             }
             let frustum = frustum.reaching(top.max(0.0));
             let faces = (0..3).any(|axis| {
@@ -1195,16 +1267,18 @@ impl View {
                 let offset = shell().map(|p| normal.dot(p)).fold(f64::INFINITY, f64::min);
                 frustum.beyond(normal, offset - bulge)
             });
-            if faces || sides {
+            (!faces && !sides).then_some((all, n, count))
+        };
+        let deepest = max_zoom.min(tms.max_zoom());
+        tms.cover_with(0..=0, None, max_zoom, |index, _| {
+            let Some((points, n, count)) = seen(index) else {
                 return CoverDecision::Skip;
-            }
-            if fixed {
-                return if f64::from(index.z) < covering {
-                    CoverDecision::Refine
-                } else {
-                    CoverDecision::Accept
-                };
-            }
+            };
+            let b = tms.tile_area(index);
+            let grid = &points[..n * n];
+            let points = &points[..count];
+            let center = grid[n * n / 2];
+            let finite = || points.iter().copied().filter(|p| p.is_finite());
             // Its point nearest `p` on the set's plane, clamped into it (the
             // nearest where the plane keeps the sphere's shapes).
             let nearest_to = |p: DVec2| {
@@ -1217,61 +1291,98 @@ impl View {
                 }
             };
             let z = f64::from(index.z);
-            let gl_js = matches!(detail, Detail::Terrain);
-            if !gl_js && (lod.mode == TileLodMode::Default || weight == 0.0) {
+            let refine = if fixed {
+                z < covering
+            } else if by_arc {
                 // Its covering zoom where it comes nearest the target, and
                 // its distance from it along the sphere in tiles of that
                 // zoom there.
                 let near = nearest_to(target);
                 let here = zoom_at(projection.scale_factor(near)) + lod.zoom_shift;
                 let zoom = tile_zoom(here).min(f64::from(max_zoom));
-                let refine = z < zoom && {
+                z < zoom && {
                     let span = globe.metres_per_px * tile_px * (here - zoom).exp2();
                     let arc = sphere::ecef(near, 0.0).angle_between(target_dir) * sphere::RADIUS;
                     lod.splits(zoom - z, arc / span, weight)
-                };
-                return if refine {
-                    CoverDecision::Refine
-                } else {
-                    CoverDecision::Accept
-                };
-            }
-            // Its nearest point to the eye: the point under the eye in it,
-            // or else one of its grid or a pole past its edge, at the
-            // target's elevation (the plane's terrain detail takes the
-            // eye's height over the target too).
-            let inside = nearest_to(under);
-            let nearest = (finite().chain([sphere::ecef(inside, 0.0)]))
-                .map(|p| p * (1.0 + elevation / sphere::RADIUS))
-                .min_by(|a, b| a.distance_squared(eye).total_cmp(&b.distance_squared(eye)))
-                .unwrap_or(center);
-            let distance = nearest.distance(eye).max(center_distance * 1e-3);
-            // The tile's scale taken in the tile (even when the nearest
-            // point is a pole past it), and its tilt, as GL JS's globe
-            // takes it: its nearest point's angle from straight down at the
-            // eye. (Its angle to the ground there grows on toward the
-            // horizon, which would coarsen far tiles far more.)
-            let tile_pitch = (eye - nearest).angle_between(eye);
-            let levels = if gl_js {
-                // GL JS's distance, behaviour, FOV scale and penalty.
-                (center_distance / distance / fov_scale).log2()
-                    + behavior * tile_pitch.cos().max(1e-6).log2() / 2.0
-                    - penalty
+                }
             } else {
-                lod.levels(distance / center_distance, tile_pitch.cos(), weight)
+                // Its nearest point to the eye: the point under the eye in
+                // it, or else one of its grid or a pole past its edge, at
+                // the target's elevation (the plane's terrain detail takes
+                // the eye's height over the target too).
+                let inside = nearest_to(under);
+                let nearest = (finite().chain([sphere::ecef(inside, 0.0)]))
+                    .map(|p| p * lift)
+                    .min_by(|a, b| a.distance_squared(eye).total_cmp(&b.distance_squared(eye)))
+                    .unwrap_or(center);
+                let distance = nearest.distance(eye).max(center_distance * 1e-3);
+                // The tile's scale taken in the tile (even when the nearest
+                // point is a pole past it), and its tilt, as GL JS's globe
+                // takes it: its nearest point's angle from straight down at
+                // the eye. (Its angle to the ground there grows on toward
+                // the horizon, which would coarsen far tiles far more.)
+                let tile_pitch = (eye - nearest).angle_between(eye);
+                let levels = distance_levels(distance, tile_pitch);
+                let desired = zoom_at(projection.scale_factor(inside)) + lod.zoom_shift + levels;
+                z < tile_zoom(desired)
             };
-            let desired = zoom_at(projection.scale_factor(inside)) + lod.zoom_shift + levels;
-            if z < tile_zoom(desired) {
-                CoverDecision::Refine
-            } else {
-                CoverDecision::Accept
+            if !refine {
+                return CoverDecision::Accept;
+            }
+            // A tile the sphere makes small on screen needs no finer tiles,
+            // however near it lies: the meridians converging toward a pole
+            // and the ground turning away toward the limb shrink tiles
+            // there, which neither the fixed zoom nor distances see. Its
+            // size is taken where it shows largest: at its grid's points
+            // and its points nearest the eye and the target, where
+            // perspective magnifies it most, from its scale on the sphere
+            // there and the view's magnification of the ground, against
+            // the larger of a tile of its zoom at the target and one where
+            // the same line of sight meets flat ground through the target.
+            // So perspective alone, which the plane's detail answers and
+            // which is all a nearly flat sphere adds by the handover,
+            // coarsens nothing, and nor does the sphere where the tile
+            // still shows as large as the target's. Points past the horizon
+            // don't count; one behind the eye leaves the tile to the detail
+            // above. Each halving in size, rounded, takes a zoom off the
+            // tile under the target's, so tiles within √2 of its size keep
+            // its zoom.
+            let on_screen = || {
+                let samples = grid.iter().copied().filter(|p| p.is_finite());
+                let nearest = [nearest_to(under), nearest_to(target)];
+                let mut levels = f64::NEG_INFINITY;
+                for p in samples.chain(nearest.map(|g| sphere::ecef(g, 0.0))) {
+                    if !globe.faces_eye(p - globe.target) {
+                        continue;
+                    }
+                    let p = p * lift - globe.target;
+                    let scale = globe.surface_scale(p)?;
+                    let flat = globe.flat_scale(p)?.min(target_scale?);
+                    let here = zoom_at(projection.scale_factor(sphere::geodetic(p + globe.target)));
+                    levels = levels.max(here - center_zoom + (scale / flat).log2());
+                }
+                let zoom = target_zoom + (levels + 0.5).floor();
+                zoom.is_finite().then_some(zoom)
+            };
+            match on_screen() {
+                Some(zoom) if z >= zoom => {
+                    // A wide tile's bounds fit it loosely: one whose children
+                    // are all out of view is too, as refining would find.
+                    let mut children = index.children().into_iter().filter(|&c| tms.contains(c));
+                    if index.z < deepest && !children.any(|c| seen(c).is_some()) {
+                        CoverDecision::Skip
+                    } else {
+                        CoverDecision::Accept
+                    }
+                }
+                _ => CoverDecision::Refine,
             }
         })
     }
 }
 
-/// The covering zoom up to which GL JS's globe gives every tile that zoom;
-/// past it, tiles take zooms by distance.
+/// The covering zoom up to which GL JS's globe gives every tile that zoom
+/// (less those small on screen); past it, tiles take zooms by distance.
 const GLOBE_FIXED_ZOOM: f64 = 4.0;
 
 /// A globe view's frustum cut off where it passes the horizon, as GL JS
@@ -2303,6 +2414,88 @@ mod tests {
                 }
             }
             assert!(seen > 50, "{seen} points on the globe");
+        }
+    }
+
+    /// Tiles shrink on screen toward a pole, as the meridians converge, and
+    /// toward the limb, as the ground turns away: the cover takes them
+    /// coarser there, and the view's zoom under its centre. Straight down
+    /// on the equator, every tile in view shows within √2 of the centre's
+    /// size and keeps the view's zoom.
+    #[test]
+    fn globe_cover_stops_at_tiles_small_on_screen() {
+        let tms = TileMatrixSet::web_mercator();
+        for (lat, zoom, pitch, coarser) in [
+            (45.0, 3.0, 0.0, true),
+            (60.0, 4.0, 60.0, true),
+            (0.0, 3.5, 0.0, false),
+        ] {
+            let view = globe_view(Geodetic::new(10.0, lat), zoom, pitch, 0.0);
+            let cover: Vec<_> = view.cover(tms, 512.0, 22).iter().map(|t| t.index).collect();
+            let holding = |px: DVec2| {
+                let world = view.unproject(px)?;
+                cover
+                    .iter()
+                    .find(|t| {
+                        let b = tms.tile_bounds(**t);
+                        b.min.cmple(world).all() && world.cmple(b.max).all()
+                    })
+                    .map(|t| t.z)
+            };
+            let covering = zoom.floor() as u8;
+            for offset in [(0.0, 0.0), (-100.0, -50.0), (100.0, 50.0)] {
+                let px = DVec2::new(500.0 + offset.0, 350.0 + offset.1);
+                assert_eq!(holding(px), Some(covering), "lat {lat} {px}");
+            }
+            assert_eq!(
+                cover.iter().any(|t| t.z < covering),
+                coarser,
+                "lat {lat}: {cover:?}"
+            );
+        }
+        // Looking down on the middle latitudes, the polar row comes a zoom
+        // coarser.
+        let view = globe_view(Geodetic::new(10.0, 45.0), 3.0, 0.0, 0.0);
+        let polar: Vec<_> = (view.cover(tms, 512.0, 22).into_iter())
+            .map(|t| t.index)
+            .filter(|t| t.row == 0)
+            .collect();
+        assert!(
+            !polar.is_empty() && polar.iter().all(|t| t.z < 3),
+            "{polar:?}"
+        );
+    }
+
+    /// Near the handover the sphere is all but flat, so the globe's cover
+    /// coarsens for perspective no more than the plane's it hands over to:
+    /// each point in view takes the covering zoom's tile on both sides.
+    #[test]
+    fn globe_cover_meets_the_plane_at_the_handover() {
+        let tms = TileMatrixSet::web_mercator();
+        for (lat, pitch) in [(0.0, 45.0), (35.7, 60.0), (60.0, 45.0)] {
+            let target = Geodetic::new(139.7, lat);
+            for (zoom, covering) in [(11.99, 11), (12.0, 12)] {
+                let view = globe_view(target, zoom, pitch, 20.0);
+                assert_eq!(view.globe().is_some(), zoom < 12.0);
+                let cover: Vec<_> = view.cover(tms, 512.0, 22).iter().map(|t| t.index).collect();
+                for i in 0..=10 {
+                    for j in 0..=10 {
+                        let px = DVec2::new(100.0 * f64::from(i), 70.0 * f64::from(j));
+                        let Some(world) = view.unproject(px) else {
+                            continue;
+                        };
+                        let z = cover.iter().find(|t| {
+                            let b = tms.tile_bounds(**t);
+                            (b.min - 1.0).cmple(world).all() && world.cmple(b.max + 1.0).all()
+                        });
+                        assert_eq!(
+                            z.map(|t| t.z),
+                            Some(covering),
+                            "lat {lat} pitch {pitch} z{zoom} {px}"
+                        );
+                    }
+                }
+            }
         }
     }
 }

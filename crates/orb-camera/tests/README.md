@@ -25,10 +25,11 @@ Tokyo at zooms 1.5–10 and pitches 0–60°, north-up and rotated, plus the han
 zooms 11.5 and 11.9, both poles, a pitched antimeridian, overzoomed and minzoom
 sources, 256 px tiles and rounded raster covers. Orbis measures detail on the
 sphere where GL JS measures it on the Mercator plane, and each culls with its
-own conservative volumes, so `globe_covers_match_pinned_gl_js` holds every
-visible point of the view to be covered within a zoom level of GL JS's tile
-there and no case to take many more tiles; most cases match exactly, and their
-count is a floor.
+own conservative volumes, and Orbis takes tiles the sphere makes small on screen
+coarser, so `globe_covers_match_pinned_gl_js` holds every visible point of the
+view to be covered within a zoom level of GL JS's tile there, or coarser where
+Orbis's tile shows under √2 times the centre tile's width, and no case to take
+many more tiles; the count of cases that match exactly is a floor.
 
 Regenerate from the pinned tarball (from the repository root, Node 24):
 

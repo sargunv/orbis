@@ -1,3 +1,5 @@
+use std::f64::consts::SQRT_2;
+
 use glam::DVec2;
 use orb_camera::{CameraState, View, Viewport};
 use orb_crs::Geodetic;
@@ -120,13 +122,15 @@ fn covers_match_pinned_gl_js() {
 ///   a few tiles the other drops that are out of view.
 /// - Detail: GL JS coarsens tiles by distance at any pitch; Orbis takes
 ///   Native's level of detail, as on the plane, with no coarsening up to
-///   60° of pitch.
+///   60° of pitch. Orbis also stops at tiles that show small on screen,
+///   toward a pole or the limb, where GL JS keeps the view's zoom.
 ///
 /// So for every visible point, Orbis's cover must hold it (up to 60° of
 /// pitch, at most a level coarser than GL JS's tile, which may be finer
-/// than the target's near the eye), and no case may take many more tiles
-/// than GL JS's. Covers match exactly where GL JS doesn't coarsen; the
-/// count of those is a floor, raised as covers come closer.
+/// than the target's near the eye, unless Orbis's tile there shows under
+/// √2 times the centre tile's width), and no case may take many
+/// more tiles than GL JS's. Covers match exactly where neither coarsens;
+/// the count of those is a floor, raised as covers come closer.
 #[test]
 fn globe_covers_match_pinned_gl_js() {
     let golden: serde_json::Value = serde_json::from_str(include_str!("data/covers.json")).unwrap();
@@ -197,6 +201,18 @@ fn globe_covers_match_pinned_gl_js() {
                 })
                 .map(|t| t.z)
         };
+        // How wide a tile of zoom `z` at `world` shows: the square root of
+        // the area a small square there covers on screen.
+        let shows = |z: u8, world: DVec2| {
+            let step = tms.tile_span(z) / 1024.0;
+            let at = |dx: f64, dy: f64| view.project(world + DVec2::new(dx, dy));
+            let (o, e, n) = (at(0.0, 0.0)?, at(step, 0.0)?, at(0.0, step)?);
+            Some((e - o).perp_dot(n - o).abs().sqrt() * 1024.0)
+        };
+        let wrap =
+            |world: DVec2| DVec2::new(world.x - (world.x / period).round() * period, world.y);
+        let center = wrap(view.unproject(DVec2::new(width, height) / 2.0).unwrap());
+        let center_tile = shows(holding(&actual, center).unwrap(), center).unwrap();
         for i in 0..=32 {
             for j in 0..=32 {
                 let px = DVec2::new(width * f64::from(i), height * f64::from(j)) / 32.0;
@@ -207,10 +223,16 @@ fn globe_covers_match_pinned_gl_js() {
                 if world.y.abs() >= edge {
                     continue;
                 }
-                let world = DVec2::new(world.x - (world.x / period).round() * period, world.y);
+                let world = wrap(world);
                 let ours = holding(&actual, world);
                 let theirs = holding(&expected, world);
-                let coarser = |z: u8| n("pitch") <= 60.0 && z > ours.unwrap() + 1;
+                // Tiles that show under √2 times the centre tile's width may
+                // be coarser still.
+                let coarser = |z: u8| {
+                    let ours = ours.unwrap();
+                    let small = shows(ours, world).is_some_and(|w| w < SQRT_2 * center_tile);
+                    n("pitch") <= 60.0 && z > ours + 1 && !small
+                };
                 if ours.is_none() || theirs.is_some_and(coarser) {
                     failures.push(format!("{name}: {px} in z{ours:?}, GL JS z{theirs:?}"));
                 }
@@ -218,7 +240,7 @@ fn globe_covers_match_pinned_gl_js() {
         }
     }
     assert!(
-        failures.is_empty() && exact >= 33,
+        failures.is_empty() && exact >= 27,
         "{exact} of {} match; {} failures:\n{}",
         cases.len(),
         failures.len(),
