@@ -464,6 +464,120 @@ mod tests {
         assert!(report.tiles_drawn > 0);
     }
 
+    /// Image tiles snap to whole pixels only while the camera rests, as in
+    /// GL JS and Native: under a camera between pixels, a press that
+    /// hasn't moved it draws a checkerboard's texels crisp, a drag or a
+    /// move starting there draws them blended where the camera puts them,
+    /// letting go draws them crisp again, and a move's end draws what a
+    /// fresh map there does.
+    #[test]
+    fn image_tiles_snap_to_pixels_only_at_rest() {
+        use orb_camera::input::{Button, Input, Modifiers, PointerKind};
+        let dir = crate::common::Scratch::new("raster-align");
+        let tile = dir.join("tile.png");
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 256, 256);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let texels = (0..256 * 256)
+                .flat_map(|i| match (i % 256 + i / 256) % 2 {
+                    0 => [0, 0, 0, 255],
+                    _ => [255; 4],
+                })
+                .collect::<Vec<u8>>();
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&texels)
+                .unwrap();
+        }
+        std::fs::write(&tile, png).unwrap();
+        let style = format!(
+            r#"{{"version":8,"sources":{{
+                "imagery":{{"type":"raster","tiles":["file://{}"],"tileSize":256}}}},
+              "layers":[{{"id":"raster","type":"raster","source":"imagery",
+                "paint":{{"raster-fade-duration":0}}}}]}}"#,
+            tile.display(),
+        );
+        let path = dir.join("style.json");
+        std::fs::write(&path, style).unwrap();
+        // At zoom 2 a texel is a pixel; these longitudes are between them.
+        let options = |lon: f64| crate::common::Options {
+            style: Some(format!("file://{}", path.display())),
+            at: Some((orb_crs::Geodetic::new(lon, 0.0), 2.0, 0.0, 0.0)),
+            ..tokyo(2.0)
+        };
+        // Pixels neither of the checkerboard's colours.
+        let blended = |pixels: &[u8]| {
+            (pixels.as_chunks::<4>().0)
+                .iter()
+                .filter(|p| (32..224).contains(&p[0]))
+                .count()
+        };
+        let (mut map, _, _) = crate::common::Offscreen::load(&options(0.1)).unwrap();
+        let rest = map.pixels();
+        assert_eq!(blended(&rest), 0, "crisp at rest");
+        let centre = glam::DVec2::new(map.viewport.width / 2.0, map.viewport.height / 2.0);
+        let time = map.time;
+        map.map.input(
+            Input::PointerDown {
+                id: 1,
+                kind: PointerKind::Mouse,
+                button: Button::Primary,
+                position: centre,
+                modifiers: Modifiers::default(),
+            },
+            time,
+        );
+        map.frame();
+        let differing = crate::common::differing_pixels(&map.pixels(), &rest);
+        assert_eq!(differing, 0, "pressed, not moved: at rest");
+        let dragged = centre + glam::DVec2::new(10.25, 0.0);
+        let time = map.time;
+        map.map.input(
+            Input::PointerMove {
+                id: 1,
+                position: dragged,
+            },
+            time,
+        );
+        map.frame();
+        assert!(blended(&map.pixels()) > 0, "dragged, where the camera is");
+        // Held still long enough that letting go starts no glide.
+        for _ in 0..30 {
+            map.frame();
+        }
+        assert!(blended(&map.pixels()) > 0, "dragged and held still");
+        let time = map.time;
+        map.map.input(
+            Input::PointerUp {
+                id: 1,
+                position: dragged,
+            },
+            time,
+        );
+        assert!(!map.frame().input);
+        assert_eq!(blended(&map.pixels()), 0, "let go, crisp again");
+        map.map.ease_to(
+            &orb_runtime::CameraTarget {
+                center: Some(orb_crs::Geodetic::new(0.2, 0.0)),
+                ..Default::default()
+            },
+            orb_runtime::EaseOptions {
+                duration: 200.0,
+                ..Default::default()
+            },
+        );
+        map.frame();
+        assert!(blended(&map.pixels()) > 0, "moving, where the camera is");
+        map.settle().unwrap();
+        let fresh = crate::common::snapshot(&options(0.2));
+        assert_eq!(blended(&fresh), 0, "crisp at rest");
+        let differing = crate::common::differing_pixels(&map.pixels(), &fresh);
+        assert_eq!(differing, 0, "the move's end draws as a fresh map");
+    }
+
     /// A source whose layers all hide at the camera's zoom loads and draws
     /// nothing there, as in GL JS.
     #[test]

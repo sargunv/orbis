@@ -764,6 +764,14 @@ impl Camera {
         self.is_animating() || self.held || self.active.contains(&true)
     }
 
+    /// Whether the camera is changing: animating, or with a change started
+    /// and not yet ended. Unlike [`is_moving`](Self::is_moving), not a hold
+    /// that hasn't moved it, as a press, a long press or a box zoom being
+    /// drawn leaves; a hold that has keeps its change until release.
+    pub fn is_changing(&self) -> bool {
+        self.is_animating() || self.active.contains(&true)
+    }
+
     /// Moves the ground under `from` to `to` (logical pixels).
     pub fn pan(&mut self, from: DVec2, to: DVec2) {
         let next = self.panned(from, to);

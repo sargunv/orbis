@@ -2274,11 +2274,18 @@ impl Map {
             pitch: self.camera.state().pitch.to_radians() as f32,
             roll: self.camera.state().roll.to_radians() as f32,
             camera_to_center: view.camera_to_center() as f32,
-            align: match globe {
-                Some(_) => [0.0; 2],
-                None => {
+            // Image tiles snap to whole pixels only at rest, as GL JS and
+            // Native align them: snapped while the camera moves, they'd
+            // step up to half a pixel a frame against what draws over
+            // them. A press that hasn't moved the camera, or a box zoom
+            // being drawn, is at rest. The camera has advanced for this
+            // frame, so a move's last frame, and the one after input lets
+            // go, snap.
+            align: match globe.is_none() && !self.camera.is_changing() {
+                true => {
                     pixel_alignment(view, self.surface.projection(), self.camera.state().bearing)
                 }
+                false => [0.0; 2],
             },
             terrain: frame_terrain,
             light: frame_light,

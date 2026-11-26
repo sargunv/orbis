@@ -98,7 +98,8 @@ pub struct FrameBlock {
     /// Clockwise map rotation, in radians.
     pub bearing: f32,
     /// A camera-relative world offset that puts image tiles on the pixel
-    /// grid, as GL JS's aligned projection matrix does.
+    /// grid, as GL JS's aligned projection matrix does: zero while the
+    /// camera moves, so they move with it smoothly.
     pub align: [f32; 2],
     /// Projected world units per v8 extrusion metre at the camera target.
     pub extrusion_scale: f32,

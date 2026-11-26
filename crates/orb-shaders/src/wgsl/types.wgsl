@@ -65,7 +65,8 @@ struct Frame {
     // Clockwise map rotation, in radians.
     bearing: f32,
     // A camera-relative world offset that puts image tiles on the pixel
-    // grid (GL JS's aligned projection matrix).
+    // grid at rest (GL JS's aligned projection matrix), zero while the
+    // camera moves.
     align: vec2<f32>,
     extrusion_scale: f32,
     // Milliseconds since the map began, for image fades.
