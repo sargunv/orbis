@@ -14,8 +14,8 @@ use crate::bucket::{
 use crate::geometry::Point;
 use crate::layout::{anchor_justification, justification_slot};
 use crate::placement::collision::{
-    BoxPlacement, CollisionBox, CollisionIndex, LineLabel, PlacedBox, PlacedCircles, Scratch,
-    Viewport,
+    BoxPlacement, CollisionBox, CollisionIndex, CollisionSpace, LineLabel, PlacedBox,
+    PlacedCircles, Scratch, Viewport,
 };
 use crate::placement::cross_tile::{CrossTileIndex, Indexed};
 use crate::placement::grid::{GridKey, Overlap};
@@ -587,6 +587,8 @@ pub struct Placer {
     /// Buckets placed so far: a reloaded one's copies fade in after its
     /// first placement.
     placed: HashSet<u64>,
+    /// What each placement's collision index starts from.
+    collisions: CollisionSpace,
 }
 
 fn copy_key(t: &PlacedTile) -> (u64, i32) {
@@ -879,7 +881,8 @@ impl Placer {
         let placed = match &frame.scope {
             Scope::Tiles(tiles) => self.place_tiles(frame, tiles),
             Scope::Viewport | Scope::Still => {
-                let mut placer = Pass::new(camera, self.prev.as_ref(), ground);
+                let mut placer =
+                    Pass::new(&mut self.collisions, camera, self.prev.as_ref(), ground);
                 placer.stable = frame.stable_labels && frame.scope == Scope::Viewport;
                 placer.run(&self.buckets, &layers, frame.cross_source_collisions);
                 placer.now
@@ -922,13 +925,13 @@ impl Placer {
 
     /// Tile scope (see [`Scope::Tiles`]): each tile's own placement, then
     /// the labels that overlap a higher-ranked one of another tile dropped.
-    fn place_tiles(&self, frame: &Frame, tiles: &[ScopeTile]) -> Placements {
+    fn place_tiles(&mut self, frame: &Frame, tiles: &[ScopeTile]) -> Placements {
         let ground = frame.ground.as_ref().map(|g| &*g.0);
         let mut now = Placements::default();
         let mut records = Vec::with_capacity(tiles.len());
         for tile in tiles {
             let layers = self.drawn(&tile.layers);
-            let mut pass = Pass::new(&tile.camera, None, ground);
+            let mut pass = Pass::new(&mut self.collisions, &tile.camera, None, ground);
             pass.record = Some(Record::default());
             pass.run(&self.buckets, &layers, frame.cross_source_collisions);
             // A label two tiles both claim (an anchor on their shared edge,
@@ -998,7 +1001,7 @@ pub(crate) struct RecordedShape {
 type Part<'b> = (f64, &'b PlacedTile, &'b Bucket, std::ops::Range<usize>);
 
 struct Pass<'a> {
-    index: CollisionIndex,
+    index: CollisionIndex<'a>,
     now: Placements,
     prev: Option<&'a Decisions>,
     camera: &'a Camera,
@@ -1015,12 +1018,13 @@ struct Pass<'a> {
 
 impl<'a> Pass<'a> {
     fn new(
+        collisions: &'a mut CollisionSpace,
         camera: &'a Camera,
         prev: Option<&'a Decisions>,
         ground: Option<&'a dyn super::Ground>,
     ) -> Self {
         Self {
-            index: CollisionIndex::new(*camera),
+            index: collisions.index(*camera),
             now: Placements::default(),
             prev,
             camera,

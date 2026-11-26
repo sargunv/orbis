@@ -93,12 +93,29 @@ pub(crate) struct Scratch {
     distances: Vec<f64>,
 }
 
+/// What one placement's collision index leaves the next: the grid and the
+/// scratch space, emptied but with their allocations, so that placements
+/// while the camera moves allocate little.
+#[derive(Debug, Default)]
+pub(crate) struct CollisionSpace {
+    grid: GridIndex,
+    scratch: Scratch,
+}
+
+impl CollisionSpace {
+    /// An empty collision index over `camera`'s padded viewport.
+    pub(crate) fn index(&mut self, camera: Camera) -> CollisionIndex<'_> {
+        let view = Viewport::new(camera);
+        self.grid.reset(view.grid_right, view.grid_bottom);
+        CollisionIndex { space: self, view }
+    }
+}
+
 /// The placed shapes of a placement in the padded viewport's grid.
 #[derive(Debug)]
-pub(crate) struct CollisionIndex {
-    grid: GridIndex,
+pub(crate) struct CollisionIndex<'a> {
+    space: &'a mut CollisionSpace,
     pub(crate) view: Viewport,
-    scratch: Scratch,
 }
 
 /// Viewport pixels per tile unit at a tile's zoom (GL JS
@@ -108,16 +125,7 @@ const PX_PER_TILE_UNIT: f64 = 512.0 / EXTENT;
 /// Below this perspective ratio, near the horizon, nothing is placed.
 const PERSPECTIVE_RATIO_CUTOFF: f64 = 0.6;
 
-impl CollisionIndex {
-    pub(crate) fn new(camera: Camera) -> Self {
-        let view = Viewport::new(camera);
-        Self {
-            grid: GridIndex::new(view.grid_right, view.grid_bottom, 25.0),
-            view,
-            scratch: Scratch::default(),
-        }
-    }
-
+impl CollisionIndex<'_> {
     /// GL JS `placeCollisionBox`. `shift` is a variable anchor's, in layout
     /// pixels at the box's scale.
     pub(crate) fn place_box(
@@ -130,7 +138,7 @@ impl CollisionIndex {
         let [x1, y1, x2, y2] = placed.bounds;
         if placed.placeable
             && p.overlap != Overlap::Always
-            && self.grid.hit_test(x1, y1, x2, y2, p.overlap, p.group)
+            && self.space.grid.hit_test(x1, y1, x2, y2, p.overlap, p.group)
         {
             placed.placeable = false;
             placed.offscreen = false;
@@ -145,17 +153,17 @@ impl CollisionIndex {
         p: &BoxPlacement<'_>,
         label: &LineLabel<'_>,
     ) -> PlacedCircles {
-        let grid = &mut self.grid;
-        self.view
-            .place_circles(p, label, &mut self.scratch, |x, y, radius| {
-                grid.hit_test_circle(x, y, radius, p.overlap, p.group)
-            })
+        let CollisionSpace { grid, scratch } = &mut *self.space;
+        self.view.place_circles(p, label, scratch, |x, y, radius| {
+            grid.hit_test_circle(x, y, radius, p.overlap, p.group)
+        })
     }
 
     /// Adds a placed box; one that ignores placement collides with nothing.
     pub(crate) fn insert_box(&mut self, bounds: [f64; 4], key: GridKey, ignore_placement: bool) {
         if !ignore_placement {
-            self.grid
+            self.space
+                .grid
                 .insert(key, bounds[0], bounds[1], bounds[2], bounds[3]);
         }
     }
@@ -172,7 +180,7 @@ impl CollisionIndex {
             return;
         }
         for &[x, y, r] in circles {
-            self.grid.insert_circle(key, x, y, r);
+            self.space.grid.insert_circle(key, x, y, r);
         }
     }
 }

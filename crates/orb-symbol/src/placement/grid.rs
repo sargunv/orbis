@@ -32,7 +32,13 @@ pub(crate) fn in_group(group: Group, key: GridKey) -> bool {
     group.is_none_or(|g| key.group == g)
 }
 
-#[derive(Debug)]
+/// The side of a grid cell, in pixels.
+const CELL_SIZE: f64 = 25.0;
+
+/// Placed shapes by the cells they cover. One grid serves placement after
+/// placement: [`reset`](Self::reset) empties it, and its cells keep their
+/// allocations. A default grid has no cells until its first `reset`.
+#[derive(Debug, Default)]
 pub(crate) struct GridIndex {
     box_cells: Vec<Vec<u32>>,
     circle_cells: Vec<Vec<u32>>,
@@ -53,26 +59,28 @@ pub(crate) struct GridIndex {
 }
 
 impl GridIndex {
-    pub(crate) fn new(width: f64, height: f64, cell_size: f64) -> Self {
-        let x_cells = (width / cell_size).ceil().max(1.0) as usize;
-        let y_cells = (height / cell_size).ceil().max(1.0) as usize;
-        Self {
-            box_cells: vec![Vec::new(); x_cells * y_cells],
-            circle_cells: vec![Vec::new(); x_cells * y_cells],
-            box_keys: Vec::new(),
-            circle_keys: Vec::new(),
-            bboxes: Vec::new(),
-            circles: Vec::new(),
-            x_cells,
-            y_cells,
-            width,
-            height,
-            x_scale: x_cells as f64 / width,
-            y_scale: y_cells as f64 / height,
-            box_seen: Vec::new(),
-            circle_seen: Vec::new(),
-            query: 0,
+    /// Empties the grid and sizes it to `width` by `height` pixels.
+    pub(crate) fn reset(&mut self, width: f64, height: f64) {
+        let x_cells = (width / CELL_SIZE).ceil().max(1.0) as usize;
+        let y_cells = (height / CELL_SIZE).ceil().max(1.0) as usize;
+        for cells in [&mut self.box_cells, &mut self.circle_cells] {
+            cells.truncate(x_cells * y_cells);
+            cells.iter_mut().for_each(Vec::clear);
+            cells.resize_with(x_cells * y_cells, Vec::new);
         }
+        self.box_keys.clear();
+        self.circle_keys.clear();
+        self.bboxes.clear();
+        self.circles.clear();
+        self.box_seen.clear();
+        self.circle_seen.clear();
+        self.query = 0;
+        self.x_cells = x_cells;
+        self.y_cells = y_cells;
+        self.width = width;
+        self.height = height;
+        self.x_scale = x_cells as f64 / width;
+        self.y_scale = y_cells as f64 / height;
     }
 
     fn cells(&self, x1: f64, y1: f64, x2: f64, y2: f64) -> impl Iterator<Item = usize> + use<> {
@@ -231,4 +239,44 @@ pub(crate) fn circle_and_rect_collide(
     }
     let (dx, dy) = (dist_x - half_w, dist_y - half_h);
     dx * dx + dy * dy <= r * r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY: GridKey = GridKey {
+        overlap: Overlap::Never,
+        group: 0,
+    };
+
+    #[test]
+    fn a_reset_grid_holds_nothing_from_before() {
+        let mut grid = GridIndex::default();
+        grid.reset(200.0, 100.0);
+        grid.insert(KEY, 10.0, 10.0, 60.0, 30.0);
+        grid.insert_circle(KEY, 150.0, 50.0, 10.0);
+        assert!(grid.hit_test(20.0, 20.0, 30.0, 25.0, Overlap::Never, None));
+        assert!(grid.hit_test_circle(150.0, 55.0, 2.0, Overlap::Never, None));
+
+        grid.reset(200.0, 100.0);
+        assert!(!grid.hit_test(20.0, 20.0, 30.0, 25.0, Overlap::Never, None));
+        assert!(!grid.hit_test_circle(150.0, 55.0, 2.0, Overlap::Never, None));
+        grid.insert(KEY, 100.0, 60.0, 120.0, 80.0);
+        assert!(grid.hit_test(110.0, 70.0, 111.0, 71.0, Overlap::Never, None));
+    }
+
+    #[test]
+    fn a_reset_grid_takes_its_new_size() {
+        let mut grid = GridIndex::default();
+        grid.reset(100.0, 100.0);
+        grid.insert(KEY, 10.0, 10.0, 20.0, 20.0);
+
+        grid.reset(400.0, 50.0);
+        // Past the old width, and over the cell the old box sat in.
+        grid.insert(KEY, 350.0, 10.0, 360.0, 20.0);
+        assert!(grid.hit_test(355.0, 15.0, 356.0, 16.0, Overlap::Never, None));
+        assert!(!grid.hit_test(12.0, 12.0, 14.0, 14.0, Overlap::Never, None));
+        assert!(!grid.hit_test(100.0, 10.0, 340.0, 20.0, Overlap::Never, None));
+    }
 }
