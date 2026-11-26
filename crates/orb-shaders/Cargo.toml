@@ -23,13 +23,14 @@ postcard.workspace = true
 
 [dev-dependencies]
 # The variants write Metal; the WebGL 2 dry run, GLSL ES 3.00; the
-# Vulkan check, SPIR-V.
+# Vulkan check, SPIR-V; the D3D12 one, HLSL.
 naga = { workspace = true, features = [
   "serialize",
   "deserialize",
   "msl-out",
   "glsl-out",
   "spv-out",
+  "hlsl-out",
 ] }
 postcard.workspace = true
 

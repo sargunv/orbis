@@ -226,6 +226,93 @@ impl Block {
 mod tests {
     use super::*;
 
+    /// The override constants pipelines set (orb-render's plane variants,
+    /// `ORB_CULL=keep-all`, an `ExtrusionShape`), each stage taking those
+    /// it reads.
+    const VARIANTS: &[&[(&str, f64)]] = &[
+        &[],
+        &[
+            (PLANE, 1.0),
+            ("keep_all", 1.0),
+            ("elevation_stops", 2.0),
+            ("elevation_input", 1.0),
+            ("elevation_curve", 1.0),
+            ("elevation_dynamic", 1.0),
+        ],
+        &[
+            ("elevation_stops", 16.0),
+            ("elevation_input", 65.0),
+            ("elevation_curve", 2.0),
+            ("elevation_dynamic", 2.0),
+        ],
+        &[
+            ("elevation_stops", 5.0),
+            ("elevation_curve", 3.0),
+            ("elevation_dynamic", 3.0),
+        ],
+    ];
+
+    /// Each stage of every shader, one module per entry point, once per
+    /// distinct set of [`VARIANTS`]' constants it takes, with its overrides
+    /// applied: (what it is, its stage, its module and validation).
+    fn variants() -> Vec<(
+        String,
+        naga::ShaderStage,
+        naga::Module,
+        naga::valid::ModuleInfo,
+    )> {
+        let mut out = Vec::new();
+        for shader in SHADERS {
+            for (entry, one) in split::entry_modules(&validate(shader)) {
+                let info = naga::valid::Validator::new(
+                    naga::valid::ValidationFlags::all(),
+                    naga::valid::Capabilities::CLIP_DISTANCES,
+                )
+                .validate(&one)
+                .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
+                let mut made = Vec::new();
+                for variant in VARIANTS {
+                    let constants: Vec<_> = (variant.iter())
+                        .filter(|(name, _)| shader.takes(&entry, name))
+                        .collect();
+                    if made.contains(&constants) {
+                        continue;
+                    }
+                    let map = (constants.iter())
+                        .map(|&&(name, value)| (name.to_string(), value))
+                        .collect();
+                    let (module, info) =
+                        naga::back::pipeline_constants::process_overrides(&one, &info, None, &map)
+                            .unwrap_or_else(|e| {
+                                panic!("{} {entry} {constants:?}: {e}", shader.label)
+                            });
+                    let what = format!("{} {entry} {constants:?}", shader.label);
+                    let stage = module.entry_points[0].stage;
+                    out.push((what, stage, module.into_owned(), info.into_owned()));
+                    made.push(constants);
+                }
+            }
+        }
+        out
+    }
+
+    /// Runs `check` on each of `items` across the machine's threads,
+    /// returning what it found wrong.
+    fn in_parallel<T: Sync>(
+        items: &[T],
+        check: impl Fn(&T) -> Option<String> + Sync,
+    ) -> Vec<String> {
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (items.chunks(items.len().div_ceil(threads).max(1)))
+                .map(|chunk| scope.spawn(|| chunk.iter().filter_map(&check).collect::<Vec<_>>()))
+                .collect();
+            (workers.into_iter())
+                .flat_map(|w| w.join().unwrap())
+                .collect()
+        })
+    }
+
     fn validate(shader: &Shader) -> naga::Module {
         parse(shader.label, &shader.source()).0
     }
@@ -890,110 +977,55 @@ mod tests {
             ((1, 5), "vulkan1.2"),
             ((1, 6), "vulkan1.3"),
         ];
-        // The override constants pipelines set (orb-render's plane
-        // variants, `ORB_CULL=keep-all`, an `ExtrusionShape`), each stage
-        // taking those it reads.
-        const VARIANTS: &[&[(&str, f64)]] = &[
-            &[],
-            &[
-                (PLANE, 1.0),
-                ("keep_all", 1.0),
-                ("elevation_stops", 2.0),
-                ("elevation_input", 1.0),
-                ("elevation_curve", 1.0),
-                ("elevation_dynamic", 1.0),
-            ],
-            &[
-                ("elevation_stops", 16.0),
-                ("elevation_input", 65.0),
-                ("elevation_curve", 2.0),
-                ("elevation_dynamic", 2.0),
-            ],
-            &[
-                ("elevation_stops", 5.0),
-                ("elevation_curve", 3.0),
-                ("elevation_dynamic", 3.0),
-            ],
-        ];
         // (image and buffer bounds checks, what they're named).
         const POLICIES: &[(naga::proc::BoundsCheckPolicy, &str)] = &[
             (naga::proc::BoundsCheckPolicy::Restrict, "restrict"),
             (naga::proc::BoundsCheckPolicy::Unchecked, "robust"),
         ];
+        let variants = variants();
+        assert!(
+            variants.len() > 90,
+            "only {} stage variants",
+            variants.len()
+        );
         // (what, the module's words, its Vulkan environment).
         let mut modules = Vec::new();
-        let mut stages = 0;
-        for shader in SHADERS {
-            for (entry, one) in split::entry_modules(&validate(shader)) {
-                stages += 1;
-                let info = naga::valid::Validator::new(
-                    naga::valid::ValidationFlags::all(),
-                    naga::valid::Capabilities::CLIP_DISTANCES,
-                )
-                .validate(&one)
-                .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
-                let mut made = Vec::new();
-                for variant in VARIANTS {
-                    let constants: Vec<_> = (variant.iter())
-                        .filter(|(name, _)| shader.takes(&entry, name))
-                        .collect();
-                    if made.contains(&constants) {
-                        continue;
+        for (what, _, module, info) in &variants {
+            for &(lang_version, env) in TARGETS {
+                for &(policy, checks) in POLICIES {
+                    for debug in [false, true] {
+                        let mut flags = spv::WriterFlags::FORCE_POINT_SIZE;
+                        flags.set(spv::WriterFlags::DEBUG, debug);
+                        let options = spv::Options {
+                            lang_version,
+                            flags,
+                            bounds_check_policies: naga::proc::BoundsCheckPolicies {
+                                index: naga::proc::BoundsCheckPolicy::Restrict,
+                                buffer: policy,
+                                image_load: policy,
+                                binding_array: naga::proc::BoundsCheckPolicy::Unchecked,
+                            },
+                            zero_initialize_workgroup_memory: if lang_version >= (1, 6) {
+                                spv::ZeroInitializeWorkgroupMemoryMode::Native
+                            } else {
+                                spv::ZeroInitializeWorkgroupMemoryMode::Polyfill
+                            },
+                            ..Default::default()
+                        };
+                        let words = spv::write_vec(module, info, &options, None)
+                            .unwrap_or_else(|e| panic!("{what}: {e}"));
+                        let what = format!(
+                            "{what} (SPIR-V {}.{}, {env}, {checks}{})",
+                            lang_version.0,
+                            lang_version.1,
+                            if debug { ", debug" } else { "" },
+                        );
+                        modules.push((what, words, env));
                     }
-                    let map = (constants.iter())
-                        .map(|&&(name, value)| (name.to_string(), value))
-                        .collect();
-                    let (one, info) =
-                        naga::back::pipeline_constants::process_overrides(&one, &info, None, &map)
-                            .unwrap_or_else(|e| {
-                                panic!("{} {entry} {constants:?}: {e}", shader.label)
-                            });
-                    for &(lang_version, env) in TARGETS {
-                        for &(policy, checks) in POLICIES {
-                            for debug in [false, true] {
-                                let mut flags = spv::WriterFlags::FORCE_POINT_SIZE;
-                                flags.set(spv::WriterFlags::DEBUG, debug);
-                                let options = spv::Options {
-                                    lang_version,
-                                    flags,
-                                    bounds_check_policies: naga::proc::BoundsCheckPolicies {
-                                        index: naga::proc::BoundsCheckPolicy::Restrict,
-                                        buffer: policy,
-                                        image_load: policy,
-                                        binding_array: naga::proc::BoundsCheckPolicy::Unchecked,
-                                    },
-                                    zero_initialize_workgroup_memory: if lang_version >= (1, 6) {
-                                        spv::ZeroInitializeWorkgroupMemoryMode::Native
-                                    } else {
-                                        spv::ZeroInitializeWorkgroupMemoryMode::Polyfill
-                                    },
-                                    ..Default::default()
-                                };
-                                let words = spv::write_vec(&one, &info, &options, None)
-                                    .unwrap_or_else(|e| {
-                                        panic!("{} {entry} {constants:?}: {e}", shader.label)
-                                    });
-                                let what = format!(
-                                    "{} {entry} {constants:?} (SPIR-V {}.{}, {env}, {checks}{})",
-                                    shader.label,
-                                    lang_version.0,
-                                    lang_version.1,
-                                    if debug { ", debug" } else { "" },
-                                );
-                                modules.push((what, words, env));
-                            }
-                        }
-                    }
-                    made.push(constants);
                 }
             }
         }
-        assert!(
-            stages > 90 && modules.len() > 12 * stages,
-            "only {} modules of {stages} stages",
-            modules.len()
-        );
-        let validate = |(what, words, env): &(String, Vec<u32>, &str)| {
+        let failures = in_parallel(&modules, |(what, words, env)| {
             let mut child = Command::new("spirv-val")
                 .args(["--relax-block-layout", "--target-env", env, "-"])
                 .stdin(Stdio::piped())
@@ -1011,24 +1043,110 @@ mod tests {
                     text.lines().take(2).collect::<Vec<_>>().join(" ")
                 )
             })
-        };
-        let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-        let failures: Vec<String> = std::thread::scope(|scope| {
-            let chunks = modules.chunks(modules.len().div_ceil(threads));
-            let workers: Vec<_> = chunks
-                .map(|chunk| {
-                    scope.spawn(move || chunk.iter().filter_map(validate).collect::<Vec<_>>())
-                })
-                .collect();
-            workers
-                .into_iter()
-                .flat_map(|w| w.join().unwrap())
-                .collect()
         });
         assert!(
             failures.is_empty(),
             "spirv-val:\n  {}",
             failures.join("\n  ")
         );
+    }
+
+    /// Every pipeline stage in each variant, as wgpu's D3D12 back end
+    /// writes it in HLSL, compiled by DXC as wgpu-hal compiles it in debug
+    /// builds (`-Od`), whose optimiser would hide some of what a device
+    /// refuses: through DXC's validation, and needing no doubles, which not
+    /// every D3D12 device has (the Adreno X1's driver refuses a pipeline
+    /// that does, as "the parameter is incorrect"). naga's untyped float
+    /// literals failed both until its patch (#35): a select of two splats
+    /// was a select of doubles, and a `dot` of it `dx.op.dot4.f64`, which
+    /// DXIL doesn't have. Skipped, saying so, where `dxc` isn't on PATH
+    /// (the Windows SDK's, the Vulkan SDK's, or DXC's release).
+    #[test]
+    fn hlsl_compiles_for_d3d12() {
+        use naga::back::hlsl;
+        use std::process::Command;
+        if Command::new("dxc").arg("--version").output().is_err() {
+            eprintln!("hlsl_compiles_for_d3d12: skipped, no dxc on PATH");
+            return;
+        }
+        // Less the stages that write clip distances (the `planes`
+        // variants), which wgpu's D3D12 back end doesn't offer.
+        let clips = |module: &naga::Module| {
+            let entry = &module.entry_points[0];
+            let clip = |b: &Option<naga::Binding>| {
+                *b == Some(naga::Binding::BuiltIn(naga::BuiltIn::ClipDistances))
+            };
+            entry.function.result.as_ref().is_some_and(|result| {
+                clip(&result.binding)
+                    || matches!(&module.types[result.ty].inner,
+                        naga::TypeInner::Struct { members, .. }
+                            if members.iter().any(|m| clip(&m.binding)))
+            })
+        };
+        let variants: Vec<_> = (variants().into_iter())
+            .filter(|(_, _, module, _)| !clips(module))
+            .collect();
+        assert!(
+            variants.len() > 90,
+            "only {} stage variants",
+            variants.len()
+        );
+        // (what, its HLSL, its entry point, its profile).
+        let sources: Vec<_> = (variants.iter())
+            .map(|(what, stage, module, info)| {
+                let options = hlsl::Options {
+                    shader_model: hlsl::ShaderModel::V6_0,
+                    fake_missing_bindings: true,
+                    zero_initialize_workgroup_memory: true,
+                    restrict_indexing: true,
+                    force_loop_bounding: true,
+                    ..Default::default()
+                };
+                let pipeline = hlsl::PipelineOptions {
+                    entry_point: Some((*stage, module.entry_points[0].name.clone())),
+                };
+                let mut source = String::new();
+                let mut reflection = hlsl::Writer::new(&mut source, &options, &pipeline)
+                    .write(module, info, None)
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+                let entry = (reflection.entry_point_names.pop())
+                    .and_then(Result::ok)
+                    .unwrap_or_else(|| panic!("{what}: no entry point"));
+                let profile = match stage {
+                    naga::ShaderStage::Vertex => "vs_6_0",
+                    naga::ShaderStage::Fragment => "ps_6_0",
+                    _ => "cs_6_0",
+                };
+                (what, source, entry, profile)
+            })
+            .collect();
+        let dir = std::env::temp_dir().join(format!("orb-shaders-hlsl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let numbered: Vec<_> = sources.iter().enumerate().collect();
+        let failures = in_parallel(&numbered, |(i, (what, source, entry, profile))| {
+            let path = dir.join(format!("{i}.hlsl"));
+            std::fs::write(&path, source).unwrap();
+            let out = Command::new("dxc")
+                .args(["-T", profile, "-E", entry, "-HV", "2018", "-Ges", "-Od"])
+                .arg(&path)
+                .output()
+                .expect("runs dxc");
+            // With no output file named, DXC prints the disassembly.
+            if !out.status.success() {
+                let text = String::from_utf8_lossy(&out.stderr);
+                let error = (text.lines())
+                    .filter(|l| l.contains("error"))
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                Some(format!("{what}: {error}"))
+            } else if String::from_utf8_lossy(&out.stdout).contains("Double-precision") {
+                Some(format!("{what}: needs doubles"))
+            } else {
+                None
+            }
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(failures.is_empty(), "dxc:\n  {}", failures.join("\n  "));
     }
 }

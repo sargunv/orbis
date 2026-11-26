@@ -172,7 +172,11 @@ orb-wire-derive = { path = "crates/orb-wire-derive" }
 # Android's emulated GLES kept its stencil half through a texture detach,
 # so the depth-only pass after it was incomplete (#202). And a GLES pipeline
 # layout taking up to 32 texture units across its stages, each stage still
-# at most 16: the scene's tables on WebGL 2 are a texture each.
+# at most 16: the scene's tables on WebGL 2 are a texture each. And naga's
+# HLSL writing f32 literals as `float`s (`0.5f`): DXC evaluated a select of
+# untyped ones as double, which the Adreno X1's D3D12 driver refused in
+# debug builds (`-Od`) and whose `dot` failed DXIL validation everywhere;
+# orb-shaders' `hlsl_compiles_for_d3d12` checks every stage.
 # Every crate of wgpu's workspace comes from the fork, since its path
 # dependencies resolve there. #35 tracks sending it upstream.
 naga = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }
