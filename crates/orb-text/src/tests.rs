@@ -27,15 +27,16 @@ fn test_stack() -> FontStack {
     FontStack::new(&["Test"])
 }
 
-/// GL JS's `shapeText`: shaped, then justified as `options` say.
+/// GL JS's `shapeText`: shaped, then justified to `justify`.
 fn shape_text(
     label: &Label,
     default_stack: &FontStack,
     context: ShapeContext<'_>,
     options: &ShapeOptions,
+    justify: Justify,
 ) -> Option<Shaping> {
     shape_unjustified(label, default_stack, context, options)
-        .map(|shaped| shaped.into_justified(options.justify))
+        .map(|shaped| shaped.into_justified(justify))
 }
 
 /// GL JS's test glyphs, keyed by code point, with each one's atlas rect.
@@ -105,7 +106,6 @@ fn options(max_width: f64, spacing: f64, mode: WritingMode, allow_vertical: bool
         max_width,
         line_height: ONE,
         anchor: Anchor::Center,
-        justify: Justify::Center,
         spacing,
         translate: [0.0, 0.0],
         writing_mode: mode,
@@ -121,11 +121,11 @@ fn shape(fixture: &Fixture, label: &Label, options: &ShapeOptions) -> Option<Sha
         images: &image,
         words: None,
     };
-    shape_text(label, &test_stack(), context, options)
+    shape_text(label, &test_stack(), context, options, Justify::Center)
 }
 
 /// The shaping in GL JS's JSON form.
-fn to_json(fixture: &Fixture, shaping: &Shaping) -> Value {
+fn to_json(fixture: &Fixture, shaping: &Shaping, mode: WritingMode) -> Value {
     let lines: Vec<Value> = shaping
         .lines
         .iter()
@@ -145,7 +145,7 @@ fn to_json(fixture: &Fixture, shaping: &Shaping) -> Value {
                             )
                         }
                         GlyphSource::Image { section } => {
-                            let ShapedSection::Image(name) = &shaping.sections[section] else {
+                            let SectionKind::Image(name) = &shaping.sections[section] else {
                                 panic!("image glyph from a text section");
                             };
                             let size = image(name).unwrap().padded_size;
@@ -188,11 +188,11 @@ fn to_json(fixture: &Fixture, shaping: &Shaping) -> Value {
         "bottom": shaping.bottom,
         "left": shaping.left,
         "right": shaping.right,
-        "writingMode": match shaping.writing_mode {
+        "writingMode": match mode {
             WritingMode::Horizontal => 1,
             WritingMode::Vertical => 2,
         },
-        "iconsInText": shaping.icons_in_text,
+        "iconsInText": shaping.sections.iter().any(|s| matches!(s, SectionKind::Image(_))),
         "verticalizable": shaping.verticalizable,
     })
 }
@@ -243,7 +243,11 @@ fn check(
 ) -> Result<(), String> {
     let shaping = shape(fixture, &label, &options).ok_or_else(|| format!("{name}: no shaping"))?;
     let expected: Value = serde_json::from_str(expected).unwrap();
-    same(name, &to_json(fixture, &shaping), &expected)
+    same(
+        name,
+        &to_json(fixture, &shaping, options.writing_mode),
+        &expected,
+    )
 }
 
 /// GL JS `test/integration/symbol-shaping/shaping.test.ts`: every
@@ -373,7 +377,7 @@ fn gl_js_shaping_cases() {
     let expected: Value = serde_json::from_str(fixture!("newline")).unwrap();
     same(
         "crlf",
-        &to_json(&f, &crlf)["positionedLines"],
+        &to_json(&f, &crlf, h15.writing_mode)["positionedLines"],
         &expected["positionedLines"],
     )
     .unwrap();
@@ -501,7 +505,6 @@ fn line_label(
         max_width: f64::INFINITY,
         line_height: 24.0,
         anchor: Anchor::Center,
-        justify: Justify::Center,
         spacing: 0.0,
         translate: [0.0, 0.0],
         writing_mode: mode,
@@ -514,7 +517,7 @@ fn line_label(
         images: &no_images,
         words: None,
     };
-    shape_text(label, &test_stack(), context, &options)
+    shape_text(label, &test_stack(), context, &options, Justify::Center)
 }
 
 fn orientations(glyphs: &GlyphMap, shaping: &Shaping) -> Vec<(String, &'static str)> {
@@ -959,7 +962,6 @@ fn horizontal(text: &str, glyphs: &GlyphMap, max_width: f64) -> Shaping {
         max_width,
         line_height: 24.0,
         anchor: Anchor::Center,
-        justify: Justify::Center,
         spacing: 0.0,
         translate: [0.0, 0.0],
         writing_mode: WritingMode::Horizontal,
@@ -972,7 +974,14 @@ fn horizontal(text: &str, glyphs: &GlyphMap, max_width: f64) -> Shaping {
         images: &no_images,
         words: None,
     };
-    shape_text(&Label::from_text(text), &test_stack(), context, &options).unwrap()
+    shape_text(
+        &Label::from_text(text),
+        &test_stack(),
+        context,
+        &options,
+        Justify::Center,
+    )
+    .unwrap()
 }
 
 /// GL JS `shaping.test.ts` "right-to-left", with the built-in bidi in place
@@ -1087,7 +1096,6 @@ fn complex_scripts() {
         max_width: f64::INFINITY,
         line_height: 24.0,
         anchor: Anchor::Center,
-        justify: Justify::Center,
         spacing: 0.0,
         translate: [0.0, 0.0],
         writing_mode: WritingMode::Horizontal,
@@ -1100,7 +1108,7 @@ fn complex_scripts() {
         images: &square,
         words: None,
     };
-    let shaping = shape_text(&label, &test_stack(), context, &options).unwrap();
+    let shaping = shape_text(&label, &test_stack(), context, &options, Justify::Center).unwrap();
     assert_eq!(drawn(&glyphs, &shaping), ["a", "<image>", "b"]);
 }
 
@@ -1115,7 +1123,6 @@ fn thai_breaks_at_dictionary_words() {
         max_width: 60.0,
         line_height: 24.0,
         anchor: Anchor::Center,
-        justify: Justify::Center,
         spacing: 0.0,
         translate: [0.0, 0.0],
         writing_mode: WritingMode::Horizontal,
@@ -1129,8 +1136,14 @@ fn thai_breaks_at_dictionary_words() {
             images: &no_images,
             words,
         };
-        let shaping =
-            shape_text(&Label::from_text(text), &test_stack(), context, &options).unwrap();
+        let shaping = shape_text(
+            &Label::from_text(text),
+            &test_stack(),
+            context,
+            &options,
+            Justify::Center,
+        )
+        .unwrap();
         shaping
             .lines
             .iter()
@@ -1189,7 +1202,6 @@ fn layout_is_bit_identical_across_targets() {
                     max_width,
                     line_height: 28.8,
                     anchor: Anchor::BottomLeft,
-                    justify: Justify::Right,
                     spacing: 1.2,
                     translate: [3.25, -1.5],
                     writing_mode: mode,
@@ -1202,9 +1214,13 @@ fn layout_is_bit_identical_across_targets() {
                     images: &no_images,
                     words: None,
                 };
-                let Some(shaping) =
-                    shape_text(&Label::from_text(&shaped), &test_stack(), context, &options)
-                else {
+                let Some(shaping) = shape_text(
+                    &Label::from_text(&shaped),
+                    &test_stack(),
+                    context,
+                    &options,
+                    Justify::Right,
+                ) else {
                     continue;
                 };
                 for v in [shaping.top, shaping.bottom, shaping.left, shaping.right] {
@@ -1279,7 +1295,6 @@ fn glyph_pbfs_end_to_end() {
         max_width: 10.0 * ONE_EM,
         line_height: 1.2 * ONE_EM,
         anchor: Anchor::Center,
-        justify: Justify::Center,
         spacing: 0.0,
         translate: [0.0, 0.0],
         writing_mode: WritingMode::Horizontal,
@@ -1292,7 +1307,7 @@ fn glyph_pbfs_end_to_end() {
         images: &no_images,
         words: None,
     };
-    let shaping = shape_text(&label, &stack, context, &options).unwrap();
+    let shaping = shape_text(&label, &stack, context, &options, Justify::Center).unwrap();
     // Visual order: Latin first, then the Arabic word reversed.
     assert_eq!(drawn(&glyphs, &shaping).concat(), "abc ﺎﺒﺣﺮﻣ");
     let advances: f64 = positioned(&shaping).iter().map(|g| g.metrics.advance).sum();

@@ -2,7 +2,7 @@
 
 use std::sync::LazyLock;
 
-use orb_text::{Shaping, WritingMode};
+use orb_text::Shaping;
 use serde_json::Value;
 
 use super::{anchor, assert_same, image, line, lines, num, nums};
@@ -235,9 +235,7 @@ fn shaping_box(v: &Value) -> Shaping {
         bottom: num(&v["bottom"]),
         left: num(&v["left"]),
         right: num(&v["right"]),
-        writing_mode: WritingMode::Horizontal,
         text: String::new(),
-        icons_in_text: false,
         verticalizable: false,
         sections: Vec::new(),
     }

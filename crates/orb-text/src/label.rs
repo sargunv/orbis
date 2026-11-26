@@ -134,8 +134,10 @@ impl InlineImage {
 /// Looks inline images up by name.
 pub type Images<'a> = &'a dyn Fn(&str) -> Option<InlineImage>;
 
+/// What a label section draws: text in a font stack, or an inline image
+/// by name.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum SectionKind {
+pub enum SectionKind {
     Text(FontStack),
     Image(Box<str>),
 }

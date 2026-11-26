@@ -31,13 +31,13 @@ pub use glyph::{
     GlyphRequests, LocalFont, Provider, Variant, glyphs_url, provider,
 };
 pub use label::{
-    Content, IMAGE_PADDING, Images, InlineImage, Label, Section, VerticalAlign, js_max, js_min,
+    Content, IMAGE_PADDING, Images, InlineImage, Label, Section, SectionKind, VerticalAlign,
+    js_max, js_min,
 };
 pub use segment::{HostGraphemes, HostWords, WordBreaker, set_host_graphemes};
 pub use shaping::{
     Anchor, DEFAULT_OFFSET, GlyphSource, Justify, ONE_EM, PositionedGlyph, PositionedLine,
-    ShapeContext, ShapeOptions, ShapedSection, Shaping, Unjustified, WritingMode,
-    shape_unjustified,
+    ShapeContext, ShapeOptions, Shaping, Unjustified, WritingMode, shape_unjustified,
 };
 pub use transform::{TextTransform, transform_text};
 

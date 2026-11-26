@@ -86,7 +86,6 @@ pub struct ShapeOptions {
     /// `text-line-height` × [`ONE_EM`].
     pub line_height: f64,
     pub anchor: Anchor,
-    pub justify: Justify,
     /// `text-letter-spacing` × [`ONE_EM`], or 0 for cursive text.
     pub spacing: f64,
     /// `text-offset` or the radial offset, in layout units.
@@ -140,21 +139,12 @@ pub struct Shaping {
     pub bottom: f64,
     pub left: f64,
     pub right: f64,
-    pub writing_mode: WritingMode,
     /// The logical text, with vertical punctuation applied.
     pub text: String,
-    pub icons_in_text: bool,
     pub verticalizable: bool,
     /// The label's sections as layout kept them, which
     /// [`PositionedGlyph::section`] indexes.
-    pub sections: Vec<ShapedSection>,
-}
-
-/// A label section as shaped: its font stack or image name.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ShapedSection {
-    Text(FontStack),
-    Image(Box<str>),
+    pub sections: Vec<SectionKind>,
 }
 
 /// Inputs shared by every label of a tile.
@@ -218,8 +208,8 @@ impl Unjustified {
 }
 
 /// Shapes a label into positioned lines (GL JS `shapeText`) short of
-/// justification, which it leaves to [`Unjustified::justify`]:
-/// `options.justify` is not read. `None` when no glyph is placed.
+/// justification, which it leaves to [`Unjustified::justify`]. `None`
+/// when no glyph is placed.
 pub fn shape_unjustified(
     label: &Label,
     default_stack: &FontStack,
@@ -253,18 +243,9 @@ pub fn shape_unjustified(
         bottom: options.translate[1],
         left: options.translate[0],
         right: options.translate[0],
-        writing_mode: options.writing_mode,
         text: logical.text.clone(),
-        icons_in_text: false,
         verticalizable: false,
-        sections: logical
-            .sections
-            .iter()
-            .map(|s| match &s.kind {
-                SectionKind::Text(stack) => ShapedSection::Text(stack.clone()),
-                SectionKind::Image(name) => ShapedSection::Image(name.clone()),
-            })
-            .collect(),
+        sections: logical.sections.iter().map(|s| s.kind.clone()).collect(),
     };
     let block = shape_lines(&mut shaping, glyphs, images, lines, options);
     if shaping.lines.iter().all(|l| l.glyphs.is_empty()) {
@@ -569,7 +550,6 @@ fn shape_lines(
                         (GlyphSource::Glyph(id), attributes)
                     }
                     SectionKind::Image(name) => {
-                        shaping.icons_in_text = true;
                         section.scale *= size_factor;
                         let Some(image) = images(name) else {
                             continue;

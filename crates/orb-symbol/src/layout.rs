@@ -788,9 +788,15 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn shape(&self, label: &Label, f: &FeatureLayout, options: ShapeOptions) -> Option<Shaping> {
+    fn shape(
+        &self,
+        label: &Label,
+        f: &FeatureLayout,
+        options: ShapeOptions,
+        justify: Justify,
+    ) -> Option<Shaping> {
         self.shape_unjustified(label, f, options)
-            .map(|shaped| shaped.into_justified(options.justify))
+            .map(|shaped| shaped.into_justified(justify))
     }
 
     /// [`Self::shape`] short of justification (see [`shape_unjustified`]).
@@ -865,11 +871,10 @@ impl<'a> Builder<'a> {
         } else {
             f64::INFINITY
         };
-        let options = |anchor, justify, writing_mode, allow_vertical| ShapeOptions {
+        let options = |anchor, writing_mode, allow_vertical| ShapeOptions {
             max_width,
             line_height,
             anchor,
-            justify,
             spacing,
             translate: text_offset,
             writing_mode,
@@ -897,18 +902,21 @@ impl<'a> Builder<'a> {
             let justify = resolve_justify(f.text_justify, f.text_anchor);
             (f.text_anchor, vec![justify])
         };
-        let horizontal = justifications.first().copied().and_then(|justify| {
-            let options = options(anchor, justify, WritingMode::Horizontal, false);
-            Horizontal::new(self.shape_unjustified(label, f, options)?, justifications)
-        });
+        let horizontal = if justifications.is_empty() {
+            None
+        } else {
+            let options = options(anchor, WritingMode::Horizontal, false);
+            self.shape_unjustified(label, f, options)
+                .and_then(|shaped| Horizontal::new(shaped, justifications))
+        };
 
         let vertical_writing = unicode::allows_vertical_writing_mode(&unformatted);
         let vertical = if text_along_line && style.text_keep_upright && vertical_writing {
-            let options = options(f.text_anchor, Justify::Center, WritingMode::Vertical, false);
-            self.shape(label, f, options)
+            let options = options(f.text_anchor, WritingMode::Vertical, false);
+            self.shape(label, f, options, Justify::Center)
         } else if allow_vertical_placement && vertical_writing {
-            let options = options(f.text_anchor, Justify::Left, WritingMode::Vertical, true);
-            self.shape(label, f, options)
+            let options = options(f.text_anchor, WritingMode::Vertical, true);
+            self.shape(label, f, options, Justify::Left)
         } else {
             None
         };

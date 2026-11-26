@@ -5,7 +5,7 @@
 //! padded rectangle, never to an atlas.
 
 use orb_text::{
-    DEFAULT_OFFSET, GlyphId, GlyphMap, GlyphSource, IMAGE_PADDING, ONE_EM, ShapedSection, Shaping,
+    DEFAULT_OFFSET, GlyphId, GlyphMap, GlyphSource, IMAGE_PADDING, ONE_EM, SectionKind, Shaping,
     pbf::BORDER,
 };
 
@@ -324,7 +324,7 @@ pub(crate) fn glyph_quads(
                         )
                     }
                     GlyphSource::Image { section } => {
-                        let ShapedSection::Image(name) = &shaping.sections[section] else {
+                        let SectionKind::Image(name) = &shaping.sections[section] else {
                             continue;
                         };
                         let Some((index, image)) = images.get(name) else {
