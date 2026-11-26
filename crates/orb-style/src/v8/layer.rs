@@ -4,7 +4,7 @@
 use crate::*;
 
 use orb_expr::json::{Json, JsonValue, Member, Span};
-use orb_expr::{Diagnostic, Filter, Kind, PropertyExpression, Value};
+use orb_expr::{Diagnostic, Filter, FilterLayer, Kind, PropertyExpression, Value};
 
 use crate::v8::{Cx, target};
 
@@ -326,42 +326,29 @@ fn selection(
         Some(f) => {
             let filter_path = format!("{path}.filter");
             let mut warnings = Vec::new();
-            let filter = Filter::parse_symbol(f, &mut warnings, &cx.state)
+            let layer = match ty {
+                LayerType::Symbol => FilterLayer::Symbol,
+                ty => FilterLayer::Other { ty: ty.name(), id },
+            };
+            let filter = Filter::parse_layer(f, &mut warnings, layer, &cx.state)
                 .map_err(|errors| cx.errors_at(&filter_path, errors))
                 .ok();
             cx.warnings_at(&filter_path, warnings);
-            filter.and_then(|filter| camera_filter(cx, filter, &filter_path, f.span, (id, ty)))
+            filter.map(|filter| camera_filter(cx, filter, &filter_path, f.span))
         }
     };
     (cx.diagnostics.errors.len() == errors)
         .then(|| (source.expect("no errors"), source_layer, filter))
 }
 
-/// A filter that reads the camera, which only a symbol layer's may: its
-/// symbols decide at placement. Reading `pitch` or `bearing` isn't
-/// portable; the distance from the view's centre needs its preview, or
-/// the filter's camera conditions are ignored.
-fn camera_filter(
-    cx: &mut Cx,
-    filter: Filter,
-    path: &str,
-    span: Span,
-    (id, ty): (&str, LayerType),
-) -> Option<Filter> {
+/// A symbol layer's filter that reads the camera, its symbols deciding at
+/// placement. Reading `pitch` or `bearing` isn't portable; the distance
+/// from the view's centre needs its preview, or the filter's camera
+/// conditions are ignored.
+fn camera_filter(cx: &mut Cx, filter: Filter, path: &str, span: Span) -> Filter {
     let Some(camera) = filter.camera() else {
-        return Some(filter);
+        return filter;
     };
-    if ty != LayerType::Symbol {
-        // Mapbox GL JS's message for the layer types whose filters don't
-        // read the camera.
-        let message = format!(
-            "[\"{}\"] expression is not supported in a filter for a {} layer with id: {id}",
-            camera.operator(),
-            ty.name(),
-        );
-        cx.error(path, span, message);
-        return None;
-    }
     if camera.reads_center_distance()
         && !cx.preview(
             Preview::DistanceFromCenter,
@@ -370,12 +357,12 @@ fn camera_filter(
             "the camera part of this filter",
         )
     {
-        return Some(filter.without_camera());
+        return filter.without_camera();
     }
     if camera.reads_camera() {
         cx.filter_not_portable(path, span);
     }
-    Some(filter)
+    filter
 }
 
 /// A layer names a source the style doesn't have (yet): it draws nothing

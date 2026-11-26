@@ -344,9 +344,10 @@ pub(crate) struct Parser<'l> {
     pub(crate) ir: Ir,
     pub errors: Vec<Diagnostic>,
     pub(super) scope: Vec<(String, NodeId)>,
-    /// `["dev.sargunv.orbis:distance-from-center"]` may be read: the
-    /// parse is a symbol layer's filter.
-    pub(crate) center_distance: bool,
+    /// The parse is a filter's, which may read
+    /// `["dev.sargunv.orbis:distance-from-center"]`: [`Filter`](crate::Filter)
+    /// keeps it to a symbol layer's.
+    pub(crate) in_filter: bool,
 }
 
 impl<'l> Parser<'l> {
@@ -655,7 +656,7 @@ impl<'l> Parser<'l> {
                 self.parse_assertion(op, items, span, key)
             }
             CENTER_DISTANCE => {
-                if !self.center_distance {
+                if !self.in_filter {
                     let message = format!(
                         "[\"{op}\"] expression may only be used in a symbol layer's filter"
                     );

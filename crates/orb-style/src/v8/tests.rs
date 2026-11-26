@@ -1094,6 +1094,7 @@ fn symbol_filters_read_the_camera() {
                 "[\"{operator}\"] expression is not supported in a filter for a circle layer with id: f"
             )
         );
+        assert_eq!(errors[0].path, "layers[0].filter");
     }
 }
 

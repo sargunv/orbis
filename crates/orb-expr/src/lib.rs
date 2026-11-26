@@ -45,7 +45,7 @@ pub use color::Color;
 pub use context::{CameraInputs, CanonicalTile, EvaluationContext, FeatureGeometry};
 pub use elevation::{ElevationCurve, ElevationOp};
 pub use eval::{EvalError, interpolation_factor};
-pub use filter::{CameraFilter, Filter, FilterGroups};
+pub use filter::{CameraFilter, Filter, FilterGroups, FilterLayer};
 pub use inputs::Inputs;
 pub use ir::Interpolation;
 pub use locale::{Collator, HostLocale, NumberFormat, set_host_locale};
