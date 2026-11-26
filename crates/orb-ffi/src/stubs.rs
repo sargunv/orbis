@@ -10,6 +10,16 @@
 
 use crate::sys::*;
 
+/// `mln_acquired_frame_get_d3d12_texture`: not implemented.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_acquired_frame_get_d3d12_texture(
+    frame: mln_acquired_frame,
+    out_frame: *mut mln_d3d12_texture_frame,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    unsafe { crate::base::unsupported(out_diagnostic, "mln_acquired_frame_get_d3d12_texture") }
+}
+
 /// `mln_acquired_frame_get_opaque_fd`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_acquired_frame_get_opaque_fd(
@@ -270,12 +280,20 @@ const _: () = {
         crate::gpu_device::mln_gpu_device_get_capabilities,
     ];
     let _ = [
+        crate::sys::mln_gpu_device_get_d3d12_context,
+        crate::gpu_device::mln_gpu_device_get_d3d12_context,
+    ];
+    let _ = [
         crate::sys::mln_gpu_device_get_vulkan_context,
         crate::gpu_device::mln_gpu_device_get_vulkan_context,
     ];
     let _ = [
         crate::sys::mln_gpu_device_release,
         crate::gpu_device::mln_gpu_device_release,
+    ];
+    let _ = [
+        crate::sys::mln_gpu_device_wrap_d3d12,
+        crate::gpu_device::mln_gpu_device_wrap_d3d12,
     ];
     let _ = [
         crate::sys::mln_gpu_device_wrap_metal,

@@ -7,7 +7,7 @@
 // sessions attached with it render on their runtime's device. A wrapped
 // MTLDevice must be that device, which an attach checks once the runtime
 // has made it; a device can't be named by UUID or LUID, wrap the host's
-// Vulkan, OpenGL or WebGPU device, or share the host's queue.
+// Vulkan, D3D12, OpenGL or WebGPU device, or share the host's queue.
 
 use std::sync::Arc;
 
@@ -25,6 +25,8 @@ pub(crate) struct GpuDevice {
 /// The backend every Orbis device renders with: wgpu's on the platform.
 pub(crate) const BACKEND: mln_render_backend = if cfg!(target_vendor = "apple") {
     MLN_RENDER_BACKEND_METAL
+} else if cfg!(windows) {
+    MLN_RENDER_BACKEND_D3D12
 } else {
     MLN_RENDER_BACKEND_VULKAN
 };
@@ -64,8 +66,7 @@ fn check_options(o: &mln_gpu_device_options) -> Result {
     }
     let has = |field| o.fields & field != 0;
     let backend = has(MLN_GPU_DEVICE_OPTION_BACKEND).then_some(o.backend);
-    if backend
-        .is_some_and(|b| !(MLN_RENDER_BACKEND_METAL..=MLN_RENDER_BACKEND_WEB_GPU).contains(&b))
+    if backend.is_some_and(|b| !(MLN_RENDER_BACKEND_METAL..=MLN_RENDER_BACKEND_D3D12).contains(&b))
     {
         return Err(Failure::argument("options.backend names no render backend"));
     }
@@ -112,7 +113,7 @@ fn check_options(o: &mln_gpu_device_options) -> Result {
     {
         return Err(Failure::unsupported(
             "this build renders with its platform's own backend alone: Metal on Apple \
-             platforms, Vulkan elsewhere",
+             platforms, D3D12 on Windows, Vulkan elsewhere",
         ));
     }
     if o.queue_lock.lock.is_some() {
@@ -259,6 +260,45 @@ pub unsafe extern "C" fn mln_gpu_device_wrap_metal(
                     metal: Some(Retained::new(UserData(d.device))),
                 },
             )
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_gpu_device_wrap_d3d12(
+    descriptor: *const mln_d3d12_device_descriptor,
+    out_device: *mut mln_gpu_device,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        boundary(out_diagnostic, || {
+            let d = sized(descriptor, "descriptor")?;
+            required(d.device, "descriptor.device")?;
+            required(d.command_queue, "descriptor.command_queue")?;
+            fresh_out(out_device, "out_device")?;
+            Err(Failure::unsupported(
+                "wrapping a D3D12 device is not supported by this build: Orbis renders on its \
+                 runtime's own device",
+            ))
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_gpu_device_get_d3d12_context(
+    device: mln_gpu_device,
+    out_result: *mut mln_gpu_device_d3d12_context_result,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        boundary(out_diagnostic, || {
+            handles::gpu_device(device.0)?;
+            sized(out_result.cast_const(), "out_result")?;
+            Err(Failure::unsupported(
+                "Orbis shares no D3D12 objects: its runtime's device is wgpu's own",
+            ))
         })
     }
 }

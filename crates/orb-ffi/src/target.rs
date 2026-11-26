@@ -360,6 +360,39 @@ pub(crate) unsafe fn describe(target: *const mln_render_target) -> Result<Descri
                 }
                 d.logical_size
             }
+            MLN_RENDER_TARGET_KIND_D3D12_BORROWED_TEXTURES => {
+                let d = data.d3d12_borrowed_textures;
+                let physical = (d.physical_width, d.physical_height);
+                let what = "d3d12_borrowed_textures";
+                ring(
+                    what,
+                    physical,
+                    Ring {
+                        textures: d.textures,
+                        count: d.texture_count,
+                        depth: d.depth_textures,
+                        depth_count: d.depth_texture_count,
+                    },
+                    |i, t| {
+                        required(t.resource, &format!("{what}.textures[{i}].resource"))?;
+                        Ok(t.resource)
+                    },
+                )?;
+                d.logical_size
+            }
+            MLN_RENDER_TARGET_KIND_D3D12_COMPOSITION => {
+                let d = data.d3d12_composition;
+                if !matches!(
+                    d.kind,
+                    MLN_D3D12_COMPOSITION_KIND_VISUAL | MLN_D3D12_COMPOSITION_KIND_SWAP_CHAIN_PANEL
+                ) {
+                    return Err(Failure::argument(
+                        "target.d3d12_composition.kind names no composition kind",
+                    ));
+                }
+                required(d.object, "d3d12_composition.object")?;
+                d.logical_size
+            }
             MLN_RENDER_TARGET_KIND_EXPORTED_RING => {
                 let d = data.exported_ring;
                 if d.texture_count == 0 || d.texture_count > MLN_TEXTURE_RING_MAX_DEPTH {

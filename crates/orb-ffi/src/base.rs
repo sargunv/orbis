@@ -358,7 +358,8 @@ pub extern "C" fn mln_c_version() -> u32 {
     MLN_C_VERSION
 }
 
-/// Orbis renders through wgpu: Metal on Apple platforms, Vulkan elsewhere.
+/// Orbis renders through wgpu: Metal on Apple platforms, D3D12 on Windows,
+/// Vulkan elsewhere.
 #[unsafe(no_mangle)]
 pub extern "C" fn mln_supported_render_backend_mask() -> mln_render_backend_flags {
     crate::gpu_device::backend_flag(crate::gpu_device::BACKEND)
