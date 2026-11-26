@@ -2408,14 +2408,18 @@ impl Map {
 
     /// The most terrain tiles this frame's cover may have: those the
     /// device's drape pages hold a cover of ([`Renderer::drape_room`]):
-    /// all of a still map's, and all but one of a continuous map's, whose
-    /// pages keep a slot past the cover for its tiles' moves to go through
-    /// ([`Map::plan_drape`]), so that they fit the frame's budget even
-    /// where the cover meets the device's room.
+    /// all of a still map's, and all of a continuous map's but where runs
+    /// of slots share a texture ([`Renderer::drape_shared`]). There its
+    /// tiles move to the slots of their places, and its pages keep a slot
+    /// past the cover for the moves to go through ([`Map::plan_drape`]),
+    /// so that they fit the frame's budget even where the cover meets the
+    /// device's room.
     pub(crate) fn cover_room(&self, gpu: &dyn Gpu, renderer: &Renderer) -> u32 {
         let room = renderer.drape_room(gpu);
         match self.mode {
-            RenderMode::Continuous => room.saturating_sub(1).max(1),
+            RenderMode::Continuous if renderer.drape_shared(gpu) > 1 => {
+                room.saturating_sub(1).max(1)
+            }
             _ => room,
         }
     }

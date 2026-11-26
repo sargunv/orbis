@@ -1677,6 +1677,12 @@ impl Renderer {
             .map_or(room, |(slots, _)| room.min(slots))
     }
 
+    /// The tile slots each drape texture holds with this style's stacks
+    /// ([`DrapeLayout::shared`]).
+    pub fn drape_shared(&self, gpu: &dyn Gpu) -> u32 {
+        terrain::shared(gpu, self.drape_stacks())
+    }
+
     /// Lets the drape ask the device for textures past those it held when
     /// the device refused one, as a map whose memory settled does:
     /// whether it kept to fewer.
@@ -1779,6 +1785,7 @@ impl Renderer {
             }),
             written: Vec::new(),
             scene: Default::default(),
+            slot_scenes: Default::default(),
             recorded: Vec::new(),
         });
         level.written.resize(self.nodes.len(), None);
@@ -2936,8 +2943,11 @@ impl Renderer {
             );
             self.dem_bound = dem;
             self.terrain_depth_bound = terrain_depth;
-            for scene in self.drape.iter_mut().flat_map(|d| &mut d.scene) {
-                std::mem::take(scene).release(gpu);
+            if let Some(drape) = self.drape.as_mut() {
+                for page in 0..2 {
+                    std::mem::take(&mut drape.scene[page]).release(gpu);
+                    drape.forget_slot_scenes(gpu, page);
+                }
             }
             // Extrusion and heatmap nodes record the scene group too.
             self.forget_draws(gpu);
@@ -3057,8 +3067,9 @@ impl Renderer {
         let mut stacks: Vec<u32> = slots.iter().map(|&(stack, _)| stack).collect();
         stacks.dedup();
         for stack in stacks {
-            self.record_drape(gpu, frame, stack);
+            self.record_drape(gpu, stack);
         }
+        self.slot_frames(gpu, frame, &slots);
         let drape = self.slot_commands(&slots);
         let drape = self.slot_draws(gpu, drape);
         let encoding = clock();
@@ -4046,15 +4057,14 @@ impl Renderer {
     }
 
     /// Readies the drape passes into stack `stack` for this frame: its
-    /// page's frame written, and its draws of the draped nodes recorded if
-    /// they aren't ([`Recorded`]), once any node's drape paint was set.
-    fn record_drape(&mut self, gpu: &mut dyn Gpu, frame: &FrameBlock, stack: u32) {
-        let Some(terrain) = self.terrain.as_ref() else {
+    /// draws of the draped nodes recorded if they aren't ([`Recorded`]),
+    /// once any node's drape paint was set.
+    fn record_drape(&mut self, gpu: &mut dyn Gpu, stack: u32) {
+        if self.terrain.is_none() {
             return;
-        };
+        }
         let colour = self.drape_stacks[0];
         let page = usize::from(stack >= colour);
-        let drape_frame = terrain.drape_frame(frame, page);
         let Some(level) = self.drape.as_mut() else {
             return;
         };
@@ -4063,10 +4073,11 @@ impl Renderer {
             level.recorded.resize_with(at + 1, || None);
         }
         if level.scene[page].is_empty() {
-            // A frame and a group for each block, the frame telling the
-            // block's rows.
+            // A frame and a group for each block, which the draws record
+            // over ([`Drape::frames`]).
             let held: Vec<u32> = self.scene.blocks().collect();
             std::mem::take(&mut level.frames[page]).release(gpu);
+            level.forget_slot_scenes(gpu, page);
             level.frames[page] = (0..self.scene.block_slots())
                 .map(|block| {
                     held.contains(&block).then(|| {
@@ -4092,14 +4103,6 @@ impl Renderer {
                 if usize::from(s as u32 >= colour) == page {
                     recorded.take().release(gpu);
                 }
-            }
-        }
-        let words = crate::scene::frame_words(&drape_frame);
-        for (block, buffer) in level.frames[page].iter().enumerate() {
-            if let Some(buffer) = buffer {
-                let mut words = words.clone();
-                self.scene.block_words(block as u32, &mut words);
-                gpu.write_buffer(*buffer, 0, bytemuck::cast_slice(&words));
             }
         }
         if level.recorded[at].is_some() {
@@ -4170,6 +4173,58 @@ impl Renderer {
         });
     }
 
+    /// Readies the frames of each redrawn slot of `slots` (`(stack, tile
+    /// slot)`s), one a block, and their scene groups: the drape frame with
+    /// its camera at the slot's corner, so that what a slot draws of its
+    /// own lies alike in clip space whatever its place in the grid, and
+    /// what other slots hold whole slots off its layer.
+    fn slot_frames(&mut self, gpu: &mut dyn Gpu, frame: &FrameBlock, slots: &[(u32, u32)]) {
+        let (Some(terrain), Some(level)) = (self.terrain.as_ref(), self.drape.as_mut()) else {
+            return;
+        };
+        let layout = terrain.layout();
+        let colour = self.drape_stacks[0];
+        let mut done = rustc_hash::FxHashSet::default();
+        for &(stack, slot) in slots {
+            let page = usize::from(stack >= colour);
+            if level.scene[page].is_empty() || !done.insert((page, slot)) {
+                continue;
+            }
+            let corner = layout.corner(slot, stack);
+            let words = crate::scene::frame_words(&terrain.drape_frame(frame, page, corner));
+            let (frames, _) = level.slot_scenes[page].entry(slot).or_insert_with(|| {
+                let held: Vec<u32> = self.scene.blocks().collect();
+                let frames: Vec<Option<BufferId>> = (0..self.scene.block_slots())
+                    .map(|block| {
+                        held.contains(&block).then(|| {
+                            gpu.create_buffer(&BufferDesc {
+                                label: "drape slot frame",
+                                size: crate::scene::FRAME_BYTES,
+                                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+                            })
+                        })
+                    })
+                    .collect();
+                let groups = scene_groups(
+                    gpu,
+                    self.draw_layout,
+                    &self.scene,
+                    &self.image_bindings,
+                    (self.images.nearest(), self.dem_bound, self.no_terrain_depth),
+                    Some(&frames),
+                );
+                (frames, groups)
+            });
+            for (block, buffer) in frames.iter().enumerate() {
+                if let Some(buffer) = buffer {
+                    let mut words = words.clone();
+                    self.scene.block_words(block as u32, &mut words);
+                    gpu.write_buffer(*buffer, 0, bytemuck::cast_slice(&words));
+                }
+            }
+        }
+    }
+
     /// The drape passes' commands this frame, by stack and tile slot: each
     /// stack's [recorded](Recorded) draws, the draws of a node's runs
     /// those of the slot's runs alone. `slots` are the frame's redrawn
@@ -4207,6 +4262,17 @@ impl Renderer {
                     }
                 }
                 commands.extend_from_slice(&recorded.commands[from..]);
+                // The slot's own frames in place of the page's.
+                if let Some((_, own)) = level.slot_scenes[usize::from(stack >= colour)].get(&slot) {
+                    for command in &mut commands {
+                        if let RenderCommand::SetBindGroup { index: 0, group } = command
+                            && let Some(block) = scenes.iter().position(|s| *s == Some(*group))
+                            && let Some(Some(mine)) = own.get(block)
+                        {
+                            *group = *mine;
+                        }
+                    }
+                }
                 by_slot.insert((stack, slot), bound_once(commands));
             }
         }
@@ -4805,8 +4871,9 @@ struct Ready {
 /// page its frame, scene group and bundle.
 #[derive(Debug)]
 struct Drape {
-    /// The drape frame, per drape page and block slot: each block's tells
-    /// its rows.
+    /// Per drape page and block slot, the frame `scene`'s groups bind,
+    /// never written: the stacks' draws record over them, and each slot's
+    /// pass binds its own (`slot_scenes`) in their place.
     frames: [Vec<Option<BufferId>>; 2],
     /// Node uniforms, at each node's offset.
     uniforms: BufferId,
@@ -4816,9 +4883,17 @@ struct Drape {
     /// Per page, the scene groups over its `frames`, by block slot; empty
     /// until made.
     scene: [Vec<Option<BindGroupId>>; 2],
+    /// Per page, by tile slot, the frames its passes draw with, one a block
+    /// slot, and the scene groups over them, which take the place of
+    /// `scene`'s in the slot's commands ([`Renderer::slot_frames`]).
+    slot_scenes: [SlotScenes; 2],
     /// Per stack, the draws of the nodes drawing into it.
     recorded: Vec<Option<Recorded>>,
 }
+
+/// A drape page's frames and scene groups by tile slot, each by block
+/// slot.
+type SlotScenes = FxHashMap<u32, (Vec<Option<BufferId>>, Vec<Option<BindGroupId>>)>;
 
 /// A drape stack's draws, recorded once for every slot's pass into it: its
 /// draped nodes' commands, but for their runs, whose draws differ by slot.
@@ -4872,9 +4947,18 @@ impl Drape {
 
     fn release(mut self, gpu: &mut dyn Gpu) {
         self.forget_recorded(gpu);
+        self.forget_slot_scenes(gpu, 0);
+        self.forget_slot_scenes(gpu, 1);
         let [a, b] = self.scene;
         let [f, g] = self.frames;
         ((a, b), (f, g), self.uniforms).release(gpu);
+    }
+
+    /// Page `page`'s slots' frames and scene groups.
+    fn forget_slot_scenes(&mut self, gpu: &mut dyn Gpu, page: usize) {
+        for (frames, groups) in std::mem::take(&mut self.slot_scenes[page]).into_values() {
+            (groups, frames).release(gpu);
+        }
     }
 }
 

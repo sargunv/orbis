@@ -731,7 +731,8 @@ impl Terrain {
     }
 
     /// Whether every tile of the cover is drawn in the slot of its place,
-    /// as [`plan`](Self::plan) leaves them once nothing is deferred.
+    /// as [`plan`](Self::plan) leaves them once nothing is deferred where
+    /// slots share textures.
     #[cfg(test)]
     fn slots_follow_cover(&self) -> bool {
         self.retired.is_empty()
@@ -773,14 +774,18 @@ impl Terrain {
     /// stale one.
     /// Then stale ones, the longest stale first, each drawn as it was
     /// until a frame redraws it. Of those alike, the ones that show
-    /// largest go first, then those nearest the view's centre. Each tile
-    /// takes the slot of its place in the cover, whose place in the drape
-    /// grid it draws in, as a fresh map's does. A move is a redraw, within
-    /// the budget, into a place left free. Once none is blank, stale or
-    /// out of place, each slot holds what a fresh map's does. Slots' sides
-    /// follow their tiles' footprints in `view` on a target of its pixel
-    /// ratio ([`slot_shrink`]). Each tile comes with its index, and flat: on a
-    /// globe, the map places it on the sphere.
+    /// largest go first, then those nearest the view's centre. A tile keeps
+    /// its slot while the cover holds it, and a new one takes a free one:
+    /// a slot draws alike wherever it lies (orb-render's `drape_frame`).
+    /// Where runs of slots share a texture ([`DrapeLayout::shared`], GL),
+    /// which tiles share one follows their slots, so there each tile takes
+    /// the slot of its place in the cover, as a fresh map's does, to hold
+    /// the textures a fresh map holds: a move is a redraw, within the
+    /// budget, into a place left free. Once none is blank, stale or out of
+    /// place, each slot holds what a fresh map's does. Slots' sides follow their tiles' footprints in
+    /// `view` on a target of its pixel ratio ([`slot_shrink`]). Each tile
+    /// comes with its index, and flat: on a globe, the map places it on the
+    /// sphere.
     pub(crate) fn plan(
         &mut self,
         tms: &TileMatrixSet,
@@ -805,6 +810,8 @@ impl Terrain {
         debug_assert!(self.tiles.len() <= layout.tile_slots as usize);
         let places: FxHashMap<CoveredTile, u32> = self.tiles.iter().copied().zip(0..).collect();
         let period = tms.projection().wrap_period().unwrap_or(0.0);
+        // Tiles take the slots of their places.
+        let pinned = layout.shared > 1;
         // Out of place with no free slot to move through: every tile takes
         // its place in one frame, drawn anew where it moves. So too
         // wherever the budget is unbounded (a still map). A continuous
@@ -813,7 +820,7 @@ impl Terrain {
         let held = self.slots.len() + self.retired.len();
         let misplaced = (self.slots.iter()).any(|(t, s)| places[t] != s.index);
         let texels = budget.map(|b| b.0);
-        if texels.is_none() || misplaced && held >= layout.tile_slots as usize {
+        if pinned && (texels.is_none() || misplaced && held >= layout.tile_slots as usize) {
             self.retired.clear();
             self.slots.retain(|t, s| places[t] == s.index);
         }
@@ -824,7 +831,7 @@ impl Terrain {
             let shrink = slot_shrink((view, f64::from(pixel_ratio)), tms, (tile, ceiling));
             let need = match self.slots.get(&tile) {
                 None => Need::Blank(self.stand_in(tile)),
-                Some(slot) if slot.index != place => Need::Move,
+                Some(slot) if pinned && slot.index != place => Need::Move,
                 Some(slot) => {
                     let stacks: Vec<u8> = (0..content.len())
                         .filter(|&s| slot.shrink != shrink || slot.content.get(s) != content.get(s))
@@ -918,7 +925,7 @@ impl Terrain {
                 Need::Blank(stand_in) => {
                     let free = (0..layout.tile_slots).find(|i| !used.contains(i));
                     let index = match free {
-                        _ if !used.contains(&want.place) => want.place,
+                        _ if pinned && !used.contains(&want.place) => want.place,
                         Some(index) => index,
                         // Each retired slot left is shown by one blank
                         // tile alone (they number no more than those, and
@@ -1254,13 +1261,12 @@ pub(crate) fn drape_rows(
         }
         for &stack in stacks {
             let [cx, cy] = layout.corner(slot, u32::from(stack));
-            let corner = DVec2::new(f64::from(cx), -f64::from(cy));
             // Texels per world unit, and per logical pixel at the zoom.
             let slot_px = f64::from(layout.slot_px(u32::from(stack)) >> shrink);
             let k = slot_px / span;
-            let o = corner + (origin - t_origin) * k;
             out.push(TileRow {
-                origin: o.to_array(),
+                origin: ((origin - t_origin) * k).to_array(),
+                slot_corner: [cx as i32, -(cy as i32)],
                 scale: (scale * k) as f32,
                 clips,
                 bound,
@@ -2137,8 +2143,9 @@ mod tests {
     }
 
     /// A tile the cover splits shows its part of its parent's slot until
-    /// a frame's budget draws it, one a frame; then each moves to the slot
-    /// of its place within the budget too, and then none is left.
+    /// a frame's budget draws it, one a frame; then, where slots share
+    /// textures, each moves to the slot of its place within the budget
+    /// too, and then none is left.
     #[test]
     fn split_tiles_show_their_parents_slot_until_the_budget_draws_them() {
         let tms = tms();
@@ -2153,6 +2160,7 @@ mod tests {
         let layout = DrapeLayout {
             stacks: [1, 0],
             side: 8,
+            shared: 2,
             tile_slots: 6,
             generation: 1,
             revision: 0,
@@ -2216,6 +2224,7 @@ mod tests {
         let layout = DrapeLayout {
             stacks: [1, 0],
             side: 8,
+            shared: 1,
             tile_slots: 8,
             generation: 1,
             revision: 0,
@@ -2290,6 +2299,7 @@ mod tests {
         let layout = DrapeLayout {
             stacks: [1, 0],
             side: 8,
+            shared: 1,
             tile_slots: 8,
             generation: 1,
             revision: 0,

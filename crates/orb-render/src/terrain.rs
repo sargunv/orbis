@@ -15,10 +15,13 @@
 //! settles. A frame redraws only the slots the runtime marks: their drape
 //! placements, the draped nodes' only candidates, map each into its place
 //! in a grid of drape space, a function of its tile slot alone, and a pass
-//! a slot's stack draws the stack's draped nodes' runs of that slot alone
-//! (the renderer's `Recorded`) with the viewport moving its place onto its
-//! texture's layer, which draws it alike in any texture; then a compute
-//! pass a texture downsamples its mip levels.
+//! a slot's stack draws the stack's draped nodes' runs of that slot (the
+//! renderer's `Recorded`; a stream whose runs don't say their slots draws
+//! whole) in a frame of its own whose camera is the slot's corner
+//! ([`Terrain::drape_frame`]): the slot's content lies alike in clip space
+//! at any place, which it draws alike in, and other slots' lie whole
+//! places off its layer. Then a compute pass a texture downsamples its mip
+//! levels.
 //!
 //! The terrain draws in the map's own pass, its tiles in the order the
 //! runtime gives them, each with its slots' textures bound, over a depth
@@ -88,6 +91,12 @@ pub(crate) fn room(gpu: &dyn Gpu, stacks: [u32; 2]) -> u32 {
         desc.array_layers <= gpu.caps().limits.max_texture_array_layers && gpu.texture_fits(&desc)
     });
     if fits { grid_side(gpu).pow(2) } else { 0 }
+}
+
+/// The tile slots a texture holds with `stacks` colour and slope stacks
+/// ([`DrapeLayout::shared`]).
+pub(crate) fn shared(gpu: &dyn Gpu, stacks: [u32; 2]) -> u32 {
+    slots_per_texture(gpu, allocated(stacks))
 }
 
 /// Why the drape pages can't hold a view's terrain tiles.
@@ -276,14 +285,18 @@ pub struct TerrainDem {
 /// in a grid `side` places a side, a function of its index alone, whose
 /// top-left square of its side each of its slots draws in: each layer's
 /// drape space is the grid's texels with y up, texel `(x, y)` drape world
-/// `(x, −y)`, and a slot draws alike in whichever texture its texels lie,
-/// which a pass's viewport maps its place onto.
+/// `(x, −y)`, and a slot's pass draws its place onto its layer
+/// ([`Terrain::drape_frame`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DrapeLayout {
     /// Colour stacks, then slope stacks.
     pub stacks: [u32; 2],
     /// Places a side of the grid.
     pub side: u32,
+    /// The tile slots a texture of each side holds: a run of consecutive
+    /// slots, more than one where the device would make one's layers with
+    /// a layer more than they take (GL).
+    pub shared: u32,
     /// Tile slots the grid holds: its places.
     pub tile_slots: u32,
     /// Changes when every slot is blank (other stacks): every slot must
@@ -691,6 +704,7 @@ impl Terrain {
             layout_state: DrapeLayout {
                 stacks: [1, 0],
                 side: grid_side(gpu),
+                shared: 1,
                 tile_slots: 0,
                 generation: 0,
                 revision: 0,
@@ -845,7 +859,7 @@ impl Terrain {
             self.release_texels(gpu);
             self.resized.count(gpu, &before);
             self.pending.clear();
-            self.shared = slots_per_texture(gpu, allocated(stacks));
+            self.shared = shared(gpu, stacks);
             let counts = allocated(stacks);
             let at = params::COLOUR_STACKS as u64 * 4;
             gpu.write_buffer(self.params, at, bytemuck::cast_slice(&counts));
@@ -854,6 +868,7 @@ impl Terrain {
         self.layout_state = DrapeLayout {
             stacks,
             side: grid_side(gpu),
+            shared: self.shared,
             tile_slots: room,
             generation: state.generation + u64::from(made),
             revision: state.revision,
@@ -1373,12 +1388,10 @@ impl Terrain {
         };
         if !self.pending.is_empty() {
             let start = passes.len();
-            let layout = self.layout_state;
             let mut pending = std::mem::take(&mut self.pending);
             pending.sort_unstable();
             pending.dedup();
             drawn.slots = pending.len() as u32;
-            let grid = layout.side as f32;
             for run in pending.chunk_by(|a, b| (a.page, a.texture) == (b.page, b.texture)) {
                 let (page, texture) = (run[0].page, run[0].texture);
                 let Some(slots) = (self.texels.get(texture as usize).and_then(Option::as_ref))
@@ -1389,15 +1402,12 @@ impl Terrain {
                 let px = PAGE_PX[page] as f32;
                 // A pass a slot's stack: its layer cleared, then the
                 // stack's draws of the slot's content (or their bundle)
-                // into it, the grid's drape space, which the drape frame maps
-                // onto a viewport of its size, moved so that the slot's
-                // place lands on the layer.
+                // into it, its place in the grid on the layer's corner.
                 for p in run {
                     let Some(draws) = drape.get(&(p.stack, p.tile_slot)) else {
                         continue;
                     };
-                    let corner = layout.corner(p.tile_slot, p.stack).map(|n| -(n as f32));
-                    let viewport = [corner[0], corner[1], grid * px, grid * px];
+                    let viewport = [0.0, 0.0, px, px];
                     passes.push(Pass::Render(RenderPass {
                         label: "drape",
                         colors: vec![ColorAttachment {
@@ -1668,27 +1678,37 @@ impl Terrain {
     }
 
     /// The drape frame: the map's, at the zoom its slots draw at
-    /// ([`redraw`](Self::redraw)), drawn into page `page`.
+    /// ([`redraw`](Self::redraw)), drawn into page `page` for the slot
+    /// whose top-left texel in the grid is `corner`. Its camera at the
+    /// corner, a whole number of the quanta rows' origins split at,
+    /// shaders take the corner from the slot's placements exactly, so the
+    /// slot draws the same clip positions, and pixels, at any place.
     pub(crate) fn drape_frame(
         &self,
         frame: &crate::scene::FrameBlock,
         page: usize,
+        corner: [u32; 2],
     ) -> crate::scene::FrameBlock {
-        // The grid of the slots' places, which each slot's passes move
-        // their viewport over.
-        let [w, h] = [(self.layout_state.side * PAGE_PX[page]) as f32; 2];
-        // Drape world (x, −y) for texel (x, y) → clip.
+        let quantum = crate::scene::quantum(frame.world_span);
+        debug_assert!(
+            corner
+                .iter()
+                .all(|&c| (f64::from(c) / quantum).fract() == 0.0)
+        );
+        let side = PAGE_PX[page] as f32;
+        // Drape world (x, −y) for texel (x, y) of the slot's place → clip.
         let view_proj = [
-            [2.0 / f64::from(w), 0.0, 0.0, 0.0],
-            [0.0, 2.0 / f64::from(h), 0.0, 0.0],
+            [2.0 / f64::from(side), 0.0, 0.0, 0.0],
+            [0.0, 2.0 / f64::from(side), 0.0, 0.0],
             [0.0, 0.0, 0.0, 0.0],
             [-1.0, 1.0, 0.0, 1.0],
         ];
         crate::scene::FrameBlock {
             view_proj,
-            // Drape placements' origins are in drape space already.
-            camera: [0.0; 2],
-            viewport: [w, h],
+            // The slot's corner, which shaders subtract from placements'
+            // origins in whole quanta, exactly.
+            camera: [f64::from(corner[0]), -f64::from(corner[1])],
+            viewport: [side, side],
             // Drape placements' `px_scale` is their texels per logical
             // pixel at the slots' zoom.
             world_per_px: 1.0,

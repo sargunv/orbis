@@ -103,24 +103,23 @@ fn tile_local(tile: Tile, p: vec2<f32>) -> vec2<f32> {
     return warp_sum(w.at, lagrange(w.st.x), lagrange(w.st.y));
 }
 
-// A drape placement's tile point `p` in atlas texels, the same wherever
-// its slot is, which the map's history decides. Its origin's whole quanta
-// hold the slot's corner, a multiple of the quantum, and the remainder its
-// place in the slot: the point within the slot, snapped onto the
-// rasterizer's 1/256 grid, is the same in every slot, and the corner adds
-// to it exactly. On the grid, not between its points: a point midway
-// rounds by the rasterizer's rule, which can differ by sign (a slot's edge
-// lies just off the page at row 0).
+// A drape placement's tile point `p` in texels of its slot, the same
+// wherever its slot is, which the map's history decides. The drape frame's
+// camera is the slot's corner (orb-render's `drape_frame`), a multiple of
+// the quantum, so its origin's whole quanta less the camera's and its
+// remainder are the same in every slot. The point within them is snapped
+// onto the rasterizer's 1/256 grid, not between its points: a point midway
+// rounds by the rasterizer's rule, which can differ by sign.
 // `local` is the point's `tile_local`.
 fn drape_texel(tile: Tile, local: vec2<f32>) -> vec2<f32> {
     let whole = vec2<f32>(tile.origin - frame.camera_whole) * frame.quantum;
     return whole + snap_texel((tile.origin_rest - frame.camera_rest) + local);
 }
 
-// Where a drape placement's tile origin's whole quanta put it in the page,
-// in texels; the origin elsewhere. Screen positions taken from it are the
-// same in every slot, and exact: interpolated across a primitive, they
-// round alike wherever the slot is.
+// Where a drape placement's tile origin's whole quanta put it in its slot,
+// in texels; the origin elsewhere. Screen positions taken from it stay
+// small and exact: interpolated across a primitive, they round alike
+// wherever the slot is.
 fn drape_origin(tile: Tile) -> vec2<f32> {
     if !draped_placement(tile) {
         return vec2<f32>(0.0);

@@ -296,7 +296,8 @@ pub(crate) fn surface_cells(globe: Option<FrameGlobe>) -> u32 {
 /// depends on the camera but the pattern origin's integer zoom.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TileRow {
-    /// In world units; rows hold it as hi/lo f32, less the frame's camera.
+    /// In world units, from `slot_corner`; rows hold it as hi/lo f32,
+    /// less the frame's camera.
     pub origin: [f64; 2],
     pub scale: f32,
     /// The tile's zoom level.
@@ -331,6 +332,11 @@ pub struct TileRow {
     /// A drape placement's tile slot: only the passes into that slot's
     /// layers draw it ([`Scene::slot_segments`]). `None` for others.
     pub drape_slot: Option<u32>,
+    /// A drape placement's slot corner in drape space, a whole number of
+    /// the quanta origins split at, which `origin` is from; zero for
+    /// others. Split apart and added in whole quanta, the slot's origins
+    /// split alike at any corner.
+    pub slot_corner: [i32; 2],
     /// Its planar patches (`project.wgsl`), or [`TileWarp::NONE`].
     pub warp: TileWarp,
     /// On a globe view, where it is on the sphere.
@@ -384,7 +390,12 @@ impl TileRow {
         let mut words = [0u32; TILE_WORDS];
         let mut put =
             |at: usize, values: &[u32]| words[at..][..values.len()].copy_from_slice(values);
-        let [origin_whole, origin_rest] = split(self.origin, quantum);
+        let [mut origin_whole, origin_rest] = split(self.origin, quantum);
+        for (whole, corner) in origin_whole.iter_mut().zip(self.slot_corner) {
+            let quanta = f64::from(corner) / quantum;
+            debug_assert_eq!(quanta.fract(), 0.0, "a slot corner is whole quanta");
+            *whole = whole.wrapping_add(quanta as i64 as u32);
+        }
         put(t::ORIGIN, &origin_whole);
         put(t::ORIGIN_REST, &origin_rest);
         put(t::SCALE, &[self.scale.to_bits(), self.zoom.to_bits()]);
@@ -3470,6 +3481,55 @@ fn move_buffer(gpu: &mut dyn Gpu, buffer: &mut BufferId, desc: &BufferDesc<'_>, 
 #[cfg(test)]
 mod tests {
     use super::grown;
+
+    /// A drape row's origin words at any slot corner are those at the
+    /// first, the corner's whole quanta added: its remainder is the same,
+    /// near and exact half-quantum ties and large offsets included, so a
+    /// slot draws alike wherever it lies.
+    #[test]
+    fn a_slot_corner_moves_only_the_whole_quanta() {
+        use super::{ClipRect, DemRef, PlacementTarget, TileRow, TileWarp, layout::tile as t};
+        let row = |local: f64, corner: i32| TileRow {
+            origin: [local, -local],
+            scale: 1.0,
+            zoom: 0.0,
+            clips: [ClipRect::EMPTY; 4],
+            bound: ClipRect::EVERYWHERE,
+            pattern_origin: [0; 2],
+            extent: 8192.0,
+            wrap: 0,
+            px_scale: 1.0,
+            sphere: None,
+            dem: DemRef::NONE,
+            terrain_range: [0.0; 2],
+            target: PlacementTarget::Drape(0),
+            drape_slot: Some(0),
+            slot_corner: [corner, -corner],
+            warp: TileWarp::NONE,
+            globe: None,
+            neighbours: 0,
+        };
+        let q = 2.0;
+        for local in [
+            -1.0,
+            1.0,
+            -1.000_000_000_000_353_3,
+            8_388_095.0 - 2f64.powi(-30),
+            4_294_967_294.0,
+        ] {
+            let at = row(local, 0).words(q);
+            for corner in [1024, 7168, -2048] {
+                let moved = row(local, corner).words(q);
+                assert_eq!(moved[t::ORIGIN_REST..][..2], at[t::ORIGIN_REST..][..2]);
+                for i in 0..2 {
+                    let sign = [1, -1][i];
+                    let shift =
+                        (moved[t::ORIGIN + i] as i32).wrapping_sub(at[t::ORIGIN + i] as i32);
+                    assert_eq!(shift, sign * corner / 2, "{local} at {corner}");
+                }
+            }
+        }
+    }
 
     /// The shaders' chunk sizes are the layout's: the most indices a chunk
     /// has, which bounds the cull's copy loop, and the instances a point
