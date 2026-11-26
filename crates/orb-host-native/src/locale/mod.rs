@@ -14,6 +14,8 @@
 //! one file each, chosen by `cfg` in `platform` below:
 //!
 //! - `apple.rs`: the system ICU, `libicucore`, through `icu4c.rs`.
+//! - `linux.rs`: the system ICU, `libicuuc` and `libicui18n`, through
+//!   `icu4c.rs`.
 //!
 //! A backend file provides `open() -> Option<Box<dyn Backend>>`, which
 //! loads its library and resolves every function it calls at run time
@@ -30,7 +32,7 @@
 
 // A platform without a backend yet uses nothing but `install`.
 #![cfg_attr(
-    not(target_vendor = "apple"),
+    not(any(target_vendor = "apple", target_os = "linux")),
     allow(dead_code, reason = "no backend on this platform yet")
 )]
 
@@ -43,15 +45,19 @@ use orb_expr::{BuiltinLocale, Collator, HostLocale, NumberFormat};
 
 #[cfg(target_vendor = "apple")]
 mod apple;
-#[cfg(target_vendor = "apple")]
+#[cfg(any(target_vendor = "apple", target_os = "linux"))]
 mod icu4c;
+#[cfg(target_os = "linux")]
+mod linux;
 
 /// This platform's backend.
 mod platform {
     #[cfg(target_vendor = "apple")]
     pub(super) use super::apple::open;
+    #[cfg(target_os = "linux")]
+    pub(super) use super::linux::open;
 
-    #[cfg(not(target_vendor = "apple"))]
+    #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
     pub(super) fn open() -> Option<Box<dyn super::Backend>> {
         None
     }
@@ -572,7 +578,7 @@ mod tests {
     }
 
     /// The platform's library, on platforms with a backend.
-    #[cfg(target_vendor = "apple")]
+    #[cfg(any(target_vendor = "apple", target_os = "linux"))]
     mod system {
         use super::super::*;
 
