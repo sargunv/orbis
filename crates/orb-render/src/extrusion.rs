@@ -5,7 +5,7 @@
 use crate::TargetFormat;
 use crate::offscreen::{Apart, Composites, Mode, Offscreen};
 use crate::paint::ExtrusionShape;
-use crate::pipeline::{Draw, depth_test};
+use crate::pipeline::{Cache, Draw, Take, depth_test};
 use crate::release::Release;
 use crate::scene::SceneBuffers;
 use orb_hal::*;
@@ -17,7 +17,8 @@ pub(crate) struct Extrusions {
     /// whole buildings, and where clip distances are, with them the cut
     /// ones of a placement with one clip rectangle, clipped by its planes
     /// (`planes`); and the cut ones clipped per fragment, which alone
-    /// discard; per [`column`](Self::column).
+    /// discard; into the targets they draw in now (the
+    /// [`Cache`] keeps those for the others).
     pipelines: Vec<((ExtrusionShape, bool), Pipelines)>,
     /// The device has clip distances: the first pipeline draws the cut
     /// stream too, its buildings of a placement with one clip rectangle,
@@ -98,9 +99,8 @@ impl Streams {
     }
 }
 
-/// Whole and cut, each at one sample and at four, over a depth without a
-/// stencil and with one.
-type Pipelines = [[Option<RenderPipelineId>; 4]; 2];
+/// Whole and cut.
+type Pipelines = [Option<RenderPipelineId>; 2];
 
 impl Extrusions {
     pub(crate) fn new(
@@ -135,14 +135,11 @@ impl Extrusions {
     /// compile, if every shape's full ones are made. True when that
     /// changed, and bundles recorded with the other draw no more.
     pub(crate) fn settle(&mut self, gpu: &mut dyn Gpu) -> bool {
-        let samples = self.column();
         let made = |full: bool| {
-            (self.drawing())
-                .filter(move |((_, f), p)| *f == full && p.iter().any(|p| p[samples].is_some()))
+            (self.drawing()).filter(move |((_, f), p)| *f == full && p.iter().any(Option::is_some))
         };
-        let plane_compiled = made(false).all(|(_, p)| {
-            (p.iter().filter_map(|p| p[samples])).all(|p| gpu.pipeline_ready(p.into()))
-        });
+        let plane_compiled =
+            made(false).all(|(_, p)| p.iter().flatten().all(|&p| gpu.pipeline_ready(p.into())));
         let full_cover =
             made(false).all(|((shape, _), _)| made(true).any(|((s, _), _)| s == shape));
         let drawn = self.full || (!plane_compiled && full_cover);
@@ -154,31 +151,34 @@ impl Extrusions {
         (self.pipelines.iter()).filter(|(key, _)| !self.warm.contains(key))
     }
 
-    /// The whole and cut pipelines for `shape` at the current sample count
-    /// in the variant they draw in.
-    fn slot(&self, shape: ExtrusionShape) -> [Option<RenderPipelineId>; 2] {
+    /// The whole and cut pipelines for `shape` in the variant they draw
+    /// in.
+    fn slot(&self, shape: ExtrusionShape) -> Pipelines {
         self.slot_in(shape, self.drawn_full)
     }
 
-    /// The whole and cut pipelines for `shape` at the current sample count
-    /// in the full variant or the plane one.
-    fn slot_in(&self, shape: ExtrusionShape, full: bool) -> [Option<RenderPipelineId>; 2] {
-        let samples = self.column();
+    /// The whole and cut pipelines for `shape` in the full variant or the
+    /// plane one.
+    fn slot_in(&self, shape: ExtrusionShape, full: bool) -> Pipelines {
         (self.pipelines.iter())
             .find(|(s, _)| *s == (shape, full))
-            .map_or([None; 2], |(_, p)| p.map(|p| p[samples]))
+            .map_or([None; 2], |&(_, p)| p)
     }
 
-    /// Makes the pipelines for `shape` at the current sample count and
-    /// variant, for the first extrusion node of that shape, or (`warm`)
-    /// ahead of any.
-    pub(crate) fn make(&mut self, gpu: &mut dyn Gpu, shape: ExtrusionShape, warm: bool) {
-        let samples = self.column();
+    /// Makes the pipelines for `shape` in the current targets and variant,
+    /// for the first extrusion node of that shape, or (`warm`) ahead of
+    /// any.
+    pub(crate) fn make(
+        &mut self,
+        (gpu, cache): (&mut dyn Gpu, &mut Cache),
+        shape: ExtrusionShape,
+        warm: bool,
+    ) {
         let key = (shape, self.full);
         let index = match self.pipelines.iter().position(|(s, _)| *s == key) {
             Some(i) => i,
             None => {
-                self.pipelines.push((key, [[None; 4]; 2]));
+                self.pipelines.push((key, [None; 2]));
                 if warm {
                     self.warm.push(key);
                 }
@@ -188,12 +188,29 @@ impl Extrusions {
         if !warm {
             self.warm.retain(|k| *k != key);
         }
-        let (whole, cut) = (EXTRUSION_SHADER, EXTRUSION_CUT_SHADER);
+        if self.pipelines[index].1.iter().all(Option::is_some) {
+            return;
+        }
         // With clip distances, the whole pipeline's vertex stage also clips
         // the cut buildings of placements with one clip rectangle by its
         // planes, and the cut pipeline keeps those of placements with
         // several.
         self.planes = gpu.caps().clip_distances;
+        self.pipelines[index].1 = self.draws(key, &mut Take::Make(gpu, cache));
+    }
+
+    /// Takes the pipelines made for the current targets in place of those
+    /// for the targets before, none where none were made.
+    fn retarget(&mut self, cache: &Cache) {
+        for i in 0..self.pipelines.len() {
+            self.pipelines[i].1 = self.draws(self.pipelines[i].0, &mut Take::Find(cache));
+        }
+    }
+
+    /// The whole and cut pipelines of `shape` in the full variant or the
+    /// plane one into the current targets, as `take` takes them.
+    fn draws(&self, (shape, full): (ExtrusionShape, bool), take: &mut Take<'_>) -> Pipelines {
+        let (whole, cut) = (EXTRUSION_SHADER, EXTRUSION_CUT_SHADER);
         let (whole_vertex, cut_vertex) = match self.planes {
             true => (
                 (&EXTRUSION_PLANES_SHADER, "vs_extrusion_planes"),
@@ -210,48 +227,28 @@ impl Extrusions {
             (true, false) => ((&whole, "vs_extrusion_plain"), "fs_extrusion_plain"),
             (false, _) => (whole_vertex, whole.fragment),
         };
-        let stages = [
+        let stages: [((&Shader, _), (&Shader, _)); 2] = [
             (whole_stages.0, (&whole, whole_stages.1)),
             ((&cut, cut_vertex), (&cut, cut.fragment)),
         ];
-        for (kind, (vertex, fragment)) in stages.into_iter().enumerate() {
-            if self.pipelines[index].1[kind][samples].is_none() {
-                let pipeline = self.pipeline(gpu, vertex, fragment, shape);
-                self.pipelines[index].1[kind][samples] = Some(pipeline);
-            }
-        }
-    }
-
-    /// A pipeline of a vertex stage and a fragment stage, each a shader and
-    /// its entry point.
-    fn pipeline(
-        &self,
-        gpu: &mut dyn Gpu,
-        vertex: (&Shader, &str),
-        fragment: (&Shader, &str),
-        shape: ExtrusionShape,
-    ) -> RenderPipelineId {
         let [vertex_constants, fragment_constants] = shape.constants();
-        let target = TargetFormat {
-            color: self.format,
-            sample_count: self.samples,
-        };
-        Draw {
-            vertex,
-            fragment,
-            constants: [&vertex_constants, &fragment_constants],
-            depth: depth_test(self.depth_format()),
-            cull_back: true,
-            plane: !self.full,
-            state: !shape.stateless,
-            patterns: shape.pattern,
-            ..Draw::new(vertex.0, &self.layouts, target, None)
-        }
-        .make(gpu)
+        stages.map(|(vertex, fragment)| {
+            take.pipeline(&Draw {
+                vertex,
+                fragment,
+                constants: [&vertex_constants, &fragment_constants],
+                depth: depth_test(self.depth_format()),
+                cull_back: true,
+                plane: !full,
+                state: !shape.stateless,
+                patterns: shape.pattern,
+                ..Draw::new(vertex.0, &self.layouts, self.format(), None)
+            })
+        })
     }
 
-    /// Whether every shape's pipelines made at the current sample count
-    /// in the variant they draw in, and the composites', compiled.
+    /// Whether every shape's pipelines made for the current targets in the
+    /// variant they draw in, and the composites', compiled.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu, composites: &Composites) -> bool {
         crate::awaits::compiled(gpu, self.needs(composites))
     }
@@ -259,10 +256,9 @@ impl Extrusions {
     /// The pipelines [`ready`](Self::ready) waits for, `None` for one not
     /// made: until one is, the shapes' pipelines.
     pub(crate) fn needs(&self, composites: &Composites) -> Vec<Option<PipelineId>> {
-        let samples = self.column();
         let mut needs: Vec<_> = (self.drawing())
             .filter(|((_, full), _)| *full == self.drawn_full)
-            .flat_map(|(_, p)| p.map(|p| p[samples]))
+            .flat_map(|&(_, p)| p)
             .flatten()
             .map(|p| Some(p.into()))
             .collect();
@@ -286,13 +282,14 @@ impl Extrusions {
     /// Draws at four samples when `antialias`, else at one; whether that
     /// changed, so the pipelines are asked for again and the targets made
     /// anew.
-    pub(crate) fn set_antialias(&mut self, antialias: bool) -> bool {
+    pub(crate) fn set_antialias(&mut self, cache: &Cache, antialias: bool) -> bool {
         let samples = if antialias { 4 } else { 1 };
         if samples == self.samples {
             return false;
         }
         self.samples = samples;
         self.size = [0; 2];
+        self.retarget(cache);
         true
     }
 
@@ -309,8 +306,10 @@ impl Extrusions {
     /// may draw in them, or none: a stencil's memory, and the 24-bit depth
     /// where the device has no `depth32float-stencil8`, only for maps
     /// that need it. The pipelines for either are kept.
-    pub(crate) fn set_stencil(&mut self, stencil: bool) {
-        self.stencil = stencil;
+    pub(crate) fn set_stencil(&mut self, cache: &Cache, stencil: bool) {
+        if std::mem::replace(&mut self.stencil, stencil) != stencil {
+            self.retarget(cache);
+        }
     }
 
     fn depth_format(&self) -> TextureFormat {
@@ -318,11 +317,6 @@ impl Extrusions {
             true => self.stencil_format,
             false => TextureFormat::Depth32Float,
         }
-    }
-
-    /// The pipelines' column for the current sample count and depth.
-    fn column(&self) -> usize {
-        usize::from(self.samples == 4) + 2 * usize::from(self.stencil)
     }
 
     /// The depth 3D passes share, once a resize made it, and how its
@@ -458,7 +452,6 @@ impl Extrusions {
 
 impl crate::release::Release for Extrusions {
     fn release(self, gpu: &mut dyn Gpu) {
-        let pipelines: Vec<Pipelines> = self.pipelines.into_iter().map(|(_, p)| p).collect();
-        (pipelines, self.depth.map(|(depth, _)| depth)).release(gpu);
+        self.depth.map(|(depth, _)| depth).release(gpu);
     }
 }

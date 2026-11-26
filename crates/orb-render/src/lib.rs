@@ -386,6 +386,9 @@ pub struct Renderer {
     /// What the pipelines kept for the other kind of pass were made for,
     /// once the passes changed.
     kept_target: Option<Attachments>,
+    /// The extrusions', the terrain's and the atmosphere's pipelines, in
+    /// every kind of pass they drew in.
+    pipeline_cache: pipeline::Cache,
     /// That depth attachment, made for the frame's size: never stored.
     map_depth: Option<(TextureId, [u32; 2])>,
     /// The multisampled colour the map's last canvas draws into, where
@@ -624,6 +627,7 @@ impl Renderer {
         )
             .release(gpu);
         (
+            self.pipeline_cache,
             self.atmosphere,
             self.images,
             self.downsampler,
@@ -770,6 +774,7 @@ impl Renderer {
             host,
             target,
             kept_target: None,
+            pipeline_cache: pipeline::Cache::default(),
             map_depth: None,
             map_samples: None,
             depth_format,
@@ -942,15 +947,22 @@ impl Renderer {
         self.antialias_3d = enabled;
         // The map's passes where they split at 3D layers take their
         // sample count: four with terrain, as these.
-        if self.extrusions.set_antialias(enabled) {
+        if self.extrusions.set_antialias(&self.pipeline_cache, enabled) {
             self.set_stale = true;
             self.invalidate_bundle(gpu);
         }
         let terrain = self.terrain_target();
         if let Some(t) = &mut self.terrain {
-            t.retarget(gpu, terrain);
+            t.retarget(&self.pipeline_cache, terrain, self.extrusions.format());
         }
         self.fit_target(gpu);
+        // Nothing draws at the other sample count now: the host's target
+        // and every format are the renderer's for its life, so
+        // antialiasing alone changes what its passes draw into, and what
+        // draws at one sample (terrain's depth for what it hides) draws
+        // there either way.
+        let samples = [1, self.host.sample_count, self.extrusions.samples];
+        (self.pipeline_cache).retain(gpu, |a| samples.contains(&a.sample_count));
     }
 
     /// What the map's passes draw into while they have their depth, which
@@ -1473,15 +1485,15 @@ impl Renderer {
             self.symbols.forget_kept(gpu);
             self.images.forget_kept(gpu);
             self.composites.forget_kept(gpu);
-            self.atmosphere.forget_kept(gpu);
         }
         self.kept_target = Some(std::mem::replace(&mut self.target, target));
         std::mem::swap(&mut self.paint, &mut self.paint_kept);
         self.symbols.swap_draws();
-        self.extrusions.set_stencil(target.depth.is_some());
+        let cache = &self.pipeline_cache;
+        self.extrusions.set_stencil(cache, target.depth.is_some());
         self.images.retarget(target);
         self.composites.retarget(target);
-        self.atmosphere.swap_target();
+        self.atmosphere.retarget(cache, target);
     }
 
     /// Whether every pipeline the map's frames draw with once its terrain
@@ -2306,7 +2318,9 @@ impl Renderer {
     ) {
         let frame = self.scene.buffers().frame;
         let target = (self.target, self.full_projection);
-        self.atmosphere.set(gpu, target, frame, paint, view);
+        let cache = &mut self.pipeline_cache;
+        self.atmosphere
+            .set((gpu, cache), target, frame, paint, view);
     }
 
     /// Whether a layer can composite at a layer opacity, asking for the
@@ -2436,7 +2450,8 @@ impl Renderer {
             // shows the sky at once.
             let frame = self.scene.buffers().frame;
             let target = (self.target, self.full_projection);
-            self.atmosphere.request(gpu, target, frame, false);
+            let cache = &mut self.pipeline_cache;
+            self.atmosphere.request((gpu, cache), target, frame, false);
         }
         if ahead || self.terrain_on() {
             self.request_terrain(gpu, set.shaded);
@@ -2467,7 +2482,10 @@ impl Renderer {
             self.composites
                 .make(gpu, offscreen::Mode::Blend(Blend::Multiply));
         }
-        (self.terrain(gpu)).request_pipelines(gpu, three_d, (shaded, beneath));
+        self.terrain(gpu);
+        let terrain = self.terrain.as_mut().expect("made");
+        let cache = &mut self.pipeline_cache;
+        terrain.request_pipelines((gpu, cache), three_d, (shaded, beneath));
         self.downsampler.make(gpu);
         self.images.make_prepare(gpu);
     }
@@ -2626,8 +2644,8 @@ impl Renderer {
                 self.composites.make(gpu, offscreen::Mode::Ramp);
             }
             Family::FillExtrusion => {
-                self.extrusions
-                    .make(gpu, self.nodes[i].shape.elevation, warm);
+                let cache = &mut self.pipeline_cache;
+                (self.extrusions).make((gpu, cache), self.nodes[i].shape.elevation, warm);
                 // Its target's composite.
                 self.composites.make(gpu, offscreen::Mode::Over);
             }

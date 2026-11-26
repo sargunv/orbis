@@ -36,7 +36,7 @@
 //! the canvas the pass before drew.
 
 use crate::TargetFormat;
-use crate::pipeline::{Attachments, Draw, depth_test};
+use crate::pipeline::{Attachments, Cache, Draw, Take, depth_test};
 use crate::release::Release;
 use crate::scene::{Backing, DataTable};
 use TextureViewDimension::D2Array;
@@ -463,13 +463,14 @@ pub(crate) struct Terrain {
     /// A blank texture, and a backdrop group binding it.
     blank: Option<(TextureId, BindGroupId)>,
     /// Terrain layers over the map, lighting hillshades between their
-    /// stacks or not, and those that read the map beneath ([`Kind`]).
+    /// stacks or not, and those that read the map beneath ([`Kind`]), in
+    /// the map's passes.
     pipelines: [Option<RenderPipelineId>; 3],
     /// The terrain's depth alone, before anything tests it: in the map's
-    /// passes ([`MAP`]), and in the 3D layers' ([`THREE_D`]) where theirs
-    /// differ (multisampled), each with the attachments it was made for;
-    /// and the 3D layers' attachments, once asked for.
-    depth_pipelines: [Option<(Attachments, RenderPipelineId)>; 2],
+    /// passes ([`MAP`]), and in the 3D layers' ([`THREE_D`]), one pipeline
+    /// where they're alike; and the 3D layers' attachments, once asked
+    /// for.
+    depth_pipelines: [Option<RenderPipelineId>; 2],
     three_d: Option<Attachments>,
     grid: DataTable,
     grid_indices: BufferId,
@@ -1182,18 +1183,21 @@ impl Terrain {
         true
     }
 
-    /// Draws into the map's passes as `target` from now: the pipelines
-    /// made for them before are let go, for the next request to make.
-    pub(crate) fn retarget(&mut self, gpu: &mut dyn Gpu, target: Attachments) {
-        if self.target == target {
-            return;
-        }
+    /// Draws into the map's passes as `target`, and into the 3D layers' as
+    /// `three_d` where it did, from now: with the pipelines made for them
+    /// before, if any.
+    pub(crate) fn retarget(&mut self, cache: &Cache, target: Attachments, three_d: TargetFormat) {
         self.target = target;
-        std::mem::take(&mut self.pipelines).release(gpu);
-        (self.depth_pipelines.iter_mut())
-            .map(|d| d.take().map(|(_, p)| p))
-            .collect::<Vec<_>>()
-            .release(gpu);
+        self.three_d = (self.three_d).map(|_| Attachments {
+            depth: target.depth,
+            ..three_d.into()
+        });
+        for kind in [Kind::Plain, Kind::Shaded, Kind::Beneath] {
+            self.pipelines[kind as usize] = self.layer_pipeline(kind, &mut Take::Find(cache));
+        }
+        self.depth_pipelines[MAP] = self.depth_pipeline(target, &mut Take::Find(cache));
+        self.depth_pipelines[THREE_D] =
+            (self.three_d).and_then(|three_d| self.depth_pipeline(three_d, &mut Take::Find(cache)));
     }
 
     /// Asks for the pipelines the terrain draws with: its layers' in the
@@ -1204,26 +1208,39 @@ impl Terrain {
     /// ([`Renderer::set_pipelines`](crate::Renderer::set_pipelines)).
     pub(crate) fn request_pipelines(
         &mut self,
-        gpu: &mut dyn Gpu,
+        (gpu, cache): (&mut dyn Gpu, &mut Cache),
         three_d: Option<TargetFormat>,
         (shaded, beneath): (bool, bool),
     ) {
-        self.pipeline(gpu, Kind::Plain);
-        if shaded {
-            self.pipeline(gpu, Kind::Shaded);
+        let kinds = [
+            (Kind::Plain, true),
+            (Kind::Shaded, shaded),
+            (Kind::Beneath, beneath),
+        ];
+        for (kind, _) in kinds.into_iter().filter(|&(_, wanted)| wanted) {
+            if self.pipelines[kind as usize].is_none() {
+                self.pipelines[kind as usize] =
+                    self.layer_pipeline(kind, &mut Take::Make(gpu, cache));
+            }
         }
-        if beneath {
-            self.pipeline(gpu, Kind::Beneath);
+        if self.depth_pipelines[MAP].is_none() {
+            self.depth_pipelines[MAP] =
+                self.depth_pipeline(self.target, &mut Take::Make(gpu, cache));
         }
-        self.depth_pipeline(gpu, MAP, self.target);
         if let Some(three_d) = three_d {
             let three_d = Attachments {
                 depth: self.target.depth,
                 ..three_d.into()
             };
-            self.depth_pipeline(gpu, THREE_D, three_d);
+            if self.three_d != Some(three_d) || self.depth_pipelines[THREE_D].is_none() {
+                self.three_d = Some(three_d);
+                self.depth_pipelines[THREE_D] =
+                    self.depth_pipeline(three_d, &mut Take::Make(gpu, cache));
+            }
         }
-        self.occlusion_pipeline(gpu);
+        if self.occlusion_pipeline.is_none() {
+            self.occlusion_pipeline = self.occlusion_pipeline(&mut Take::Make(gpu, cache));
+        }
     }
 
     /// Whether every terrain pipeline this frame's layers draw with
@@ -1239,7 +1256,7 @@ impl Terrain {
         let kinds = (self.layers.iter()).map(|l| self.pipelines[l.kind() as usize]);
         let wanted = self.occlusion.and(self.occlusion_pipeline);
         (kinds.chain(wanted.into_iter().map(Some)))
-            .chain([self.depth_pipeline_at(MAP)])
+            .chain([self.depth_pipelines[MAP]])
             .map(|p| p.map(PipelineId::from))
             .collect()
     }
@@ -1247,29 +1264,14 @@ impl Terrain {
     /// Whether the pipeline of the terrain's depth alone in the map's
     /// passes ([`MAP`]) or the 3D layers' ([`THREE_D`]) compiled.
     pub(crate) fn depth_ready(&self, gpu: &mut dyn Gpu, at: usize) -> bool {
-        self.depth_pipeline_at(at)
-            .is_some_and(|p| gpu.pipeline_ready(p.into()))
-    }
-
-    /// The pipeline of the terrain's depth alone in the map's passes
-    /// ([`MAP`]) or the 3D layers' ([`THREE_D`]), once made: the map's
-    /// serves both where their attachments are alike.
-    fn depth_pipeline_at(&self, at: usize) -> Option<RenderPipelineId> {
-        let wanted = if at == MAP {
-            Some(self.target)
-        } else {
-            self.three_d
-        };
-        (self.depth_pipelines.iter().flatten())
-            .find(|(made, _)| Some(*made) == wanted)
-            .map(|&(_, p)| p)
+        self.depth_pipelines[at].is_some_and(|p| gpu.pipeline_ready(p.into()))
     }
 
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
-        let depth = self.depth_pipelines.iter().flatten().map(|&(_, p)| p);
-        let made = (self.pipelines.iter().flatten().copied()).chain(depth);
-        made.chain(self.occlusion_pipeline)
-            .map(PipelineId::from)
+        let made = (self.pipelines.iter()).chain(&self.depth_pipelines);
+        made.chain([&self.occlusion_pipeline])
+            .flatten()
+            .map(|&p| PipelineId::from(p))
             .collect()
     }
 
@@ -1285,13 +1287,10 @@ impl Terrain {
         self.layout_state.revision += 1;
     }
 
-    /// Makes the pipeline terrain layers of `kind` draw with, unless it is
-    /// made: over the map, by premultiplied blending, or in place of it
-    /// where they read it.
-    fn pipeline(&mut self, gpu: &mut dyn Gpu, kind: Kind) {
-        if self.pipelines[kind as usize].is_some() {
-            return;
-        }
+    /// The pipeline terrain layers of `kind` draw with in the map's
+    /// passes, as `take` takes it: over the map, by premultiplied
+    /// blending, or in place of it where they read it.
+    fn layer_pipeline(&self, kind: Kind, take: &mut Take<'_>) -> Option<RenderPipelineId> {
         let shaded = [self.layout, self.stack_layout, self.shade_layout];
         let beneath = [
             self.layout,
@@ -1309,7 +1308,7 @@ impl Terrain {
         // and of the pieces of mesh meeting there (a skirt and a
         // neighbour's edge) the first drawn alone: none blends twice.
         let format = self.target.depth.expect("the map's passes have a depth");
-        let pipeline = Draw {
+        take.pipeline(&Draw {
             fragment: (shader, entry),
             depth: Some(DepthState {
                 format,
@@ -1318,27 +1317,14 @@ impl Terrain {
                 once: true,
             }),
             ..Draw::new(shader, layouts, self.target, blend)
-        }
-        .make(gpu);
-        self.pipelines[kind as usize] = Some(pipeline);
+        })
     }
 
-    /// Makes the pipeline of the terrain's depth alone into `target`'s
-    /// passes, the map's ([`MAP`]) or the 3D layers' ([`THREE_D`]), unless
-    /// it is made for them, or for the map's passes where the 3D layers'
-    /// are alike: its fragments add nothing to the colour.
-    fn depth_pipeline(&mut self, gpu: &mut dyn Gpu, at: usize, target: Attachments) {
-        if at == THREE_D {
-            self.three_d = Some(target);
-        }
-        if self.depth_pipelines[at].is_some_and(|(made, _)| made == target) {
-            return;
-        }
-        self.depth_pipelines[at].take().map(|(_, p)| p).release(gpu);
-        if at == THREE_D && target == self.target {
-            return;
-        }
-        let pipeline = Draw {
+    /// The pipeline of the terrain's depth alone into `target`'s passes,
+    /// the map's ([`MAP`]) or the 3D layers' ([`THREE_D`]), as `take`
+    /// takes it: its fragments add nothing to the colour.
+    fn depth_pipeline(&self, target: Attachments, take: &mut Take<'_>) -> Option<RenderPipelineId> {
+        take.pipeline(&Draw {
             label: "terrain depth alone",
             fragment: (&TERRAIN_SHADER, "fs_terrain_hidden"),
             constants: [DEPTH_ALONE, &[]],
@@ -1349,9 +1335,7 @@ impl Terrain {
                 target,
                 Some(BlendState::PremultipliedAlpha),
             )
-        }
-        .make(gpu);
-        self.depth_pipelines[at] = Some((target, pipeline));
+        })
     }
 
     /// This frame's passes before the map: redrawn drape slots (`drape`
@@ -1538,7 +1522,7 @@ impl Terrain {
     /// surface, which every layer's draw then shades once. Nothing while
     /// the terrain can't draw this frame.
     pub(crate) fn depth_commands(&self, at: usize) -> Vec<RenderCommand> {
-        let Some(pipeline) = self.depth_pipeline_at(at).filter(|_| self.drawn.is_some()) else {
+        let Some(pipeline) = self.depth_pipelines[at].filter(|_| self.drawn.is_some()) else {
             return Vec::new();
         };
         let mut commands = vec![RenderCommand::SetPipeline(pipeline)];
@@ -1763,25 +1747,20 @@ impl Terrain {
         self.occlusion.take().release(gpu);
     }
 
-    /// Makes the pipeline of the terrain drawn as its depth, at one
-    /// sample, unless it is made.
-    fn occlusion_pipeline(&mut self, gpu: &mut dyn Gpu) {
-        if self.occlusion_pipeline.is_some() {
-            return;
-        }
+    /// The pipeline of the terrain drawn as its depth, at one sample, as
+    /// `take` takes it.
+    fn occlusion_pipeline(&self, take: &mut Take<'_>) -> Option<RenderPipelineId> {
         let target = TargetFormat {
             color: TextureFormat::R32Float,
             sample_count: 1,
         };
-        let pipeline = Draw {
+        take.pipeline(&Draw {
             label: "terrain depth",
             fragment: (&TERRAIN_SHADER, "fs_terrain_depth"),
             constants: [DEPTH_ALONE, &[]],
             depth: depth_test(TextureFormat::Depth32Float),
             ..Draw::new(&TERRAIN_SHADER, &[self.layout], target, None)
-        }
-        .make(gpu);
-        self.occlusion_pipeline = Some(pipeline);
+        })
     }
 }
 
@@ -1853,13 +1832,10 @@ impl crate::release::Release for Terrain {
         (self.backdrop_layout, backdrops, self.blank).release(gpu);
         let shades: Vec<BindGroupId> = (self.shade_groups.iter().flatten()).map(|s| s.1).collect();
         (self.shade_layout, shades).release(gpu);
-        let depth = self.depth_pipelines.map(|d| d.map(|(_, p)| p));
-        let pipelines = (self.pipelines, depth);
-        let pipelines = (pipelines, self.occlusion_pipeline);
         self.grid.destroy(gpu);
         self.tiles.destroy(gpu);
         let buffers = (self.grid_indices, self.params);
-        (layouts, pipelines, buffers, self.stack_uniforms).release(gpu);
+        (layouts, buffers, self.stack_uniforms).release(gpu);
         (self.stack_groups, self.mip_targets).release(gpu);
     }
 }

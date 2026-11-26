@@ -5,7 +5,7 @@
 //! horizon: a line on flat surfaces, a sphere on the globe. Style values
 //! are written only when they or the view change.
 
-use crate::pipeline::{Attachments, Draw};
+use crate::pipeline::{Attachments, Cache, Draw};
 use orb_hal::*;
 use orb_shaders::{SCATTER_SHADER, SKY_SHADER, Shader};
 
@@ -71,15 +71,12 @@ pub(crate) struct Atmosphere {
     /// The layout and group the sky and the scattering share, made for the
     /// first of them.
     group: Option<(BindGroupLayoutId, BindGroupId)>,
-    /// The sky's pipeline, made for the first sky.
+    /// The sky's pipeline in the map's passes, made for the first sky.
     sky: Option<RenderPipelineId>,
-    /// The globe's scattering pipeline and its sunward table, made for the
-    /// first globe sky.
+    /// The globe's scattering pipeline in them and its sunward table, made
+    /// for the first globe sky.
     scatter: Option<RenderPipelineId>,
     sunward: Option<Sunward>,
-    /// The sky's and the scattering's pipelines for the map's other kind
-    /// of pass ([`swap_target`](Self::swap_target)).
-    kept: [Option<RenderPipelineId>; 2],
     scatter_blend: f32,
     written: Option<(Option<AtmospherePaint>, AtmosphereView)>,
     pub(crate) enabled: bool,
@@ -98,7 +95,6 @@ impl Atmosphere {
             sky: None,
             scatter: None,
             sunward: None,
-            kept: [None; 2],
             scatter_blend: 0.0,
             written: None,
             enabled: false,
@@ -115,19 +111,15 @@ impl Atmosphere {
             .collect()
     }
 
-    /// Lets the pipelines kept for the other kind of pass go: they were
-    /// made for passes the map's no longer are.
-    pub(crate) fn forget_kept(&mut self, gpu: &mut dyn Gpu) {
-        use crate::release::Release;
-        std::mem::take(&mut self.kept).release(gpu);
-    }
-
-    /// Draws into the map's passes with or without their depth from now
-    /// on: its pipelines for the other kind, kept since it last drew into
-    /// those, take the place of these, which are kept in turn.
-    pub(crate) fn swap_target(&mut self) {
-        let current = [self.sky, self.scatter];
-        [self.sky, self.scatter] = std::mem::replace(&mut self.kept, current);
+    /// Draws into the map's passes as `target` from now on: with the
+    /// pipelines made for them before, if any.
+    pub(crate) fn retarget(&mut self, cache: &Cache, target: Attachments) {
+        let Some((layout, _)) = self.group else {
+            return;
+        };
+        self.sky = cache.get(&draw(&SKY_SHADER, &[layout], target));
+        self.scatter = (self.sunward.as_ref())
+            .and_then(|s| cache.get(&draw(&SCATTER_SHADER, &[layout, s.layout], target)));
     }
 
     /// Asks for the sky's pipeline unless it is made, and for the globe's
@@ -136,7 +128,7 @@ impl Atmosphere {
     /// (`globe`): the pipeline set's for a style with a sky.
     pub(crate) fn request(
         &mut self,
-        gpu: &mut dyn Gpu,
+        (gpu, cache): (&mut dyn Gpu, &mut Cache),
         (target, full_projection): (Attachments, bool),
         frame: BufferId,
         globe: bool,
@@ -145,15 +137,14 @@ impl Atmosphere {
         let (layout, _) = *self
             .group
             .get_or_insert_with(|| sky_group(gpu, frame, uniform));
-        let blend = Some(BlendState::PremultipliedAlpha);
         if self.sky.is_none() {
-            self.sky = Some(pipeline(gpu, &SKY_SHADER, target, &[layout], blend));
+            self.sky = Some(cache.get_or_make(gpu, &draw(&SKY_SHADER, &[layout], target)));
         }
         if self.scatter.is_none() && (globe || full_projection) {
             let sunward = self.sunward.get_or_insert_with(|| Sunward::new(gpu));
             gpu.set_background_compiles(!globe);
             let layouts = [layout, sunward.layout];
-            let scatter = pipeline(gpu, &SCATTER_SHADER, target, &layouts, blend);
+            let scatter = cache.get_or_make(gpu, &draw(&SCATTER_SHADER, &layouts, target));
             gpu.set_background_compiles(false);
             self.scatter = Some(scatter);
         }
@@ -163,7 +154,7 @@ impl Atmosphere {
     /// no fog. A sky the pipeline set left out asks for its pipelines.
     pub(crate) fn set(
         &mut self,
-        gpu: &mut dyn Gpu,
+        (gpu, cache): (&mut dyn Gpu, &mut Cache),
         target: (Attachments, bool),
         frame: BufferId,
         paint: Option<AtmospherePaint>,
@@ -171,7 +162,7 @@ impl Atmosphere {
     ) {
         self.enabled = paint.is_some();
         if self.enabled {
-            self.request(gpu, target, frame, view.globe.is_some());
+            self.request((gpu, cache), target, frame, view.globe.is_some());
         }
         if self.written == Some((paint, view)) {
             return;
@@ -289,19 +280,20 @@ fn sky_group(
     (layout, group)
 }
 
-fn pipeline(
-    gpu: &mut dyn Gpu,
-    shader: &Shader,
-    target: Attachments,
-    layouts: &[BindGroupLayoutId],
-    blend: Option<BlendState>,
-) -> RenderPipelineId {
-    Draw::new(shader, layouts, target, blend).make(gpu)
+/// The sky's or the scattering's pipeline into `target`: each draws over
+/// what's there.
+fn draw<'a>(shader: &'a Shader, layouts: &'a [BindGroupLayoutId], target: Attachments) -> Draw<'a> {
+    Draw::new(
+        shader,
+        layouts,
+        target,
+        Some(BlendState::PremultipliedAlpha),
+    )
 }
 
 impl crate::release::Release for Atmosphere {
     fn release(self, gpu: &mut dyn Gpu) {
-        (self.uniform, self.group, self.sky, self.scatter, self.kept).release(gpu);
+        (self.uniform, self.group).release(gpu);
         if let Some(s) = self.sunward {
             (s.table, s.sampler, s.layout, s.group).release(gpu);
         }
