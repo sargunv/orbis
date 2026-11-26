@@ -7,6 +7,7 @@ pub mod android;
 mod cache;
 mod connect;
 mod fonts;
+mod http;
 mod storage;
 
 use std::sync::Arc;
@@ -182,7 +183,7 @@ impl NativeFetch {
         if let Some(path) = url.strip_prefix("file://") {
             return Ok(read_file(path, range));
         }
-        let cacheable = orb_host::cache::cacheable(url);
+        let cacheable = http::cacheable(url);
         if !cacheable && !hooked {
             return Ok(Err(FetchError::UnsupportedUrl(url.to_string())));
         }
@@ -429,8 +430,8 @@ fn http(
     let (cache_control, expires, date) =
         (header("cache-control"), header("expires"), header("date"));
     let (etag, last_modified) = (header("etag"), header("last-modified"));
-    let fresh_until = orb_host::cache::fresh_until(
-        orb_host::cache::Headers {
+    let fresh_until = http::fresh_until(
+        http::Headers {
             cache_control: cache_control.as_deref(),
             expires: expires.as_deref(),
             date: date.as_deref(),
@@ -605,7 +606,7 @@ impl NativeFetch {
                 modified: c
                     .last_modified
                     .as_deref()
-                    .and_then(orb_host::cache::http_date),
+                    .and_then(|date| http::http_date(date, cache::now())),
                 bytes: c.bytes.clone(),
             });
             let network = NetworkRequest {
@@ -629,7 +630,7 @@ impl NativeFetch {
                             bytes,
                             fresh_until,
                             etag,
-                            last_modified: modified.map(orb_host::cache::format_http_date),
+                            last_modified: modified.map(http::format_http_date),
                         }),
                         NetworkAnswer::NotModified { fresh_until } => {
                             Ok(Response::NotModified { fresh_until })
@@ -649,7 +650,7 @@ impl NativeFetch {
                                             etag: None,
                                             last_modified: None,
                                         })
-                                    } else if orb_host::cache::cacheable(&request.url) {
+                                    } else if http::cacheable(&request.url) {
                                         let validators = cached.as_ref().map(|c| {
                                             (c.etag.as_deref(), c.last_modified.as_deref())
                                         });
