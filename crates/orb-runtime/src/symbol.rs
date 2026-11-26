@@ -961,13 +961,14 @@ pub struct SymbolMeta {
     pub ancestor_scale: u32,
 }
 
-/// A symbol layer's share of a finished tile: its bucket's tables as word
-/// streams, the glyph keys its quads name by tile-local glyph id, and its
-/// images by tile-local index.
+/// A group of symbol layers' share of a finished tile: their bucket's
+/// tables as word streams, the glyph keys its quads name by tile-local
+/// glyph id, and its images by tile-local index.
 #[derive(Debug, orb_wire::Wire)]
 pub struct ResultSymbols {
-    /// The layer's key.
-    pub layer: u32,
+    /// The keys of the layers that lay out alike and share the bucket,
+    /// leader first.
+    pub layers: Vec<u32>,
     pub meta: SymbolMeta,
     pub tables: [crate::jobs::Stream; SYMBOL_TABLES],
     /// By glyph id; `None` for requests nothing could draw.
@@ -982,9 +983,13 @@ impl ResultSymbols {
         &self.tables[table as usize]
     }
 
-    /// The layer's tables, laid into the tile's `arena` as placement reads
+    /// The bucket's tables, laid into the tile's `arena` as placement reads
     /// them.
-    pub(crate) fn new(layer: u32, build: &SymbolBuild, arena: &mut crate::jobs::Arena) -> Self {
+    pub(crate) fn new(
+        layers: Vec<u32>,
+        build: &SymbolBuild,
+        arena: &mut crate::jobs::Arena,
+    ) -> Self {
         let b = &build.bucket;
         let tables = [
             arena.push_pod(&b.instances),
@@ -1003,7 +1008,7 @@ impl ResultSymbols {
             arena.push_pod(&build.name_bytes),
         ];
         Self {
-            layer,
+            layers,
             meta: SymbolMeta {
                 text_size: b.text_size,
                 icon_size: b.icon_size,

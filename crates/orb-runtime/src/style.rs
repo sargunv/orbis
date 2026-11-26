@@ -520,6 +520,39 @@ impl StylePlan {
         self.nodes.iter().position(|n| n.key == key)
     }
 
+    /// The keys of the layers that lay out alike with layer `layer`
+    /// ([`StylePlan::layout_leaders`]), its leader first: a symbol layer's
+    /// group shares one bucket, which the leader lays out and places.
+    pub(crate) fn layout_group(&self, layer: usize) -> Vec<u32> {
+        let leader = self.layout_leaders[layer].unwrap_or(layer);
+        (leader..self.layout_leaders.len())
+            .filter(|&i| i == leader || self.layout_leaders[i] == Some(leader))
+            .map(|i| self.layer_keys[i])
+            .collect()
+    }
+
+    /// `nodes` (keys) with every other node of their symbol layers'
+    /// groups ([`StylePlan::layout_group`]): a group's bucket lays out
+    /// for all of its layers at once.
+    pub(crate) fn with_layout_groups(&self, nodes: &[u32]) -> Vec<u32> {
+        let mut all = nodes.to_vec();
+        for &key in nodes {
+            let Some(node) = self.node(key).map(|i| &self.nodes[i]) else {
+                continue;
+            };
+            if !node.family.is_symbol() {
+                continue;
+            }
+            for layer in self.layout_group(node.layer) {
+                all.extend((0..LAYER_NODES).map(|n| node_key(layer, n)));
+            }
+        }
+        all.retain(|&key| self.node(key).is_some());
+        all.sort_unstable();
+        all.dedup();
+        all
+    }
+
     /// The index of the terrain's DEM source and its exaggeration.
     pub(crate) fn terrain(&self) -> Option<(usize, f64)> {
         let terrain = self.style.terrain.as_ref()?;

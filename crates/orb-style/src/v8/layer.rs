@@ -678,10 +678,13 @@ fn targets(cx: &mut Cx, json: &Json, path: &str, ty: LayerType) -> Targets {
 
 /// A hash of what GL JS's `groupByLayout` keys a layer by: its type,
 /// source, source layer, zoom range, filter and layout, objects compared
-/// whatever their key order.
+/// whatever their key order. Visibility aside: a hidden layer still lays
+/// out here, so showing or hiding one leaves its group as it was.
 fn layout_group(layer: &Json) -> u64 {
     use std::hash::{Hash, Hasher};
-    fn hash(json: Option<&Json>, h: &mut impl Hasher) {
+    /// `skip`: a key of `json`'s own members left out. An object with no
+    /// other members is none at all, as a missing layout is an empty one.
+    fn hash(json: Option<&Json>, skip: &str, h: &mut impl Hasher) {
         let Some(json) = json else {
             return 0u8.hash(h);
         };
@@ -693,17 +696,21 @@ fn layout_group(layer: &Json) -> u64 {
             JsonValue::Array(items) => {
                 (5u8, items.len()).hash(h);
                 for item in items {
-                    hash(Some(item), h);
+                    hash(Some(item), "", h);
                 }
             }
             JsonValue::Object(members) => {
                 let mut keys: Vec<&str> = members.iter().map(|m| m.key.as_str()).collect();
+                keys.retain(|&k| k != skip);
+                if keys.is_empty() {
+                    return 0u8.hash(h);
+                }
                 keys.sort_unstable();
                 keys.dedup();
                 (6u8, keys.len()).hash(h);
                 for key in keys {
                     key.hash(h);
-                    hash(json.get(key), h);
+                    hash(json.get(key), "", h);
                 }
             }
         }
@@ -718,7 +725,8 @@ fn layout_group(layer: &Json) -> u64 {
         "filter",
         "layout",
     ] {
-        hash(layer.get(key), &mut h);
+        let skip = if key == "layout" { "visibility" } else { "" };
+        hash(layer.get(key), skip, &mut h);
     }
     h.finish()
 }

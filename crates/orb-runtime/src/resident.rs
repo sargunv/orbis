@@ -212,8 +212,8 @@ pub(crate) fn ready_source(
 }
 
 /// Drops a result's meshes and symbol buckets of nodes no longer planned
-/// or laid out since (`stale`, by key); a symbol layer's bucket goes with
-/// its nodes.
+/// or laid out since (`stale`, by key); a symbol bucket goes with any of
+/// its layers' nodes.
 pub(crate) fn drop_stale(build: &mut TileResult, plan: &StylePlan, stale: &[u32]) {
     let keep: Vec<bool> = (build.meshes.iter())
         .map(|m| plan.node(m.node).is_some() && !stale.contains(&m.node))
@@ -260,11 +260,10 @@ pub(crate) fn drop_stale(build: &mut TileResult, plan: &StylePlan, stale: &[u32]
     let mut keep = keep.into_iter();
     build.meshes.retain(|_| keep.next().expect("one per mesh"));
     build.symbols.retain(|s| {
-        let keys = [
-            crate::style::node_key(s.layer, 0),
-            crate::style::node_key(s.layer, 1),
-        ];
-        plan.node(keys[0]).is_some() && !keys.iter().any(|k| stale.contains(k))
+        s.layers.iter().all(|&layer| {
+            let keys = [0, 1].map(|n| crate::style::node_key(layer, n));
+            plan.node(keys[0]).is_some() && !keys.iter().any(|k| stale.contains(k))
+        })
     });
 }
 

@@ -492,17 +492,22 @@ impl Map {
                     Some(series) => series.linear(orb_symbol::EXTENT),
                     None => tms.data_to_world(tile, orb_symbol::EXTENT as u32),
                 };
+                // Each layer of a group draws its shared bucket, which the
+                // first places.
                 for symbols in &resident.symbols {
-                    for &wrap in &wraps {
-                        style.symbol_tiles.push(crate::labels::SymbolTile {
-                            to_world,
-                            layer: symbols.layer,
-                            bucket: symbols.bucket,
-                            tile,
-                            wrap,
-                            mercator: on_mercator && resident.series.is_none(),
-                            globe: globe.clone(),
-                        });
+                    for (i, &layer) in symbols.layers.iter().enumerate() {
+                        for &wrap in &wraps {
+                            style.symbol_tiles.push(crate::labels::SymbolTile {
+                                to_world,
+                                layer,
+                                bucket: symbols.bucket,
+                                places: i == 0,
+                                tile,
+                                wrap,
+                                mercator: on_mercator && resident.series.is_none(),
+                                globe: globe.clone(),
+                            });
+                        }
                     }
                 }
             }
@@ -1956,7 +1961,7 @@ impl Unbounded {
     /// The highest these stand in `tile`, as it laid out, style metres.
     fn tallest(&self, tile: &ResidentTile) -> f32 {
         let labels = (tile.symbols.iter())
-            .filter(|s| self.labels.contains(&s.layer))
+            .filter(|s| s.layers.iter().any(|l| self.labels.contains(l)))
             .map(|s| s.max_height_offset as f32);
         // An extrusion's paint slots: colour, height, base.
         let extrusions = tile.meshes.iter().flat_map(|m| {

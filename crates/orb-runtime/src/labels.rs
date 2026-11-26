@@ -35,12 +35,13 @@ const _: () = {
 /// Buckets dropped since the last frame, with the glyph rows they held.
 type Retired = Arc<Mutex<Vec<(u64, Vec<u32>)>>>;
 
-/// A symbol layer's bucket of a resident tile. Dropping it hands its glyph
-/// rows and placement bucket back, however the tile leaves the scene.
+/// The bucket a resident tile holds for a group of symbol layers that lay
+/// out alike. Dropping it hands its glyph rows and placement bucket back,
+/// however the tile leaves the scene.
 #[derive(Debug)]
 pub(crate) struct ResidentSymbols {
-    /// The layer's key.
-    pub(crate) layer: u32,
+    /// The keys of the layers that draw it, leader first.
+    pub(crate) layers: Vec<u32>,
     pub(crate) bucket: u64,
     /// The largest `symbol-height-offset` its labels lift by, metres.
     pub(crate) max_height_offset: f64,
@@ -55,6 +56,36 @@ impl Drop for ResidentSymbols {
             retired.push((self.bucket, rows));
         }
     }
+}
+
+/// Drops the buckets `resident` holds that any of `layers` draws, with the
+/// symbol meshes of `layers` and of every layer that draws those buckets:
+/// a bucket's meshes draw its glyph rows and take its states, so none
+/// outlives it.
+pub(crate) fn drop_symbols(
+    renderer: &mut Renderer,
+    resident: &mut ResidentTile,
+    states: &mut FeatureStates,
+    layers: &[u32],
+) {
+    let mut gone = layers.to_vec();
+    resident.symbols.retain(|s| {
+        let drop = s.layers.iter().any(|l| layers.contains(l));
+        if drop {
+            gone.extend_from_slice(&s.layers);
+        }
+        !drop
+    });
+    resident.meshes.retain(|m| {
+        if !gone.contains(&crate::style::layer_key(m.node)) {
+            return true;
+        }
+        renderer.remove_mesh(resident.gpu, m.mesh);
+        for &index in &m.states {
+            states.release(index);
+        }
+        false
+    });
 }
 
 /// A glyph as leases know it: its key and, for PBF glyphs, the style's
@@ -185,12 +216,12 @@ fn same_inputs(a: &orb_symbol::Frame, b: &orb_symbol::Frame) -> bool {
 /// Per bucket, the world copies a placement draws.
 type WorldCopies = HashMap<u64, Vec<i32>>;
 
-/// A resident bucket: the meshes its states go to, and what its text
-/// size is evaluated from.
+/// A resident bucket: the meshes its states go to, one of each kind per
+/// layer that draws it, and what its text size is evaluated from.
 #[derive(Clone, Debug, Default)]
 struct BucketMeshes {
-    text: Option<MeshId>,
-    icon: Option<MeshId>,
+    text: Vec<MeshId>,
+    icon: Vec<MeshId>,
     text_size: SizeKind,
     tile_zoom: f64,
     /// The states last written, per drawn world copy, to write again when
@@ -209,14 +240,15 @@ struct BucketMeshes {
 impl BucketMeshes {
     fn write(&self, gpu: &mut dyn Gpu, renderer: &mut Renderer, wrap: i32) {
         let states = &self.written[&wrap];
-        for (mesh, words, order) in [
-            (self.text, &states.text, &states.text_order),
-            (self.icon, &states.icon, &states.icon_order),
+        for (meshes, words, order) in [
+            (&self.text, &states.text, &states.text_order),
+            (&self.icon, &states.icon, &states.icon_order),
         ] {
-            let Some(mesh) = mesh else { continue };
-            renderer.write_symbol_states(gpu, mesh, wrap, words);
-            if !order.is_empty() {
-                renderer.write_symbol_order(gpu, mesh, order);
+            for &mesh in meshes {
+                renderer.write_symbol_states(gpu, mesh, wrap, words);
+                if !order.is_empty() {
+                    renderer.write_symbol_order(gpu, mesh, order);
+                }
             }
         }
     }
@@ -241,6 +273,10 @@ pub(crate) struct SymbolTile {
     /// The layer's key.
     pub(crate) layer: u32,
     pub(crate) bucket: u64,
+    /// The layer places the bucket for every layer that draws it: it is
+    /// the first of them as the bucket was laid out
+    /// ([`orb_symbol::PlacedTile::places`]).
+    pub(crate) places: bool,
     pub(crate) tile: orb_crs::TileIndex,
     pub(crate) wrap: i32,
     /// The tile is a Web Mercator tile drawn whole (not warped), so
@@ -330,7 +366,6 @@ fn layer_params(
     };
     orb_symbol::LayerParams {
         layer: crate::style::layer_key(node.key),
-        follows: plan.layout_leaders[node.layer].map(|leader| plan.layer_keys[leader]),
         source: plan.sources[node.source].key,
         minzoom: layer.minzoom,
         maxzoom: if layer.maxzoom.is_finite() {
@@ -714,8 +749,8 @@ impl Labels {
         }
     }
 
-    /// Uploads a tile's symbol layers into `resident`, replacing what it held
-    /// of those layers, and gives their buckets to the placement lane.
+    /// Uploads a tile's symbol buckets into `resident`, replacing what it
+    /// held of their layers, and gives them to the placement lane.
     /// `reloaded`: the tile was laid out again (a data or style change), so
     /// its labels show without fading in the first time they are placed
     /// (GL JS's and MapLibre Native's `justReloaded`); a tile's first load
@@ -758,23 +793,17 @@ impl Labels {
         tile_zoom: f64,
         reloaded: bool,
     ) -> Result<(), OutOfSpace> {
-        let (icon_key, text_key) = (
-            crate::style::node_key(s.layer, 0),
-            crate::style::node_key(s.layer, 1),
-        );
-        // What the tile held of the layer goes.
-        resident.symbols.retain(|r| r.layer != s.layer);
-        resident.meshes.retain(|m| {
-            if m.node == icon_key || m.node == text_key {
-                renderer.remove_mesh(resident.gpu, m.mesh);
-                for &index in &m.states {
-                    states.release(index);
-                }
-                false
-            } else {
-                true
-            }
-        });
+        let node_keys = |layer: u32| {
+            (
+                crate::style::node_key(layer, 0),
+                crate::style::node_key(layer, 1),
+            )
+        };
+        let is_text = |key: u32| key == crate::style::node_key(crate::style::layer_key(key), 1);
+        // What the tile held of the layers goes.
+        drop_symbols(renderer, resident, states, &s.layers);
+        // The leader's layout is the group's.
+        let (icon_key, text_key) = node_keys(s.layers[0]);
         let Some(icon_node) = plan.node(icon_key) else {
             return Ok(());
         };
@@ -813,7 +842,7 @@ impl Labels {
         // The leases' owner from the start: if an upload below fails, it
         // drops, and the next `retire` hands the rows back.
         let owner = ResidentSymbols {
-            layer: s.layer,
+            layers: s.layers.clone(),
             bucket: self.next_bucket,
             max_height_offset: s.meta.max_height_offset,
             rows: s
@@ -886,24 +915,28 @@ impl Labels {
         }
 
         let mut meshes = BucketMeshes::default();
-        let streams = [
-            (
-                text_key,
-                &text_placed,
-                SymbolTable::TextQuads,
-                SymbolTable::TextGlyphOffsets,
-                text_params,
-                &[][..],
-            ),
-            (
-                icon_key,
-                &icon_placed,
-                SymbolTable::IconQuads,
-                SymbolTable::IconGlyphOffsets,
-                icon_params,
-                &icon_text_sizes[..],
-            ),
-        ];
+        // Each layer draws the bucket with its own rows.
+        let streams = s.layers.iter().flat_map(|&layer| {
+            let (icon_key, text_key) = node_keys(layer);
+            [
+                (
+                    text_key,
+                    &text_placed,
+                    SymbolTable::TextQuads,
+                    SymbolTable::TextGlyphOffsets,
+                    text_params,
+                    &[][..],
+                ),
+                (
+                    icon_key,
+                    &icon_placed,
+                    SymbolTable::IconQuads,
+                    SymbolTable::IconGlyphOffsets,
+                    icon_params,
+                    &icon_text_sizes[..],
+                ),
+            ]
+        });
         // Each stream's chunks and placed symbols' quads, then their rows'
         // states: they go up together, in one block of the scene.
         let (mut pending, mut pending_rows) = (Vec::new(), Vec::new());
@@ -934,7 +967,7 @@ impl Labels {
             let rows_mesh = result.meshes.iter().find(|m| m.node == key);
             let placed_quads: Vec<[u32; 2]> = placed.iter().map(|p| p.quads).collect();
             debug_assert_eq!(
-                s.table(if key == text_key {
+                s.table(if is_text(key) {
                     SymbolTable::TextPlaced
                 } else {
                     SymbolTable::IconPlaced
@@ -978,7 +1011,7 @@ impl Labels {
                     (key, _, chunks, placed_quads, (quads_words, offsets), params),
                     (rows_mesh, _, text_sizes),
                 )| {
-                    let text = *key == text_key;
+                    let text = is_text(*key);
                     SymbolMeshData {
                         quads: *quads_words,
                         placed: s
@@ -1033,15 +1066,15 @@ impl Labels {
                 states: indices,
                 maxima: Vec::new(),
             });
-            if key == text_key {
-                meshes.text = Some(mesh);
+            if is_text(key) {
+                meshes.text.push(mesh);
             } else {
-                meshes.icon = Some(mesh);
+                meshes.icon.push(mesh);
             }
         }
 
         // Beyond the spec, each symbol's own translates, which end its
-        // feature's rows.
+        // feature's rows: the leader's, as it places for the group.
         let translates = [text_key, icon_key].map(|key| {
             let Some(node) = plan.node(key).map(|i| &plan.nodes[i]) else {
                 return Vec::new();
@@ -1277,7 +1310,7 @@ impl Labels {
                 .map_or(1, |(max, min)| (max - min + 1) as u32)
                 .next_power_of_two();
             let mut rewrite = false;
-            for mesh in [meshes.text, meshes.icon].into_iter().flatten() {
+            for &mesh in meshes.text.iter().chain(&meshes.icon) {
                 if renderer.symbol_copies(mesh) < copies {
                     // Out of memory: copies keep sharing their words.
                     rewrite |= renderer.set_symbol_copies(gpu, mesh, copies).is_ok();
@@ -1492,10 +1525,10 @@ impl Labels {
                             a.translation.y,
                         ) - camera_world;
                         // The filter's camera conditions, which the
-                        // layer that places for its group decides.
+                        // layer that places the bucket decides.
                         let filter = (symbol.filter.as_ref())
                             .and_then(|f| f.camera())
-                            .filter(|_| plan.layout_leaders[node.layer].is_none());
+                            .filter(|_| t.places);
                         let filtered = filter.map_or_else(Vec::new, |filter| {
                             let center = |anchor: [i16; 2]| {
                                 let p =
@@ -1541,6 +1574,7 @@ impl Labels {
                             translate_t: [orb_style::TEXT_PART, orb_style::ICON_PART]
                                 .map(|part| translate_t(symbol, part, b.tile_zoom, zoom)),
                             filtered,
+                            places: t.places,
                         })
                     })
                     .collect();
@@ -2054,6 +2088,7 @@ mod tests {
                 text_size: orb_symbol::ZoomSize::default(),
                 translate_t: [0.0; 2],
                 filtered: Vec::new(),
+                places: true,
             };
             let camera = orb_style::CameraInputs {
                 pitch: 0.0,
@@ -2159,7 +2194,7 @@ mod tests {
         h.labels.invalidate();
         let commit = h.commit(bucket, &[0, 1]);
         h.labels.committed(&mut h.gpu, &mut h.renderer, commit);
-        let mesh = h.labels.buckets[&bucket].text.expect("a text mesh");
+        let mesh = h.labels.buckets[&bucket].text[0];
         assert_eq!(h.renderer.symbol_copies(mesh), 2);
     }
 

@@ -670,7 +670,8 @@ impl From<TileBuild> for TileResult {
         let hit_geometry: Vec<_> = build.hits.into_iter().map(|(_, g)| Arc::new(g)).collect();
         let shares = share_geometry(&build.meshes);
         let symbol_nodes: Vec<u32> = (build.symbols.iter())
-            .flat_map(|(layer, _)| [0, 1].map(|n| crate::style::node_key(*layer, n)))
+            .flat_map(|(layers, _)| layers)
+            .flat_map(|&layer| [0, 1].map(|n| crate::style::node_key(layer, n)))
             .collect();
         let mut arena = Arena::default();
         let mesh_words: usize = (build.meshes.iter())
@@ -694,7 +695,7 @@ impl From<TileBuild> for TileResult {
             }
         }
         let symbols = (build.symbols.iter())
-            .map(|(layer, s)| ResultSymbols::new(*layer, s, &mut arena))
+            .map(|(layers, s)| ResultSymbols::new(layers.clone(), s, &mut arena))
             .collect();
         let mut result = Self {
             meshes: (build.meshes.into_iter().zip(streams).zip(shares))

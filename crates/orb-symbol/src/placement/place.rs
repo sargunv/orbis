@@ -66,11 +66,6 @@ impl PlacementTables {
 pub struct LayerParams {
     /// The layer's key.
     pub layer: u32,
-    /// An earlier layer that lays out the same symbols, which places them
-    /// for both, as GL JS and Native place a bucket for the first of the
-    /// layers it groups: this layer's symbols show where that layer's do,
-    /// rather than colliding with them.
-    pub follows: Option<u32>,
     /// Its source: symbols of different sources collide only with
     /// `crossSourceCollisions`.
     pub source: u32,
@@ -250,6 +245,12 @@ pub struct PlacedTile {
     /// camera: they aren't placed, so they neither show nor collide.
     /// Empty when it rejects none.
     pub filtered: Vec<u64>,
+    /// This layer places the bucket. Layers that lay out alike draw one
+    /// bucket, which the first of them places for all, as GL JS and
+    /// Native place a bucket for the first of the layers it groups; the
+    /// others draw the states it commits, so their symbols show where its
+    /// do. The bucket says which layer that is, as it was laid out.
+    pub places: bool,
 }
 
 impl PlacedTile {
@@ -687,7 +688,8 @@ fn quads(placed: &[PlacedSymbol], index: u32) -> u32 {
 
 /// The text's and icon's `*-translate` of instance `index` of a tile's
 /// tables: pixels, and whether each turns with the viewport. The layer's,
-/// or beyond the spec the instance's own.
+/// or beyond the spec the instance's own, which the tables hold for the
+/// layer that places them alone.
 pub fn label_translates(
     params: &LayerParams,
     tile: &PlacedTile,
@@ -697,7 +699,9 @@ pub fn label_translates(
     let layer = [params.text_translate, params.icon_translate];
     [0, 1].map(|part| {
         let (px, viewport) = layer[part];
-        let own = tables.own_translate(part, index, tile.translate_t[part]);
+        let own = (tile.places)
+            .then(|| tables.own_translate(part, index, tile.translate_t[part]))
+            .flatten();
         (own.unwrap_or(px), viewport)
     })
 }
@@ -819,12 +823,13 @@ impl Placer {
         let dropped = self.update_copies(frame);
         let camera = &frame.camera;
         let layers = self.drawn(&frame.layers);
-        // Each layer's copies lend the index their ids.
+        // Each layer's copies of the buckets it places lend the index
+        // their ids.
         let mut lent = Vec::new();
         let mut keys = HashSet::default();
         for (params, tiles) in &layers {
             keys.clear();
-            for t in tiles {
+            for t in tiles.iter().filter(|t| t.places) {
                 // Each copy appears once per layer.
                 if !keys.insert(copy_key(t)) {
                     continue;
@@ -851,7 +856,7 @@ impl Placer {
         let handed_over = handed_over(dropped, self.buckets.values());
 
         let ground = frame.ground.as_ref().map(|g| &*g.0);
-        let mut placed = match &frame.scope {
+        let placed = match &frame.scope {
             Scope::Tiles(tiles) => self.place_tiles(frame, tiles),
             Scope::Viewport | Scope::Still => {
                 let mut placer = Pass::new(camera, self.prev.as_ref(), ground);
@@ -860,7 +865,6 @@ impl Placer {
                 placer.now
             }
         };
-        self.follow(&layers, &mut placed);
         let mut now = commit(
             placed,
             self.prev.as_ref(),
@@ -872,7 +876,7 @@ impl Placer {
         let mut changed = Vec::new();
         for (params, tiles) in &layers {
             let mut seen = HashSet::default();
-            for t in tiles {
+            for t in tiles.iter().filter(|t| t.places) {
                 let b = self.buckets.get_mut(&copy_key(t)).expect("filtered above");
                 b.just_reloaded = false;
                 self.placed.insert(t.bucket);
@@ -894,34 +898,6 @@ impl Placer {
         };
         self.prev = Some(now);
         committed
-    }
-
-    /// Gives each symbol of a layer that follows another (see
-    /// [`LayerParams::follows`]) the placement of the same symbol of that
-    /// layer's bucket for the same tile.
-    fn follow(&self, layers: &[(LayerParams, Vec<PlacedTile>)], now: &mut Placements) {
-        for (params, tiles) in layers {
-            let Some(leader) = params.follows else {
-                continue;
-            };
-            let Some((_, leader_tiles)) = layers.iter().find(|(p, _)| p.layer == leader) else {
-                continue;
-            };
-            for t in tiles {
-                let Some(l) = leader_tiles.iter().find(|l| l.view.id == t.view.id) else {
-                    continue;
-                };
-                let (from, to) = (&self.buckets[&copy_key(l)], &self.buckets[&copy_key(t)]);
-                if from.ids.len() != to.ids.len() {
-                    continue;
-                }
-                for (&from, &to) in from.ids.iter().zip(&to.ids) {
-                    if let Some(&p) = now.get(&from) {
-                        now.insert(to, p);
-                    }
-                }
-            }
-        }
     }
 
     /// Tile scope (see [`Scope::Tiles`]): each tile's own placement, then
@@ -1055,8 +1031,7 @@ impl<'a> Pass<'a> {
     ) {
         for (rank, (params, tiles)) in layers.iter().rev().enumerate() {
             let zoom = self.camera.zoom;
-            if params.follows.is_some()
-                || (params.minzoom != 0.0 && params.minzoom > zoom)
+            if (params.minzoom != 0.0 && params.minzoom > zoom)
                 || (params.maxzoom != 0.0 && params.maxzoom <= zoom)
             {
                 continue;
@@ -1064,7 +1039,7 @@ impl<'a> Pass<'a> {
             self.layer = rank as u32;
             let group = (!cross_source_collisions).then_some(params.source);
             let mut parts: Vec<Part<'_>> = Vec::new();
-            for t in tiles {
+            for t in tiles.iter().filter(|t| t.places) {
                 let b = &buckets[&copy_key(t)];
                 if params.sort_across_tiles {
                     for r in &b.tables.sort_key_ranges {
@@ -1916,7 +1891,6 @@ mod tests {
     fn params(layer: u32) -> LayerParams {
         LayerParams {
             layer,
-            follows: None,
             source: 1,
             minzoom: 0.0,
             maxzoom: 0.0,
@@ -1980,6 +1954,7 @@ mod tests {
             text_size: ZoomSize { size: 16.0, t: 0.0 },
             translate_t: [0.0; 2],
             filtered: Vec::new(),
+            places: true,
         }
     }
 
@@ -2203,37 +2178,37 @@ mod tests {
 
     #[test]
     fn layers_that_lay_out_alike_place_together() {
-        // Layer 9 lays out what layer 8 does (a second label colour, say):
-        // its labels show with layer 8's rather than colliding with them,
-        // and the one layer 10 above hides in layer 8 hides in layer 9.
-        let mut placer = Placer::default();
-        placer.ingest(1, labels(&[(1, [4096, 4096]), (2, [6000, 6000])]));
-        placer.ingest(2, labels(&[(3, [4096, 4096]), (4, [6000, 6000])]));
-        placer.ingest(3, labels(&[(5, [6004, 6000])]));
-        let c = placer.place(&frame(
-            vec![
-                LayerFrame {
-                    params: params(8),
-                    tiles: vec![tile(1, 0)],
-                },
-                LayerFrame {
-                    params: LayerParams {
-                        follows: Some(8),
-                        ..params(9)
-                    },
-                    tiles: vec![tile(2, 0)],
-                },
-                LayerFrame {
-                    params: params(10),
-                    tiles: vec![tile(3, 0)],
-                },
-            ],
-            0.0,
-            0.0,
-        ));
-        let by = |b: u64| &c.changed.iter().find(|(id, _, _)| *id == b).unwrap().2;
-        assert!(shown(word(by(1), 0)) && shown(word(by(2), 0)));
-        assert!(!shown(word(by(1), 1)) && !shown(word(by(2), 1)));
+        // Layer 9 lays out what layer 8 does (a second label colour, say)
+        // and draws its bucket: its labels show with layer 8's rather than
+        // colliding with them, and the one layer 10 above hides in layer 8
+        // hides in layer 9, as if layer 9 weren't there.
+        let place = |follower: bool| {
+            let mut placer = Placer::default();
+            placer.ingest(1, labels(&[(1, [4096, 4096]), (2, [6000, 6000])]));
+            placer.ingest(3, labels(&[(5, [6004, 6000])]));
+            let mut layers = vec![LayerFrame {
+                params: params(8),
+                tiles: vec![tile(1, 0)],
+            }];
+            if follower {
+                layers.push(LayerFrame {
+                    params: params(9),
+                    tiles: vec![PlacedTile {
+                        places: false,
+                        ..tile(1, 0)
+                    }],
+                });
+            }
+            layers.push(LayerFrame {
+                params: params(10),
+                tiles: vec![tile(3, 0)],
+            });
+            placer.place(&frame(layers, 0.0, 0.0)).changed
+        };
+        let changed = place(true);
+        assert_eq!(changed, place(false));
+        let states = &changed.iter().find(|(id, _, _)| *id == 1).unwrap().2;
+        assert!(shown(word(states, 0)) && !shown(word(states, 1)));
     }
 
     #[test]

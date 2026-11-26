@@ -1171,7 +1171,12 @@ fn layers_that_lay_out_alike_share_a_group() {
             {"id": "c", "type": "symbol", "source": "v", "source-layer": "poi",
              "layout": {"text-field": "{name}", "text-size": 13}},
             {"id": "d", "type": "symbol", "source": "v", "source-layer": "poi", "minzoom": 3,
-             "layout": {"text-field": "{name}", "text-size": 12}}
+             "layout": {"text-field": "{name}", "text-size": 12}},
+            {"id": "e", "type": "symbol", "source": "v", "source-layer": "poi",
+             "layout": {"text-field": "{name}", "text-size": 12, "visibility": "none"}},
+            {"id": "f", "type": "symbol", "source": "v", "source-layer": "poi"},
+            {"id": "g", "type": "symbol", "source": "v", "source-layer": "poi",
+             "layout": {"visibility": "visible"}}
         ]"#,
     )
     .unwrap_or_else(|d| panic!("{d}"));
@@ -1183,4 +1188,6 @@ fn layers_that_lay_out_alike_share_a_group() {
     assert_eq!(group(0), group(1), "paint and key order aside");
     assert_ne!(group(0), group(2), "another layout");
     assert_ne!(group(0), group(3), "another zoom range");
+    assert_eq!(group(0), group(4), "hidden or shown");
+    assert_eq!(group(5), group(6), "no layout but visibility");
 }

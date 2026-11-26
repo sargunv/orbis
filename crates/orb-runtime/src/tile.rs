@@ -34,9 +34,11 @@ pub struct TileBuild {
     pub(crate) meshes: Vec<NodeMesh>,
     /// Per source layer laid out, the geometry its nodes' hits point into.
     pub(crate) hits: Vec<(String, crate::query::HitGeometry)>,
-    /// Per symbol layer laid out, by layer key: its bucket. Its icon and
-    /// text nodes' meshes carry property rows only.
-    pub(crate) symbols: Vec<(u32, SymbolBuild)>,
+    /// Per group of symbol layers that lay out alike laid out, the keys of
+    /// its layers, leader first ([`StylePlan::layout_group`]), and the
+    /// bucket they share. Their icon and text nodes' meshes carry property
+    /// rows only.
+    pub(crate) symbols: Vec<(Vec<u32>, SymbolBuild)>,
     /// Images the symbol layers name that the style doesn't have.
     pub(crate) missing_images: Vec<String>,
     /// Some label drew a glyph from a range that failed (locally, or not
@@ -581,7 +583,7 @@ fn build_symbols<'f>(
     symbols: Symbols<'_>,
     groups: &mut Groups<'f>,
     (warnings, glyphs_failed): (&mut Vec<String>, &mut bool),
-) -> Result<Vec<(u32, SymbolBuild)>, Missing> {
+) -> Result<Vec<(Vec<u32>, SymbolBuild)>, Missing> {
     let template = plan.style.glyphs.as_deref();
     let policy = orb_text::FontPolicy {
         glyphs_url: template.is_some(),
@@ -590,9 +592,11 @@ fn build_symbols<'f>(
     let source_def = plan.source_def(source);
     let mut prepared = Vec::new();
     let mut missing = Missing::default();
+    // A group's leader lays its bucket out for all of its layers.
     for node in &plan.nodes {
         if node.source != source
             || node.family != Family::SymbolIcon
+            || plan.layout_leaders[node.layer].is_some()
             || !wants_symbols(select, node.key)
         {
             continue;
@@ -679,7 +683,7 @@ fn build_symbols<'f>(
             .enumerate()
             .map(|(slot, &f)| (f, slot as u32))
             .collect();
-        let layer_key = crate::style::layer_key(node.key);
+        let layers = plan.layout_group(node.layer);
         let mut symbols = crate::symbol::layout(
             p,
             (layer, ancestor),
@@ -711,7 +715,7 @@ fn build_symbols<'f>(
         let id = &plan.style.layers[node.layer].id;
         let named = format!("layers[{}] ({id})", node.layer);
         warnings.extend(symbols.bucket.warnings.messages(&named));
-        built.push((layer_key, symbols));
+        built.push((layers, symbols));
     }
     Ok(built)
 }
@@ -728,6 +732,14 @@ pub(crate) fn build(
     select: Select<'_>,
     symbols: Symbols<'_>,
 ) -> Result<TileBuild, Missing> {
+    // A symbol layer's group lays out together.
+    let grouped = (select.nodes)
+        .filter(|_| !select.rows_only)
+        .map(|n| plan.with_layout_groups(n));
+    let select = Select {
+        nodes: grouped.as_deref().or(select.nodes),
+        ..select
+    };
     let mut groups = Groups::default();
     let mut laid = Laid::default();
     let mut build = TileBuild {
@@ -847,10 +859,8 @@ pub(crate) fn build(
                 _ if select.rows_only => Mesh::default(),
                 // Symbol geometry is the layer's bucket; its nodes carry rows.
                 family @ (Family::SymbolIcon | Family::SymbolText) => {
-                    let bucket = build
-                        .symbols
-                        .iter()
-                        .find(|(k, _)| *k == crate::style::layer_key(node.key));
+                    let layer = crate::style::layer_key(node.key);
+                    let bucket = (build.symbols.iter()).find(|(l, _)| l.contains(&layer));
                     let stream = bucket.map(|(_, b)| match family {
                         Family::SymbolIcon => &b.bucket.icon,
                         _ => &b.bucket.text,

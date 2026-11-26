@@ -508,7 +508,12 @@ impl Map {
                 let Some(state) = style.nodes.get(&key) else {
                     continue;
                 };
-                if build.revision < state.layout_epoch {
+                // A symbol layer's group comes back whole or not at all:
+                // its layers draw one bucket.
+                let newer = |key: &u32| {
+                    (style.nodes.get(key)).is_some_and(|s| build.revision < s.layout_epoch)
+                };
+                if newer(&key) || plan.with_layout_groups(&[key]).iter().any(newer) {
                     continue;
                 }
                 if build.revision < state.rows_epoch {
@@ -525,14 +530,14 @@ impl Map {
                     }
                     self.retired.ramps.append(&mut old.ramps);
                 }
-                // A symbol layer comes back whole with its bucket, below.
+                // A symbol layer comes back whole with its group's bucket,
+                // below.
                 if plan
                     .node(key)
                     .is_some_and(|i| plan.nodes[i].family.is_symbol())
                 {
-                    resident
-                        .symbols
-                        .retain(|s| s.layer != crate::style::layer_key(key));
+                    let layer = crate::style::layer_key(key);
+                    crate::labels::drop_symbols(renderer, resident, &mut style.states, &[layer]);
                     continue;
                 }
                 for mesh in build.meshes.iter().filter(|m| m.node == key) {
@@ -551,11 +556,12 @@ impl Map {
                     break;
                 }
             }
+            // A group's bucket is stale once any of its layers is.
             build.symbols.retain(|s| {
-                style
-                    .nodes
-                    .get(&crate::style::node_key(s.layer, 0))
-                    .is_some_and(|state| build.revision >= state.layout_epoch)
+                s.layers.iter().all(|&layer| {
+                    (style.nodes.get(&crate::style::node_key(layer, 0)))
+                        .is_some_and(|state| build.revision >= state.layout_epoch)
+                })
             });
             no_room = no_room
                 || (self.labels)
@@ -707,6 +713,33 @@ fn stale_nodes(
                     relayout.entry(node.source).or_default().push(node.key);
                 }
                 _ => {}
+            }
+        }
+    }
+    // A symbol bucket is its group's: a group that gained or lost a layer
+    // lays out again whole, and buckets laid out for it before are stale.
+    let group_of = |plan: &StylePlan, leader: u32| {
+        let at = plan.layer_keys.iter().position(|&k| k == leader)?;
+        let mut group = plan.layout_group(at);
+        group.sort_unstable();
+        (plan.layout_leaders[at].is_none()).then_some(group)
+    };
+    let symbols = plan
+        .nodes
+        .iter()
+        .filter(|n| n.family == orb_render::Family::SymbolIcon);
+    for node in symbols {
+        let leader = plan.layer_keys[node.layer];
+        let group = group_of(plan, leader);
+        if group.is_none() || group == group_of(old_plan, leader) {
+            continue;
+        }
+        for key in plan.with_layout_groups(&[node.key]) {
+            let state = style.nodes.get_mut(&key).expect("added above");
+            if state.layout_epoch != version {
+                state.layout_epoch = version;
+                state.rows_epoch = version;
+                relayout.entry(node.source).or_default().push(key);
             }
         }
     }

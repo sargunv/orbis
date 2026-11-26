@@ -2283,3 +2283,100 @@ fn failed_glyph_ranges_are_fetched_again() {
         "the retried range draws as a fresh map's"
     );
 }
+
+/// Two symbol layers that lay out alike (a label drawn twice, in two
+/// colours) show exactly the same labels: one bucket, placed for both by
+/// the first, after a pan and after the second leaves the group and joins
+/// it again.
+#[test]
+fn layers_that_lay_out_alike_show_the_same_labels() {
+    let points: Vec<String> = (0..24)
+        .map(|i| {
+            let (lon, lat) = (f64::from(i % 6) * 3.0 - 7.5, f64::from(i / 6) * 2.0 - 3.0);
+            format!(
+                r#"{{"type":"Feature","id":{i},"properties":{{"name":"Label {i}"}},
+                  "geometry":{{"type":"Point","coordinates":[{lon},{lat}]}}}}"#
+            )
+        })
+        .collect();
+    let layout =
+        r#"{"text-field": ["get", "name"], "text-font": ["Noto Sans Regular"], "text-size": 14}"#;
+    let style = format!(
+        r##"{{"version": 8, "center": [0, 0], "zoom": 3,
+        "glyphs": "file://{}/glyphs/{{fontstack}}/{{range}}.pbf",
+        "sources": {{"p": {{"type": "geojson",
+            "data": {{"type": "FeatureCollection", "features": [{}]}}}}}},
+        "layers": [
+          {{"id": "bg", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+          {{"id": "a", "type": "symbol", "source": "p", "layout": {layout},
+            "paint": {{"text-color": "#ff0000"}}}},
+          {{"id": "b", "type": "symbol", "source": "p", "layout": {layout},
+            "paint": {{"text-color": "#0000ff", "text-translate": [1, 1]}}}}]}}"##,
+        common::data().display(),
+        points.join(",")
+    );
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, 256, 256, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).expect("style");
+    // Per layer, the features its labels show.
+    let mut shown = |map: &mut Map| {
+        settle(map, &mut target);
+        let all = map.query_rendered(glam::DVec2::ZERO, glam::DVec2::splat(256.0));
+        let doc = json::parse(&answer(map, all)).unwrap();
+        let mut by_layer = [Vec::new(), Vec::new()];
+        for feature in doc.as_array().unwrap() {
+            let layer = feature.get("layer").and_then(|l| l.get("id"));
+            let at = match layer.and_then(|l| l.as_str()) {
+                Some("a") => 0,
+                Some("b") => 1,
+                other => panic!("{other:?}"),
+            };
+            by_layer[at].push(feature.get("id").unwrap().as_f64().unwrap() as u32);
+        }
+        for ids in &mut by_layer {
+            ids.sort_unstable();
+        }
+        by_layer
+    };
+    let same = |[a, b]: [Vec<u32>; 2], when: &str| {
+        assert!(
+            !a.is_empty() && a.len() < points.len(),
+            "{when}: some labels collide"
+        );
+        assert_eq!(a, b, "{when}");
+    };
+    same(shown(&mut map), "at first");
+    map.jump_to(&CameraTarget {
+        center: Some(orb_api::Geodetic::new(4.0, 1.0)),
+        ..CameraTarget::default()
+    });
+    let panned = shown(&mut map);
+    same(panned.clone(), "after a pan");
+    // Laid out otherwise, each layer places its own labels: `b`'s all
+    // show and leave `a`'s as they were; laid out alike again, `b` shows
+    // `a`'s.
+    let apart = r#"[["setLayoutProperty", "b", "text-allow-overlap", true],
+        ["setLayoutProperty", "b", "text-ignore-placement", true]]"#;
+    map.edit(&commands(apart)).expect("edit");
+    let [a, b] = shown(&mut map);
+    assert_eq!(a, panned[0], "apart, `a` places as before");
+    assert_eq!(b.len(), points.len(), "apart, every label of `b` shows");
+    let together = r#"[["setLayoutProperty", "b", "text-allow-overlap", null],
+        ["setLayoutProperty", "b", "text-ignore-placement", null]]"#;
+    map.edit(&commands(together)).expect("edit");
+    same(shown(&mut map), "grouped again");
+    // Hiding a layer leaves the group as it was: `b`'s labels, hidden,
+    // don't collide with `a`'s.
+    let visibility = |v: &str| format!(r#"[["setLayoutProperty", "b", "visibility", "{v}"]]"#);
+    map.edit(&commands(&visibility("none"))).expect("edit");
+    assert_eq!(shown(&mut map)[0], panned[0], "with `b` hidden");
+    map.edit(&commands(&visibility("visible"))).expect("edit");
+    same(shown(&mut map), "shown again");
+    // The other layer leaves the group; `a` places as before.
+    map.edit(&commands(r#"[["removeLayer", "b"]]"#))
+        .expect("edit");
+    let [a, b] = shown(&mut map);
+    assert_eq!(a, panned[0], "with `b` gone, `a` places as before");
+    assert!(b.is_empty());
+}

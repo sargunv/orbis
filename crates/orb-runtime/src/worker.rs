@@ -1661,7 +1661,7 @@ pub(crate) mod tests {
         // The decoded tile is cached; the second build needs no bytes.
         let build = worker.build(&[], Encoding::Mvt, &request).unwrap().tile();
         let (layer, symbols) = &build.symbols[0];
-        assert_eq!(*layer, 1);
+        assert_eq!(*layer, [1]);
         let b = &symbols.bucket;
         assert!(!b.instances.is_empty() && b.icon.quads.is_empty());
         assert!(
@@ -1684,7 +1684,7 @@ pub(crate) mod tests {
         let packed = pack(worker.build(&[], Encoding::Mvt, &request).unwrap().tile());
         let result = crate::jobs::tests::unpacked(&packed.to_bytes());
         let (unpacked, original) = (&result.symbols[0], &core.symbols[0]);
-        assert_eq!(unpacked.layer, original.layer);
+        assert_eq!(unpacked.layers, original.layers);
         assert_eq!(unpacked.meta, original.meta);
         assert_eq!(unpacked.glyphs, original.glyphs);
         assert_eq!(unpacked.images, original.images);

@@ -2481,9 +2481,16 @@ impl Map {
                 continue;
             };
             for (_, resident) in pyramid.ready_mut() {
-                resident
-                    .symbols
-                    .retain(|s| keys.contains(&crate::style::node_key(s.layer, 0)));
+                // A bucket goes with any of its layers, and the other
+                // layers' meshes that draw it with it.
+                let gone: Vec<u32> = (resident.symbols.iter())
+                    .flat_map(|s| &s.layers)
+                    .copied()
+                    .filter(|&l| !keys.contains(&crate::style::node_key(l, 0)))
+                    .collect();
+                if !gone.is_empty() {
+                    crate::labels::drop_symbols(renderer, resident, &mut style.states, &gone);
+                }
                 // The renderer drops the meshes of nodes that leave.
                 resident.meshes.retain_mut(|mesh| {
                     if keys.contains(&mesh.node) {
@@ -3723,7 +3730,7 @@ mod tests {
     fn stale_results_drop_symbol_buckets_with_their_meshes() {
         let (worker, mut result) = crate::testing::symbol_tile();
         assert!(!result.symbols.is_empty());
-        let text = crate::style::node_key(result.symbols[0].layer, 1);
+        let text = crate::style::node_key(result.symbols[0].layers[0], 1);
         drop_stale(&mut result, worker.plan(), &[text]);
         assert!(result.symbols.is_empty());
         assert!(result.meshes.iter().all(|m| m.node != text));
@@ -3734,7 +3741,7 @@ mod tests {
     #[test]
     fn stale_results_hand_shared_words_to_the_meshes_kept() {
         let (worker, mut result) = crate::testing::symbol_tile();
-        let [icon, text] = [0, 1].map(|n| crate::style::node_key(result.symbols[0].layer, n));
+        let [icon, text] = [0, 1].map(|n| crate::style::node_key(result.symbols[0].layers[0], n));
         let mesh = |node, vertices: (u32, u32), shares| crate::jobs::ResultMesh {
             hits: Default::default(),
             node,
