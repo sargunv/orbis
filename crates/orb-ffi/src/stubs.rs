@@ -10,6 +10,16 @@
 
 use crate::sys::*;
 
+/// `mln_acquired_frame_get_opaque_fd`: not implemented.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_acquired_frame_get_opaque_fd(
+    frame: mln_acquired_frame,
+    out_frame: *mut mln_opaque_fd_frame,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    unsafe { crate::base::unsupported(out_diagnostic, "mln_acquired_frame_get_opaque_fd") }
+}
+
 /// `mln_android_frame_pacer_create`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_android_frame_pacer_create(
@@ -57,66 +67,6 @@ pub unsafe extern "C" fn mln_map_add_image_source_image(
     out_diagnostic: *mut mln_diagnostic,
 ) -> mln_status {
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_add_image_source_image") }
-}
-
-/// `mln_map_attach_android_hardware_buffer_ring`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_attach_android_hardware_buffer_ring(
-    map: mln_map,
-    descriptor: *const mln_android_hardware_buffer_ring_descriptor,
-    device: mln_gpu_device,
-    options: *const mln_render_session_attach_options,
-    out_session: *mut mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe {
-        crate::base::unsupported(
-            out_diagnostic,
-            "mln_map_attach_android_hardware_buffer_ring",
-        )
-    }
-}
-
-/// `mln_map_attach_dma_buf_ring`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_attach_dma_buf_ring(
-    map: mln_map,
-    descriptor: *const mln_dma_buf_ring_descriptor,
-    device: mln_gpu_device,
-    options: *const mln_render_session_attach_options,
-    out_session: *mut mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_dma_buf_ring") }
-}
-
-/// `mln_map_attach_dxgi_shared_texture_ring`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_attach_dxgi_shared_texture_ring(
-    map: mln_map,
-    descriptor: *const mln_dxgi_shared_texture_ring_descriptor,
-    device: mln_gpu_device,
-    options: *const mln_render_session_attach_options,
-    out_session: *mut mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_dxgi_shared_texture_ring") }
-}
-
-/// `mln_map_attach_io_surface_ring`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_attach_io_surface_ring(
-    map: mln_map,
-    descriptor: *const mln_io_surface_ring_descriptor,
-    options: *const mln_render_session_attach_options,
-    out_session: *mut mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_io_surface_ring") }
 }
 
 /// `mln_map_set_image_source_image`: not implemented.

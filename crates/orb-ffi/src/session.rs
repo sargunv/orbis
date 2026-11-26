@@ -1670,6 +1670,7 @@ pub unsafe extern "C" fn mln_render_session_get_capabilities(
                     texture_ring_depth: depth.max(1),
                     flags,
                     producer_sync_kind: MLN_GPU_SYNC_CPU_COMPLETE,
+                    export_kind: MLN_GPU_EXPORT_KIND_NONE,
                     consumer_sync_kinds: MLN_GPU_SYNC_KIND_FLAG_CPU_COMPLETE,
                 },
                 "out_capabilities",

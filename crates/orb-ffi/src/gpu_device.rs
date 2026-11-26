@@ -215,6 +215,11 @@ pub unsafe extern "C" fn mln_gpu_device_wrap_vulkan(
             required(c.physical_device, "descriptor.context.physical_device")?;
             required(c.device, "descriptor.context.device")?;
             required(c.graphics_queue, "descriptor.context.graphics_queue")?;
+            if d.enabled_extension_count > 0 && d.enabled_extensions.is_null() {
+                return Err(Failure::argument(
+                    "descriptor.enabled_extensions is null but its count isn't zero",
+                ));
+            }
             check_queue_lock(&d.queue_lock, "descriptor.queue_lock")?;
             fresh_out(out_device, "out_device")?;
             Err(Failure::unsupported(

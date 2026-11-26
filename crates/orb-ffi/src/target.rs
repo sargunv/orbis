@@ -272,6 +272,35 @@ pub(crate) unsafe fn describe(target: *const mln_render_target) -> Result<Descri
                 }
                 d.logical_size
             }
+            MLN_RENDER_TARGET_KIND_EXPORTED_RING => {
+                let d = data.exported_ring;
+                if d.texture_count == 0 || d.texture_count > MLN_TEXTURE_RING_MAX_DEPTH {
+                    return Err(Failure::argument(format!(
+                        "target.exported_ring.texture_count must be from 1 to \
+                         MLN_TEXTURE_RING_MAX_DEPTH ({MLN_TEXTURE_RING_MAX_DEPTH})"
+                    )));
+                }
+                let known = (MLN_GPU_EXPORT_KIND_FLAG_OPAQUE_FD << 1) - 1;
+                if d.export_kinds == 0 || d.export_kinds & !known != 0 {
+                    return Err(Failure::argument(
+                        "target.exported_ring.export_kinds must name ways of sharing a texture, \
+                         and only those",
+                    ));
+                }
+                if d.dma_buf_format_count > 0 && d.dma_buf_formats.is_null() {
+                    return Err(Failure::argument(
+                        "target.exported_ring.dma_buf_formats is null but its count isn't zero",
+                    ));
+                }
+                if d.export_kinds & MLN_GPU_EXPORT_KIND_FLAG_DMA_BUF != 0
+                    && d.dma_buf_format_count == 0
+                {
+                    return Err(Failure::argument(
+                        "target.exported_ring exports dmabufs, so it needs dma_buf_formats",
+                    ));
+                }
+                d.logical_size
+            }
             _ => {
                 return Err(Failure::argument("target.kind names no render target kind"));
             }
