@@ -263,11 +263,11 @@ fn label(sections: &[FormattedSection], transform: orb_text::TextTransform) -> L
     }
 }
 
-/// Evaluates a symbol layer's `features` (the filter's selection, in
-/// order) at tile zoom `zoom`. `ids` is the column of stable ids, the
-/// promoted id when the source has one. `tile` locates the layer for
-/// expressions that read geometry; `ancestor` is where an overzoom slice
-/// laid out in its ancestor is in it.
+/// Evaluates a symbol layer's `features` (those of the filter's selection
+/// that may anchor in the tile, in order) at tile zoom `zoom`. `ids` is
+/// the column of stable ids, the promoted id when the source has one.
+/// `tile` locates the layer for expressions that read geometry; `ancestor`
+/// is where an overzoom slice laid out in its ancestor is in it.
 pub(crate) fn prepare(
     symbol: &orb_style::Layer,
     layer: &Layer,
@@ -490,7 +490,7 @@ pub(crate) fn prepare(
         orb_symbol::retain_line_labels_in_tile(layer, &mut prepared, ancestor);
     }
     let mut requests = GlyphRequests::default();
-    orb_symbol::add_glyph_requests(layer, &prepared, &style, &mut requests);
+    orb_symbol::add_glyph_requests(&prepared, &style, &mut requests);
     Prepared {
         style,
         features: prepared,

@@ -12,7 +12,7 @@ use crate::bucket::{
 };
 use crate::layout::{
     FeatureLayout, LayerLayout, LayoutContext, Placement, SymbolFeature, TextJustify, TileImages,
-    TileParams, add_glyph_requests, layout,
+    TileParams, add_glyph_requests, layout, may_anchor_in_tile,
 };
 use crate::{IconImage, IconTextFit};
 
@@ -22,9 +22,9 @@ fn stack() -> FontStack {
 
 /// Every single-code-point request resolves: CJK full width, the rest
 /// 12 px wide. Vertical alternates are unavailable, as with PBF glyphs.
-fn glyphs(layer: &Layer, features: &[SymbolFeature], style: &LayerLayout) -> GlyphMap {
+fn glyphs(features: &[SymbolFeature], style: &LayerLayout) -> GlyphMap {
     let mut requests = GlyphRequests::default();
-    add_glyph_requests(layer, features, style, &mut requests);
+    add_glyph_requests(features, style, &mut requests);
     let mut map = GlyphMap::default();
     for request in requests {
         let mut chars = request.text.chars();
@@ -102,7 +102,7 @@ fn run_with(
     style: &LayerLayout,
     images: &TileImages,
 ) -> SymbolBucket {
-    let glyphs = glyphs(layer, features, style);
+    let glyphs = glyphs(features, style);
     let tile = TileParams {
         source_layer: layer.name(),
         overscaling: 1.0,
@@ -385,29 +385,54 @@ fn stable_keys_name_layer_feature_and_text() {
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 #[cfg_attr(not(target_arch = "wasm32"), test)]
-fn points_outside_the_tile_get_no_symbols_or_glyphs() {
-    let layer = points(&[[-10, 100], [100, 8192]]);
+fn labels_that_cannot_anchor_in_the_tile_are_left_out() {
+    // Points all outside it can't anchor in it, and laid out anyway they
+    // add no symbol.
+    let layer = points(&[[-10, 100], [100, 8192], [100, 100]]);
     let features = [feature(0, "Out"), feature(1, "Edge")];
-    let style = LayerLayout::default();
-    let mut requests = GlyphRequests::default();
-    add_glyph_requests(&layer, &features, &style, &mut requests);
-    assert!(requests.is_empty());
-    assert!(run(&layer, &features, &style).is_empty());
+    let may = |layer: &Layer, placement| -> Vec<u32> {
+        (0..3)
+            .filter(|&f| may_anchor_in_tile(layer, f, placement, None))
+            .collect()
+    };
+    assert_eq!(may(&layer, Placement::Point), [2]);
+    assert!(run(&layer, &features, &LayerLayout::default()).is_empty());
 
-    // Nor do point and line-center labels of lines wholly outside it; one
-    // that crosses it asks for its glyphs.
-    let layer = lines(&[&[[-500, 100], [-10, 200]], &[[-500, 300], [500, 300]]]);
-    let features = [feature(0, "Out"), feature(1, "In")];
+    // Nor point and line-center labels of lines wholly outside it; one
+    // that crosses it may, and line labels of any line may.
+    let layer = lines(&[
+        &[[-500, 100], [-10, 200]],
+        &[[-500, 300], [500, 300]],
+        &[[-500, 400], [-10, 400]],
+    ]);
     for placement in [Placement::Point, Placement::LineCenter] {
+        assert_eq!(may(&layer, placement), [1], "{placement:?}");
         let style = LayerLayout {
             placement,
             ..LayerLayout::default()
         };
-        let mut requests = GlyphRequests::default();
-        add_glyph_requests(&layer, &features, &style, &mut requests);
-        let texts: Vec<&str> = requests.iter().map(|r| &*r.text).collect();
-        assert_eq!(texts, ["I", "n"], "{placement:?}");
+        let outside = [feature(0, "Out"), feature(2, "Out")];
+        assert!(run(&layer, &outside, &style).is_empty(), "{placement:?}");
     }
+    assert_eq!(may(&layer, Placement::Line), [0, 1, 2]);
+
+    // Nor a point label of a polygon wholly beside it.
+    let mut b = LayerBuilder::new("polygons", 8192);
+    b.begin_feature(None, GeometryType::Polygon);
+    b.begin_part();
+    b.begin_ring();
+    for p in [
+        [-500, 100],
+        [-10, 100],
+        [-10, 500],
+        [-500, 500],
+        [-500, 100],
+    ] {
+        b.push_vertex(p);
+    }
+    let layer = b.finish();
+    assert!(!may_anchor_in_tile(&layer, 0, Placement::Point, None));
+    assert!(run(&layer, &[feature(0, "Out")], &LayerLayout::default()).is_empty());
 }
 
 /// Same-text labels block one another down a chain (GL JS
@@ -426,7 +451,7 @@ fn slices_follow_repeated_labels_across_their_ancestor() {
     let layer = lines(&pieces.iter().map(Vec::as_slice).collect::<Vec<_>>());
     let features: Vec<_> = (0..10).map(|k| feature(k, "AB")).collect();
     let style = line_style();
-    let glyphs = glyphs(&layer, &features, &style);
+    let glyphs = glyphs(&features, &style);
     let images = TileImages::default();
     let lay = |overscaling, ancestor| {
         let tile = TileParams {

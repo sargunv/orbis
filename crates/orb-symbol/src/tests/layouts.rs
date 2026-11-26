@@ -15,7 +15,8 @@ use super::{anchor, assert_same, image, num, nums};
 use crate::bucket::{NONE, SizeKind, SymbolBucket, SymbolStream, instance_flags, quad_flags};
 use crate::layout::{
     Alignment, FeatureLayout, FeatureSize, LayerLayout, LayoutContext, Placement, SymbolFeature,
-    TextJustify, TileImages, TileParams, add_glyph_requests, layout, retain_line_labels_in_tile,
+    TextJustify, TileImages, TileParams, add_glyph_requests, layout, may_anchor_in_tile,
+    retain_line_labels_in_tile,
 };
 use crate::{IconTextFit, quads::GLYPH_PADDING};
 
@@ -243,9 +244,9 @@ impl Glyphs {
     }
 
     /// The glyphs `requests` asks for, each one GL JS asked for. Orbis
-    /// asks for none of the labels layout drops for an anchor outside the
-    /// tile, which GL JS asks for too; one it should have asked for shows
-    /// as a missing quad.
+    /// asks for none of the labels that can't anchor in the tile, which
+    /// GL JS asks for too; one it should have asked for shows as a missing
+    /// quad.
     fn map(&self, requests: GlyphRequests) -> GlyphMap {
         let mut map = GlyphMap::default();
         for request in requests {
@@ -307,6 +308,8 @@ fn run_in<'a>(name: &'a str, json: &str, ancestor: Option<Ancestor>) -> Case<'a>
     let style = layer_layout(&golden["layer"]);
     // GL JS's per-layer values that Orbis reads per feature.
     let l = &golden["layer"];
+    // GL JS's features, but those that can't anchor in the tile, as the
+    // runtime leaves them out.
     let features: Vec<SymbolFeature> = golden["features"]
         .as_array()
         .unwrap()
@@ -321,10 +324,11 @@ fn run_in<'a>(name: &'a str, json: &str, ancestor: Option<Ancestor>) -> Case<'a>
                 .map(|a| a.iter().map(|a| anchor(a.as_str().unwrap())).collect());
             f
         })
+        .filter(|f| may_anchor_in_tile(layer, f.index, style.placement, ancestor))
         .collect();
 
     let mut requests = GlyphRequests::default();
-    add_glyph_requests(layer, &features, &style, &mut requests);
+    add_glyph_requests(&features, &style, &mut requests);
     let glyphs = Glyphs::new(&golden["glyphs"]);
     let glyph_map = glyphs.map(requests);
 

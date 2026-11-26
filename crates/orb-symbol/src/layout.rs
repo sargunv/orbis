@@ -358,21 +358,16 @@ pub struct LayoutContext<'a> {
 }
 
 /// Adds the glyphs `features` need to `requests` (GL JS
-/// `calculateGlyphDependencies`, as `populate` calls it), but not those
-/// of labels layout drops for an anchor outside the tile.
+/// `calculateGlyphDependencies`, as `populate` calls it). Callers pass
+/// only the features that may anchor in the tile ([`may_anchor_in_tile`]),
+/// so no glyph is asked for a label layout would drop.
 pub fn add_glyph_requests(
-    layer: &Layer,
     features: &[SymbolFeature],
     style: &LayerLayout,
     requests: &mut GlyphRequests,
 ) {
     let allow_vertical_placement = style.allow_vertical_placement();
     for feature in features {
-        // In the layer's own tile: an overzoom slice laid out in its
-        // ancestor keeps only the features that may anchor in the slice.
-        if !may_anchor_in_tile(layer, feature.index, style.placement, None) {
-            continue;
-        }
         if let Some(label) = &feature.text {
             requests.add_label(
                 label,
@@ -389,9 +384,11 @@ pub fn add_glyph_requests(
 /// laid out in it). Not for point labels of points all outside it, nor
 /// point and line-center labels of a line or polygon wholly to one side of
 /// it: their anchors (a polygon's pole, a line's first vertex or its
-/// middle) lie within its bounds, and GL JS drops anchors outside the
-/// tile. An overzoom slice laid out in its ancestor then shapes only the
-/// labels it may keep.
+/// middle) lie within its bounds, and layout drops anchors outside the
+/// tile, as GL JS does. Filtering features by it before their properties
+/// are evaluated spares those of points in the tile's buffer, and an
+/// overzoom slice laid out in its ancestor then shapes only the labels it
+/// may keep; it changes no layout.
 pub fn may_anchor_in_tile(
     layer: &Layer,
     index: u32,
@@ -574,7 +571,9 @@ fn load_geometry(layer: &Layer, index: usize, units: Units) -> Geometry {
 
 /// Lays out `features`, the features of `layer` a symbol layer draws, in
 /// the layer's order (GL JS `populate` from the filter on, then
-/// `performSymbolLayout`).
+/// `performSymbolLayout`). Those that can't anchor in the tile add
+/// nothing; callers leave them out before preparing them
+/// ([`may_anchor_in_tile`]).
 pub fn layout(
     layer: &Layer,
     features: &[SymbolFeature],
@@ -589,7 +588,6 @@ pub fn layout(
     let units = Units::new(tile.ancestor);
     let mut prepared: Vec<Prepared<'_>> = features
         .iter()
-        .filter(|f| may_anchor_in_tile(layer, f.index, style.placement, tile.ancestor))
         .map(|feature| Prepared {
             feature,
             geometry: load_geometry(layer, feature.index as usize, units),
