@@ -16,6 +16,13 @@ pub struct GestureOptions {
     pub rotate: Movement,
     pub pitch: Movement,
     pub thresholds: Thresholds,
+    /// Levels a double tap zooms in, eased, or out with
+    /// [`Modes::zoom_out`](super::Modes::zoom_out): 1 by default, and 0
+    /// leaves double taps to the host.
+    pub double_tap_zoom: f64,
+    /// Levels a two-finger tap zooms, eased, negative out: -1 by default,
+    /// and 0 leaves two-finger taps to the host.
+    pub two_finger_tap_zoom: f64,
 }
 
 impl Default for GestureOptions {
@@ -31,6 +38,8 @@ impl Default for GestureOptions {
             },
             pitch: Movement::new(MomentumDecay::PITCH),
             thresholds: Thresholds::default(),
+            double_tap_zoom: 1.0,
+            two_finger_tap_zoom: -1.0,
         }
     }
 }
@@ -84,12 +93,18 @@ impl Movement {
 pub enum Fling {
     /// This decay for every release.
     Decay(MomentumDecay),
-    /// The distance and duration Android's `OverScroller` gives a fling
-    /// at the release's speed, along its curve (Compose's
-    /// `MomentumPlanner.AndroidFling`), planning logical pixels as dp. A
-    /// release slower than `min_speed` stays; one faster than `max_speed`
-    /// counts as it; none moves farther than `max_distance`.
-    Android {
+    /// A glide that lasts `duration` milliseconds × (speed /
+    /// `reference_speed`) to the power of `exponent`, along `easing`, a
+    /// cubic Bézier's control points, starting at the release's speed, so
+    /// faster releases glide longer and farther (Compose's
+    /// `MomentumPlanner`). A release slower than `min_speed` stays; one
+    /// faster than `max_speed` counts as it; none moves farther than
+    /// `max_distance`.
+    Curve {
+        reference_speed: f64,
+        duration: f64,
+        exponent: f64,
+        easing: [f64; 4],
         min_speed: f64,
         max_speed: f64,
         max_distance: f64,
@@ -97,20 +112,37 @@ pub enum Fling {
 }
 
 impl Fling {
-    /// Android's fling with its platform defaults: at least 50 dp/s
-    /// (`ViewConfiguration`'s minimum fling velocity), at most 8000.
-    pub const ANDROID: Self = Self::Android {
-        min_speed: 50.0,
-        max_speed: 8000.0,
-        max_distance: f64::INFINITY,
-    };
+    /// Android's `OverScroller` fling (`SplineOverScroller`, at 160 dpi so
+    /// its pixels are logical pixels), with its platform's limits: at least
+    /// 50 px/s (`ViewConfiguration`'s minimum fling velocity), at most
+    /// 8000.
+    pub const ANDROID: Self = Self::android(50.0, 8000.0);
+
+    /// Android's fling within a platform's limits of speed
+    /// (`ViewConfiguration`'s minimum and maximum fling velocity), in
+    /// logical pixels a second.
+    pub const fn android(min_speed: f64, max_speed: f64) -> Self {
+        Self::Curve {
+            reference_speed: 1000.0,
+            duration: 555.182,
+            exponent: 0.7362676,
+            easing: [0.175, 0.5, 0.35, 1.0],
+            min_speed,
+            max_speed,
+            max_distance: f64::INFINITY,
+        }
+    }
 
     /// The decay a release at `speed` (not negative) continues with, or
     /// `None` when it stays.
     pub(crate) fn decay(&self, speed: f64) -> Option<MomentumDecay> {
         match *self {
             Self::Decay(decay) => (speed >= decay.min_speed).then_some(decay),
-            Self::Android {
+            Self::Curve {
+                reference_speed,
+                duration,
+                exponent,
+                easing,
                 min_speed,
                 max_speed,
                 max_distance,
@@ -118,12 +150,19 @@ impl Fling {
                 if speed.is_nan() || speed < min_speed {
                     return None;
                 }
-                let (distance, duration) = android_fling(speed.min(max_speed))?;
+                let speed = speed.min(max_speed);
+                let duration = duration * (speed / reference_speed).powf(exponent);
+                // The curve starts at slope y1 / x1: the distance whose
+                // glide starts at the release's speed.
+                let distance = speed * duration / 1000.0 * easing[0] / easing[1];
+                if !(distance > 0.0 && distance.is_finite() && duration.is_finite()) {
+                    return None;
+                }
                 Some(MomentumDecay {
                     model: DecayModel::Ease {
                         distance,
                         duration,
-                        easing: Easing::Bezier([0.175, 0.5, 0.35, 1.0]),
+                        easing: Easing::Bezier(easing),
                     },
                     min_speed,
                     max_speed: f64::INFINITY,
@@ -132,27 +171,6 @@ impl Fling {
             }
         }
     }
-}
-
-/// The distance in dp and duration in milliseconds of Android's
-/// `OverScroller` spline fling at `speed` dp/s (`SplineOverScroller`, at
-/// 160 dpi so its pixels are dp).
-fn android_fling(speed: f64) -> Option<(f64, f64)> {
-    const INFLEXION: f64 = 0.35;
-    /// `ViewConfiguration.getScrollFriction()`.
-    const FRICTION: f64 = 0.015;
-    /// Earth's gravity in inches per second squared at 160 dpi, times
-    /// Android's 0.84.
-    const PHYSICAL: f64 = 9.80665 * 39.37 * 160.0 * 0.84;
-    let rate = 0.78f64.ln() / 0.9f64.ln();
-    if speed.is_nan() || speed <= 0.0 || speed.is_infinite() {
-        return None;
-    }
-    let deceleration = (INFLEXION * speed / (FRICTION * PHYSICAL)).ln();
-    let distance = FRICTION * PHYSICAL * (rate / (rate - 1.0) * deceleration).exp();
-    let duration = 1000.0 * (deceleration / (rate - 1.0)).exp();
-    (distance > 0.0 && distance.is_finite() && duration > 0.0 && duration.is_finite())
-        .then_some((distance, duration))
 }
 
 /// When presses are clicks, taps pair and holds are long: GL JS's values
@@ -187,6 +205,16 @@ impl Default for Thresholds {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The distance and duration a fling plans at `speed`.
+    fn android_fling(speed: f64) -> Option<(f64, f64)> {
+        match Fling::ANDROID.decay(speed)?.model {
+            DecayModel::Ease {
+                distance, duration, ..
+            } => Some((distance, duration)),
+            DecayModel::Friction { .. } => None,
+        }
+    }
 
     #[test]
     fn android_flings_as_its_overscroller_does() {

@@ -177,7 +177,7 @@ export interface GestureOptions {
 }
 
 /** How a gesture the page recognized itself keeps moving the camera after
- * release: maplibre-native-ffi's `mln_gesture_momentum`. */
+ * release. */
 export interface GestureMomentum {
   /** Pixels per second the content moved on screen at release. */
   pan?: { velocity: Point; decay?: MomentumDecay };

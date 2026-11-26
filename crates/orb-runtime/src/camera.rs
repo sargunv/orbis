@@ -4,7 +4,7 @@
 //! advances gestures and animations at the frame's timestamp, then draws.
 
 use glam::DVec2;
-use orb_camera::input::{GestureOptions, Input, InteractEvent};
+use orb_camera::input::{GestureOptions, Input, InteractEvent, Move};
 use orb_camera::{
     AnimationId, Bounds, CameraState, CameraTarget, Constraints, EaseOptions, FitOptions,
     FlyOptions, FreeCamera, GestureMomentum, Skew, Viewport,
@@ -12,6 +12,20 @@ use orb_camera::{
 use orb_crs::Geodetic;
 
 use crate::{Map, MapEvent};
+
+/// How input moves the camera ([`Map::gesture_motion`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GestureMotion {
+    Still,
+    /// Input holds it: a gesture is under way.
+    Held,
+    /// A gesture's momentum moves it on: the glide and snap after its
+    /// release.
+    Gliding,
+    /// An eased step input started moves it: a tap's zoom, a box zoom, a
+    /// discrete delta, a key.
+    Easing,
+}
 
 impl Map {
     /// The camera as it is now: it moves during gestures and animations.
@@ -43,7 +57,7 @@ impl Map {
     }
 
     /// Continues a gesture the host recognized itself with `momentum`
-    /// from the next frame on (mln-ffi's end-phase camera delta). `None`
+    /// from the next frame on (the web package's `startMomentum`). `None`
     /// when nothing moves or settles over time.
     pub fn start_momentum(&mut self, momentum: &GestureMomentum) -> Option<AnimationId> {
         self.camera.start_momentum(momentum, None)
@@ -129,6 +143,32 @@ impl Map {
     fn apply_gestures(&mut self, time: f64) {
         for mv in self.input.take_moves() {
             self.camera.apply(mv, time);
+        }
+    }
+
+    /// Applies the moves of a recognizer the host keeps on its own thread
+    /// (the C API's gesture recognizers), at `time` on the clock frames
+    /// use, in the order it made them. Returns whether one took the camera
+    /// from its animations, stopping them.
+    pub fn apply_moves(&mut self, moves: impl IntoIterator<Item = Move>, time: f64) -> bool {
+        let mut took = false;
+        for mv in moves {
+            took |= self.camera.apply(mv, time);
+        }
+        took
+    }
+
+    /// How input moves the camera: holding it, or through what a gesture
+    /// started (a glide, a snap, a tap's zoom) that still runs.
+    pub fn gesture_motion(&self) -> GestureMotion {
+        if self.camera.is_held() {
+            GestureMotion::Held
+        } else if self.camera.has_momentum() {
+            GestureMotion::Gliding
+        } else if self.camera.is_user_animating() {
+            GestureMotion::Easing
+        } else {
+            GestureMotion::Still
         }
     }
 
@@ -261,9 +301,11 @@ impl Map {
         }
         for event in self.input.take_events() {
             self.events.push(match event {
-                InteractEvent::Click { position } => MapEvent::Click { position },
-                InteractEvent::DoubleClick { position } => MapEvent::DoubleClick { position },
-                InteractEvent::LongClick { position } => MapEvent::LongClick { position },
+                InteractEvent::Click { position, .. } => MapEvent::Click { position },
+                InteractEvent::DoubleClick { position, .. } => MapEvent::DoubleClick { position },
+                InteractEvent::LongClick { position, .. } => MapEvent::LongClick { position },
+                // It zooms as the options say; hosts have no use for it.
+                InteractEvent::TwoFingerTap { .. } => continue,
             });
         }
         gesture || animating

@@ -110,15 +110,38 @@ pub enum GesturePhase {
     Cancel,
 }
 
+/// What a one-pointer drag or a double tap does instead of its default.
+/// A press reads them as it goes down, and keeps them until it lifts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Modes {
+    /// Sideways turns the map and up and down tilts it.
+    pub rotate: bool,
+    /// Draws a box the map zooms to when the pointer lifts.
+    pub box_zoom: bool,
+    /// A double tap zooms out instead of in.
+    pub zoom_out: bool,
+}
+
 /// Input in logical pixels from the viewport's top-left corner.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Input {
+    /// A pointer went down: a secondary button rotates and its click is a
+    /// long click, Ctrl rotates and Shift zooms to a box or out, as
+    /// [`Input::Press`]'s modes.
     PointerDown {
         id: u32,
         kind: PointerKind,
         button: Button,
         position: DVec2,
         modifiers: Modifiers,
+    },
+    /// A pointer went down with the modes its host chose for it, as the C
+    /// API's hosts choose them from buttons and held keys.
+    Press {
+        id: u32,
+        kind: PointerKind,
+        position: DVec2,
+        modes: Modes,
     },
     PointerMove {
         id: u32,
@@ -154,26 +177,42 @@ pub enum Input {
         key: Key,
         modifiers: Modifiers,
     },
+    /// Camera movement from a wheel, a dial, keys or buttons, which the
+    /// host measured in camera units: how far the map's content moves on
+    /// screen, levels of zoom and degrees clockwise of bearing and of
+    /// pitch, zooms and turns keeping `position` in place. A discrete one,
+    /// such as a wheel's notch, eases, and a quick run of them merges into
+    /// one ease that speeds up; a continuous one, such as a trackpad's
+    /// scroll, moves at once, and holds the camera until a while after the
+    /// last.
+    Delta {
+        position: DVec2,
+        discrete: bool,
+        pan: DVec2,
+        zoom: f64,
+        bearing: f64,
+        pitch: f64,
+    },
     /// The view lost focus: every pointer is released.
     Blur,
 }
 
-/// What a gesture means beyond the camera's own events.
+/// What a gesture means beyond the camera's own events, with the pointer
+/// that made it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InteractEvent {
     /// A primary press and release that didn't move the map: a click or
     /// a tap.
-    Click {
-        position: DVec2,
-    },
-    DoubleClick {
-        position: DVec2,
-    },
+    Click { id: u32, position: DVec2 },
+    /// The second click of a double click, which zooms as
+    /// [`GestureOptions::double_tap_zoom`] says.
+    DoubleClick { id: u32, position: DVec2 },
     /// A touch or pen held still, or a right click: the place's context
     /// (Compose's `longClick`, GL JS's `contextmenu`).
-    LongClick {
-        position: DVec2,
-    },
+    LongClick { id: u32, position: DVec2 },
+    /// Two fingers tapped together, which zooms as
+    /// [`GestureOptions::two_finger_tap_zoom`] says.
+    TwoFingerTap { position: DVec2 },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -207,9 +246,9 @@ enum Mode {
     Idle,
     /// Pressed and not moved past the click tolerance.
     Pressed {
-        rotate: bool,
-        button: Button,
-        shift: bool,
+        modes: Modes,
+        /// A secondary button: its click is a long click.
+        context: bool,
         /// A touch or pen held long enough: a long click, not a click.
         long: bool,
     },
@@ -454,27 +493,43 @@ impl Interaction {
         std::mem::take(&mut self.events)
     }
 
-    /// Ends gestures that time out and recognizes long presses. Call once
-    /// a display frame with the time; returns whether it needs more frames
-    /// to do so.
+    /// When a press held still becomes a long press, while one may.
+    fn long_press_at(&self) -> Option<f64> {
+        match (self.mode, &self.pointers[..]) {
+            (
+                Mode::Pressed {
+                    context: false,
+                    long: false,
+                    ..
+                },
+                [pointer],
+            ) if pointer.kind != PointerKind::Mouse => {
+                Some(pointer.down_at + self.options.thresholds.long_press)
+            }
+            _ => None,
+        }
+    }
+
+    /// When the recognizer next needs [`frame`](Self::frame), on the
+    /// inputs' clock: when a press becomes a long press, or a continuous
+    /// delta's hold ends; `None` until the next input.
+    pub fn next_tick(&self) -> Option<f64> {
+        match (self.long_press_at(), self.wheel_hold_until) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Ends gestures that time out and recognizes long presses. Call at
+    /// [`next_tick`](Self::next_tick), or once a display frame, with the
+    /// time; returns whether it needs more time to do so.
     pub fn frame(&mut self, now: f64) -> bool {
         let mut waiting = false;
-        if let Mode::Pressed {
-            button: Button::Primary,
-            long: long @ false,
-            ..
-        } = &mut self.mode
-            && let [pointer] = self.pointers[..]
-            && pointer.kind != PointerKind::Mouse
-        {
-            if now - pointer.down_at < self.options.thresholds.long_press {
+        if let Some(at) = self.long_press_at() {
+            if now < at {
                 waiting = true;
             } else {
-                *long = true;
-                self.last_tap = None;
-                self.events.push(InteractEvent::LongClick {
-                    position: pointer.position,
-                });
+                self.long_press();
             }
         }
         if let Some(until) = self.wheel_hold_until {
@@ -490,6 +545,20 @@ impl Interaction {
         waiting
     }
 
+    /// The press under way is a long press.
+    fn long_press(&mut self) {
+        if let Mode::Pressed { long, .. } = &mut self.mode
+            && let [pointer] = self.pointers[..]
+        {
+            *long = true;
+            self.last_tap = None;
+            self.events.push(InteractEvent::LongClick {
+                id: pointer.id,
+                position: pointer.position,
+            });
+        }
+    }
+
     /// Handles one input at host time `now` (milliseconds). Returns whether
     /// the map used it, so hosts can stop the platform's default.
     pub fn handle(&mut self, input: Input, now: f64) -> bool {
@@ -500,7 +569,24 @@ impl Interaction {
                 button,
                 position,
                 modifiers,
-            } => self.down(id, kind, button, position, modifiers, now),
+            } => {
+                let touch = kind == PointerKind::Touch;
+                if !touch && button == Button::Middle {
+                    return false;
+                }
+                let modes = Modes {
+                    rotate: button == Button::Secondary || (modifiers.ctrl && !touch),
+                    box_zoom: modifiers.shift && !touch && button == Button::Primary,
+                    zoom_out: modifiers.shift && !touch,
+                };
+                self.down(id, kind, position, modes, button != Button::Primary, now)
+            }
+            Input::Press {
+                id,
+                kind,
+                position,
+                modes,
+            } => self.down(id, kind, position, modes, false, now),
             Input::PointerMove { id, position } => self.moved(id, position, now),
             Input::PointerUp { id, position } => self.up(id, Some(position), now),
             Input::PointerCancel { id } => self.up(id, None, now),
@@ -516,6 +602,14 @@ impl Interaction {
                 phase,
             } => self.platform_pinch(center, scale, rotation, phase, now),
             Input::Key { key, modifiers } => self.key(key, modifiers),
+            Input::Delta {
+                position,
+                discrete,
+                pan,
+                zoom,
+                bearing,
+                pitch,
+            } => self.delta(position, discrete, pan, [zoom, bearing, pitch], now),
             Input::Blur => {
                 self.pointers.clear();
                 self.mode = Mode::Idle;
@@ -525,21 +619,21 @@ impl Interaction {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// A pointer down with `modes`; `context` for a secondary button.
     fn down(
         &mut self,
         id: u32,
         kind: PointerKind,
-        button: Button,
         position: DVec2,
-        modifiers: Modifiers,
+        modes: Modes,
+        context: bool,
         now: f64,
     ) -> bool {
         if self.pointers.iter().any(|p| p.id == id) {
             return false;
         }
         let touch = kind == PointerKind::Touch;
-        if !touch && (!self.pointers.is_empty() || button == Button::Middle) {
+        if !touch && !self.pointers.is_empty() {
             return false;
         }
         if matches!(self.mode, Mode::Platform) {
@@ -566,9 +660,11 @@ impl Interaction {
                         }
                     } else {
                         Mode::Pressed {
-                            rotate: button == Button::Secondary || (modifiers.ctrl && !touch),
-                            button,
-                            shift: modifiers.shift && !touch && options.zoom.enabled,
+                            modes: Modes {
+                                box_zoom: modes.box_zoom && options.zoom.enabled,
+                                ..modes
+                            },
+                            context,
                             long: false,
                         }
                     };
@@ -606,15 +702,10 @@ impl Interaction {
         let last = self.pointers[index].position;
         self.pointers[index].position = position;
         match &mut self.mode {
-            Mode::Pressed {
-                rotate,
-                shift,
-                button,
-                ..
-            } => {
+            Mode::Pressed { modes, .. } => {
                 let down = self.pointers[index].down;
                 if position.distance(down) > self.options.thresholds.click_tolerance {
-                    self.mode = match (*rotate, *shift && *button == Button::Primary) {
+                    self.mode = match (modes.rotate, modes.box_zoom) {
                         (true, _) => Mode::Rotate,
                         (false, true) => Mode::BoxZoom { origin: down },
                         (false, false) => Mode::Pan,
@@ -825,6 +916,10 @@ impl Interaction {
         };
         let pointer = self.pointers.remove(index);
         let cancelled = position.is_none();
+        if cancelled && self.pointers.is_empty() && !matches!(self.mode, Mode::Idle | Mode::Ignored)
+        {
+            self.camera(Step::Cancel);
+        }
         match self.mode {
             Mode::Pinch(pinch) => {
                 if !self.pointers.is_empty() {
@@ -841,8 +936,9 @@ impl Interaction {
                     return true;
                 }
                 if pinch.tap && !cancelled {
-                    let mid = (pinch.last[0] + pinch.last[1]) / 2.0;
-                    self.zoom_step(mid, -1.0);
+                    let position = (pinch.last[0] + pinch.last[1]) / 2.0;
+                    self.events.push(InteractEvent::TwoFingerTap { position });
+                    self.zoom_step(position, self.options.two_finger_tap_zoom);
                 }
                 let end = match (cancelled, pinch.tap) {
                     (true, _) => End::Cancel,
@@ -853,14 +949,26 @@ impl Interaction {
             }
             Mode::Pan if !self.pointers.is_empty() => {}
             Mode::Pressed {
-                button,
-                shift,
+                modes,
+                context,
                 long,
-                ..
             } => {
                 if self.pointers.is_empty() {
-                    if !cancelled && !long {
-                        self.tap(pointer, button, shift, now);
+                    // A press held long enough with no frame to time it is
+                    // a long press as it lifts.
+                    let held = !context
+                        && pointer.kind != PointerKind::Mouse
+                        && now - pointer.down_at >= self.options.thresholds.long_press;
+                    match (cancelled || long, held) {
+                        (true, _) => {}
+                        (false, true) => {
+                            self.last_tap = None;
+                            self.events.push(InteractEvent::LongClick {
+                                id: pointer.id,
+                                position: pointer.position,
+                            });
+                        }
+                        (false, false) => self.tap(pointer, modes, context, now),
                     }
                     self.finish(now, End::Settle);
                 }
@@ -878,9 +986,11 @@ impl Interaction {
                 if self.pointers.is_empty() {
                     self.last_tap = None;
                     if !moved && !cancelled {
-                        self.events
-                            .push(InteractEvent::DoubleClick { position: origin });
-                        self.zoom_step(origin, 1.0);
+                        self.events.push(InteractEvent::DoubleClick {
+                            id: pointer.id,
+                            position: origin,
+                        });
+                        self.zoom_step(origin, self.options.double_tap_zoom);
                     }
                     let end = match (cancelled, moved) {
                         (true, _) => End::Cancel,
@@ -904,23 +1014,24 @@ impl Interaction {
 
     /// A press released without moving: a click, perhaps the second of a
     /// double click.
-    fn tap(&mut self, pointer: Pointer, button: Button, shift: bool, now: f64) {
-        let position = pointer.position;
-        if button != Button::Primary {
+    fn tap(&mut self, pointer: Pointer, modes: Modes, context: bool, now: f64) {
+        let (id, position) = (pointer.id, pointer.position);
+        if context {
             // A right click is a long click (Compose's) or a context menu
             // (GL JS's).
-            self.events.push(InteractEvent::LongClick { position });
+            self.events.push(InteractEvent::LongClick { id, position });
             return;
         }
-        self.events.push(InteractEvent::Click { position });
+        self.events.push(InteractEvent::Click { id, position });
         if now - pointer.down_at > self.options.thresholds.tap_interval {
             return;
         }
         if self.follows_tap(pointer.kind, position, now) {
             self.last_tap = None;
-            self.events.push(InteractEvent::DoubleClick { position });
-            // Shift-double-click zooms out.
-            self.zoom_step(position, if shift { -1.0 } else { 1.0 });
+            self.events
+                .push(InteractEvent::DoubleClick { id, position });
+            let zoom = self.options.double_tap_zoom;
+            self.zoom_step(position, if modes.zoom_out { -zoom } else { zoom });
         } else {
             self.last_tap = Some((position, now, pointer.kind));
         }
@@ -954,10 +1065,10 @@ impl Interaction {
         })
     }
 
-    /// Double-click, double-tap and two-finger-tap zoom: one level around
-    /// a point, eased (GL JS, 300 ms).
+    /// Double-click, double-tap and two-finger-tap zoom: `levels` around a
+    /// point, eased (GL JS, 300 ms); none when zero.
     fn zoom_step(&mut self, at: DVec2, levels: f64) {
-        if self.options.zoom.enabled {
+        if self.options.zoom.enabled && levels != 0.0 {
             self.camera(Step::TapZoom { at, levels });
         }
     }
@@ -991,32 +1102,80 @@ impl Interaction {
                     false => SCROLL_ZOOM_RATE,
                 };
                 let zoom = (-pixels * rate).clamp(-MAX_SCROLL_ZOOM, MAX_SCROLL_ZOOM);
-                if zoom == 0.0 || zoom.is_nan() {
-                    return true;
-                }
-                self.camera(Step::Scroll);
-                self.camera(Step::ZoomBy {
-                    around: position,
-                    levels: zoom,
-                });
-                self.wheel_hold_until = Some(now + SCROLL_IDLE);
+                self.delta(position, false, DVec2::ZERO, [zoom, 0.0, 0.0], now);
             }
             WheelDelta::Notches(notches) => {
                 let zoom = -notches * NOTCH_ZOOM;
-                if zoom == 0.0 || !zoom.is_finite() {
-                    return true;
-                }
-                self.camera(Step::Glide(Box::new(Glide {
-                    zoom: Some(Track {
-                        amount: zoom,
-                        duration: NOTCH_DURATION,
-                        easing: Easing::DEFAULT,
-                    }),
-                    around: Some(position),
-                    ..Glide::default()
-                })));
+                self.delta(position, true, DVec2::ZERO, [zoom, 0.0, 0.0], now);
             }
         }
+        true
+    }
+
+    /// A delta in camera units ([`Input::Delta`]): each part the options
+    /// let move, eased if `discrete`, else at once, holding the camera
+    /// until a while after. Returns whether any part moved.
+    fn delta(
+        &mut self,
+        position: DVec2,
+        discrete: bool,
+        pan: DVec2,
+        [zoom, bearing, pitch]: [f64; 3],
+        now: f64,
+    ) -> bool {
+        let options = &self.options;
+        let on = |movement: &Movement, v: f64| {
+            (movement.enabled && v.is_finite() && v != 0.0).then_some(v)
+        };
+        let pan = Some(pan).filter(|p| options.pan.enabled && p.is_finite() && *p != DVec2::ZERO);
+        let (zoom, bearing, pitch) = (
+            on(&options.zoom, zoom),
+            on(&options.rotate, bearing),
+            on(&options.pitch, pitch),
+        );
+        if pan.is_none() && zoom.is_none() && bearing.is_none() && pitch.is_none() {
+            return false;
+        }
+        if discrete {
+            fn track<T>(amount: T) -> Track<T> {
+                Track {
+                    amount,
+                    duration: NOTCH_DURATION,
+                    easing: Easing::DEFAULT,
+                }
+            }
+            self.camera(Step::Glide(Box::new(Glide {
+                pan: pan.map(track),
+                zoom: zoom.map(track),
+                bearing: bearing.map(track),
+                pitch: pitch.map(track),
+                around: Some(position),
+            })));
+            return true;
+        }
+        self.camera(Step::Scroll);
+        if let Some(pan) = pan {
+            self.camera(Step::Pan {
+                from: position,
+                to: position + pan,
+            });
+        }
+        if let Some(levels) = zoom {
+            self.camera(Step::ZoomBy {
+                around: position,
+                levels,
+            });
+        }
+        if let Some(degrees) = bearing {
+            self.camera(Step::RotateBy {
+                around: Some(position),
+                degrees,
+            });
+        }
+        if let Some(degrees) = pitch {
+            self.camera(Step::PitchBy(degrees));
+        }
+        self.wheel_hold_until = Some(now + SCROLL_IDLE);
         true
     }
 
@@ -1089,6 +1248,7 @@ impl Interaction {
                 let end = if phase == GesturePhase::End {
                     End::Glide
                 } else {
+                    self.camera(Step::Cancel);
                     End::Cancel
                 };
                 self.finish(now, end);

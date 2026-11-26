@@ -209,16 +209,6 @@ impl EndHandler {
     }
 
     fn end(self, outcome: mln_camera_transition_outcome, generation: u64) {
-        self.end_moving(outcome, generation, orb_api::MomentumVelocity::default());
-    }
-
-    /// Ends the transition, reporting the speed its motion had left.
-    fn end_moving(
-        self,
-        outcome: mln_camera_transition_outcome,
-        generation: u64,
-        velocity: orb_api::MomentumVelocity,
-    ) {
         delivery::deliver(
             self.queue,
             Box::new(move || {
@@ -227,15 +217,6 @@ impl EndHandler {
                 end.size = std::mem::size_of::<mln_camera_transition_end>() as u32;
                 end.outcome = outcome;
                 end.generation = generation;
-                end.velocity = mln_camera_velocity {
-                    pan: mln_screen_point {
-                        x: velocity.pan.x,
-                        y: velocity.pan.y,
-                    },
-                    zoom: velocity.zoom,
-                    bearing: velocity.bearing,
-                    pitch: velocity.pitch,
-                };
                 // SAFETY: the caller's registration; `end` lives until it
                 // returns.
                 crate::base::to_host(|| unsafe { (self.callback)(self.user_data.get(), &end) });
@@ -294,14 +275,6 @@ pub(crate) struct MapEntry {
     /// Command groups open: while any is, a session draws none of the
     /// map's changes, so they show together once the outermost ends.
     pub(crate) groups: u32,
-    /// A gesture runs: from its begin to its end or cancel, or to the end
-    /// of the glide its release starts.
-    gesture: bool,
-    /// The glide a gesture's release started.
-    momentum: Option<AnimationId>,
-    /// Whether the gesture under way changed the zoom, the bearing and
-    /// the pitch: only those settle on a release's snaps.
-    gesture_changed: [bool; 3],
     /// How the camera's latest change was made, for its camera events.
     change: (mln_camera_change_mode, mln_camera_change_source),
     /// An immediate move raised its camera events with its command, so
@@ -409,7 +382,7 @@ impl MapEntry {
             generation: self.generation,
             fully_loaded: self.style_loaded && !self.loading,
             rendering_stats_view_enabled: self.stats_view,
-            gesture_in_progress: self.gesture,
+            gesture_in_progress: self.map.gesture_motion() != orb_api::GestureMotion::Still,
             // Native's `inTransition`: an animation runs. A jump that took the
             // last one's fields ends it at once, though the move's end
             // waits for the runtime thread's next frame to report it.
@@ -434,6 +407,35 @@ impl MapEntry {
             globe_free_bearing_enabled: self.map.globe_free_bearing(),
         };
         *lock(&self.handle.snapshot) = Some(snapshot);
+    }
+
+    /// Applies a gesture recognizer's moves to the camera now. A gesture
+    /// that begins or is cancelled stops the camera's transitions as
+    /// cancelled; its own glide, which it may catch, is none. Its changes
+    /// report as frames show them: a gesture's while input holds the camera
+    /// or its eased steps run, and its glide's after its release.
+    pub(crate) fn apply_gesture(&mut self, moves: Vec<orb_api::Move>) {
+        let now = self.core.now();
+        if self.map.apply_moves(moves, now) {
+            for t in &mut self.transitions {
+                t.outcome = Some(MLN_CAMERA_TRANSITION_OUTCOME_CANCELLED);
+            }
+        }
+        self.jumped = false;
+        self.change = match self.map.gesture_motion() {
+            orb_api::GestureMotion::Gliding => (
+                MLN_CAMERA_CHANGE_MODE_ANIMATED,
+                MLN_CAMERA_CHANGE_SOURCE_MOMENTUM,
+            ),
+            orb_api::GestureMotion::Easing => (
+                MLN_CAMERA_CHANGE_MODE_ANIMATED,
+                MLN_CAMERA_CHANGE_SOURCE_GESTURE,
+            ),
+            _ => (
+                MLN_CAMERA_CHANGE_MODE_IMMEDIATE,
+                MLN_CAMERA_CHANGE_SOURCE_GESTURE,
+            ),
+        };
     }
 
     /// Publishes a render update for a change, or holds it for the end of
@@ -549,7 +551,6 @@ fn take_events(entry: &mut MapEntry) -> Vec<Box<dyn FnOnce()>> {
     let id = entry.id;
     let mut out = Vec::new();
     let mut ended = Vec::new();
-    let mut moving = Vec::new();
     let mut waiters = Vec::new();
     {
         let mut camera_phases = [false; 3];
@@ -699,15 +700,8 @@ fn take_events(entry: &mut MapEntry) -> Vec<Box<dyn FnOnce()>> {
                     }
                 }
                 E::Camera(orb_api::CameraEvent::AnimationEnd {
-                    id,
-                    interrupted,
-                    velocity,
+                    id, interrupted, ..
                 }) => {
-                    // A gesture's glide ends the gesture.
-                    if entry.momentum == Some(id) {
-                        entry.momentum = None;
-                        entry.gesture = false;
-                    }
                     // An animation interrupted without a cancel lost what
                     // it moved to a later command.
                     if let Some(i) = entry
@@ -720,9 +714,7 @@ fn take_events(entry: &mut MapEntry) -> Vec<Box<dyn FnOnce()>> {
                         t.replaced |= interrupted;
                         if t.animations.is_empty() {
                             let t = entry.transitions.remove(i);
-                            if let Some(handler) = t.handler {
-                                moving.push((handler, t.outcome(), velocity));
-                            }
+                            ended.extend(t.handler.map(|h| (h, t.outcome())));
                         }
                     }
                 }
@@ -751,11 +743,6 @@ fn take_events(entry: &mut MapEntry) -> Vec<Box<dyn FnOnce()>> {
     let mut after: Vec<Box<dyn FnOnce()>> = Vec::new();
     for (handler, outcome) in ended {
         after.push(Box::new(move || handler.end(outcome, generation)));
-    }
-    for (handler, outcome, velocity) in moving {
-        after.push(Box::new(move || {
-            handler.end_moving(outcome, generation, velocity);
-        }));
     }
     for (completion, result) in waiters {
         after.push(Box::new(move || completion.complete(result, generation)));
@@ -921,9 +908,6 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                     style_waiters: Vec::new(),
                     transitions: Vec::new(),
                     groups: 0,
-                    gesture: false,
-                    momentum: None,
-                    gesture_changed: [false; 3],
                     camera_events: Vec::new(),
                     ended: Vec::new(),
                     change: (
@@ -1872,24 +1856,9 @@ fn update_camera(
     mode: mln_camera_update_mode,
     t: &CameraTarget,
     animation: &Animation,
-    phase: mln_gesture_phase,
 ) -> Result {
     let duration =
         (animation.fields & MLN_ANIMATION_OPTION_DURATION != 0).then_some(animation.duration_ms);
-    gesture_phase(entry, phase);
-    if phase != MLN_GESTURE_PHASE_NONE {
-        // A gesture's update can repeat a value it doesn't change.
-        let camera = entry.map.camera();
-        let now = [entry.map.zoom(), camera.bearing, camera.pitch];
-        for ((changed, to), now) in entry
-            .gesture_changed
-            .iter_mut()
-            .zip([t.zoom, t.bearing, t.pitch])
-            .zip(now)
-        {
-            *changed |= to.is_some_and(|v| v != now);
-        }
-    }
     // Native eases without a duration at once, and a flight of no duration
     // jumps.
     let immediate = match mode {
@@ -1908,11 +1877,7 @@ fn update_camera(
         } else {
             MLN_CAMERA_CHANGE_MODE_ANIMATED
         },
-        if phase == MLN_GESTURE_PHASE_NONE {
-            MLN_CAMERA_CHANGE_SOURCE_COMMAND
-        } else {
-            MLN_CAMERA_CHANGE_SOURCE_GESTURE
-        },
+        MLN_CAMERA_CHANGE_SOURCE_COMMAND,
     );
     if immediate {
         // Native reports an immediate move as it makes it.
@@ -1982,51 +1947,21 @@ fn track(entry: &mut MapEntry, animation_id: Option<AnimationId>, animation: &An
     }
 }
 
-/// A gesture's phase: a begin cancels the camera's transitions, and the
-/// snapshot shows a gesture from its begin to its end or cancel, which
-/// cancels the transitions started during it.
-fn gesture_phase(entry: &mut MapEntry, phase: mln_gesture_phase) {
-    // A begin, or the first phase after the input ended, starts a gesture.
-    let input = entry.gesture && entry.momentum.is_none();
-    if phase == MLN_GESTURE_PHASE_BEGIN || (phase != MLN_GESTURE_PHASE_NONE && !input) {
-        entry.gesture_changed = [false; 3];
-    }
-    match phase {
-        MLN_GESTURE_PHASE_BEGIN => {
-            // The glide a new gesture stops no longer ends a gesture.
-            entry.momentum = None;
-            cancel(entry, None);
-            entry.gesture = true;
-        }
-        MLN_GESTURE_PHASE_UPDATE => entry.gesture = true,
-        MLN_GESTURE_PHASE_END => entry.gesture = false,
-        MLN_GESTURE_PHASE_CANCEL => {
-            cancel(entry, None);
-            entry.gesture = false;
-        }
-        _ => {}
-    }
-}
-
 command!(
     mln_map_update_camera(update: *const mln_camera_update),
     false,
     true,
     |state, id| {
         let update = *sized(update, "update")?;
-        if update.mode > MLN_CAMERA_UPDATE_MODE_FLY
-            || update.gesture_phase > MLN_GESTURE_PHASE_CANCEL
-        {
-            return Err(Failure::argument(
-                "the update's mode or gesture phase is invalid",
-            ));
+        if update.mode > MLN_CAMERA_UPDATE_MODE_FLY {
+            return Err(Failure::argument("the update's mode is invalid"));
         }
         check_camera(&update.camera)?;
-        let (mode, camera, phase) = (update.mode, update.camera, update.gesture_phase);
+        let (mode, camera) = (update.mode, update.camera);
         let animation = Animation::from_c(&update.animation)?;
         Ok(move |entry: &mut MapEntry| {
             let t = target(entry, &camera)?;
-            update_camera(entry, mode, &t, &animation, phase)?;
+            update_camera(entry, mode, &t, &animation)?;
             Ok(Value::None)
         })
     }
@@ -2042,7 +1977,6 @@ struct Delta {
     pitch: f64,
     anchor: mln_screen_point,
     animation: Animation,
-    gesture_phase: mln_gesture_phase,
 }
 
 /// The camera `t` sets (its zoom, bearing and pitch) moved so that `keep`
@@ -2074,9 +2008,9 @@ fn keeping(entry: &MapEntry, mut t: CameraTarget, keep: Geodetic, at: glam::DVec
     t
 }
 
-/// A host's gesture step on Orbis's camera: the pan moves the map's
-/// content by the offset, then zoom, rotation and tilt turn about the
-/// anchor, or the center.
+/// A delta on Orbis's camera: the pan moves the map's content by the
+/// offset, then zoom, rotation and tilt turn about the anchor, or the
+/// center.
 fn apply_delta(entry: &mut MapEntry, d: &Delta) -> Result {
     let has = |bit| d.fields & bit != 0;
     let animated = d.animation.fields & MLN_ANIMATION_OPTION_DURATION != 0;
@@ -2124,212 +2058,7 @@ fn apply_delta(entry: &mut MapEntry, d: &Delta) -> Result {
     } else {
         MLN_CAMERA_UPDATE_MODE_JUMP
     };
-    update_camera(entry, mode, &t, &d.animation, d.gesture_phase)
-}
-
-/// A part's decay over its defaults, checked as mln-ffi checks it.
-fn decay(
-    d: &mln_momentum_decay,
-    defaults: orb_api::MomentumDecay,
-) -> Result<orb_api::MomentumDecay> {
-    let has = |bit| d.fields & bit != 0;
-    let mut out = defaults;
-    let limit = |v: f64| {
-        if v.is_nan() || v < 0.0 {
-            Err(Failure::argument(
-                "a momentum decay's speeds and distance are numbers that isn't negative",
-            ))
-        } else {
-            Ok(v)
-        }
-    };
-    if has(MLN_MOMENTUM_DECAY_MIN_SPEED) {
-        out.min_speed = limit(d.min_speed)?;
-    }
-    if has(MLN_MOMENTUM_DECAY_MAX_SPEED) {
-        out.max_speed = limit(d.max_speed)?;
-    }
-    if has(MLN_MOMENTUM_DECAY_MAX_DISTANCE) {
-        out.max_distance = limit(d.max_distance)?;
-    }
-    let ease = has(MLN_MOMENTUM_DECAY_MODEL) && d.model == MLN_MOMENTUM_DECAY_MODEL_EASE;
-    if has(MLN_MOMENTUM_DECAY_MODEL) && d.model > MLN_MOMENTUM_DECAY_MODEL_EASE {
-        return Err(Failure::argument("the momentum decay model is invalid"));
-    }
-    if ease {
-        if !(has(MLN_MOMENTUM_DECAY_DISTANCE) && has(MLN_MOMENTUM_DECAY_DURATION_MS)) {
-            return Err(Failure::argument(
-                "an eased glide needs a distance and a duration",
-            ));
-        }
-        if !(d.distance.is_finite() && d.duration_ms.is_finite() && d.duration_ms > 0.0) {
-            return Err(Failure::argument(
-                "an eased glide needs a distance and a duration that are finite",
-            ));
-        }
-        let mut easing = Easing::Bezier([0.175, 0.5, 0.35, 1.0]);
-        if has(MLN_MOMENTUM_DECAY_EASING) {
-            let e = d.easing;
-            let unit = |v: f64| (0.0..=1.0).contains(&v);
-            if !(unit(e.x1) && unit(e.y1) && unit(e.x2) && unit(e.y2)) {
-                return Err(Failure::argument(
-                    "an eased glide's control points are within [0, 1] only",
-                ));
-            }
-            easing = Easing::Bezier([e.x1, e.y1, e.x2, e.y2]);
-        }
-        out.model = orb_api::DecayModel::Ease {
-            distance: d.distance,
-            duration: d.duration_ms,
-            easing,
-        };
-    } else if let orb_api::DecayModel::Friction {
-        mut half_life,
-        mut stop_speed,
-    } = defaults.model
-    {
-        if has(MLN_MOMENTUM_DECAY_HALF_LIFE_MS) {
-            if !(d.half_life_ms.is_finite() && d.half_life_ms > 0.0) {
-                return Err(Failure::argument("friction needs a positive half-life"));
-            }
-            half_life = d.half_life_ms;
-        }
-        if has(MLN_MOMENTUM_DECAY_STOP_SPEED) {
-            if !(d.stop_speed.is_finite() && d.stop_speed > 0.0) {
-                return Err(Failure::argument("friction needs a positive stop speed"));
-            }
-            stop_speed = d.stop_speed;
-        }
-        out.model = orb_api::DecayModel::Friction {
-            half_life,
-            stop_speed,
-        };
-    }
-    Ok(out)
-}
-
-/// A zoom, bearing or pitch part of a release, over its defaults.
-fn anchored(
-    m: &mln_anchored_momentum,
-    part: orb_api::AnchoredMomentum,
-    snap_defaults: orb_api::MomentumSnap,
-) -> Result<Option<orb_api::AnchoredMomentum>> {
-    let has = |bit| m.fields & bit != 0;
-    // The decay is checked even for a part that doesn't move.
-    let checked = decay(&m.decay, part.decay)?;
-    if has(MLN_ANCHORED_MOMENTUM_VELOCITY) && !m.velocity.is_finite() {
-        return Err(Failure::argument("momentum velocities must be finite"));
-    }
-    let mut out = part;
-    out.velocity = has(MLN_ANCHORED_MOMENTUM_VELOCITY).then_some(m.velocity);
-    out.decay = checked;
-    if has(MLN_ANCHORED_MOMENTUM_ANCHOR) {
-        check_point(&m.anchor)?;
-        out.anchor = Some(glam::DVec2::new(m.anchor.x, m.anchor.y));
-    }
-    if has(MLN_ANCHORED_MOMENTUM_SNAP) {
-        let s = &m.snap;
-        let set = |bit| s.fields & bit != 0;
-        let mut snap = snap_defaults;
-        if set(MLN_MOMENTUM_SNAP_SPACING) {
-            if !(s.spacing.is_finite() && s.spacing > 0.0) {
-                return Err(Failure::argument("a snap needs a positive spacing"));
-            }
-            snap.spacing = s.spacing;
-        }
-        if set(MLN_MOMENTUM_SNAP_OFFSET) {
-            if !s.offset.is_finite() {
-                return Err(Failure::argument("a snap's offset must be finite"));
-            }
-            snap.offset = s.offset;
-        }
-        if set(MLN_MOMENTUM_SNAP_TOLERANCE) {
-            if !(s.tolerance.is_finite() && s.tolerance >= 0.0) {
-                return Err(Failure::argument("a snap's tolerance isn't negative"));
-            }
-            snap.tolerance = s.tolerance;
-        }
-        if set(MLN_MOMENTUM_SNAP_DURATION_MS) {
-            if !(s.duration_ms.is_finite() && s.duration_ms >= 0.0) {
-                return Err(Failure::argument("a snap's duration isn't negative"));
-            }
-            snap.duration = s.duration_ms;
-        }
-        out.snap = Some(snap);
-    }
-    // Every part is checked; only one with a velocity or a snap moves.
-    Ok((out.velocity.is_some() || out.snap.is_some()).then_some(out))
-}
-
-/// A release's momentum as Orbis's camera takes it.
-fn momentum(m: &mln_gesture_momentum) -> Result<orb_api::GestureMomentum> {
-    let pan_decay = decay(&m.pan.decay, orb_api::MomentumDecay::PAN)?;
-    let pan = if m.pan.fields & MLN_PAN_MOMENTUM_VELOCITY != 0 {
-        let v = m.pan.velocity;
-        if !(v.x.is_finite() && v.y.is_finite()) {
-            return Err(Failure::argument("momentum velocities must be finite"));
-        }
-        let mut pan = orb_api::PanMomentum::new(glam::DVec2::new(v.x, v.y));
-        pan.decay = pan_decay;
-        Some(pan)
-    } else {
-        None
-    };
-    Ok(orb_api::GestureMomentum {
-        pan,
-        zoom: anchored(
-            &m.zoom,
-            orb_api::AnchoredMomentum::zoom(None),
-            orb_api::MomentumSnap::ZOOM,
-        )?,
-        bearing: anchored(
-            &m.bearing,
-            orb_api::AnchoredMomentum::bearing(None),
-            orb_api::MomentumSnap::BEARING,
-        )?,
-        pitch: anchored(
-            &m.pitch,
-            orb_api::AnchoredMomentum::pitch(None),
-            orb_api::MomentumSnap::PITCH,
-        )?,
-    })
-}
-
-/// A gesture's release: its last step, then the glide its momentum
-/// starts, which ends the gesture when it ends. A release that moves
-/// nothing over time ends the gesture at once.
-fn release_gesture(entry: &mut MapEntry, d: &Delta, glide: &orb_api::GestureMomentum) -> Result {
-    let step = Delta {
-        animation: Animation {
-            handler: None,
-            ..d.animation
-        },
-        gesture_phase: MLN_GESTURE_PHASE_UPDATE,
-        ..*d
-    };
-    apply_delta(entry, &step)?;
-    // Only what the gesture changed settles.
-    let mut glide = *glide;
-    for (part, changed) in [&mut glide.zoom, &mut glide.bearing, &mut glide.pitch]
-        .into_iter()
-        .zip(entry.gesture_changed)
-    {
-        if let Some(part) = part.as_mut().filter(|_| !changed) {
-            part.snap = None;
-        }
-    }
-    let started = entry.map.start_momentum(&glide);
-    entry.momentum = started;
-    entry.gesture = started.is_some();
-    if started.is_some() {
-        entry.jumped = false;
-        entry.change = (
-            MLN_CAMERA_CHANGE_MODE_ANIMATED,
-            MLN_CAMERA_CHANGE_SOURCE_MOMENTUM,
-        );
-    }
-    track(entry, started, &d.animation);
-    Ok(())
+    update_camera(entry, mode, &t, &d.animation)
 }
 
 /// Checks a delta as mln-ffi does: only the fields it selects are read.
@@ -2338,13 +2067,9 @@ fn check_delta(d: &mln_camera_delta) -> Result {
         | MLN_CAMERA_DELTA_SCALE
         | MLN_CAMERA_DELTA_BEARING
         | MLN_CAMERA_DELTA_PITCH
-        | MLN_CAMERA_DELTA_ANCHOR
-        | MLN_CAMERA_DELTA_MOMENTUM;
+        | MLN_CAMERA_DELTA_ANCHOR;
     if d.fields & !known != 0 {
         return Err(Failure::argument("the delta's fields have unknown bits"));
-    }
-    if d.gesture_phase > MLN_GESTURE_PHASE_CANCEL {
-        return Err(Failure::argument("the delta's gesture phase is invalid"));
     }
     let has = |bit| d.fields & bit != 0;
     if has(MLN_CAMERA_DELTA_OFFSET) && !(d.offset.x.is_finite() && d.offset.y.is_finite()) {
@@ -2386,21 +2111,6 @@ command!(
     |state, id| {
         let d = *sized(delta, "delta")?;
         check_delta(&d)?;
-        let glide = if d.fields & MLN_CAMERA_DELTA_MOMENTUM != 0 {
-            if d.gesture_phase != MLN_GESTURE_PHASE_END {
-                return Err(Failure::argument(
-                    "only a delta in the end phase carries momentum",
-                ));
-            }
-            if d.animation.fields & !MLN_ANIMATION_OPTION_TRANSITION_ID != 0 {
-                return Err(Failure::argument(
-                    "a delta with momentum sets only the transition ID of its animation",
-                ));
-            }
-            Some(momentum(&d.momentum)?)
-        } else {
-            None
-        };
         let delta = Delta {
             fields: d.fields,
             offset: d.offset,
@@ -2409,12 +2119,8 @@ command!(
             pitch: d.pitch,
             anchor: d.anchor,
             animation: Animation::from_c(&d.animation)?,
-            gesture_phase: d.gesture_phase,
         };
-        Ok(job(move |entry| match glide {
-            None => apply_delta(entry, &delta),
-            Some(glide) => release_gesture(entry, &delta, &glide),
-        }))
+        Ok(job(move |entry| apply_delta(entry, &delta)))
     }
 );
 
@@ -2428,8 +2134,7 @@ command!(mln_map_get_camera(), true, false, |state, id| {
 });
 
 /// Ends the transitions `which` names, or all of them, as cancelled, and
-/// stops their animations where they are. Each ends with its animations,
-/// whose ends report the speed they had left.
+/// stops their animations where they are. Each ends with its animations.
 fn cancel(entry: &mut MapEntry, which: Option<u64>) {
     let mut stopping = Vec::new();
     for t in &mut entry.transitions {
@@ -2879,7 +2584,7 @@ fn fit_job(
             }
         };
         let t = target(entry, &camera)?;
-        update_camera(entry, mode, &t, &animation, MLN_GESTURE_PHASE_NONE)
+        update_camera(entry, mode, &t, &animation)
     })
 }
 

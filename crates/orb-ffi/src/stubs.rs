@@ -260,6 +260,26 @@ const _: () = {
         crate::delivery::mln_delivery_queue_release,
     ];
     let _ = [
+        crate::sys::mln_gesture_recognizer_create,
+        crate::gesture::mln_gesture_recognizer_create,
+    ];
+    let _ = [
+        crate::sys::mln_gesture_recognizer_handle,
+        crate::gesture::mln_gesture_recognizer_handle,
+    ];
+    let _ = [
+        crate::sys::mln_gesture_recognizer_release,
+        crate::gesture::mln_gesture_recognizer_release,
+    ];
+    let _ = [
+        crate::sys::mln_gesture_recognizer_set_options,
+        crate::gesture::mln_gesture_recognizer_set_options,
+    ];
+    let _ = [
+        crate::sys::mln_gesture_recognizer_tick,
+        crate::gesture::mln_gesture_recognizer_tick,
+    ];
+    let _ = [
         crate::sys::mln_gpu_device_create,
         crate::gpu_device::mln_gpu_device_create,
     ];

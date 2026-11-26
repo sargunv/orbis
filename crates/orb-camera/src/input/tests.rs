@@ -185,6 +185,7 @@ fn clicks_and_double_clicks() {
     assert_eq!(
         rig.input.take_events(),
         [InteractEvent::Click {
+            id: 1,
             position: DVec2::new(201.0, 200.0),
         }]
     );
@@ -196,6 +197,7 @@ fn clicks_and_double_clicks() {
         rig.input
             .take_events()
             .contains(&InteractEvent::DoubleClick {
+                id: 1,
                 position: DVec2::new(201.0, 200.0)
             })
     );
@@ -602,6 +604,7 @@ fn a_touch_held_still_is_a_long_click() {
     assert_eq!(
         rig.input.take_events(),
         [InteractEvent::LongClick {
+            id: 1,
             position: DVec2::new(302.0, 301.0)
         }]
     );
@@ -629,6 +632,7 @@ fn a_touch_held_still_is_a_long_click() {
     assert_eq!(
         rig.input.take_events(),
         [InteractEvent::Click {
+            id: 1,
             position: DVec2::new(300.0, 300.0)
         }]
     );
@@ -674,6 +678,7 @@ fn a_right_click_is_a_long_click() {
     assert_eq!(
         rig.input.take_events(),
         [InteractEvent::LongClick {
+            id: 1,
             position: DVec2::new(100.0, 120.0)
         }]
     );
@@ -1051,4 +1056,133 @@ fn a_drag_off_the_globe_turns_it() {
             "step {i}: {moved}"
         );
     }
+}
+
+impl Rig {
+    fn press(&mut self, id: u32, kind: PointerKind, x: f64, y: f64, modes: Modes) {
+        self.send(Input::Press {
+            id,
+            kind,
+            position: DVec2::new(x, y),
+            modes,
+        });
+    }
+
+    fn delta(&mut self, discrete: bool, pan: DVec2, zoom: f64, bearing: f64) -> bool {
+        self.send(Input::Delta {
+            position: DVec2::new(400.0, 300.0),
+            discrete,
+            pan,
+            zoom,
+            bearing,
+            pitch: 0.0,
+        })
+    }
+}
+
+#[test]
+fn a_zoom_out_press_double_clicks_out_and_drags_a_pan() {
+    let zoom_out = Modes {
+        zoom_out: true,
+        ..Modes::default()
+    };
+    let mut rig = Rig::new();
+    let zoom = rig.camera.zoom();
+    for _ in 0..2 {
+        rig.press(1, PointerKind::Mouse, 200.0, 200.0, zoom_out);
+        rig.up(1, 200.0, 200.0);
+        rig.now += 100.0;
+    }
+    rig.settle();
+    assert!((rig.camera.zoom() - (zoom - 1.0)).abs() < 1e-9);
+    rig.now += 1000.0;
+    let ground = rig.camera.unproject(DVec2::new(200.0, 200.0)).unwrap();
+    rig.press(1, PointerKind::Mouse, 200.0, 200.0, zoom_out);
+    rig.now += 16.0;
+    rig.to(1, 260.0, 200.0);
+    assert!(rig.input.box_zoom().is_none(), "no box without its mode");
+    let under = rig.camera.project(ground).unwrap();
+    assert!(under.distance(DVec2::new(260.0, 200.0)) < 1e-6, "{under}");
+}
+
+#[test]
+fn deltas_move_each_part_eased_or_at_once() {
+    let mut rig = Rig::new();
+    let (zoom, bearing) = (rig.camera.zoom(), rig.camera.state().bearing);
+    assert!(rig.delta(true, DVec2::ZERO, 0.5, 10.0));
+    rig.frame();
+    assert!(rig.camera.zoom() < zoom + 0.5, "a discrete delta eases");
+    rig.settle();
+    assert!((rig.camera.zoom() - (zoom + 0.5)).abs() < 1e-9);
+    assert!((rig.camera.state().bearing - (bearing + 10.0)).abs() < 1e-9);
+
+    let middle = DVec2::new(400.0, 300.0);
+    let ground = rig.camera.unproject(middle).unwrap();
+    assert!(rig.delta(false, DVec2::new(30.0, 0.0), 0.0, 0.0));
+    let under = rig.camera.project(ground).unwrap();
+    assert!(
+        under.distance(middle + DVec2::new(30.0, 0.0)) < 1e-6,
+        "{under}"
+    );
+    assert!(rig.input.is_active(), "a continuous delta holds the camera");
+    let tick = rig.input.next_tick().expect("its hold ends at a time");
+    rig.now = tick;
+    rig.frame();
+    assert!(!rig.input.is_active());
+
+    let mut off = Rig::with(GestureOptions::none());
+    assert!(
+        !off.delta(true, DVec2::new(30.0, 0.0), 1.0, 0.0),
+        "the page scrolls instead"
+    );
+}
+
+#[test]
+fn a_press_held_past_the_long_press_without_frames_lifts_as_one() {
+    let mut rig = Rig::new();
+    rig.down(1, PointerKind::Touch, 300.0, 300.0);
+    let at = rig.input.next_tick().expect("a long press is due");
+    assert_eq!(at, rig.now + rig.input.options().thresholds.long_press);
+    rig.now = at + 10.0;
+    rig.up(1, 300.0, 300.0);
+    assert_eq!(
+        rig.input.take_events(),
+        [InteractEvent::LongClick {
+            id: 1,
+            position: DVec2::new(300.0, 300.0)
+        }]
+    );
+    assert_eq!(rig.input.next_tick(), None);
+}
+
+#[test]
+fn tap_zooms_follow_their_options() {
+    let mut rig = Rig::with(GestureOptions {
+        double_tap_zoom: 0.0,
+        two_finger_tap_zoom: -2.0,
+        ..GestureOptions::default()
+    });
+    let zoom = rig.camera.zoom();
+    rig.down(1, PointerKind::Touch, 300.0, 300.0);
+    rig.up(1, 300.0, 300.0);
+    rig.now += 150.0;
+    rig.down(1, PointerKind::Touch, 300.0, 300.0);
+    rig.up(1, 300.0, 300.0);
+    rig.settle();
+    assert!((rig.camera.zoom() - zoom).abs() < 1e-9, "left to the host");
+    rig.input.take_events();
+    rig.now += 1000.0;
+    rig.down(1, PointerKind::Touch, 300.0, 300.0);
+    rig.down(2, PointerKind::Touch, 400.0, 300.0);
+    rig.now += 60.0;
+    rig.up(1, 300.0, 300.0);
+    rig.up(2, 400.0, 300.0);
+    assert_eq!(
+        rig.input.take_events(),
+        [InteractEvent::TwoFingerTap {
+            position: DVec2::new(350.0, 300.0)
+        }]
+    );
+    rig.settle();
+    assert!((rig.camera.zoom() - (zoom - 2.0)).abs() < 1e-9);
 }

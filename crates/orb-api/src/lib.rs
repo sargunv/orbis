@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 pub use map::{CullCount, Event, Image, Map, STILL_TIMEOUT, TileRequest, Waiter};
 pub use orb_camera::input::{
-    Button, Fling, GestureOptions, GesturePhase, Input, Key, Modifiers, Movement, PointerKind,
-    Thresholds, WheelDelta,
+    Button, Fling, GestureOptions, GesturePhase, Input, InteractEvent, Interaction, Key, Modes,
+    Modifiers, Move, Movement, PointerKind, Thresholds, WheelDelta,
 };
 pub use orb_camera::{
     AnchoredMomentum, AnimationId, Bounds, CameraEvent, CameraTarget, Change, Constraints,
@@ -44,9 +44,9 @@ pub use orb_host::{
 };
 pub use orb_runtime::{
     Activity, CameraState, ClusterQuery, FeatureTarget, FetchCounts, FrameReport, FrameTimes,
-    HOST_TILES, Hit, HostElevations, HostTile, MapEvent, MapOptions, Memory, MissingTiles, Op,
-    PoolMemory, Preview, Previews, Progress, Resized, StyleDoc, StyleImage, Transaction,
-    VideoRequest, json,
+    GestureMotion, HOST_TILES, Hit, HostElevations, HostTile, MapEvent, MapOptions, Memory,
+    MissingTiles, Op, PoolMemory, Preview, Previews, Progress, Resized, StyleDoc, StyleImage,
+    Transaction, VideoRequest, json,
 };
 pub use regions::{RegionDefinition, RegionEvent, RegionInfo};
 pub use target::Target;

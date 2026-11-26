@@ -60,6 +60,7 @@ mod turns;
 mod video;
 mod worker;
 
+pub use camera::GestureMotion;
 pub use events::{MapEvent, Progress};
 pub use video::{NO_VIDEO, VideoRequest};
 

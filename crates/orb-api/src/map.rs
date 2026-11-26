@@ -19,7 +19,7 @@ use orb_runtime::{
     RenderMode, StyleImage, Transaction, VideoRequest, Viewport,
 };
 
-use crate::{Activity, Error, Runtime, Skew, Target};
+use crate::{Activity, Error, GestureMotion, Move, Runtime, Skew, Target};
 
 /// Something a map, its camera or a gesture did.
 #[derive(Clone, Debug, PartialEq)]
@@ -673,8 +673,8 @@ impl Map {
 
     /// Continues a gesture the host recognized itself: each part of
     /// `momentum` glides on from its release velocity and slows by its
-    /// decay, from the next frame on, then settles on its snap (mln-ffi's
-    /// `mln_gesture_momentum`). Any input or camera move stops it; its
+    /// decay, from the next frame on, then settles on its snap. Any input
+    /// or camera move stops it; its
     /// [`CameraEvent::AnimationEnd`](crate::CameraEvent::AnimationEnd) then reports the speed it had left.
     /// `None` when nothing moves or settles over time. [`input`](Self::input)
     /// gestures end with one of their own.
@@ -780,6 +780,21 @@ impl Map {
 
     pub fn gestures(&self) -> &GestureOptions {
         self.map.gestures()
+    }
+
+    /// Applies the camera moves of a recognizer the host keeps on its own
+    /// thread, at `time` on the clock frame times use, in order: the C
+    /// API's gesture recognizers' moves. Returns whether one took the
+    /// camera from its animations, stopping them.
+    pub fn apply_moves(&mut self, moves: impl IntoIterator<Item = Move>, time: f64) -> bool {
+        self.dirty = true;
+        self.map.apply_moves(moves, time)
+    }
+
+    /// How input moves the camera: holding it, or through a glide, snap or
+    /// eased step a gesture started.
+    pub fn gesture_motion(&self) -> GestureMotion {
+        self.map.gesture_motion()
     }
 
     /// The box a Shift-drag zooms to while it is drawn, corner to corner

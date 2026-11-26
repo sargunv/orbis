@@ -29,6 +29,7 @@ pub(crate) enum Kind {
     Batch = 21,
     Queue = 23,
     GpuDevice = 26,
+    Gestures = 28,
 }
 
 impl Kind {
@@ -45,6 +46,7 @@ impl Kind {
             Kind::Batch => "mln_render_frame_batch",
             Kind::Queue => "mln_delivery_queue",
             Kind::GpuDevice => "mln_gpu_device",
+            Kind::Gestures => "mln_gesture_recognizer",
         }
     }
 }
@@ -66,6 +68,7 @@ pub(crate) enum Object {
     ),
     Queue(Arc<DeliveryQueue>),
     GpuDevice(Arc<crate::gpu_device::GpuDevice>),
+    Gestures(Arc<crate::gesture::Recognizer>),
 }
 
 impl Object {
@@ -82,6 +85,7 @@ impl Object {
             Object::Batch(_) => Kind::Batch,
             Object::Queue(_) => Kind::Queue,
             Object::GpuDevice(_) => Kind::GpuDevice,
+            Object::Gestures(_) => Kind::Gestures,
         }
     }
 }
@@ -168,6 +172,7 @@ fn kind_of(byte: u8) -> Option<Kind> {
         Kind::Batch,
         Kind::Queue,
         Kind::GpuDevice,
+        Kind::Gestures,
     ]
     .into_iter()
     .find(|k| *k as u8 == byte)
@@ -245,6 +250,13 @@ pub(crate) fn queue(handle: u64) -> Result<Arc<DeliveryQueue>> {
 pub(crate) fn gpu_device(handle: u64) -> Result<Arc<crate::gpu_device::GpuDevice>> {
     match lookup(handle, Kind::GpuDevice)? {
         Object::GpuDevice(d) => Ok(d),
+        _ => unreachable!(),
+    }
+}
+
+pub(crate) fn gestures(handle: u64) -> Result<Arc<crate::gesture::Recognizer>> {
+    match lookup(handle, Kind::Gestures)? {
+        Object::Gestures(g) => Ok(g),
         _ => unreachable!(),
     }
 }

@@ -763,6 +763,20 @@ impl Camera {
         !self.running.is_empty()
     }
 
+    /// Whether an animation input started runs: a glide, a snap, a tap's
+    /// or a key's eased step.
+    pub fn is_user_animating(&self) -> bool {
+        self.running.iter().any(|r| r.user)
+    }
+
+    /// Whether a gesture's momentum runs: the glide and snap after its
+    /// release.
+    pub fn has_momentum(&self) -> bool {
+        self.running
+            .iter()
+            .any(|r| matches!(r.motion, Motion::Momentum(_)))
+    }
+
     /// User input holds the camera: movement continues, frame to frame,
     /// until [`release`](Self::release). Stops any animation, and returns
     /// how fast a momentum it stopped still moved.

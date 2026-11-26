@@ -263,6 +263,7 @@ fn gestures(value: &JsValue) -> GestureOptions {
             tap_interval: number(value, "tapInterval").unwrap_or(t.tap_interval),
             long_press: number(value, "longPress").unwrap_or(t.long_press),
         },
+        ..defaults
     }
 }
 

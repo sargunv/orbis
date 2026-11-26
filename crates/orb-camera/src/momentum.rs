@@ -1,6 +1,7 @@
 //! Gesture momentum: camera motion that continues a gesture after its last
-//! contact lifts, shaped after maplibre-native-ffi's `mln_gesture_momentum`
-//! (and its MapLibre Native patch), whose C API Orbis will take on. Each
+//! contact lifts, shaped after the C API's gesture momentum (its
+//! `mln_momentum_decay` and `mln_momentum_snap` are how a recognizer's
+//! parts glide and settle). Each
 //! part (pan, zoom, bearing, pitch) starts at its release speed, slows by
 //! its own [`MomentumDecay`], and may settle on a [`MomentumSnap`]. Steps
 //! apply to the camera as it stands, so bounds and limits that hold a part
@@ -230,8 +231,8 @@ impl AnchoredMomentum {
     }
 }
 
-/// How a gesture keeps moving the camera after the user lets go
-/// (`mln_gesture_momentum`). Absent parts don't move.
+/// How a gesture keeps moving the camera after the user lets go. Absent
+/// parts don't move.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GestureMomentum {
     pub pan: Option<PanMomentum>,
@@ -240,8 +241,7 @@ pub struct GestureMomentum {
     pub pitch: Option<AnchoredMomentum>,
 }
 
-/// How fast each part of a momentum moves, in its unit per second
-/// (`mln_camera_velocity`).
+/// How fast each part of a momentum moves, in its unit per second.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MomentumVelocity {
     /// Logical pixels per second the map's content moves on screen.

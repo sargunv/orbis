@@ -103,11 +103,7 @@ fn android_gestures(config: Option<ViewConfiguration>, scale: f64) -> GestureOpt
     };
     GestureOptions {
         pan: Movement {
-            momentum: Some(Fling::Android {
-                min_speed: c.min_fling / scale,
-                max_speed: c.max_fling / scale,
-                max_distance: f64::INFINITY,
-            }),
+            momentum: Some(Fling::android(c.min_fling / scale, c.max_fling / scale)),
             ..defaults.pan
         },
         thresholds: Thresholds {

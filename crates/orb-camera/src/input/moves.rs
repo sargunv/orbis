@@ -28,6 +28,8 @@ pub(super) enum Step {
     /// Input takes the camera unless it holds it already: a scroll.
     Scroll,
     Release,
+    /// The platform took the gesture away: the camera's animations stop.
+    Cancel,
     /// The ground under `from` moves to `to`.
     Pan {
         from: DVec2,
@@ -162,21 +164,29 @@ impl Plan {
 
 impl Camera {
     /// Applies a recognizer's move at host time `now` (milliseconds), the
-    /// time its animations start from.
-    pub fn apply(&mut self, mv: Move, now: f64) {
+    /// time its animations start from. Returns whether input took the
+    /// camera from its animations, stopping them: a gesture that begins
+    /// or is cancelled, or a step that eases from where the camera is.
+    pub fn apply(&mut self, mv: Move, now: f64) -> bool {
         match mv.0 {
             Step::Hold { first } => {
                 let caught = self.hold();
                 if first {
                     self.caught = caught;
                 }
+                return true;
             }
             Step::Scroll => {
                 if !self.is_held() {
                     self.hold();
+                    return true;
                 }
             }
             Step::Release => self.release(),
+            Step::Cancel => {
+                self.stop();
+                return true;
+            }
             Step::Pan { from, to } => self.pan(from, to),
             Step::ZoomBy { around, levels } => self.zoom_by(around, levels),
             Step::RotateBy { around, degrees } => {
@@ -186,10 +196,11 @@ impl Camera {
             Step::PitchBy(degrees) => self.pitch_by(degrees),
             Step::Glide(glide) => {
                 self.glide(*glide, now);
+                return true;
             }
             Step::TapZoom { at, levels } => {
                 let Some(around) = self.unproject(at) else {
-                    return;
+                    return false;
                 };
                 let target = CameraTarget {
                     zoom: Some(self.zoom() + levels),
@@ -206,10 +217,10 @@ impl Camera {
                 let size = (b - a).abs();
                 let viewport = self.viewport();
                 if size.x < 1.0 || size.y < 1.0 {
-                    return;
+                    return false;
                 }
                 let Some(center) = self.unproject((a + b) / 2.0) else {
-                    return;
+                    return false;
                 };
                 let zoom = (viewport.width / size.x)
                     .min(viewport.height / size.y)
@@ -249,5 +260,6 @@ impl Camera {
                 }
             }
         }
+        false
     }
 }
