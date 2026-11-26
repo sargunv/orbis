@@ -97,3 +97,34 @@ fn host_data_moves_to_the_device_that_replaces_a_lost_one() {
     assert_eq!(gpu.read_host_bytes(ids[2], 0..8), vec![2; 8]);
     assert_eq!(gpu.read_host_bytes(fresh, 0..4), vec![9; 4]);
 }
+
+/// The host hears of a loss it didn't ask for, once, with what the driver
+/// said (in the browser, a warning on the console, and a wake that has the
+/// map make another device), and not of one it made (`lose`).
+#[test]
+fn the_host_hears_of_a_loss_it_didnt_make() {
+    let losses = |lose: fn(&WgpuGpu)| {
+        let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        // The adapter as the HAL configures it (ORB_BACKEND, its instance
+        // flags), from a device of its own.
+        let host = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
+        let (_, adapter) = host.instance_and_adapter().expect("a native device");
+        let sink = heard.clone();
+        let gpu = pollster::block_on(WgpuGpu::open(adapter, move |why| {
+            sink.lock().unwrap().push(why.to_owned());
+        }))
+        .expect("a device");
+        assert!(!gpu.lost());
+        lose(&gpu);
+        let _ = gpu.device().poll(wgpu::PollType::wait_indefinitely());
+        assert!(gpu.lost());
+        assert!(gpu.lost_reason().is_some(), "the driver said nothing");
+        heard.lock().unwrap().clone()
+    };
+    let heard = losses(|gpu| gpu.device().destroy());
+    assert!(
+        matches!(&heard[..], [why] if why.contains("Destroyed")),
+        "{heard:?}"
+    );
+    assert_eq!(losses(WgpuGpu::lose), Vec::<String>::new());
+}

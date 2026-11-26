@@ -2,9 +2,6 @@
 //! lost through its callback; a WebGL context says so with events on its
 //! canvas, and comes back on the same canvas once the browser restores it.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use js_sys::{Function, Reflect};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -30,20 +27,24 @@ fn listen(canvas: &JsValue, event: &str, handler: impl FnMut(JsValue) + 'static)
     );
 }
 
-/// Sets `lost` and wakes map `map` when the context is lost, keeping it
-/// restorable (the event's default would give it up). It listens before
-/// the device is asked for, so a context lost while the map starts is
-/// heard too.
-pub(crate) fn watch(canvas: &JsValue, lost: Arc<AtomicBool>, map: u32) {
+/// Calls `mark_lost` and wakes map `map` when the context is lost, keeping
+/// it restorable (the event's default would give it up); at once if it's
+/// lost already, as a context made while the GPU was gone can come. A
+/// context lost before the map listens isn't kept: it listens before
+/// anything yields to the page after the context is made.
+pub(crate) fn watch(canvas: &JsValue, mark_lost: impl Fn() + 'static, map: u32) {
+    if is_lost(canvas) {
+        mark_lost();
+    }
     listen(canvas, "webglcontextlost", move |event| {
         let _ = call(&event, "preventDefault", &[]);
-        lost.store(true, Ordering::Relaxed);
+        mark_lost();
         crate::map::wake(map);
     });
 }
 
 /// Whether the canvas's context is lost now.
-pub(crate) fn is_lost(canvas: &JsValue) -> bool {
+fn is_lost(canvas: &JsValue) -> bool {
     of(canvas)
         .and_then(|context| call(&context, "isContextLost", &[]))
         .is_ok_and(|lost| lost.is_truthy())

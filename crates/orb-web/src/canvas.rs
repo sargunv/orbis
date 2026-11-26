@@ -44,8 +44,6 @@ pub(crate) struct Canvas {
     /// page's thread, behind every compile asked for before it.
     configure_due: bool,
     format: TargetFormat,
-    /// Set by the device's lost callback.
-    lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// WebGL 2's frames read back: drawn here, then copied to the canvas.
     read: Option<ReadTarget>,
     /// The canvas, whose WebGL 2 context says when it's lost.
@@ -252,23 +250,16 @@ impl Canvas {
 
     /// Whether the device was lost: the map needs another.
     pub(crate) fn lost(&self) -> bool {
-        self.lost.load(std::sync::atomic::Ordering::Relaxed)
+        self.gpu.lost()
     }
 
     /// Loses the device on purpose (`device.destroy()`; on WebGL 2, the
     /// context, as `WEBGL_lose_context` does), to exercise recovery.
-    /// WebGPU's loss is marked here at once rather than by the device's
-    /// lost callback: Firefox can leave `device.lost` pending after
-    /// `destroy()` (a map on the page after the e2e `edits` check's edits
-    /// and queries never heard of it).
     pub(crate) fn lose(&mut self) {
         #[cfg(feature = "gl")]
         let _ = crate::gl_context::lose(&self.element);
         #[cfg(not(feature = "gl"))]
-        {
-            self.gpu.device().destroy();
-            self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
+        self.gpu.lose();
     }
 
     /// Each submission's times since the last call once the GPU finished
@@ -404,9 +395,6 @@ impl Canvas {
     ) -> Result<Self, String> {
         use orb_hal_wgpu::from_texture_format;
 
-        let lost = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        #[cfg(feature = "gl")]
-        crate::gl_context::watch(&canvas, lost.clone(), map);
         #[cfg(not(feature = "gl"))]
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
@@ -422,35 +410,25 @@ impl Canvas {
             })
             .await
             .map_err(|e| format!("no WebGL 2 adapter: {e}"))?;
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("orbis"),
-                required_features: orb_hal_wgpu::device_features(&adapter),
-                required_limits: orb_hal_wgpu::device_limits(&adapter),
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| format!(concat!("no ", api!(), " device: {}"), e))?;
-        let flag = lost.clone();
-        device.set_device_lost_callback(move |reason, message| {
-            // Why, where the map didn't lose it on purpose (`lose`, which
-            // marks the loss before it destroys the device): the map draws
-            // on through another device, which says nothing of this one.
-            // Not by the reason: WebKit says `destroyed`, with no message,
-            // when its GPU process aborts a command buffer (macOS logs it
-            // as `kIOGPUCommandBufferCallbackErrorInvalidResource`).
-            if !flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                let why = format!("orbis: the GPU device was lost ({reason:?}): {message}");
-                web_sys::console::warn_1(&why.into());
-            }
-            // The next frame sees the loss and the host recovers.
+        // Says why, where the map didn't lose the device on purpose (`lose`):
+        // the map draws on through another device, which says nothing of
+        // this one. Not by the reason: WebKit says `destroyed`, with no
+        // message, when its GPU process aborts a command buffer (macOS logs
+        // it as `kIOGPUCommandBufferCallbackErrorInvalidResource`). The next
+        // frame sees the loss and the host recovers.
+        #[cfg_attr(not(feature = "gl"), allow(unused_mut))]
+        let mut gpu = WgpuGpu::open(&adapter, move |why| {
+            let why = format!("orbis: the GPU device was lost ({why})");
+            web_sys::console::warn_1(&why.into());
             crate::map::wake(map);
-        });
-        // A context made while the GPU was gone can come lost.
+        })
+        .await
+        .map_err(|e| format!(concat!("no ", api!(), " device: {}"), e))?;
+        // Nothing has yielded to the page since the context was made (the
+        // surface's; WebGL 2's adapter and device come at once), so the
+        // watcher hears every loss.
         #[cfg(feature = "gl")]
-        if crate::gl_context::is_lost(&canvas) {
-            lost.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
+        crate::gl_context::watch(&canvas, gpu.marks_lost(), map);
         #[cfg(feature = "gl")]
         let first_vertex = crate::gl_context::first_vertex(&canvas);
         let caps = surface.get_capabilities(&adapter);
@@ -483,16 +461,12 @@ impl Canvas {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         if GL {
-            surface.configure(&device, &config);
+            surface.configure(gpu.device(), &config);
         }
         // WebGPU's copies only: WebGL 2 copies images at submission.
         if !GL {
-            warm_image_copies(device.clone(), queue.clone());
+            warm_image_copies(gpu.device().clone(), gpu.queue().clone());
         }
-        #[cfg_attr(not(feature = "gl"), allow(unused_mut))]
-        let mut gpu = WgpuGpu::new(device, queue);
-        #[cfg(feature = "gl")]
-        gpu.read_formats(&adapter);
         #[cfg(feature = "gl")]
         if first_vertex {
             gpu.flat_from_first();
@@ -509,7 +483,6 @@ impl Canvas {
                 color: from_texture_format(surface_format).expect("checked above"),
                 sample_count: 1,
             },
-            lost,
             read: None,
             element: canvas,
         })

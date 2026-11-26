@@ -85,7 +85,7 @@ const TEXTURE_SIDE: &str = "ORB_TEXTURE_SIDE";
 /// clip cut buildings without discarding; depth as floats beside a
 /// stencil (`Caps::depth32_stencil8`); and on GL, passthrough shaders,
 /// which take the build's GLSL (`ShaderModuleDesc::glsl`).
-pub fn device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
+fn device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
     let mut wanted = wgpu::Features::PIPELINE_CACHE
         | wgpu::Features::TIMESTAMP_QUERY
         | wgpu::Features::CLIP_DISTANCES
@@ -235,8 +235,8 @@ pub struct WgpuGpu {
     /// Whether submissions carry their debug groups outside captures too
     /// ([`WgpuGpu::set_debug_groups`]).
     debug_groups: bool,
-    /// Set when the device made by `offscreen` is lost.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Set once the device is lost: by its lost callback, by a call that
+    /// shows it, or by the host ([`marks_lost`](Self::marks_lost)).
     lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Which thread wgpu told of the loss, and what the driver said.
     #[cfg(not(target_arch = "wasm32"))]
@@ -520,7 +520,32 @@ fn gl_clips_zero_to_one(device: &wgpu::Device) -> bool {
 }
 
 impl WgpuGpu {
-    pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
+    /// A device on `adapter`, with the features and limits Orbis asks of
+    /// it ([`device_limits`]) and the render formats it reads from it
+    /// where WebGPU doesn't guarantee them. It marks itself lost when the
+    /// driver loses it and then calls `on_lost` with what the driver said
+    /// ([`lost`](Self::lost)).
+    pub async fn open(
+        adapter: &wgpu::Adapter,
+        on_lost: impl Fn(&str) + Send + 'static,
+    ) -> Result<Self, wgpu::RequestDeviceError> {
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("orbis"),
+                required_features: device_features(adapter),
+                required_limits: device_limits(adapter),
+                ..Default::default()
+            })
+            .await?;
+        #[cfg_attr(webgpu, allow(unused_mut))]
+        let mut gpu = Self::new(device, queue);
+        #[cfg(not(webgpu))]
+        gpu.read_formats(adapter);
+        gpu.watch_loss(on_lost);
+        Ok(gpu)
+    }
+
+    fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         // GLES runs the CPU frame driver, as WebGL 2 does, even where it
         // offers compute (#140); WebGL 2's limits already say so.
         #[cfg(not(target_arch = "wasm32"))]
@@ -623,7 +648,6 @@ impl WgpuGpu {
             capture: None,
             capturing: false,
             debug_groups: false,
-            #[cfg(not(target_arch = "wasm32"))]
             lost: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             loss: Default::default(),
@@ -682,7 +706,7 @@ impl WgpuGpu {
     /// On a device known to be lost the writes are dropped; one whose
     /// staging buffer comes back invalid is taken as lost.
     fn encode_writes(&self, encoder: &mut wgpu::CommandEncoder) {
-        if self.known_lost() {
+        if self.lost() {
             self.writes.discard();
             return;
         }
@@ -706,10 +730,7 @@ impl WgpuGpu {
                 c.upload_calls += issued.calls;
                 c.texture_write_submissions += issued.submissions;
             }),
-            #[cfg(not(target_arch = "wasm32"))]
-            None => self.lost.store(true, std::sync::atomic::Ordering::Relaxed),
-            #[cfg(target_arch = "wasm32")]
-            None => {}
+            None => self.mark_lost(),
         }
     }
 
@@ -1008,7 +1029,7 @@ impl WgpuGpu {
     /// Reads what `adapter`, this device's, renders to, where WebGPU
     /// doesn't guarantee it: [`Caps::float_targets`].
     #[cfg(not(webgpu))]
-    pub fn read_formats(&mut self, adapter: &wgpu::Adapter) {
+    fn read_formats(&mut self, adapter: &wgpu::Adapter) {
         let renders = |format, blended: bool| {
             let features = adapter.get_texture_format_features(format);
             features
@@ -1116,7 +1137,7 @@ impl WgpuGpu {
                 Err(e) => {
                     #[cfg(not(target_arch = "wasm32"))]
                     if self.failures_lose {
-                        self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
+                        self.mark_lost();
                     }
                     self.fault.get_or_insert(Fault::Failed {
                         label: done.label,
@@ -1133,7 +1154,7 @@ impl WgpuGpu {
             && let Some(hung) = self.compiler.hung()
         {
             self.fault = Some(hung);
-            self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.mark_lost();
         }
         self.gate_background();
     }
@@ -1208,19 +1229,21 @@ impl WgpuGpu {
         self.compiled.iter().map(|(_, took)| *took).sum()
     }
 
-    /// Whether the device `offscreen` made was lost.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Whether the device is lost: the host needs another. Calls on a lost
+    /// device do nothing, and none panics.
     pub fn lost(&self) -> bool {
         self.lost.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Whether the device is known to be lost: natively, as `lost`; in
-    /// the browser, whose failures don't stop the page, never.
-    fn known_lost(&self) -> bool {
-        #[cfg(not(target_arch = "wasm32"))]
-        return self.lost();
-        #[cfg(target_arch = "wasm32")]
-        false
+    fn mark_lost(&self) {
+        self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Marks the device lost when called: for a host that hears of a loss
+    /// the driver doesn't report, as a WebGL 2 canvas does of its context.
+    pub fn marks_lost(&self) -> impl Fn() + Send + Sync + 'static {
+        let lost = self.lost.clone();
+        move || lost.store(true, std::sync::atomic::Ordering::Relaxed)
     }
 
     /// What the driver said when the device was lost, if it was.
@@ -1229,39 +1252,55 @@ impl WgpuGpu {
         self.loss.reason.get().cloned()
     }
 
-    /// Loses the device on purpose (`destroy`), to exercise recovery.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Loses the device on purpose (`destroy`), to exercise recovery. The
+    /// loss is marked at once rather than by the lost callback, which
+    /// hears of it later or (Firefox's, after `destroy()`) not at all.
     pub fn lose(&self) {
-        self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.mark_lost();
         self.device.destroy();
     }
 
-    /// Marks the device lost when the driver loses it, and takes the
-    /// errors calls on a lost device raise as part of the loss: a loss
-    /// can come in the middle of a frame (in a render bundle's `finish`, at
-    /// a submit), and the frame's remaining calls each fail with "Parent
-    /// device is lost", which wgpu's default handler would panic on. Any
-    /// other uncaptured error still panics, as it would without this.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn watch_loss(&self) {
+    /// Marks the device lost when the driver loses it, calling `on_lost`
+    /// with what the driver said if the loss wasn't already known (as one
+    /// [`lose`](Self::lose) made is).
+    ///
+    /// Natively it also takes the errors calls on a lost device raise as
+    /// part of the loss: a loss can come in the middle of a frame (in a
+    /// render bundle's `finish`, at a submit), and the frame's remaining
+    /// calls each fail with "Parent device is lost", which wgpu's default
+    /// handler would panic on. Any other uncaptured error still panics, as
+    /// it would without this.
+    fn watch_loss(&self, on_lost: impl Fn(&str) + Send + 'static) {
+        #[cfg(not(target_arch = "wasm32"))]
         let loss = self.loss.clone();
+        #[cfg(not(target_arch = "wasm32"))]
         self.compiler.watch_loss(loss.clone());
         let lost = self.lost.clone();
-        self.device.set_device_lost_callback(move |why, message| {
-            loss.reason.get_or_init(|| format!("{why:?}: {message}"));
-            loss.thread.get_or_init(|| std::thread::current().id());
-            lost.store(true, std::sync::atomic::Ordering::Relaxed);
-        });
-        let lost = self.lost.clone();
         self.device
-            .on_uncaptured_error(std::sync::Arc::new(move |error: wgpu::Error| {
-                let loss = lost.load(std::sync::atomic::Ordering::Relaxed)
-                    || error.to_string().contains("device is lost");
-                if !loss {
-                    panic!("wgpu error: {error}");
+            .set_device_lost_callback(move |reason, message| {
+                let why = format!("{reason:?}: {message}");
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    loss.reason.get_or_init(|| why.clone());
+                    loss.thread.get_or_init(|| std::thread::current().id());
                 }
-                lost.store(true, std::sync::atomic::Ordering::Relaxed);
-            }));
+                if !lost.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    on_lost(&why);
+                }
+            });
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let lost = self.lost.clone();
+            self.device
+                .on_uncaptured_error(std::sync::Arc::new(move |error: wgpu::Error| {
+                    let loss = lost.load(std::sync::atomic::Ordering::Relaxed)
+                        || error.to_string().contains("device is lost");
+                    if !loss {
+                        panic!("wgpu error: {error}");
+                    }
+                    lost.store(true, std::sync::atomic::Ordering::Relaxed);
+                }));
+        }
     }
 
     /// D3D12's shader compiler ([`offscreen`](Self::offscreen) chooses DXC
@@ -1451,7 +1490,7 @@ impl WgpuGpu {
     pub fn end_frame(&mut self, in_flight: usize) {
         self.frames.extend(self.last.take());
         // wgpu panics when a wait fails, as it does on a lost device.
-        if self.known_lost() {
+        if self.lost() {
             self.frames.clear();
         }
         while self.frames.len() > in_flight {
@@ -2235,7 +2274,7 @@ impl Gpu for WgpuGpu {
         // wgpu panics when `finish` fails, whatever the error handler, and
         // on a lost device it fails ("Parent device is lost"): the frame
         // goes on without the bundle, and the next one makes a new device.
-        let bundle = (!self.known_lost()).then(|| {
+        let bundle = (!self.lost()).then(|| {
             encoder.finish(&wgpu::RenderBundleDescriptor {
                 label: Some(desc.label),
             })

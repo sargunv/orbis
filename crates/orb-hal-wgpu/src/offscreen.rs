@@ -1,5 +1,6 @@
-//! Devices without a surface, readback and waiting for the GPU: for tests,
-//! the fixture runner, snapshots and the bench.
+//! Devices without a surface (native only), and readback and waiting for
+//! the GPU on both targets: for tests, the fixture runner, snapshots and
+//! the bench.
 //!
 //! Readback is async on both targets. Natively the futures block on
 //! `Device::poll` and are ready when first polled (drive them with any
@@ -40,6 +41,7 @@ pub(crate) struct Readback {
 ///
 /// On Windows, D3D12's shader compiler too ([`crate::dx12`]): what it is,
 /// when the adapter is D3D12's.
+#[cfg(not(target_arch = "wasm32"))]
 async fn adapter() -> Result<(wgpu::Instance, wgpu::Adapter, Option<String>), String> {
     let described = || {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
@@ -87,10 +89,11 @@ async fn adapter() -> Result<(wgpu::Instance, wgpu::Adapter, Option<String>), St
 }
 
 impl WgpuGpu {
-    /// A device on the default adapter with WebGPU's default limits, without
-    /// a surface. `ORB_BACKEND`, `WGPU_BACKEND` and wgpu's other variables
-    /// choose the adapter. Natively the device keeps its instance, so it can
-    /// also draw to window surfaces.
+    /// A native device on the default adapter ([`open`](Self::open)),
+    /// without a surface. `ORB_BACKEND`, `WGPU_BACKEND` and wgpu's other
+    /// variables choose the adapter. The device keeps its instance, so it
+    /// can also draw to window surfaces.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn offscreen() -> Result<Self, String> {
         let (instance, adapter, compiler) = adapter().await?;
         // Orbis draws indirectly from compute; devices without that (the
@@ -106,27 +109,11 @@ impl WgpuGpu {
                 needed - downlevel
             ));
         }
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("orbis"),
-                required_features: crate::device_features(&adapter),
-                required_limits: crate::device_limits(&adapter),
-                ..Default::default()
-            })
+        let mut gpu = Self::open(&adapter, |_| {})
             .await
             .map_err(|e| format!("no device: {e}"))?;
-        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
-        let mut gpu = Self::new(device, queue);
-        #[cfg(not(webgpu))]
-        gpu.read_formats(&adapter);
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            gpu.watch_loss();
-            gpu.native = Some((instance, adapter));
-            gpu.shader_compiler = compiler;
-        }
-        #[cfg(target_arch = "wasm32")]
-        let _ = (instance, compiler);
+        gpu.native = Some((instance, adapter));
+        gpu.shader_compiler = compiler;
         Ok(gpu)
     }
 
@@ -385,10 +372,9 @@ const BACKEND: &str = "ORB_BACKEND";
 /// can crash in `loader_get_icd_and_device` (#169; fixed by
 /// KhronosGroup/Vulkan-Loader@5ee27b30c). Fedora 44 ships 1.4.341, where
 /// parallel test binaries crashed four runs in five.
+#[cfg(not(target_arch = "wasm32"))]
 fn with_env(descriptor: wgpu::InstanceDescriptor) -> wgpu::InstanceDescriptor {
-    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
     let mut descriptor = descriptor.with_env();
-    #[cfg(not(target_arch = "wasm32"))]
     if let Ok(names) = std::env::var(BACKEND) {
         descriptor.backends = wgpu::Backends::from_comma_list(&names);
     }
