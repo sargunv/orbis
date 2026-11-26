@@ -92,9 +92,11 @@ pub(crate) fn answer(query: Query, result: std::result::Result<String, String>) 
                     .and_then(Json::as_str)
                     .unwrap_or_default()
                     .to_string();
+                // A feature without state lends none, as mln-rs's does.
                 let state = f
                     .get("state")
-                    .map_or_else(|| "{}".to_string(), Json::to_string);
+                    .filter(|s| s.as_object().is_none_or(|m| !m.is_empty()))
+                    .map_or_else(String::new, Json::to_string);
                 out.push(mln_rendered_feature {
                     feature: lent.text(bare_feature(f)),
                     layer_id: lent.text(layer),
