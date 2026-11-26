@@ -317,7 +317,7 @@ pub unsafe extern "C" fn mln_gpu_device_wrap_web_gpu(
             if context.is_null() {
                 return Err(Failure::argument("context is null"));
             }
-            if (*context).device.is_null() {
+            if (*context).device == 0 {
                 return Err(Failure::argument("context.device must not be null"));
             }
             fresh_out(out_device, "out_device")?;

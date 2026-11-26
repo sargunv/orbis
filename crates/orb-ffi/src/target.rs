@@ -65,6 +65,21 @@ impl Described {
     }
 }
 
+/// The bytes a view names.
+///
+/// # Safety
+/// The view's data is null or holds its size's bytes.
+unsafe fn bytes<'a>(view: mln_buffer_view, what: &str) -> Result<&'a [u8]> {
+    match (view.data.is_null(), view.size) {
+        (_, 0) => Ok(&[]),
+        (true, _) => Err(Failure::argument(format!(
+            "{what} is null but its size isn't zero"
+        ))),
+        // SAFETY: the caller's contract.
+        (false, size) => Ok(unsafe { std::slice::from_raw_parts(view.data.cast(), size) }),
+    }
+}
+
 fn required(object: *mut c_void, what: &str) -> Result {
     match object.is_null() {
         true => Err(Failure::argument(format!("target.{what} must not be null"))),
@@ -199,21 +214,18 @@ pub(crate) unsafe fn describe(target: *const mln_render_target) -> Result<Descri
                 required(d.window, "ohos_window.window")?;
                 d.logical_size
             }
-            MLN_RENDER_TARGET_KIND_WEB_GPU_SURFACE => {
-                let d = data.web_gpu_surface;
-                required(d.surface, "web_gpu_surface.surface")?;
-                if d.format == 0 {
+            MLN_RENDER_TARGET_KIND_WEB_CANVAS => {
+                let d = data.web_canvas;
+                if d.canvas == 0 {
                     return Err(Failure::argument(
-                        "target.web_gpu_surface.format must name a texture format",
+                        "target.web_canvas.canvas must name a canvas",
                     ));
                 }
-                d.logical_size
-            }
-            MLN_RENDER_TARGET_KIND_HTML_CANVAS => {
-                let d = data.html_canvas;
-                if d.selector.data.is_null() || d.selector.size == 0 {
+                let format = bytes(d.format, "target.web_canvas.format")?;
+                if !matches!(format, b"" | b"bgra8unorm" | b"rgba8unorm" | b"rgba16float") {
                     return Err(Failure::argument(
-                        "target.html_canvas.selector must name a canvas",
+                        "target.web_canvas.format must be empty or a canvas's GPUTextureFormat: \
+                         bgra8unorm, rgba8unorm or rgba16float",
                     ));
                 }
                 d.logical_size
@@ -333,17 +345,17 @@ pub(crate) unsafe fn describe(target: *const mln_render_target) -> Result<Descri
                         depth_count: d.depth_texture_count,
                     },
                     |i, t| {
-                        if t.texture.is_null() || t.texture_view.is_null() {
+                        if t.texture == 0 {
                             return Err(Failure::argument(format!(
-                                "target.{what}.textures[{i}] needs a texture and a texture view"
+                                "target.{what}.textures[{i}].texture must name a GPUTexture"
                             )));
                         }
                         Ok(t.texture)
                     },
                 )?;
-                if d.format == 0 {
+                if bytes(d.format, "format")?.is_empty() {
                     return Err(Failure::argument(format!(
-                        "target.{what}.format must name a texture format"
+                        "target.{what}.format must name a GPUTextureFormat"
                     )));
                 }
                 d.logical_size

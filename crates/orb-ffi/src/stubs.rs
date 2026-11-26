@@ -150,6 +150,20 @@ pub unsafe extern "C" fn mln_runtime_update_offline_region_metadata(
     }
 }
 
+/// `mln_web_alloc`: not implemented.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_web_alloc(size: usize, align: usize) -> *mut std::ffi::c_void {
+    std::ptr::null_mut()
+}
+
+/// `mln_web_free`: not implemented.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_web_free(pointer: *mut std::ffi::c_void, size: usize, align: usize) {}
+
+/// `mln_web_object_release`: not implemented.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_web_object_release(object: mln_web_object) {}
+
 // A function item coerces to a function pointer type it shares with another
 // only if their signatures match, so this fails to compile where a
 // hand-written export differs from the header's declaration.
