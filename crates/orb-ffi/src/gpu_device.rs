@@ -347,6 +347,9 @@ pub unsafe extern "C" fn mln_gpu_device_get_capabilities(
                     target_kinds: TARGET_KINDS,
                     export_kinds: 0,
                     sync_kinds: MLN_GPU_SYNC_KIND_FLAG_CPU_COMPLETE,
+                    // A frame's depth stays the renderer's own.
+                    depth_stencil_formats: 0,
+                    depth_export_kinds: 0,
                 },
                 "out_capabilities",
             )

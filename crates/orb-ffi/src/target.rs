@@ -21,10 +21,12 @@ enum Shape {
     Offscreen,
     /// A CAMetalLayer.
     MetalLayer(UserData),
-    /// The host's MTLTextures, of this physical size.
+    /// The host's MTLTextures, of this physical size, and whether it gave
+    /// depth textures too.
     MetalTextures {
         textures: Vec<UserData>,
         physical: (u32, u32),
+        depth: bool,
     },
     /// A kind no build of Orbis renders to.
     Other,
@@ -49,7 +51,13 @@ impl Described {
         match &self.shape {
             Shape::Offscreen => Ok(TargetSpec::Offscreen),
             Shape::MetalLayer(layer) => Ok(TargetSpec::Metal(*layer)),
-            Shape::MetalTextures { textures, physical } => {
+            Shape::MetalTextures { depth: true, .. } => Err(Failure::unsupported(
+                "a ring's depth textures are not supported by this build: its devices' \
+                 depth_stencil_formats are empty, as Orbis keeps a frame's depth to itself",
+            )),
+            Shape::MetalTextures {
+                textures, physical, ..
+            } => {
                 crate::frames::metal_slots(textures, self.logical, *physical).map(TargetSpec::Ring)
             }
             Shape::Other => unreachable!("TARGET_KINDS names no other kind"),
@@ -64,20 +72,34 @@ fn required(object: *mut c_void, what: &str) -> Result {
     }
 }
 
+/// A ring's textures, and its depth textures (none, or one for each).
+struct Ring<T> {
+    textures: *const T,
+    count: usize,
+    depth: *const T,
+    depth_count: usize,
+}
+
 /// Checks the rules every ring of the host's textures shares: a positive
-/// physical size, one to `MLN_TEXTURE_RING_MAX_DEPTH` textures, and no
-/// texture twice, by the identity `id` reads of each entry once it checks
-/// the objects the entry names.
+/// physical size, one to `MLN_TEXTURE_RING_MAX_DEPTH` textures, no texture
+/// twice, by the identity `id` reads of each entry once it checks the
+/// objects the entry names, and no depth textures or one for each texture.
+/// Returns the textures, and whether the ring has depth textures.
 ///
 /// # Safety
-/// `textures` is null or holds `count` entries.
+/// Each array is null or holds its count's entries.
 unsafe fn ring<'a, T, I: PartialEq>(
     what: &str,
     physical: (u32, u32),
-    textures: *const T,
-    count: usize,
+    ring: Ring<T>,
     id: impl Fn(usize, &T) -> Result<I>,
-) -> Result<&'a [T]> {
+) -> Result<(&'a [T], bool)> {
+    let Ring {
+        textures,
+        count,
+        depth,
+        depth_count,
+    } = ring;
     if physical.0 == 0 || physical.1 == 0 {
         return Err(Failure::argument(format!(
             "target.{what}: the physical texture dimensions must be positive"
@@ -106,7 +128,20 @@ unsafe fn ring<'a, T, I: PartialEq>(
             "target.{what} takes distinct textures"
         )));
     }
-    Ok(textures)
+    if depth_count == 0 {
+        return Ok((textures, false));
+    }
+    if depth.is_null() || depth_count != count {
+        return Err(Failure::argument(format!(
+            "target.{what} has depth textures, but not one for each of its textures"
+        )));
+    }
+    // SAFETY: the caller's contract.
+    let depth = unsafe { std::slice::from_raw_parts(depth, depth_count) };
+    for (i, t) in depth.iter().enumerate() {
+        id(i, t)?;
+    }
+    Ok((textures, true))
 }
 
 /// Checks the target `target` points at.
@@ -201,13 +236,24 @@ pub(crate) unsafe fn describe(target: *const mln_render_target) -> Result<Descri
                 let d = data.metal_borrowed_textures;
                 let physical = (d.physical_width, d.physical_height);
                 let what = "metal_borrowed_textures";
-                let textures = ring(what, physical, d.textures, d.texture_count, |i, t| {
-                    required(t.texture, &format!("{what}.textures[{i}].texture"))?;
-                    Ok(t.texture)
-                })?;
+                let (textures, depth) = ring(
+                    what,
+                    physical,
+                    Ring {
+                        textures: d.textures,
+                        count: d.texture_count,
+                        depth: d.depth_textures,
+                        depth_count: d.depth_texture_count,
+                    },
+                    |i, t| {
+                        required(t.texture, &format!("{what}.textures[{i}].texture"))?;
+                        Ok(t.texture)
+                    },
+                )?;
                 shape = Shape::MetalTextures {
                     textures: textures.iter().map(|t| UserData(t.texture)).collect(),
                     physical,
+                    depth,
                 };
                 d.logical_size
             }
@@ -215,14 +261,24 @@ pub(crate) unsafe fn describe(target: *const mln_render_target) -> Result<Descri
                 let d = data.vulkan_borrowed_textures;
                 let physical = (d.physical_width, d.physical_height);
                 let what = "vulkan_borrowed_textures";
-                ring(what, physical, d.textures, d.texture_count, |i, t| {
-                    if t.image == 0 || t.image_view == 0 {
-                        return Err(Failure::argument(format!(
-                            "target.{what}.textures[{i}] needs an image and an image view"
-                        )));
-                    }
-                    Ok(t.image)
-                })?;
+                ring(
+                    what,
+                    physical,
+                    Ring {
+                        textures: d.textures,
+                        count: d.texture_count,
+                        depth: d.depth_textures,
+                        depth_count: d.depth_texture_count,
+                    },
+                    |i, t| {
+                        if t.image == 0 || t.image_view == 0 {
+                            return Err(Failure::argument(format!(
+                                "target.{what}.textures[{i}] needs an image and an image view"
+                            )));
+                        }
+                        Ok(t.image)
+                    },
+                )?;
                 if d.format == 0 || d.final_layout == 0 {
                     return Err(Failure::argument(format!(
                         "target.{what} needs a format and final_layout"
@@ -237,14 +293,24 @@ pub(crate) unsafe fn describe(target: *const mln_render_target) -> Result<Descri
                 let d = data.open_gl_borrowed_textures;
                 let physical = (d.physical_width, d.physical_height);
                 let what = "open_gl_borrowed_textures";
-                ring(what, physical, d.textures, d.texture_count, |i, t| {
-                    if t.texture == 0 {
-                        return Err(Failure::argument(format!(
-                            "target.{what}.textures[{i}].texture must name a texture"
-                        )));
-                    }
-                    Ok(t.texture)
-                })?;
+                ring(
+                    what,
+                    physical,
+                    Ring {
+                        textures: d.textures,
+                        count: d.texture_count,
+                        depth: d.depth_textures,
+                        depth_count: d.depth_texture_count,
+                    },
+                    |i, t| {
+                        if t.texture == 0 {
+                            return Err(Failure::argument(format!(
+                                "target.{what}.textures[{i}].texture must name a texture"
+                            )));
+                        }
+                        Ok(t.texture)
+                    },
+                )?;
                 if d.target == 0 {
                     return Err(Failure::argument(format!(
                         "target.{what}.target must name the textures' target, such as \
@@ -257,14 +323,24 @@ pub(crate) unsafe fn describe(target: *const mln_render_target) -> Result<Descri
                 let d = data.web_gpu_borrowed_textures;
                 let physical = (d.physical_width, d.physical_height);
                 let what = "web_gpu_borrowed_textures";
-                ring(what, physical, d.textures, d.texture_count, |i, t| {
-                    if t.texture.is_null() || t.texture_view.is_null() {
-                        return Err(Failure::argument(format!(
-                            "target.{what}.textures[{i}] needs a texture and a texture view"
-                        )));
-                    }
-                    Ok(t.texture)
-                })?;
+                ring(
+                    what,
+                    physical,
+                    Ring {
+                        textures: d.textures,
+                        count: d.texture_count,
+                        depth: d.depth_textures,
+                        depth_count: d.depth_texture_count,
+                    },
+                    |i, t| {
+                        if t.texture.is_null() || t.texture_view.is_null() {
+                            return Err(Failure::argument(format!(
+                                "target.{what}.textures[{i}] needs a texture and a texture view"
+                            )));
+                        }
+                        Ok(t.texture)
+                    },
+                )?;
                 if d.format == 0 {
                     return Err(Failure::argument(format!(
                         "target.{what}.format must name a texture format"

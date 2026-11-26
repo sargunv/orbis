@@ -497,6 +497,9 @@ pub unsafe extern "C" fn mln_acquired_frame_get_metal_texture(
                     texture: f.info.texture.get(),
                     device: f.info.device.get(),
                     pixel_format: f.info.pixel_format,
+                    // Rings take no depth textures.
+                    depth_texture: std::ptr::null_mut(),
+                    depth_pixel_format: 0,
                 })
             })
         })

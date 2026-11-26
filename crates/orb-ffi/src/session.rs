@@ -532,6 +532,11 @@ pub(crate) unsafe fn attach(
             "Orbis sessions render on threads of their own (MLN_RENDER_DRIVER_CORE_WORKER)",
         ));
     }
+    if options.keep_depth {
+        return Err(Failure::unsupported(
+            "only an exported ring keeps depth, and Orbis's devices export no rings",
+        ));
+    }
     if options.producer_sync_kinds != 0
         && options.producer_sync_kinds & MLN_GPU_SYNC_KIND_FLAG_CPU_COMPLETE == 0
     {
