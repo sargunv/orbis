@@ -726,10 +726,16 @@ fn host_triple() -> Result<String, String> {
         .ok_or_else(|| "rustc -vV names no host".to_string())
 }
 
-/// A C or C++ compiler command. On macOS it takes the SDK `rustc` links
-/// with (`xcrun --sdk macosx`), not the one `cc` defaults to, which can be
-/// a Command Line Tools SDK newer than the linker reads.
+/// A C or C++ compiler command, `cc` or `c++` (clang's, which takes the
+/// same flags, on Windows). On macOS it takes the SDK `rustc` links with
+/// (`xcrun --sdk macosx`), not the one `cc` defaults to, which can be a
+/// Command Line Tools SDK newer than the linker reads.
 fn compiler(program: &str) -> Command {
+    let program = match program {
+        "cc" if cfg!(windows) => "clang",
+        "c++" if cfg!(windows) => "clang++",
+        _ => program,
+    };
     let mut command = Command::new(program);
     if cfg!(target_os = "macos") && std::env::var_os("SDKROOT").is_none() {
         static SDK: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
@@ -785,12 +791,20 @@ fn install_library(mirror: &Path, library: Option<&Path>, asan: bool) -> Result<
     let (built, installed) = if cfg!(target_vendor = "apple") {
         ("libmaplibre_native_c.dylib", "libmaplibre-native-c.dylib")
     } else if cfg!(windows) {
-        ("maplibre_native_c.dll", "maplibre-native-c.dll")
+        // The DLL keeps the name its import library records; the suite
+        // links that library as `-lmaplibre-native-c`.
+        ("maplibre_native_c.dll", "maplibre_native_c.dll")
     } else {
         ("libmaplibre_native_c.so", "libmaplibre-native-c.so")
     };
     let from = library.map_or_else(|| built_dir.join(built), Path::to_path_buf);
     fs::copy(&from, lib.join(installed)).map_err(|e| format!("{}: {e}", from.display()))?;
+    if cfg!(windows) {
+        let mut import = from.into_os_string();
+        import.push(".lib");
+        fs::copy(&import, lib.join("maplibre-native-c.lib"))
+            .map_err(|e| format!("{}: {e}", import.display()))?;
+    }
     if asan {
         // The sanitizer's runtime, which the library loads by its rpath:
         // beside it, from the toolchain.
@@ -936,15 +950,24 @@ fn build_suite(mirror: &Path, prefix: &Path, work: &Path) -> Result<PathBuf, Str
     }
 
     let lib = prefix.join("lib");
-    let exe = build.join("mln_native_abi_tests");
+    let exe = build
+        .join("mln_native_abi_tests")
+        .with_extension(std::env::consts::EXE_EXTENSION);
     let mut link = compiler("c++");
     link.args(objects.into_inner().expect("objects"))
         .arg("-o")
         .arg(&exe)
         .arg(format!("-L{}", lib.display()))
-        .arg("-lmaplibre-native-c")
-        .arg(format!("-Wl,-rpath,{}", lib.display()))
-        .arg("-lpthread");
+        .arg("-lmaplibre-native-c");
+    if cfg!(windows) {
+        // No rpath: the DLL is found beside the suite.
+        link.args(["-lws2_32", "-luser32", "-lgdi32"]);
+        let dll = "maplibre_native_c.dll";
+        fs::copy(lib.join(dll), build.join(dll)).map_err(|e| format!("{dll}: {e}"))?;
+    } else {
+        link.arg(format!("-Wl,-rpath,{}", lib.display()))
+            .arg("-lpthread");
+    }
     if cfg!(target_vendor = "apple") {
         link.args([
             "-framework",
@@ -955,7 +978,7 @@ fn build_suite(mirror: &Path, prefix: &Path, work: &Path) -> Result<PathBuf, Str
             "Metal",
             "-lobjc",
         ]);
-    } else {
+    } else if !cfg!(windows) {
         link.arg("-ldl");
     }
     run_tool(&mut link)?;
@@ -1074,11 +1097,19 @@ fn run_file(
             remaining.join(",")
         };
         first = false;
-        let mut command = Command::new("perl");
+        // Under perl's alarm, which Windows lacks; there the suite's own
+        // watchdog stops a hung case.
+        let mut command = if cfg!(windows) {
+            Command::new(exe)
+        } else {
+            let mut command = Command::new("perl");
+            command
+                .args(["-e", "alarm shift; exec @ARGV"])
+                .arg(RUN_TIMEOUT_SECS.to_string())
+                .arg(exe);
+            command
+        };
         command
-            .args(["-e", "alarm shift; exec @ARGV"])
-            .arg(RUN_TIMEOUT_SECS.to_string())
-            .arg(exe)
             .args(["-f", &filter])
             .env(
                 "MLN_FFI_TEST_FIXTURE_DIR",
