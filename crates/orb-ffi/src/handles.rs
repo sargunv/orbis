@@ -9,7 +9,6 @@ use crate::delivery::DeliveryQueue;
 use crate::expression::ExpressionHandle;
 use crate::frames::FrameHandle;
 use crate::map::MapHandle;
-use crate::pacer::FramePacer;
 use crate::projection::ProjectionHandle;
 use crate::resources::{ResourceRequest, TransformRequest};
 use crate::runtime::RuntimeHandle;
@@ -30,7 +29,6 @@ pub(crate) enum Kind {
     Batch = 21,
     Queue = 23,
     GpuDevice = 26,
-    Pacer = 27,
 }
 
 impl Kind {
@@ -47,7 +45,6 @@ impl Kind {
             Kind::Batch => "mln_render_frame_batch",
             Kind::Queue => "mln_delivery_queue",
             Kind::GpuDevice => "mln_gpu_device",
-            Kind::Pacer => "mln_frame_pacer",
         }
     }
 }
@@ -69,11 +66,6 @@ pub(crate) enum Object {
     ),
     Queue(Arc<DeliveryQueue>),
     GpuDevice(Arc<crate::gpu_device::GpuDevice>),
-    #[cfg_attr(
-        not(target_os = "macos"),
-        expect(dead_code, reason = "only macOS makes a pacer")
-    )]
-    Pacer(Arc<FramePacer>),
 }
 
 impl Object {
@@ -90,7 +82,6 @@ impl Object {
             Object::Batch(_) => Kind::Batch,
             Object::Queue(_) => Kind::Queue,
             Object::GpuDevice(_) => Kind::GpuDevice,
-            Object::Pacer(_) => Kind::Pacer,
         }
     }
 }
@@ -177,7 +168,6 @@ fn kind_of(byte: u8) -> Option<Kind> {
         Kind::Batch,
         Kind::Queue,
         Kind::GpuDevice,
-        Kind::Pacer,
     ]
     .into_iter()
     .find(|k| *k as u8 == byte)
@@ -248,13 +238,6 @@ pub(crate) fn frame(handle: u64) -> Result<Arc<FrameHandle>> {
 pub(crate) fn queue(handle: u64) -> Result<Arc<DeliveryQueue>> {
     match lookup(handle, Kind::Queue)? {
         Object::Queue(q) => Ok(q),
-        _ => unreachable!(),
-    }
-}
-
-pub(crate) fn pacer(handle: u64) -> Result<Arc<FramePacer>> {
-    match lookup(handle, Kind::Pacer)? {
-        Object::Pacer(p) => Ok(p),
         _ => unreachable!(),
     }
 }

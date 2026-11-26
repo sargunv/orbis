@@ -260,18 +260,6 @@ const _: () = {
         crate::delivery::mln_delivery_queue_release,
     ];
     let _ = [
-        crate::sys::mln_frame_pacer_create,
-        crate::pacer::mln_frame_pacer_create,
-    ];
-    let _ = [
-        crate::sys::mln_frame_pacer_release,
-        crate::pacer::mln_frame_pacer_release,
-    ];
-    let _ = [
-        crate::sys::mln_frame_pacer_set_options,
-        crate::pacer::mln_frame_pacer_set_options,
-    ];
-    let _ = [
         crate::sys::mln_gpu_device_create,
         crate::gpu_device::mln_gpu_device_create,
     ];
@@ -800,8 +788,8 @@ const _: () = {
         crate::session::mln_render_session_service_driver_work,
     ];
     let _ = [
-        crate::sys::mln_render_session_set_frame_pacer,
-        crate::session::mln_render_session_set_frame_pacer,
+        crate::sys::mln_render_session_set_frame_pacing,
+        crate::session::mln_render_session_set_frame_pacing,
     ];
     let _ = [
         crate::sys::mln_render_session_set_target,

@@ -49,7 +49,7 @@ enum Msg {
     },
     /// The session ends, whatever waits.
     End(Ending),
-    /// Something may be new: a command applied, data arrived, a pacer
+    /// Something may be new: a command applied, data arrived, its pacing
     /// ticked, the host gave a frame back.
     Pump,
 }
@@ -129,9 +129,9 @@ pub(crate) struct SessionHandle {
     results: Mutex<Vec<mln_render_frame_result>>,
     /// Whether the frame wake was called since the last drain.
     notified: AtomicBool,
-    /// A pacer's refresh not yet seen by the session's thread.
+    /// A refresh of its pacing not yet seen by the session's thread.
     pub(crate) tick: AtomicBool,
-    /// The host draws at a redraw wake, so takes no pacer.
+    /// The host draws at a redraw wake, so takes no frame pacing.
     redraw_wake: bool,
     driver: mln_render_driver_kind,
     readback: bool,
@@ -369,7 +369,8 @@ pub(crate) struct SessionEntry {
     demands: VecDeque<mln_frame_demand>,
     redraw_wake: Option<Wake>,
     redraw_signaled: bool,
-    pacer: Option<Arc<crate::pacer::FramePacer>>,
+    /// What paces its frames to the display, if anything does.
+    pacing: Option<crate::pacer::Pacing>,
     frame_generation: u64,
     /// The render update of the map that the session drew last, and what
     /// that frame showed.
@@ -385,9 +386,6 @@ pub(crate) struct SessionEntry {
 
 impl Drop for SessionEntry {
     fn drop(&mut self) {
-        if let Some(pacer) = self.pacer.take() {
-            pacer.remove(&self.handle);
-        }
         if let Some(wake) = self.redraw_wake.take() {
             wake.release();
         }
@@ -760,7 +758,7 @@ impl Session {
             demands: VecDeque::new(),
             redraw_wake: start.redraw_wake,
             redraw_signaled: false,
-            pacer: None,
+            pacing: None,
             frame_generation: 0,
             drawn_update: 0,
             shown: None,
@@ -849,7 +847,7 @@ impl Session {
         self.steps = map.still.is_some() && map.map.needs_frame();
     }
 
-    /// Draws the frames the session's demands and pacer ask for, and its
+    /// Draws the frames the session's demands and pacing ask for, and its
     /// map's still image, and raises their events.
     fn pump<'a>(
         &mut self,
@@ -2194,36 +2192,32 @@ pub(crate) fn abandon(handle: &Arc<SessionHandle>, keep: bool) -> Result<u32> {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_set_frame_pacer(
+pub unsafe extern "C" fn mln_render_session_set_frame_pacing(
     session: mln_render_session,
-    pacer: mln_frame_pacer,
+    options: *const mln_frame_pacing_options,
     out_diagnostic: *mut mln_diagnostic,
 ) -> mln_status {
-    // SAFETY: the caller's pointer.
+    // SAFETY: the caller's pointers.
     unsafe {
         boundary(out_diagnostic, || {
             let handle = handles::session(session.0)?;
+            let options = match options.is_null() {
+                true => None,
+                false => Some(crate::pacer::PacingOptions::from_c(options)?),
+            };
             handle.usable()?;
             if handle.redraw_wake {
                 return Err(Failure::state(
                     "the session was attached with a redraw wake, which paces it instead",
                 ));
             }
-            let pacer = if pacer.0 == 0 {
-                None
-            } else {
-                Some(handles::pacer(pacer.0)?)
-            };
+            // The display link starts here, on the host's thread, which a
+            // view needs to be its main one.
+            let pacing = options
+                .map(|options| crate::pacer::start(&handle, &options))
+                .transpose()?;
             handle.operation(None, move |entry, _| {
-                if entry.redraw_wake.is_none() {
-                    if let Some(old) = entry.pacer.take() {
-                        old.remove(&entry.handle);
-                    }
-                    if let Some(pacer) = &pacer {
-                        pacer.add(&entry.handle);
-                    }
-                    entry.pacer = pacer;
-                }
+                entry.pacing = pacing;
                 Ok(Value::None)
             })
         })
