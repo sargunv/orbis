@@ -802,9 +802,13 @@ pub unsafe extern "C" fn mln_runtime_create_map(
         boundary(out_diagnostic, || {
             let runtime = handles::runtime(runtime.0)?;
             let options = *sized(options, "mln_map_options")?;
-            if options.fields & !(MLN_MAP_OPTION_EVENT_MASK | MLN_MAP_OPTION_TILE_CACHE_ENABLED)
-                != 0
-            {
+            // Orbis has no system font matcher yet, so `system_fonts_enabled`
+            // changes nothing: a map draws its style's fonts and its
+            // `fallback_font_faces`.
+            let known = MLN_MAP_OPTION_EVENT_MASK
+                | MLN_MAP_OPTION_TILE_CACHE_ENABLED
+                | MLN_MAP_OPTION_SYSTEM_FONTS_ENABLED;
+            if options.fields & !known != 0 {
                 return Err(Failure::argument("mln_map_options.fields has unknown bits"));
             }
             crate::base::physical(options.initial_extent).map_err(|f| {
