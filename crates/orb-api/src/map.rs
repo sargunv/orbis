@@ -288,7 +288,8 @@ impl Map {
     /// cull drops. Reads the cull's counters back from the GPU, so it
     /// waits for the frame.
     pub fn cull_counts(&self) -> Vec<CullCount> {
-        let (Some(renderer), Some(device)) = (&self.renderer, self.runtime.shared.opened()) else {
+        let (Some(renderer), Some(mut device)) = (&self.renderer, self.runtime.shared.opened())
+        else {
             return Vec::new();
         };
         let bytes = pollster::block_on(device.read_buffer(renderer.draw_args().0));

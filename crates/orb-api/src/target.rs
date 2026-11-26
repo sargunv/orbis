@@ -173,7 +173,7 @@ impl Target {
                 Error::InvalidState("the GPU was replaced since the last frame".into()),
             ),
             Kind::Texture(id) => {
-                let device = self.shared.opened().expect("a texture's device");
+                let mut device = self.shared.opened().expect("a texture's device");
                 // wgpu panics when a lost device's wait fails.
                 if device.lost() {
                     return Err(Error::InvalidState(

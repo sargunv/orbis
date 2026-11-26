@@ -352,7 +352,7 @@ impl Offscreen {
         map.render(gpu, renderer, self.target, viewport, 1.0, time)
     }
 
-    pub(crate) fn pixels(&self) -> Vec<u8> {
+    pub(crate) fn pixels(&mut self) -> Vec<u8> {
         pollster::block_on(self.gpu.read_texture(self.target))
     }
 }

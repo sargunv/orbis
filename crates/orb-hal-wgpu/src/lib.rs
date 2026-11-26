@@ -208,9 +208,8 @@ pub struct WgpuGpu {
     /// Host bytes released while a held texture write still reads them.
     #[cfg(target_arch = "wasm32")]
     released_bytes: Vec<HostBytesId>,
-    /// What the device did ([`Gpu::counters`]), counted from `&self` too:
-    /// where held writes are issued.
-    counters: std::cell::Cell<GpuCounters>,
+    /// What the device did ([`Gpu::counters`]).
+    counters: GpuCounters,
     /// The resources it holds by label, when `ORB_GPU_LEDGER` asks.
     ledger: Option<Box<ledger::Ledger>>,
     /// Makes shader modules unique to it ([`WgpuGpu::set_shader_nonce`]).
@@ -219,14 +218,14 @@ pub struct WgpuGpu {
     writes: writes::Writes,
     /// Texture writes since the last submission, those sharing a block
     /// with an earlier one issued in waves at the next.
-    texture_writes: std::sync::Mutex<texture_writes::TextureWrites>,
+    texture_writes: texture_writes::TextureWrites,
     /// Readback buffers back from their last readback, for the next of
     /// their size: a new one maps fresh pages each time.
     readbacks: offscreen::Readbacks,
     /// The texture the next submission copies out after its passes, and
     /// the copy the last one made, for the readback after it.
     copy_next: Option<TextureId>,
-    copied: std::sync::Mutex<Option<(TextureId, offscreen::Readback)>>,
+    copied: Option<(TextureId, offscreen::Readback)>,
     /// Frames started ([`WgpuGpu::start_frame`]), and those to capture by
     /// number, while one is asked for; whether a capture is running.
     frames_started: u64,
@@ -705,7 +704,7 @@ impl WgpuGpu {
     /// records next, after issuing the held texture writes.
     /// On a device known to be lost the writes are dropped; one whose
     /// staging buffer comes back invalid is taken as lost.
-    fn encode_writes(&self, encoder: &mut wgpu::CommandEncoder) {
+    fn encode_writes(&mut self, encoder: &mut wgpu::CommandEncoder) {
         if self.lost() {
             self.writes.discard();
             return;
@@ -715,7 +714,7 @@ impl WgpuGpu {
         let issued = self.writes.encode(
             (&self.device, &self.queue),
             |id| self.buffers[id.0].clone(),
-            |id| self.texture(id).clone(),
+            |id| (self.textures[id.0].texture.clone()).expect("texture is a registered view"),
             encoder,
         );
         #[cfg(target_arch = "wasm32")]
@@ -726,19 +725,12 @@ impl WgpuGpu {
             encoder,
         ));
         match issued {
-            Some(issued) => self.count(|c| {
-                c.upload_calls += issued.calls;
-                c.texture_write_submissions += issued.submissions;
-            }),
+            Some(issued) => {
+                self.counters.upload_calls += issued.calls;
+                self.counters.texture_write_submissions += issued.submissions;
+            }
             None => self.mark_lost(),
         }
-    }
-
-    /// Adds to the device's counters.
-    fn count(&self, add: impl FnOnce(&mut GpuCounters)) {
-        let mut counters = self.counters.get();
-        add(&mut counters);
-        self.counters.set(counters);
     }
 
     /// Issues the held texture writes, wave by wave, each wave before the
@@ -749,28 +741,31 @@ impl WgpuGpu {
     /// ANGLE's Metal back end commits as a command buffer of its own
     /// (#140), and the CPU frame driver's data tables write a texture's
     /// layer many times a frame.
-    fn issue_texture_writes(&self) {
-        let mut held = self.texture_writes.lock().expect("texture writes poisoned");
-        let wave = std::cell::Cell::new(0);
-        held.issue(
-            |write, texels| self.issue_texture_write(write, texels, wave.get()),
-            || {
-                if self.gl {
-                    return;
-                }
-                wave.set(wave.get() + 1);
-                if cfg!(target_arch = "wasm32") {
-                    self.queue.submit([]);
-                    self.count(|c| c.texture_write_submissions += 1);
-                }
-            },
-        );
+    fn issue_texture_writes(&mut self) {
+        let mut held = std::mem::take(&mut self.texture_writes);
+        // The waves the web has ended with a submission.
+        let mut ended = 0;
+        held.issue(|write, texels, wave| {
+            let wave = if self.gl { 0 } else { wave };
+            while cfg!(target_arch = "wasm32") && ended < wave {
+                self.queue.submit([]);
+                self.counters.texture_write_submissions += 1;
+                ended += 1;
+            }
+            self.issue_texture_write(write, texels, wave);
+        });
+        self.texture_writes = held;
     }
 
     /// Issues a texture write in `wave`: natively staged, else (or where
     /// staging failed, on a lost device) to the queue.
-    fn issue_texture_write(&self, write: &texture_writes::TextureWrite, texels: &[u8], wave: u32) {
-        self.count(|c| c.upload_calls += 1);
+    fn issue_texture_write(
+        &mut self,
+        write: &texture_writes::TextureWrite,
+        texels: &[u8],
+        wave: u32,
+    ) {
+        self.counters.upload_calls += 1;
         #[cfg(not(target_arch = "wasm32"))]
         if let texture_writes::Source::Core { bytes_per_row, .. } = write.source
             && (self.writes).stage_texture(
@@ -850,7 +845,7 @@ impl WgpuGpu {
     /// buffer, WebGL 2's from a copy.
     #[cfg(target_arch = "wasm32")]
     fn write_texture_from_js(
-        &self,
+        &mut self,
         region: &TextureRegion,
         (bytes, offset): (HostBytesId, u64),
         bytes_per_row: u32,
@@ -1125,7 +1120,7 @@ impl WgpuGpu {
         for done in done {
             let built = match done.built {
                 Ok(built) => {
-                    self.count(|c| c.pipelines_compiled += 1);
+                    self.counters.pipelines_compiled += 1;
                     self.compiled.push((done.label, done.took));
                     Compiled::Ready(built)
                 }
@@ -1624,10 +1619,8 @@ impl Gpu for WgpuGpu {
             usage: convert::buffer_usages(desc.usage),
             mapped_at_creation: false,
         });
-        self.count(|c| {
-            c.buffers_created += 1;
-            c.bytes_allocated += desc.size;
-        });
+        self.counters.buffers_created += 1;
+        self.counters.bytes_allocated += desc.size;
         let id = self.buffers.insert(buffer);
         if let Some(l) = &mut self.ledger {
             l.made(false, id, desc.label, desc.size);
@@ -1656,10 +1649,8 @@ impl Gpu for WgpuGpu {
             offset,
             data,
         );
-        self.count(|c| {
-            c.buffer_bytes_from_core += data.len() as u64;
-            c.upload_calls += u32::from(issued);
-        });
+        self.counters.buffer_bytes_from_core += data.len() as u64;
+        self.counters.upload_calls += u32::from(issued);
     }
 
     fn write_buffer_from_host(
@@ -1681,10 +1672,8 @@ impl Gpu for WgpuGpu {
                     offset,
                     &data[range],
                 );
-                self.count(|c| {
-                    c.buffer_bytes_from_core += len;
-                    c.upload_calls += u32::from(issued);
-                });
+                self.counters.buffer_bytes_from_core += len;
+                self.counters.upload_calls += u32::from(issued);
             }
             #[cfg(webgl)]
             HostBytes::Js(data) => {
@@ -1702,17 +1691,15 @@ impl Gpu for WgpuGpu {
                     offset,
                     &data,
                 );
-                self.count(|c| {
-                    c.buffer_bytes_from_host += len;
-                    c.upload_calls += u32::from(issued);
-                });
+                self.counters.buffer_bytes_from_host += len;
+                self.counters.upload_calls += u32::from(issued);
             }
             #[cfg(webgpu)]
             HostBytes::Js(data) => {
-                self.count(|c| {
-                    c.buffer_bytes_from_host += len;
-                    c.upload_calls += 1;
-                });
+                // A handle, cloned so the device is free to flush.
+                let data = data.clone();
+                self.counters.buffer_bytes_from_host += len;
+                self.counters.upload_calls += 1;
                 // It lands before gathered writes: those it overlaps go first.
                 if self.writes.overlaps(id, offset, len) {
                     let mut encoder =
@@ -1734,7 +1721,7 @@ impl Gpu for WgpuGpu {
                     .write_buffer_with_f64_and_buffer_source_and_f64_and_f64(
                         buffer,
                         offset as f64,
-                        data,
+                        &data,
                         range.start as f64,
                         len as f64,
                     )
@@ -1759,12 +1746,7 @@ impl Gpu for WgpuGpu {
     fn release_host_bytes(&mut self, bytes: HostBytesId) {
         // A held write still reads them: released once that is issued.
         #[cfg(target_arch = "wasm32")]
-        if self
-            .texture_writes
-            .get_mut()
-            .expect("texture writes poisoned")
-            .reads_bytes(bytes)
-        {
+        if self.texture_writes.reads_bytes(bytes) {
             self.released_bytes.push(bytes);
             return;
         }
@@ -1787,14 +1769,12 @@ impl Gpu for WgpuGpu {
             }
             #[cfg(target_arch = "wasm32")]
             HostBytes::Js(_) => {
-                self.count(|c| c.texel_bytes_from_host += len);
+                self.counters.texel_bytes_from_host += len;
                 let held = self
                     .texture_writes
-                    .get_mut()
-                    .expect("texture writes poisoned")
                     .bytes(region, (bytes, offset), bytes_per_row);
                 if !held {
-                    self.count(|c| c.upload_calls += 1);
+                    self.counters.upload_calls += 1;
                     self.write_texture_from_js(region, (bytes, offset), bytes_per_row);
                 }
             }
@@ -1856,10 +1836,8 @@ impl Gpu for WgpuGpu {
             usage: convert::texture_usages(desc.usage) & self.texture_usages,
             view_formats: &[],
         });
-        self.count(|c| {
-            c.textures_created += 1;
-            c.bytes_allocated += texture_bytes(desc, layers);
-        });
+        self.counters.textures_created += 1;
+        self.counters.bytes_allocated += texture_bytes(desc, layers);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let id = self.textures.insert(Texture {
             texture: Some(texture),
@@ -1908,10 +1886,7 @@ impl Gpu for WgpuGpu {
     }
 
     fn destroy_texture(&mut self, id: TextureId) {
-        self.texture_writes
-            .get_mut()
-            .expect("texture writes poisoned")
-            .forget(id);
+        self.texture_writes.forget(id);
         #[cfg(not(target_arch = "wasm32"))]
         self.writes.forget_texture(id);
         let entry = self.textures.remove(id.0);
@@ -1924,7 +1899,7 @@ impl Gpu for WgpuGpu {
     }
 
     fn write_texture(&mut self, region: &TextureRegion, data: &[u8]) {
-        self.count(|c| c.texel_bytes_from_core += data.len() as u64);
+        self.counters.texel_bytes_from_core += data.len() as u64;
         let texture = self.texture(region.texture);
         let bytes_per_row = region.width * convert::texel_bytes(texture.format());
         assert_eq!(
@@ -1932,11 +1907,7 @@ impl Gpu for WgpuGpu {
             (bytes_per_row * region.height) as usize,
             "texture write size mismatch"
         );
-        let held = self
-            .texture_writes
-            .get_mut()
-            .expect("texture writes poisoned")
-            .core(region, data, bytes_per_row);
+        let held = self.texture_writes.core(region, data, bytes_per_row);
         if !held {
             let source = texture_writes::Source::Core {
                 at: 0,
@@ -1958,26 +1929,17 @@ impl Gpu for WgpuGpu {
         image: HostImageId,
         premultiply: bool,
     ) {
-        self.count(|c| {
-            c.texel_bytes_from_host += u64::from(region.width) * u64::from(region.height) * 4;
-        });
+        self.counters.texel_bytes_from_host +=
+            u64::from(region.width) * u64::from(region.height) * 4;
         // Issued at the next submission; the image is closed after it,
         // which WebGL 2, copying only at a submission, needs too.
-        self.texture_writes
-            .get_mut()
-            .expect("texture writes poisoned")
-            .host(region, image, premultiply);
+        self.texture_writes.host(region, image, premultiply);
     }
 
     #[cfg(target_arch = "wasm32")]
     fn release_host_image(&mut self, image: HostImageId) {
         // A held write still reads it: closed once that is issued.
-        if self
-            .texture_writes
-            .get_mut()
-            .expect("texture writes poisoned")
-            .reads(image)
-        {
+        if self.texture_writes.reads(image) {
             self.released_images.push(image);
             return;
         }
@@ -2042,7 +2004,7 @@ impl Gpu for WgpuGpu {
     }
 
     fn counters(&self) -> GpuCounters {
-        self.counters.get()
+        self.counters
     }
 
     fn create_shader_module(&mut self, desc: &ShaderModuleDesc<'_>) -> ShaderModuleId {
@@ -2160,7 +2122,7 @@ impl Gpu for WgpuGpu {
             #[cfg(not(webgpu))]
             cache: self.cache(),
         };
-        self.count(|c| c.pipelines_requested += 1);
+        self.counters.pipelines_requested += 1;
         let slot = self.pipelines.insert(Compiled::Pending {
             background: self.background,
         });
@@ -2180,7 +2142,7 @@ impl Gpu for WgpuGpu {
             #[cfg(not(webgpu))]
             cache: self.cache(),
         };
-        self.count(|c| c.pipelines_requested += 1);
+        self.counters.pipelines_requested += 1;
         let slot = self.pipelines.insert(Compiled::Pending {
             background: self.background,
         });
@@ -2266,11 +2228,11 @@ impl Gpu for WgpuGpu {
                     sample_count: desc.sample_count,
                     multiview: None,
                 });
+        self.counters.render_commands += commands.len() as u32;
         let mut skip = false;
         for command in commands {
             self.encode_render(&mut encoder, command, &mut skip);
         }
-        self.count(|c| c.render_commands += commands.len() as u32);
         // wgpu panics when `finish` fails, whatever the error handler, and
         // on a lost device it fails ("Parent device is lost"): the frame
         // goes on without the bundle, and the next one makes a new device.
@@ -2326,8 +2288,6 @@ impl Gpu for WgpuGpu {
             ),
             None => Vec::new(),
         };
-        let timing = self.timing.as_ref();
-        let writes = |i: usize| timing?.query((*queries.get(i)?)?);
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -2352,6 +2312,8 @@ impl Gpu for WgpuGpu {
         if groups {
             encoder.pop_debug_group();
         }
+        let timing = self.timing.as_ref();
+        let writes = |i: usize| timing?.query((*queries.get(i)?)?);
         // The passes in `encoder`, and the debug groups open in it, which
         // the next encoder reopens.
         let mut encoded = 0;
@@ -2393,6 +2355,7 @@ impl Gpu for WgpuGpu {
                 } => {
                     let source = self.texture(*source);
                     let destination = self.texture(*destination);
+                    let mut copied = 0;
                     let levels = source.mip_level_count().min(destination.mip_level_count());
                     for (copy, level) in
                         copies.iter().flat_map(|c| (0..levels).map(move |l| (c, l)))
@@ -2409,12 +2372,10 @@ impl Gpu for WgpuGpu {
                             depth_or_array_layers: layers,
                         };
                         let texel = u64::from(convert::texel_bytes(source.format()));
-                        self.count(|c| {
-                            c.bytes_copied += u64::from(size.width)
-                                * u64::from(size.height)
-                                * u64::from(layers)
-                                * texel;
-                        });
+                        copied += u64::from(size.width)
+                            * u64::from(size.height)
+                            * u64::from(layers)
+                            * texel;
                         encoder.copy_texture_to_texture(
                             wgpu::TexelCopyTextureInfo {
                                 mip_level: level,
@@ -2429,6 +2390,7 @@ impl Gpu for WgpuGpu {
                             size,
                         );
                     }
+                    self.counters.bytes_copied += copied;
                 }
                 Pass::CopyTextureLevel {
                     source: (source, source_level),
@@ -2438,13 +2400,11 @@ impl Gpu for WgpuGpu {
                     let source = self.texture(*source);
                     let destination = self.texture(*destination);
                     let texel = u64::from(convert::texel_bytes(source.format()));
+                    let mut copied = 0;
                     for copy in copies {
                         let at = |[x, y, z]: [u32; 3]| wgpu::Origin3d { x, y, z };
                         let [width, height, layers] = copy.size;
-                        self.count(|c| {
-                            c.bytes_copied +=
-                                u64::from(width) * u64::from(height) * u64::from(layers) * texel;
-                        });
+                        copied += u64::from(width) * u64::from(height) * u64::from(layers) * texel;
                         encoder.copy_texture_to_texture(
                             wgpu::TexelCopyTextureInfo {
                                 mip_level: *source_level,
@@ -2463,6 +2423,7 @@ impl Gpu for WgpuGpu {
                             },
                         );
                     }
+                    self.counters.bytes_copied += copied;
                 }
                 Pass::ClearBuffer {
                     buffer,
@@ -2478,7 +2439,7 @@ impl Gpu for WgpuGpu {
                     destination_offset,
                     size,
                 } => {
-                    self.count(|c| c.bytes_copied += size);
+                    self.counters.bytes_copied += size;
                     encoder.copy_buffer_to_buffer(
                         &self.buffers[source.0],
                         *source_offset,
@@ -2593,7 +2554,7 @@ impl Gpu for WgpuGpu {
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
-                    self.count(|c| c.render_commands += render.commands.len() as u32);
+                    self.counters.render_commands += render.commands.len() as u32;
                     let mut skip = false;
                     for command in &render.commands {
                         match command {

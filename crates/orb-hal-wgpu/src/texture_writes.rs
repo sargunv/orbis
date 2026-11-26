@@ -200,14 +200,11 @@ impl TextureWrites {
         count
     }
 
-    /// Issues the held writes: `put` each, wave by wave and in the order
-    /// they came within a wave, and `separate` between waves. The first
-    /// wave may have been issued already, when its writes were made.
-    pub(crate) fn issue(
-        &mut self,
-        mut put: impl FnMut(&TextureWrite, &[u8]),
-        mut separate: impl FnMut(),
-    ) {
+    /// Issues the held writes: `put` each with its wave, wave by wave and
+    /// in the order they came within a wave. Every wave after the first
+    /// puts a write; the first may have been issued already, when its
+    /// writes were made.
+    pub(crate) fn issue(&mut self, mut put: impl FnMut(&TextureWrite, &[u8], u32)) {
         if self
             .writes
             .iter()
@@ -218,9 +215,6 @@ impl TextureWrites {
         }
         let count = self.plan();
         for wave in 0..count {
-            if wave > 0 {
-                separate();
-            }
             for (w, _) in self
                 .writes
                 .iter()
@@ -233,7 +227,7 @@ impl TextureWrites {
                     #[cfg(target_arch = "wasm32")]
                     Source::Host { .. } | Source::Bytes { .. } => &[][..],
                 };
-                put(w, texels);
+                put(w, texels, wave);
             }
         }
         self.writes.clear();
@@ -261,22 +255,22 @@ mod tests {
     /// The waves `writes` are issued in, as each write's index.
     fn waves(writes: &[TextureRegion]) -> Vec<Vec<usize>> {
         let mut held = TextureWrites::default();
-        let waves = std::cell::RefCell::new(vec![Vec::new()]);
+        let mut waves = vec![Vec::new()];
         for (i, r) in writes.iter().enumerate() {
             let len = (r.width * r.height) as usize;
             if !held.core(r, &vec![i as u8; len], r.width) {
-                waves.borrow_mut()[0].push(i);
+                waves[0].push(i);
             }
         }
-        held.issue(
-            |w, texels| {
-                assert_eq!(texels.len(), (w.region.width * w.region.height) as usize);
-                let mut waves = waves.borrow_mut();
-                waves.last_mut().unwrap().push(usize::from(texels[0]));
-            },
-            || waves.borrow_mut().push(Vec::new()),
-        );
-        waves.into_inner()
+        held.issue(|w, texels, wave| {
+            assert_eq!(texels.len(), (w.region.width * w.region.height) as usize);
+            let wave = wave as usize;
+            if waves.len() == wave {
+                waves.push(Vec::new());
+            }
+            waves[wave].push(usize::from(texels[0]));
+        });
+        waves
     }
 
     #[test]
@@ -300,9 +294,9 @@ mod tests {
         assert!(!held.core(&region(1, 1, 0, 0, 64, 64), &[0; 64 * 64], 64));
         assert!(held.core(&region(1, 0, 8, 8, 4, 4), &[0; 16], 4));
         assert_eq!(held.texels.len(), 16);
-        let (mut put, mut separated) = (0, 0);
-        held.issue(|_, _| put += 1, || separated += 1);
-        assert_eq!((put, separated), (1, 1));
+        let mut put = Vec::new();
+        held.issue(|_, _, wave| put.push(wave));
+        assert_eq!(put, [1]);
     }
 
     #[test]

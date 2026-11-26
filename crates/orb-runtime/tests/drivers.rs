@@ -96,7 +96,7 @@ impl Checked {
             eprintln!("{what}: {warning}");
         }
         let check = (self.renderer.driver_check()).expect("the CPU driver, with a twin");
-        let gpu = &self.gpu;
+        let gpu = &mut self.gpu;
         let mut read = |buffer| -> Vec<u32> {
             bytemuck::cast_slice(&pollster::block_on(gpu.read_buffer(buffer))).to_vec()
         };

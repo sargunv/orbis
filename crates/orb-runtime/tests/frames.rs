@@ -182,7 +182,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         assert!(most <= cap, "a frame uploaded {most} bytes of tiles");
-        let (whole, _, _) = crate::common::Offscreen::load(&tokyo(14.0)).unwrap();
+        let (mut whole, _, _) = crate::common::Offscreen::load(&tokyo(14.0)).unwrap();
         let differing = crate::common::differing_pixels(&pieces.pixels(), &whole.pixels());
         assert_eq!(differing, 0, "pixels differ from tiles taken whole");
     }
@@ -231,7 +231,7 @@ mod tests {
             }
             (offscreen, report)
         };
-        let (unbounded, report) = zoom_out(crate::common::SceneCapacity::default());
+        let (mut unbounded, report) = zoom_out(crate::common::SceneCapacity::default());
         assert!(
             report.scene.vertex_words > capacity.vertex_words,
             "the path must need eviction to fit: {} cached, {} held",
@@ -239,7 +239,7 @@ mod tests {
             capacity.vertex_words
         );
         let reference = unbounded.pixels();
-        let (zoomed, _) = zoom_out(capacity);
+        let (mut zoomed, _) = zoom_out(capacity);
         let pixels = zoomed.pixels();
         let differing = crate::common::differing_pixels(&pixels, &reference);
         assert_eq!(differing, 0, "pixels differ from an unbounded scene");
@@ -325,7 +325,7 @@ mod tests {
             encoding: "mvt".into(),
             at: Some((orb_crs::Geodetic::new(139.765, 35.68), zoom, -12.0, pitch)),
         };
-        let (fresh, report, _) = crate::common::Offscreen::load(&at(15.0, 45.0)).unwrap();
+        let (mut fresh, report, _) = crate::common::Offscreen::load(&at(15.0, 45.0)).unwrap();
         let used = report.scene;
         let reference = fresh.pixels();
         let capacity = crate::common::SceneCapacity {
@@ -360,7 +360,7 @@ mod tests {
             "the path must need its stand-ins gone to fit: {most} words, {} room",
             capacity.vertex_words
         );
-        let (zoomed, _) = zoom_in(capacity);
+        let (mut zoomed, _) = zoom_in(capacity);
         let differing = crate::common::differing_pixels(&zoomed.pixels(), &reference);
         assert_eq!(differing, 0, "pixels differ from a fresh map");
     }
@@ -699,12 +699,12 @@ mod tests {
         };
         let (mut offscreen, _, _) = crate::common::Offscreen::load(&options).unwrap();
         let first = settle(&mut offscreen).memory.tile_textures;
-        let center = |offscreen: &crate::common::Offscreen| {
+        let center = |offscreen: &mut crate::common::Offscreen| {
             let (w, h) = (offscreen.viewport.width, offscreen.viewport.height);
             let i = ((h / 2.0) as usize * w as usize + (w / 2.0) as usize) * 4;
             offscreen.pixels()[i..i + 3].to_vec()
         };
-        assert_eq!(center(&offscreen), [255, 0, 0], "the overlay draws");
+        assert_eq!(center(&mut offscreen), [255, 0, 0], "the overlay draws");
         // The overlay's tiles can't load again; past its layer's maxzoom
         // they stay cached while the imagery's page grows for a tilted
         // view of many tiles.
@@ -719,7 +719,11 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         offscreen.frame();
-        assert_eq!(center(&offscreen), [255, 0, 0], "the overlay's tiles kept");
+        assert_eq!(
+            center(&mut offscreen),
+            [255, 0, 0],
+            "the overlay's tiles kept"
+        );
     }
 
     /// Tiles out of view stay cached, two views' worth, the least recently
@@ -1040,7 +1044,7 @@ mod tests {
         settle(&mut moved);
         zoom_by(&mut moved.map, moved.viewport, centre, 3.0);
         settle(&mut moved);
-        let fresh = load(false);
+        let mut fresh = load(false);
         assert_eq!(
             crate::common::differing_pixels(&moved.pixels(), &fresh.pixels()),
             0

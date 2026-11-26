@@ -13,7 +13,6 @@
 //! larger writes and texture writes do, staged when they're made.
 
 use std::ops::Range;
-use std::sync::Mutex;
 
 use orb_hal::BufferId;
 
@@ -166,12 +165,12 @@ impl Pending {
 
 /// The writes gathered since the last submission.
 #[derive(Debug, Default)]
-pub(crate) struct Writes(Mutex<Pending>);
+pub(crate) struct Writes(Pending);
 
 impl Writes {
     /// Gathers a write of `data` at `offset` in buffer `id`.
     pub(crate) fn gather(&mut self, id: BufferId, offset: u64, data: &[u8]) {
-        let pending = self.0.get_mut().expect("writes poisoned");
+        let pending = &mut self.0;
         // Copies take 4-byte offsets and sizes, as writes already do.
         debug_assert!(
             offset.is_multiple_of(4) && data.len().is_multiple_of(4),
@@ -190,7 +189,7 @@ impl Writes {
     /// Whether a gathered write touches `len` bytes at `offset` of `id`: a
     /// write that goes to the queue directly would land before it.
     pub(crate) fn overlaps(&mut self, id: BufferId, offset: u64, len: u64) -> bool {
-        let pending = self.0.get_mut().expect("writes poisoned");
+        let pending = &mut self.0;
         pending
             .writes
             .iter()
@@ -199,7 +198,7 @@ impl Writes {
 
     /// Drops the gathered and staged writes to a buffer being destroyed.
     pub(crate) fn forget(&mut self, id: BufferId) {
-        let pending = self.0.get_mut().expect("writes poisoned");
+        let pending = &mut self.0;
         pending.writes.retain(|w| w.buffer != id);
         #[cfg(not(target_arch = "wasm32"))]
         pending.staged.retain(|s| !s.writes_buffer(id));
@@ -208,7 +207,7 @@ impl Writes {
     /// Drops the staged writes to a texture being destroyed.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn forget_texture(&mut self, id: orb_hal::TextureId) {
-        let pending = self.0.get_mut().expect("writes poisoned");
+        let pending = &mut self.0;
         pending.staged.retain(|s| !s.writes_texture(id));
     }
 
@@ -223,7 +222,7 @@ impl Writes {
         offset: u64,
         data: &[u8],
     ) -> bool {
-        let pending = self.0.get_mut().expect("writes poisoned");
+        let pending = &mut self.0;
         let staged = crate::staging::Staged::buffer(&mut pending.belt, device, (id, offset), data);
         let staged_ok = staged.is_some();
         pending.staged.extend(staged);
@@ -235,13 +234,13 @@ impl Writes {
     /// lost device).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn stage_texture(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         (region, wave): (&orb_hal::TextureRegion, u32),
         data: &[u8],
         bytes_per_row: u32,
     ) -> bool {
-        let mut pending = self.0.lock().expect("writes poisoned");
+        let pending = &mut self.0;
         let staged = crate::staging::Staged::texture(
             &mut pending.belt,
             device,
@@ -255,8 +254,8 @@ impl Writes {
     }
 
     /// Drops the gathered writes: their device is gone.
-    pub(crate) fn discard(&self) {
-        let mut pending = self.0.lock().expect("writes poisoned");
+    pub(crate) fn discard(&mut self) {
+        let pending = &mut self.0;
         pending.clear();
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -274,13 +273,13 @@ impl Writes {
     /// explains: the writes and the belt are dropped.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn encode(
-        &self,
+        &mut self,
         (device, queue): (&wgpu::Device, &wgpu::Queue),
         buffer: impl Fn(BufferId) -> wgpu::Buffer,
         texture: impl Fn(orb_hal::TextureId) -> wgpu::Texture,
         encoder: &mut wgpu::CommandEncoder,
     ) -> Option<Issued> {
-        let mut pending = self.0.lock().expect("writes poisoned");
+        let pending = &mut self.0;
         let mut gathered = None;
         if !pending.writes.is_empty() {
             let size = pending.plan(|_| false);
@@ -345,13 +344,13 @@ impl Writes {
 
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn encode(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         buffer: impl Fn(BufferId) -> wgpu::Buffer,
         encoder: &mut wgpu::CommandEncoder,
     ) -> Issued {
-        let mut pending = self.0.lock().expect("writes poisoned");
+        let pending = &mut self.0;
         let mut issued = Issued::default();
         if pending.writes.is_empty() {
             pending.clear();
@@ -420,7 +419,7 @@ mod tests {
         for &(b, o, d) in writes {
             gathered.gather(BufferId(b), o, d);
         }
-        let pending = gathered.0.get_mut().unwrap();
+        let pending = &mut gathered.0;
         let size = pending.plan(|_| false);
         let mut bytes = vec![0; size as usize];
         pending.fill(|to, b| bytes[to..to + b.len()].copy_from_slice(b));

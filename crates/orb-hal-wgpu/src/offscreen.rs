@@ -118,7 +118,7 @@ impl WgpuGpu {
     }
 
     /// Resolves when the GPU has finished all work submitted so far.
-    pub(crate) fn work_done(&self) -> impl Future<Output = ()> + use<> {
+    pub(crate) fn work_done(&mut self) -> impl Future<Output = ()> + use<> {
         // Gathered writes are work submitted too.
         let mut encoder = self
             .device
@@ -160,11 +160,13 @@ impl WgpuGpu {
     /// submission made it ([`read_with_next_submit`](Self::read_with_next_submit));
     /// the future holds no borrow of the device, so the texture may go
     /// before it resolves.
-    pub fn read_texture(&self, id: TextureId) -> impl Future<Output = Vec<u8>> + use<> {
-        let copied = self.copied.lock().expect("copied poisoned").take();
-        let copy = match copied {
+    pub fn read_texture(&mut self, id: TextureId) -> impl Future<Output = Vec<u8>> + use<> {
+        let copy = match self.copied.take() {
             Some((texture, copy)) if texture == id => copy,
-            _ => self.copy_now(self.texture(id)),
+            _ => {
+                let texture = self.texture(id).clone();
+                self.copy_now(&texture)
+            }
         };
         self.finish_read(copy)
     }
@@ -172,7 +174,7 @@ impl WgpuGpu {
     /// [`read_texture`](Self::read_texture) for a wgpu texture the host
     /// owns, such as a canvas's current texture (made with `COPY_SRC`).
     pub fn read_wgpu_texture(
-        &self,
+        &mut self,
         texture: &wgpu::Texture,
     ) -> impl Future<Output = Vec<u8>> + use<> {
         let copy = self.copy_now(texture);
@@ -194,14 +196,14 @@ impl WgpuGpu {
         let copy = (self.copy_next.take())
             .filter(|id| self.textures.contains(id.0) && self.textures[id.0].texture.is_some())
             .map(|id| (id, self.encode_copy(encoder, self.texture(id))));
-        let unread = std::mem::replace(&mut *self.copied.lock().expect("copied poisoned"), copy);
+        let unread = std::mem::replace(&mut self.copied, copy);
         if let Some((_, unread)) = unread {
             keep(&self.readbacks, unread.buffer);
         }
     }
 
     /// Submits a copy of `texture` into a readback buffer.
-    fn copy_now(&self, texture: &wgpu::Texture) -> Readback {
+    fn copy_now(&mut self, texture: &wgpu::Texture) -> Readback {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -276,8 +278,15 @@ impl WgpuGpu {
         }
     }
 
-    /// Copies a buffer's bytes out. The buffer needs `COPY_SRC`.
-    pub async fn read_buffer(&self, id: BufferId) -> Vec<u8> {
+    /// Copies a buffer's bytes out. The buffer needs `COPY_SRC`. The
+    /// future holds no borrow of the device.
+    pub fn read_buffer(&mut self, id: BufferId) -> impl Future<Output = Vec<u8>> + use<> {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("buffer readback"),
+            });
+        self.encode_writes(&mut encoder);
         let source = self.buffer(id);
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
@@ -285,15 +294,10 @@ impl WgpuGpu {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("buffer readback"),
-            });
-        self.encode_writes(&mut encoder);
         encoder.copy_buffer_to_buffer(source, 0, &buffer, 0, source.size());
         self.queue.submit([encoder.finish()]);
-        map_read(&self.device, &buffer).await.to_vec()
+        let device = self.device.clone();
+        async move { map_read(&device, &buffer).await.to_vec() }
     }
 }
 
