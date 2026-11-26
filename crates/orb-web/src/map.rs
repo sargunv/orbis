@@ -504,8 +504,6 @@ pub async fn create_map(
     post: js_sys::Function,
     place: js_sys::Function,
 ) -> Result<OrbisMap, JsError> {
-    let size = (canvas.width(), canvas.height());
-
     let id = NEXT_MAP.with(|next| next.replace(next.get() + 1));
     let fetches = crate::js::get(&options, "tileFetches").as_f64();
     let fetches = fetches.map_or(orb_host::TILE_FETCHES, |n| n as usize);
@@ -535,7 +533,8 @@ pub async fn create_map(
     map.set_options(&map_options(&options));
     // The style loads while the GPU device is made.
     map.load_style_url(&style_url);
-    let canvas = Canvas::new(canvas, size, id)
+    // The page's resize, before the first frame, gives the real size.
+    let canvas = Canvas::new(canvas, (1, 1), id)
         .await
         .map_err(|e| JsError::new(&e))?;
     Ok(OrbisMap {
@@ -715,7 +714,8 @@ impl OrbisMap {
         features_promise(receiver)
     }
 
-    /// Matches the drawing buffer to the canvas's size in physical pixels.
+    /// Draws at `width` × `height` physical pixels from the next frame,
+    /// which sizes the canvas's drawing buffer as it draws into it.
     pub fn resize(&mut self, width: u32, height: u32, pixel_ratio: f64) {
         self.pixel_ratio = pixel_ratio;
         self.canvas.resize(width, height);

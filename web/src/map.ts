@@ -262,8 +262,8 @@ export class OrbisMap {
   /** The device pixels per CSS pixel the map draws with; the display's
    * when undefined. */
   #pixelRatio: number | undefined;
-  /** The canvas's drawing buffer and the ratio it was drawn at, as the
-   * map last heard them. */
+  /** The canvas's drawing buffer and the ratio it is drawn at, as the
+   * map last heard them: the buffer takes the size with the next frame. */
   #size: Size;
   /** The frame's CSS size as its resize observer last reported it. */
   #cssSize: [number, number] | undefined;
@@ -524,7 +524,10 @@ export class OrbisMap {
     return !this.#removed && this.#stopped === undefined;
   }
 
-  /** The canvas the map draws into and takes input from. */
+  /** The canvas the map draws into and takes input from. Its drawing
+   * buffer takes a new size with the map's next frame: its `width` and
+   * `height` keep the old one until then, while its box takes the new
+   * one at once. */
   get canvas(): HTMLCanvasElement {
     return this.#canvas;
   }
@@ -976,8 +979,9 @@ export class OrbisMap {
     });
   }
 
-  /** The canvas's buffer and box, and the map, at the frame's size and
-   * ratio now; a map starting again on WebGL 2 resizes once it has. */
+  /** The canvas's box, and the map, at the frame's size and ratio now
+   * (the buffer follows with the map's next frame); a map starting again
+   * on WebGL 2 resizes once it has. */
   #resize(): void {
     if (this.#removed || this.#fallingBack) return;
     const size = this.#bufferSize();
@@ -1197,7 +1201,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
   return map;
 }
 
-/** A canvas for the map's frame; {@link fitCanvas} sizes it. */
+/** A canvas for the map's frame; {@link fitCanvas} sizes its box. */
 function newCanvas(): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.style.display = "block";
@@ -1228,15 +1232,19 @@ function bufferSize(
   return [px(width), px(height), ratio];
 }
 
-/** Gives `canvas` a buffer of `size` and a box of exactly that many device
- * pixels, as GL JS does: a box of the frame's CSS size would cover a
+/** Gives `canvas` a box of exactly the device pixels of a buffer of
+ * `size`, as GL JS does: a box of the frame's CSS size would cover a
  * fractional number of device pixels at a fractional ratio (125% or 150%
  * on Windows, 2.625 on phones, a zoomed page), and the browser would
  * resample the map into it, blurring it, its labels most. The box is
- * within half a device pixel of the frame, which clips any overhang. */
+ * within half a device pixel of the frame, which clips any overhang.
+ *
+ * The buffer itself the map sizes with the frame it draws at `size`, in
+ * that frame's task: sizing a canvas clears it, and sized here, in the
+ * resize observer's callback, after the animation frame's callbacks, the
+ * page would paint it cleared. Until the frame comes, the browser paints
+ * the last one scaled to the box. */
 function fitCanvas(canvas: HTMLCanvasElement, [width, height, ratio]: Size) {
-  canvas.width = width;
-  canvas.height = height;
   canvas.style.width = `${width / ratio}px`;
   canvas.style.height = `${height / ratio}px`;
 }

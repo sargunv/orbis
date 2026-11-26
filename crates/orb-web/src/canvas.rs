@@ -38,10 +38,15 @@ pub(crate) struct Canvas {
     instance: wgpu::Instance,
     surface: std::rc::Rc<wgpu::Surface<'static>>,
     config: wgpu::SurfaceConfiguration,
-    /// WebGPU's context takes `config` with the next frame it presents,
-    /// not at once: Firefox paints a context configured (or a canvas
-    /// resized) since its last frame from a snapshot it waits for, on the
-    /// page's thread, behind every compile asked for before it.
+    /// The context takes `config`, which sizes the canvas's drawing
+    /// buffer, with the next frame it presents, in the task that draws it,
+    /// never at load or on a resize alone. Sizing a canvas clears it, and
+    /// the browser would paint it cleared after a task that resized it
+    /// without drawing (a blank frame per resize as a window's edge
+    /// drags); until then it paints the last frame scaled to the canvas's
+    /// box. And Firefox paints a WebGPU context configured since its last
+    /// frame from a snapshot it waits for, on the page's thread, behind
+    /// every compile asked for before it.
     configure_due: bool,
     format: TargetFormat,
     /// WebGL 2's frames read back: drawn here, then copied to the canvas.
@@ -234,18 +239,12 @@ impl Canvas {
         (self.config.width, self.config.height)
     }
 
-    /// Sizes the drawing buffer; a lost device's waits for the new
-    /// device, made at this size.
+    /// Sizes the drawing buffer with the next frame that presents; a lost
+    /// device's waits for the new device, made at this size.
     pub(crate) fn resize(&mut self, width: u32, height: u32) {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
-        if GL {
-            if !self.lost() {
-                self.surface.configure(self.gpu.device(), &self.config);
-            }
-        } else {
-            self.configure_due = true;
-        }
+        self.configure_due = true;
     }
 
     /// Whether the device was lost: the map needs another.
@@ -320,6 +319,9 @@ impl Canvas {
         &mut self,
         draw: impl FnOnce(&mut dyn Gpu, TextureId, TargetFormat) -> R,
     ) -> Result<Drawn<R>, String> {
+        if std::mem::take(&mut self.configure_due) {
+            self.surface.configure(self.gpu.device(), &self.config);
+        }
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -460,9 +462,6 @@ impl Canvas {
             view_formats: vec![],
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
-        if GL {
-            surface.configure(gpu.device(), &config);
-        }
         // WebGPU's copies only: WebGL 2 copies images at submission.
         if !GL {
             warm_image_copies(gpu.device().clone(), gpu.queue().clone());
@@ -478,7 +477,7 @@ impl Canvas {
             instance,
             surface,
             config,
-            configure_due: !GL,
+            configure_due: true,
             format: TargetFormat {
                 color: from_texture_format(surface_format).expect("checked above"),
                 sample_count: 1,

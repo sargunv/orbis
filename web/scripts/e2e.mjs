@@ -68,6 +68,11 @@
 //   buffer's device pixels, so the browser draws the map unresampled, and
 //   a snapshot at the map's size is the buffer's; in Chromium, again once
 //   the display's ratio changes (to 2.625) under it.
+// - `flicker`: boot.html's map on a red background, its box resized 60
+//   times, three animation frames apart: no frame the compositor paints
+//   shows its canvas cleared (sizing a canvas clears it, so the map sizes
+//   it in the frame that draws into it), on WebGPU and WebGL 2 where maps
+//   draw with WebGPU.
 // - `compare`: the comparison on the Tokyo extract: the plain page fetches
 //   no other engine and isn't isolated; each pair of engines (Orbis, GL JS
 //   and MapLibre Native, Orbis and GL JS twice too) loads only its engines,
@@ -131,7 +136,7 @@
 //   call GL rejected (the emulator's Chrome logs them), or failing with
 //   what the map was doing.
 //
-//   pnpm e2e [--browsers=chromium,firefox,webkit] [--only=scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,ratio,compare,gestures,readback,boot,split,regions,android,offline]
+//   pnpm e2e [--browsers=chromium,firefox,webkit] [--only=scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,ratio,flicker,compare,gestures,readback,boot,split,regions,android,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -160,7 +165,7 @@ const arg = (name, fallback) =>
     ?.slice(name.length + 3) ?? fallback;
 const only = arg(
   "only",
-  "scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,ratio,compare,gestures,readback,boot,split,regions,android",
+  "scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,ratio,flicker,compare,gestures,readback,boot,split,regions,android",
 ).split(",");
 const browsers = arg("browsers", "chromium,firefox,webkit").split(",");
 const writes = Number(arg("writes", 500));
@@ -2706,7 +2711,9 @@ async function ratio(browser, server) {
   // The map's box at `size` CSS pixels, once its resize has drawn: the
   // device pixels the box, the canvas's buffer and the canvas's box
   // cover. (Under an emulated ratio, as here, browsers report a box's
-  // `devicePixelContentBoxSize` at the screen's own ratio.)
+  // `devicePixelContentBoxSize` at the screen's own ratio.) The resize
+  // comes after the next animation frame's callbacks, and the frame that
+  // sizes the buffer in the one after, behind this page's callback.
   const covered = (size) =>
     page.evaluate(async ([width, height]) => {
       const frame = document.getElementById("map");
@@ -2714,9 +2721,8 @@ async function ratio(browser, server) {
         width: `${width}px`,
         height: `${height}px`,
       });
-      await new Promise((r) =>
-        requestAnimationFrame(() => requestAnimationFrame(r)),
-      );
+      for (let i = 0; i < 3; i++)
+        await new Promise((r) => requestAnimationFrame(r));
       const canvas = frame.querySelector("canvas");
       const ratio = devicePixelRatio;
       const device = (rect) => [rect.width * ratio, rect.height * ratio];
@@ -2778,6 +2784,74 @@ async function ratio(browser, server) {
   await page.close();
   console.log(
     "ratio: at fractional pixel ratios the canvas covers exactly its buffer's device pixels",
+  );
+}
+
+async function flicker(browser, server) {
+  const backends =
+    browser.expects.backend === "webgpu" ? ["webgpu", "webgl2"] : ["webgl2"];
+  for (const backend of backends) {
+    const { page, errors } = await open(browser, { width: 640, height: 480 });
+    await page.goto(`${server.url}boot.html?backend=${backend}`);
+    const booted = await page.evaluate(() => window.booted);
+    assert.ok(!booted.error, booted.error);
+    assert.equal(booted.backend, backend);
+    await page.evaluate(async () => {
+      window.map.setStyle({
+        version: 8,
+        sources: {},
+        layers: [
+          {
+            id: "background",
+            type: "background",
+            paint: { "background-color": "#f00" },
+          },
+        ],
+      });
+      await window.map.once("idle");
+    });
+    // Every frame the compositor paints. (A canvas read in a task that
+    // didn't draw it reads cleared, whatever the page shows.)
+    const cdp = await page.context().newCDPSession(page);
+    const painted = [];
+    cdp.on("Page.screencastFrame", ({ data, sessionId }) => {
+      painted.push(data);
+      cdp.send("Page.screencastFrameAck", { sessionId }).catch(() => {});
+    });
+    await cdp.send("Page.startScreencast", { format: "png" });
+    const resizes = 60;
+    await page.evaluate(async (resizes) => {
+      const box = document.getElementById("map");
+      for (let n = 0; n < resizes; n++) {
+        box.style.width = `${200 + ((n * 37) % 160)}px`;
+        box.style.height = `${150 + ((n * 23) % 120)}px`;
+        for (let i = 0; i < 3; i++)
+          await new Promise((r) => requestAnimationFrame(r));
+      }
+    }, resizes);
+    await cdp.send("Page.stopScreencast");
+    // The page is white: a canvas painted cleared shows it, within the
+    // smallest box.
+    const cleared = painted.filter((data) => {
+      const { width, channels, pixels } = decodePng(
+        Buffer.from(data, "base64"),
+      );
+      return pixels[(50 * width + 50) * channels + 1] > 128;
+    }).length;
+    assert.ok(
+      painted.length > 0,
+      `on ${backend}, no frames painted over ${resizes} resizes`,
+    );
+    assert.equal(
+      cleared,
+      0,
+      `on ${backend}, ${cleared} of ${painted.length} frames painted over ${resizes} resizes showed the canvas cleared`,
+    );
+    assert.deepEqual(errors, [], `on ${backend}`);
+    await page.close();
+  }
+  console.log(
+    `flicker: on ${backends.join(" and ")}, 60 resizes paint no cleared canvas`,
   );
 }
 
@@ -4379,6 +4453,7 @@ const CHECKS = {
   options,
   resize,
   ratio,
+  flicker,
   compare,
   gestures,
   readback,
@@ -4571,6 +4646,7 @@ const CHROMIUM_ONLY = {
   boot: "launches the browsers it compares itself",
   compare: "MapLibre Native's web build is measured in Chromium alone",
   android: "drives Chrome on the Android device itself",
+  flicker: "watches the compositor's frames through the DevTools protocol",
 };
 // Checks a browser fails for a reason left to fix, and why.
 const KNOWN = {
