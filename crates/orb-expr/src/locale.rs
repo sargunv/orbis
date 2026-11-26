@@ -1,10 +1,12 @@
 //! Locale-sensitive operations: collation, resolved locales and number
-//! formatting. In a browser they are the host's ([`HostLocale`], the
-//! browser's `Intl`, as GL JS asks it). Elsewhere they are built in and
-//! deterministic: Latin search collation (with German and Swedish
-//! tailoring), decimal grouping, common currency symbols and units, not
-//! the whole Unicode collation algorithm, CLDR locale data, numbering
-//! systems or every ECMA-402 unit and currency.
+//! formatting. A host that has locale services answers them
+//! ([`HostLocale`]): the browser's `Intl`, as GL JS asks it, or a native
+//! platform's ICU (`orb-host-native`'s `locale`). Elsewhere, and in tests
+//! and fixtures, they are built in and deterministic: Latin search
+//! collation (with German and Swedish tailoring), decimal grouping,
+//! common currency symbols and units, not the whole Unicode collation
+//! algorithm, CLDR locale data, numbering systems or every ECMA-402 unit
+//! and currency.
 use std::cmp::Ordering;
 use std::sync::OnceLock;
 
@@ -25,7 +27,7 @@ pub struct NumberFormat<'a> {
     pub max_fraction_digits: Option<f64>,
 }
 
-/// A host's locale services: the browser's `Intl`.
+/// A host's locale services: the browser's `Intl`, or the platform's ICU.
 pub trait HostLocale: Send + Sync {
     /// The locale a collator for `requested` (or the host's own) resolves
     /// to.
@@ -37,6 +39,25 @@ pub trait HostLocale: Send + Sync {
 }
 
 static HOST: OnceLock<Box<dyn HostLocale>> = OnceLock::new();
+
+/// The locale services built in, which answer when no host does: a host
+/// can fall back to them for what its own can't do.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BuiltinLocale;
+
+impl HostLocale for BuiltinLocale {
+    fn resolved_locale(&self, requested: Option<&str>) -> String {
+        builtin::resolved_locale(requested)
+    }
+
+    fn compare(&self, lhs: &str, rhs: &str, collator: &Collator) -> Ordering {
+        builtin::compare(lhs, rhs, collator)
+    }
+
+    fn format_number(&self, number: f64, format: &NumberFormat<'_>) -> Result<String, String> {
+        builtin::format_number(number, *format)
+    }
+}
 
 /// Answers locale expressions with `host` in this process (or wasm
 /// instance) from now on. Only the first call counts.

@@ -59,6 +59,12 @@ pub use orb_host_native::CacheStats;
 /// (`orb_host_native::android::init`).
 #[cfg(target_os = "android")]
 pub use orb_host_native::android::init as init_android;
+/// Answers locale expressions (`collator`, `resolved-locale`,
+/// `number-format`) with the platform's locale library from now on, as
+/// the browser's `Intl` answers them for GL JS, where the platform has
+/// one (`orb_host_native::locale`). A host calls it as it starts, before
+/// any style loads; tests and fixtures leave it out to stay deterministic.
+pub use orb_host_native::locale::install as install_system_locale;
 use orb_host_native::{HttpCache, NativeFetch, NativeImageDecode};
 
 /// Why a call failed.

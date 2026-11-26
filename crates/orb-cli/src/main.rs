@@ -125,6 +125,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         state_dir: args.get(&["--state-dir"]).map(PathBuf::from),
         ..RuntimeOptions::default()
     };
+    orb_api::install_system_locale();
     let runtime = Runtime::new(&options).map_err(|e| e.to_string())?;
     match command.as_str() {
         "render" => {

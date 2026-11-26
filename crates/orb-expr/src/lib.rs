@@ -48,7 +48,7 @@ pub use eval::{EvalError, interpolation_factor};
 pub use filter::{CameraFilter, Filter, FilterGroups, FilterLayer};
 pub use inputs::Inputs;
 pub use ir::Interpolation;
-pub use locale::{Collator, HostLocale, NumberFormat, set_host_locale};
+pub use locale::{BuiltinLocale, Collator, HostLocale, NumberFormat, set_host_locale};
 pub use property::{Kind, PropertyExpression, PropertySpec, PropertyType, ZoomCurve};
 pub use scale::{CameraScale, Scale};
 pub use tile::{Bound, FeatureData};

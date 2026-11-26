@@ -80,6 +80,7 @@ fn main() -> Result<(), winit::error::EventLoopError> {
             std::process::exit(2);
         }
     };
+    orb_api::install_system_locale();
     let state_dir = options.cache.map(Into::into);
     let runtime = move || {
         Runtime::new(&RuntimeOptions {

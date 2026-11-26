@@ -178,6 +178,7 @@ impl State {
                 .create_window(Window::default_attributes().with_title("Orbis"))
                 .expect("window"),
         );
+        orb_api::install_system_locale();
         let runtime = Runtime::new(&RuntimeOptions {
             state_dir: options.cache.clone(),
             ..RuntimeOptions::default()

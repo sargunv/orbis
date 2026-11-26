@@ -9,6 +9,7 @@ mod cache;
 mod connect;
 mod fonts;
 mod http;
+pub mod locale;
 mod storage;
 #[cfg(target_os = "android")]
 mod url_connection;

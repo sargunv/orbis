@@ -48,7 +48,8 @@ const PLATFORM_DEPS: &[&str] = &[
 /// carry `#![forbid(unsafe_code)]`.
 const UNSAFE_ALLOWED: &[&str] = &[
     "orb-hal-wgpu",
-    // System font files are mapped, not copied (`fonts.rs`).
+    // System font files are mapped, not copied (`fonts.rs`), and locale
+    // expressions call the system ICU (`locale`).
     "orb-host-native",
     // The Android app's entry point, JNI and logcat.
     "orb-android",

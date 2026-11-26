@@ -2958,11 +2958,15 @@ dependencies = [
 name = "orb-host-native"
 version = "0.0.0"
 dependencies = [
+ "core-foundation 0.10.1",
+ "core-foundation-sys",
  "fontdb",
  "image",
  "jni",
+ "libc",
  "ndk",
  "ndk-sys",
+ "orb-expr",
  "orb-host",
  "orb-text",
  "rustls",

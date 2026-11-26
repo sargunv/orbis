@@ -429,6 +429,7 @@ pub unsafe extern "C" fn mln_runtime_create(
                 Some(_) => None,
                 None => Some(temporary_state_dir()),
             };
+            orb_api::install_system_locale();
             // The device waits for the first session that needs it.
             let runtime = orb_api::Runtime::new(&orb_api::RuntimeOptions {
                 state_dir,
