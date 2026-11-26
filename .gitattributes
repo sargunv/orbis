@@ -1,0 +1,3 @@
+# LF everywhere, Windows checkouts included: checks such as mln-ffi's
+# generated declarations compare files byte for byte.
+* text=auto eol=lf
