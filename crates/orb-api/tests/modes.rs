@@ -247,7 +247,8 @@ fn a_style_that_fails_to_load_fails_a_snapshot_at_once() {
     .unwrap();
     let mut map = Map::new(&runtime, MapOptions::default());
     map.load_style_url(&format!("file://{}", path.display()));
-    let started = std::time::Instant::now();
+    // Waiting out the snapshot's deadline would fail it with "didn't
+    // settle in time" instead of the style's error.
     let error = map.snapshot(64, 64, 1.0).unwrap_err();
     assert!(
         error
@@ -255,11 +256,6 @@ fn a_style_that_fails_to_load_fails_a_snapshot_at_once() {
             .starts_with(&format!("style file://{}: ", path.display())),
         "{}",
         error.message()
-    );
-    assert!(
-        started.elapsed().as_secs() < 10,
-        "took {:?}",
-        started.elapsed()
     );
 }
 
