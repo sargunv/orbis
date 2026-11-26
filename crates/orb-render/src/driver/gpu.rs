@@ -85,8 +85,12 @@ impl GpuDriver {
         gpu.pipeline_ready(self.pipeline.into())
     }
 
+    pub(crate) fn pipeline(&self) -> PipelineId {
+        self.pipeline.into()
+    }
+
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
-        vec![self.pipeline.into()]
+        vec![self.pipeline()]
     }
 
     /// Binds the scene's tables and blocks again, after one moved or a

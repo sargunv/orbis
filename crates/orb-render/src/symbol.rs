@@ -19,6 +19,7 @@ use orb_hal::*;
 use orb_shaders::SYMBOL_INLINE_SHADERS;
 use orb_shaders::{SYMBOL_PLACE_SHADERS, SYMBOL_SHADER};
 
+use crate::awaits::Lacks;
 use crate::pipeline::{Attachments, Draw, Variants};
 use crate::release::Release;
 use crate::scene::{Backing, PAGE_CHUNKS, PLACED_WIDTH, Tables};
@@ -357,11 +358,11 @@ impl Symbols {
     /// Node `i`'s draws into `commands`, a symbol layer's icon node, `kind`
     /// and `placings` as in [`make`](Self::make), whose icons and text draw
     /// their halos apart as `apart` says, `quads` its draw as indexed
-    /// arguments, and whether they draw with the variant it wants: `false`
-    /// for a stand-in ([`Variants::drawn`]), which records again once that
-    /// one compiles. Nothing, and `None`, while a pipeline compiles (each
-    /// placement's too, as [`pass`](Self::pass) dispatches only once all
-    /// have).
+    /// arguments, and whether it drew: `lacks` gains what it waits for,
+    /// the variant a stand-in stands for ([`Variants::drawn`]) too.
+    /// Nothing draws while a pipeline compiles (each placement's too, as
+    /// [`pass`](Self::pass) dispatches only once all have).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn commands(
         &self,
         gpu: &mut dyn Gpu,
@@ -370,15 +371,21 @@ impl Symbols {
         apart: [bool; 2],
         quads: RenderCommand,
         commands: &mut Vec<RenderCommand>,
-    ) -> Option<bool> {
-        let (draw, wanted) = match &self.placing {
+        lacks: &mut Lacks,
+    ) -> bool {
+        let draw = match &self.placing {
             Placing::Dispatched(dispatch) => {
-                dispatch.placements(gpu, placings, full)?;
-                dispatch.draws[kind % 2].drawn(gpu, full)
+                if dispatch.placements(gpu, placings, full, lacks).is_none() {
+                    return false;
+                }
+                dispatch.draws[kind % 2].drawn(gpu, full, lacks)
             }
             #[cfg(cpu_driven)]
-            Placing::Inline(draws) => draws[kind].drawn(gpu, full),
-        }?;
+            Placing::Inline(draws) => draws[kind].drawn(gpu, full, lacks),
+        };
+        let Some(draw) = draw else {
+            return false;
+        };
         commands.extend([
             RenderCommand::SetPipeline(draw),
             RenderCommand::SetBindGroup {
@@ -400,7 +407,7 @@ impl Symbols {
                 quads.clone(),
             ]);
         }
-        Some(wanted)
+        true
     }
 
     /// The frame's placement dispatches, after the cull, which wrote the
@@ -415,7 +422,7 @@ impl Symbols {
         blocks: &[(u32, std::ops::Range<u32>)],
     ) -> Option<Pass> {
         let dispatch = self.placing.dispatch()?;
-        let pipeline = dispatch.placements(gpu, placings, full)?;
+        let pipeline = dispatch.placements(gpu, placings, full, &mut Lacks::default())?;
         let mut commands = Vec::new();
         for (slot, quads) in blocks {
             let rows =
@@ -453,18 +460,25 @@ impl Symbols {
 
 impl Dispatch {
     /// The pipeline of `placings` (`full` as in [`Variants::drawn`]), if
-    /// any, once it has compiled.
+    /// any, once it has compiled; else `lacks` gains what it waits for.
+    /// Dispatched every frame, a stand-in serves until the one it wants
+    /// compiled, and records nothing again.
     fn placements(
         &self,
         gpu: &mut dyn Gpu,
         placings: Placings,
         full: bool,
+        lacks: &mut Lacks,
     ) -> Option<Option<ComputePipelineId>> {
-        match placings {
-            // Dispatched every frame: the one it wants once compiled.
-            Some(placing) => (self.pipelines[placing].drawn(gpu, full)).map(|(p, _)| Some(p)),
-            None => Some(None),
+        let Some(placing) = placings else {
+            return Some(None);
+        };
+        let mut wants = Lacks::default();
+        let drawn = self.pipelines[placing].drawn(gpu, full, &mut wants);
+        if drawn.is_none() {
+            lacks.extend(&wants);
         }
+        drawn.map(Some)
     }
 }
 

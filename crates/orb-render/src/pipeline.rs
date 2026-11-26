@@ -6,6 +6,7 @@ use orb_hal::*;
 use orb_shaders::Shader;
 
 use crate::TargetFormat;
+use crate::awaits::Lacks;
 
 /// The format of the depth the map's passes have while terrain may draw
 /// in them, which the 3D layers' takes then too: float depth beside a
@@ -401,16 +402,17 @@ impl<P: Copy + Into<PipelineId>> Variants<P> {
         }
     }
 
-    /// What a frame draws with, once compiled, and whether it is the one
-    /// the frame [wants](Self::wanted): the full variant when the frame
-    /// needs it (`full`), the plane one otherwise, or the full one in its
-    /// place while the plane one compiles. A stand-in draws only to within
-    /// rounding of what it stands for, so what recorded it records again
-    /// once the wanted one compiles: a map that went on drawing with it
-    /// would draw otherwise than one that never needed it. Only what it
+    /// What a frame draws with, once compiled: the full variant when the
+    /// frame needs it (`full`), the plane one otherwise, or the full one
+    /// in its place while the plane one compiles. A stand-in draws only
+    /// to within rounding of what it stands for, so the
+    /// [wanted](Self::wanted) one is lacked until it compiles, and what
+    /// recorded the stand-in records again then: a map that went on
+    /// drawing with it would draw otherwise than one that never needed
+    /// it. While nothing draws, a stand-in made is lacked too. Only what it
     /// may draw with is asked after: a variant made ahead of need
     /// ([`Gpu::set_background_compiles`]) stays in the background.
-    pub(crate) fn drawn(&self, gpu: &mut dyn Gpu, full: bool) -> Option<(P, bool)> {
+    pub(crate) fn drawn(&self, gpu: &mut dyn Gpu, full: bool, lacks: &mut Lacks) -> Option<P> {
         let [plane, whole] = self.0;
         let mut ready = |p: Option<P>| p.filter(|&p| gpu.pipeline_ready(p.into()));
         let drawn = if full {
@@ -419,7 +421,13 @@ impl<P: Copy + Into<PipelineId>> Variants<P> {
             ready(plane).or_else(|| ready(whole))
         };
         let wanted = self.wanted(full).map(Into::into);
-        drawn.map(|p| (p, wanted == Some(p.into())))
+        if drawn.map(Into::into) != wanted {
+            lacks.push(wanted);
+            if let (None, false, Some(_), Some(whole)) = (drawn, full, plane, whole) {
+                lacks.push(Some(whole.into()));
+            }
+        }
+        drawn
     }
 
     /// The variant a frame waits for (`full` as in [`drawn`](Self::drawn)).

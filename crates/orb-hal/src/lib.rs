@@ -127,8 +127,8 @@ pub trait Gpu {
     fn destroy_pipeline(&mut self, id: PipelineId);
     /// Whether a pipeline settled, so commands may use it: it compiled, or
     /// the driver failed to make it where the device lives on (the web's),
-    /// and what draws or dispatches with it does nothing. Either way
-    /// nothing waits for it any longer.
+    /// and what draws or dispatches with it does nothing, or it was
+    /// destroyed. Either way nothing waits for it any longer.
     fn pipeline_ready(&mut self, id: PipelineId) -> bool;
     /// Takes compiles that finished, and counts pipelines made and still
     /// compiling (background ones aside).

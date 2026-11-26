@@ -58,8 +58,13 @@ impl Heatmaps {
 
     /// Whether the density pipeline and the composites' compiled.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu, composites: &Composites) -> bool {
-        self.pipeline.is_some_and(|p| gpu.pipeline_ready(p.into()))
-            && composites.ready(gpu, Mode::Ramp)
+        crate::awaits::compiled(gpu, self.needs(composites))
+    }
+
+    /// The pipelines [`ready`](Self::ready) waits for, `None` for one not
+    /// made.
+    pub(crate) fn needs(&self, composites: &Composites) -> [Option<PipelineId>; 2] {
+        [self.pipeline.map(Into::into), composites.needs(Mode::Ramp)]
     }
 
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {

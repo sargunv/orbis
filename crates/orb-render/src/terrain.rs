@@ -1230,10 +1230,18 @@ impl Terrain {
     /// compiled, and its depth's in the map's passes. Until then terrain
     /// draws nothing.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu) -> bool {
+        crate::awaits::compiled(gpu, self.needs())
+    }
+
+    /// The pipelines [`ready`](Self::ready) waits for, `None` for one not
+    /// made.
+    pub(crate) fn needs(&self) -> Vec<Option<PipelineId>> {
         let kinds = (self.layers.iter()).map(|l| self.pipelines[l.kind() as usize]);
         let wanted = self.occlusion.and(self.occlusion_pipeline);
-        let mut all = kinds.chain(wanted.into_iter().map(Some));
-        all.all(|p| p.is_some_and(|p| gpu.pipeline_ready(p.into()))) && self.depth_ready(gpu, MAP)
+        (kinds.chain(wanted.into_iter().map(Some)))
+            .chain([self.depth_pipeline_at(MAP)])
+            .map(|p| p.map(PipelineId::from))
+            .collect()
     }
 
     /// Whether the pipeline of the terrain's depth alone in the map's

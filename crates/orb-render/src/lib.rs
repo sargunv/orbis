@@ -21,6 +21,7 @@
 #![forbid(unsafe_code)]
 
 mod atmosphere;
+mod awaits;
 mod downsample;
 mod driver;
 mod extrusion;
@@ -70,6 +71,7 @@ pub use tiles::{
     WarpKey, changed_borders, dem_neighbours, tile_extents, tile_latitudes, tile_size,
 };
 
+use crate::awaits::{Awaits, Lacks};
 use crate::pipeline::{Attachments, Draw, Variants};
 use crate::release::Release;
 
@@ -282,10 +284,6 @@ struct Node {
     /// and the bundles record it. Until then it costs nothing, neither
     /// pipelines nor targets nor passes.
     drawn: bool,
-    /// A bundle recorded since the last invalidation left out its row, or
-    /// its second row: it had no candidates, so its draw would have drawn
-    /// nothing. Candidates arriving for it record the bundles again.
-    left_out: std::cell::Cell<[bool; 2]>,
 }
 
 /// Whether a node painted with `a` draws with the pipelines it does
@@ -459,21 +457,17 @@ pub struct Renderer {
     set_stale: bool,
     /// Pipelines the set asked for since [`take_set_asked`](Self::take_set_asked).
     set_asked: u32,
-    /// Pipelines the device had compiled when the bundles were recorded.
+    /// Pipelines the device had compiled when frames last looked for
+    /// what arrived.
     made_seen: u32,
-    /// Nodes the main bundle left out, waiting for a pipeline.
-    waiting: u32,
-    /// Whether the drape's recorded draws left out a draped node waiting
-    /// for a pipeline, or drew a split node's untested placements in its
-    /// tested pipeline, since every slot was last redrawn. A slot keeps lacking
-    /// the node, or what it drew, whatever later recordings leave out (one
-    /// whose slots the node has no candidates in leaves out nothing), so
-    /// the pipeline's arrival redraws every slot.
-    drape_waiting: bool,
-    /// Whether a bundle drew a split node's untested placements in its
-    /// tested pipeline for want of the untested one, which arriving
-    /// records the bundles again.
-    fell_back: std::cell::Cell<bool>,
+    /// What the main bundles waited for as recorded ([`Awaits`]): what of
+    /// it arrives records them again.
+    awaits: Awaits,
+    /// What the drape's recorded draws waited for since every slot was
+    /// last redrawn. A slot keeps what it drew, whatever later recordings
+    /// lack (one made while a node has no candidates lacks nothing for
+    /// it), so what of it arrives redraws every slot.
+    drape_awaits: Awaits,
     /// The device has clip distances: lines draw untested from placements
     /// with one clip rectangle ([`Untested::Rect`]).
     planes: bool,
@@ -799,9 +793,8 @@ impl Renderer {
             set_stale: false,
             set_asked: 0,
             made_seen: 0,
-            waiting: 0,
-            drape_waiting: false,
-            fell_back: Default::default(),
+            awaits: Awaits::default(),
+            drape_awaits: Awaits::default(),
             planes: gpu.caps().clip_distances,
             recorded: 0,
             node_uniforms,
@@ -1211,7 +1204,6 @@ impl Renderer {
                 composite: None,
                 solid: None,
                 drawn: false,
-                left_out: Default::default(),
             });
         }
         // A symbol layer's draw finds its list by its icon node's index,
@@ -1791,22 +1783,35 @@ impl Renderer {
         }
     }
 
+    /// Records the main bundles again: the map's passes', the composited
+    /// layers' and the render targets'.
     fn drop_bundles(&mut self, gpu: &mut dyn Gpu) {
         std::mem::take(&mut self.bundles).release(gpu);
         for (stack, _) in std::mem::take(&mut self.stacks) {
             stack.release(gpu);
         }
         self.steps.clear();
+        self.awaits = Awaits::default();
     }
 
+    /// Records the main bundles and the drape's draws again.
     fn invalidate_bundle(&mut self, gpu: &mut dyn Gpu) {
         self.drop_bundles(gpu);
-        for node in &self.nodes {
-            node.left_out.set([false; 2]);
-        }
         if let Some(drape) = &mut self.drape {
             drape.forget_recorded(gpu);
         }
+    }
+
+    /// Records the drape's draws again and redraws every slot (stale) with
+    /// them: what the slots waited for arrived, or they lack a node.
+    fn stale_drape(&mut self, gpu: &mut dyn Gpu) {
+        if let Some(drape) = &mut self.drape {
+            drape.forget_recorded(gpu);
+        }
+        if let Some(terrain) = self.terrain.as_mut() {
+            terrain.redraw_all();
+        }
+        self.drape_awaits = Awaits::default();
     }
 
     /// Records every bundle that draws nodes again, extrusions' and
@@ -2047,9 +2052,10 @@ impl Renderer {
                 }
                 entry.separate_halo = p.separate_halo;
                 entry.shape.along_line = p.along_line;
-                std::mem::take(&mut self.bundles).release(gpu);
+                self.drop_bundles(gpu);
             }
         }
+        let entry = &mut self.nodes[node as usize];
         let shape = Shape::of(paint);
         let s = &mut entry.shape;
         if (s.styled, s.rows, s.pattern) != (shape.styled, shape.rows, shape.pattern) {
@@ -2507,9 +2513,9 @@ impl Renderer {
         if started {
             self.invalidate_bundle(gpu);
         }
-        if draped && let Some(terrain) = self.terrain.as_mut() {
+        if draped {
             // Slots drawn without them lack those layers.
-            terrain.redraw_all();
+            self.stale_drape(gpu);
         }
     }
 
@@ -2846,12 +2852,6 @@ impl Renderer {
         if segments != self.segments_drawn[0] {
             self.segments_drawn[0] = segments;
             self.drop_bundles(gpu);
-            let terrain_on = self.terrain.as_ref().is_some_and(terrain::Terrain::active);
-            for node in &self.nodes {
-                if !(terrain_on && node.terrain_layer.is_some()) {
-                    node.left_out.set([false; 2]);
-                }
-            }
         }
         // The symbol draws bind the placement target, which the placements
         // write whole each frame: it is made again for the symbol nodes'
@@ -2925,7 +2925,7 @@ impl Renderer {
             placements_written: self.scene.take_placements_written(),
             paints_written: std::mem::take(&mut self.paints_written),
             pipelines_pending: compiling.pending,
-            nodes_waiting: self.waiting,
+            nodes_waiting: self.awaits.waiting(),
             slot_bytes_moved: self.scene.moved_bytes(),
             ..FrameStats::default()
         };
@@ -2989,8 +2989,18 @@ impl Renderer {
             || !self.targets.ready(gpu)
             || end.pending > 0
             || end.made != made
-            || self.waiting > 0
+            || self.awaits.lacking()
             || terrain_waited;
+        // What a recording awaits arrives by a compile (a pipeline let go
+        // counts as arrived): one that never compiles would leave it as
+        // it is.
+        debug_assert!(
+            end.pending > 0
+                || [&self.awaits, &self.drape_awaits]
+                    .iter()
+                    .all(|a| !a.stuck(gpu)),
+            "a recording awaits a pipeline nothing compiles"
+        );
         stats
     }
 
@@ -2998,15 +3008,17 @@ impl Renderer {
     /// left out for want of candidates draws once it has some, and a
     /// heatmap hidden, or with nothing to draw, composites nothing.
     fn follow_candidates(&mut self, gpu: &mut dyn Gpu, candidates_rebuilt: bool) {
-        let rows = |i: usize| [Some(i as u32), self.scene.second_row(i as u32)];
-        if candidates_rebuilt
-            && (self.nodes.iter().enumerate()).any(|(i, n)| {
-                (n.left_out.get().into_iter().zip(rows(i))).any(|(left, row)| {
-                    left && row.is_some_and(|r| self.scene.node_candidates(r) > 0)
-                })
-            })
-        {
-            self.invalidate_bundle(gpu);
+        if candidates_rebuilt {
+            let gained = |rows: &[u32]| rows.iter().any(|&r| self.scene.node_candidates(r) > 0);
+            let main = gained(self.awaits.rows());
+            let drape = (self.drape.iter().flat_map(|d| d.recorded.iter().flatten()))
+                .any(|r| gained(&r.left_out));
+            if main {
+                self.drop_bundles(gpu);
+            }
+            if drape && let Some(drape) = &mut self.drape {
+                drape.forget_recorded(gpu);
+            }
         }
         // A heatmap hidden, or with nothing to draw, composites nothing.
         for (i, node) in self.nodes.iter_mut().enumerate() {
@@ -3047,15 +3059,11 @@ impl Renderer {
         if compiling.made != self.made_seen {
             // Pipelines arrived: record again what waited for them.
             self.made_seen = compiling.made;
-            let drape_waiting = std::mem::take(&mut self.drape_waiting);
-            let fell_back = self.fell_back.take();
-            if self.waiting > 0 || drape_waiting || fell_back {
-                self.invalidate_bundle(gpu);
+            if self.awaits.arrived(gpu) {
+                self.drop_bundles(gpu);
             }
-            if drape_waiting && let Some(terrain) = self.terrain.as_mut() {
-                // Slots drawn without them lack those layers: all redraw
-                // (stale), the drape's draws recorded anew.
-                terrain.redraw_all();
+            if self.drape_awaits.arrived(gpu) {
+                self.stale_drape(gpu);
             }
         }
         if compiling.pending > 0 {
@@ -3244,11 +3252,13 @@ impl Renderer {
         (self.layers).regroup(gpu, &mut self.composites, runs, (size, format, split));
         // Until the composites compile, nothing draws: a split main
         // pass needs its blend draw.
-        if !self.layers.ready(gpu, &self.composites) {
+        let layers = Lacks::of(gpu, self.layers.needs(&self.composites));
+        if !layers.is_empty() {
             self.layers.clear(gpu);
-            ready.cull = false;
+            ready.cull.extend(&layers);
         }
-        (self.waiting, self.recorded) = (0, 0);
+        let mut awaits = Awaits::default();
+        self.recorded = 0;
         let layers = RenderBundleDesc {
             label: "layers",
             color_formats: &[self.target.color],
@@ -3264,9 +3274,7 @@ impl Renderer {
                 let node = &self.nodes[i];
                 let groups = (&self.draw_groups[..], (node.group, node.second_group), true);
                 let before = group.len();
-                if !self.node_commands(gpu, ready, i, groups, &mut group, None) {
-                    self.waiting += 1;
-                }
+                self.node_commands(gpu, &ready, i, groups, (&mut group, None), &mut awaits);
                 self.recorded += u32::from(group.len() > before);
             }
             self.layers.groups[g].bundle = Some(gpu.create_render_bundle(
@@ -3279,8 +3287,9 @@ impl Renderer {
         }
         // Each drawn render target's writers, in style order: a float one's
         // only processes, through the composite made for it.
-        let over = self.composites.ready(gpu, offscreen::Mode::Over);
-        let float_over = self.targets.float_over(gpu);
+        let over = Lacks::of(gpu, [self.composites.needs(offscreen::Mode::Over)]);
+        let mut float_over = Lacks::default();
+        let float_over = (float_over.need(gpu, self.targets.float_over()), float_over);
         for t in self.targets.drawn().collect::<Vec<_>>() {
             let float = self.targets.holds_float(t);
             let mut draws = Vec::new();
@@ -3290,22 +3299,21 @@ impl Renderer {
                         let node = &self.nodes[i];
                         let groups = (&self.draw_groups[..], (node.group, node.second_group), true);
                         let before = draws.len();
-                        if !self.node_commands(gpu, ready, i, groups, &mut draws, None) {
-                            self.waiting += 1;
-                        }
+                        self.node_commands(gpu, &ready, i, groups, (&mut draws, None), &mut awaits);
                         self.recorded += u32::from(draws.len() > before);
                     }
                     targets::Writer::Process(p) => match self.targets.composite(p) {
-                        Some(composite) if float => match float_over {
-                            Some(pipeline) => draws.extend(
-                                offscreen::Composites::commands_through(composite, pipeline),
+                        Some(composite) if float => match &float_over {
+                            (Some(pipeline), _) => draws.extend(
+                                offscreen::Composites::commands_through(composite, *pipeline),
                             ),
-                            None => self.waiting += 1,
+                            (None, lacks) => awaits.wait(lacks.clone(), false),
                         },
-                        Some(composite) if over => {
+                        Some(composite) if over.is_empty() => {
                             draws.extend(self.composites.commands(composite));
                         }
-                        _ => self.waiting += 1,
+                        Some(_) => awaits.wait(over.clone(), false),
+                        None => awaits.wait(Lacks::unmade(), false),
                     },
                 }
             }
@@ -3346,7 +3354,9 @@ impl Renderer {
         for (stack, _) in std::mem::take(&mut self.stacks) {
             stack.release(gpu);
         }
-        let stacked = over && self.composites.stack_ready(gpu);
+        let mut stacking = over.clone();
+        stacking.all(gpu, self.composites.stack_needs());
+        let stacked = stacking.is_empty();
         let mut row = Vec::new();
         for i in 0..=self.nodes.len() {
             // The solid background and what it hides go in a bundle
@@ -3363,7 +3373,8 @@ impl Renderer {
                     .and_then(offscreen::Composite::layer)
                 {
                     Some(layer) if stacked => row.push((layer, Composited::Process(p))),
-                    _ => self.waiting += 1,
+                    Some(_) => awaits.wait(stacking.clone(), false),
+                    None => awaits.wait(Lacks::unmade(), false),
                 }
             }
             if i == self.nodes.len() {
@@ -3375,7 +3386,8 @@ impl Renderer {
             if let Some(solid) = self.solid_through(i) {
                 match solid.layer() {
                     Some(layer) if stacked => row.push((layer, Composited::Fill(i))),
-                    _ => self.waiting += 1,
+                    Some(_) => awaits.wait(stacking.clone(), false),
+                    None => awaits.wait(Lacks::unmade(), false),
                 }
                 continue;
             }
@@ -3400,11 +3412,13 @@ impl Renderer {
             if let Some(layer) = node.terrain_layer.filter(|_| terrain_on) {
                 // A terrain layer draws in its first node's place.
                 if i == 0 || self.nodes[i - 1].terrain_layer != Some(layer) {
-                    if ready.cull && ready.terrain {
+                    if ready.cull.is_empty() && ready.terrain.is_empty() {
                         steps.extend(flush(gpu, &mut commands, false));
                         steps.push(Step::Terrain(layer));
                     } else {
-                        self.waiting += 1;
+                        let mut lacks = ready.cull.clone();
+                        lacks.extend(&ready.terrain);
+                        awaits.wait(lacks, false);
                     }
                 }
                 continue;
@@ -3415,8 +3429,9 @@ impl Renderer {
             }
             let groups = (&self.draw_groups[..], (node.group, node.second_group), true);
             let before = commands.len();
-            if !member && !self.node_commands(gpu, ready, i, groups, &mut commands, None) {
-                self.waiting += 1;
+            if !member {
+                let draws = (&mut commands, None);
+                self.node_commands(gpu, &ready, i, groups, draws, &mut awaits);
             }
             self.recorded += u32::from(commands.len() > before);
         }
@@ -3428,6 +3443,7 @@ impl Renderer {
         }));
         self.bundles = bundles;
         self.steps = steps;
+        self.awaits = awaits;
     }
 
     /// Draws `row`, composites in a row as layers and what each
@@ -3804,7 +3820,7 @@ impl Renderer {
         Some(texture)
     }
 
-    /// What a bundle record finds compiled besides the nodes' own
+    /// What a bundle record finds lacking besides the nodes' own
     /// pipelines. Those only a family needs are asked after once a node of
     /// it drew: made ahead of need ([`set_pipelines`](Self::set_pipelines)), they
     /// compile in the background until then.
@@ -3816,14 +3832,25 @@ impl Renderer {
             drawn(&[Family::Raster]),
             drawn(&[Family::Hillshade, Family::ColorRelief]),
         );
+        let terrain = match self.terrain.as_ref().filter(|_| terrain_on) {
+            Some(t) => Lacks::of(gpu, t.needs()),
+            None => Lacks::unmade(),
+        };
+        let prepare = match dems {
+            true => self.images.prepare_pipelines(),
+            false => Vec::new(),
+        };
+        let mips: Vec<PipelineId> = match rasters {
+            true => self.downsampler.pipelines().collect(),
+            false => Vec::new(),
+        };
+        let tables = self.images.tables_pipeline().map(PipelineId::from);
         Ready {
-            cull: self.driver.ready(gpu),
-            terrain: (self.terrain.as_mut())
-                .filter(|_| terrain_on)
-                .is_some_and(|t| t.ready(gpu)),
-            prepare: !dems || self.images.prepare_ready(gpu),
-            tables: self.images.tables_ready(gpu),
-            mips: !rasters || self.downsampler.ready(gpu),
+            cull: Lacks::of(gpu, self.driver.needs().map(Some)),
+            terrain,
+            prepare: Lacks::of(gpu, prepare.into_iter().map(Some)),
+            tables: Lacks::of(gpu, tables.map(Some)),
+            mips: Lacks::of(gpu, mips.into_iter().map(Some)),
         }
     }
 
@@ -3923,6 +3950,7 @@ impl Renderer {
         let mut commands = Vec::new();
         let mut splices = Vec::new();
         let mut groups = Vec::new();
+        let mut awaits = Awaits::default();
         for i in 0..self.nodes.len() {
             let node = &self.nodes[i];
             let in_stack = node.stack.is_some_and(|s| u32::from(s) == stack);
@@ -3963,29 +3991,20 @@ impl Renderer {
                 });
             groups.extend(second);
             let node_groups = (&scenes[..], (group, second), false);
-            let fell_back = self.fell_back.replace(false);
-            let recorded = self.node_commands(
-                gpu,
-                ready,
-                i,
-                node_groups,
-                &mut commands,
-                Some(&mut splices),
-            );
-            // A slot keeps what it drew: one drawn in the tested pipeline
-            // for want of the untested one (which lines draw otherwise, by
-            // rounding) is redrawn once it arrives, as for a pipeline a
-            // node waited for, so it draws alike whenever that compiled.
-            if !recorded || self.fell_back.get() {
-                self.drape_waiting = true;
-            }
-            self.fell_back.set(fell_back || self.fell_back.get());
+            let draws = (&mut commands, Some(&mut splices));
+            self.node_commands(gpu, &ready, i, node_groups, draws, &mut awaits);
         }
+        let left_out = awaits.take_rows();
+        // A slot keeps what it drew: one drawn while a node waited, or with
+        // a stand-in (which draws otherwise, by rounding), is redrawn once
+        // what it lacked arrives, so it draws alike whenever that compiled.
+        self.drape_awaits.absorb(awaits);
         let level = self.drape.as_mut().expect("found above");
         level.recorded[at] = Some(Recorded {
             commands,
             splices,
             groups,
+            left_out,
             slots: FxHashMap::default(),
         });
     }
@@ -4125,54 +4144,72 @@ impl Renderer {
     /// in, that block's group bound, or in its segments, in its tiles'
     /// order ([`Scene::segments`]); a split node's untested placements
     /// first, in their pipeline, then its tested ones. In the map, a
-    /// terrain layer draws its nodes ([`Step::Terrain`]). `false` when
-    /// the node waits for a pipeline: it records nothing, or draws with a
-    /// stand-in for the variant it wants ([`Variants::drawn`]) until that
-    /// one compiles and the bundles record again.
+    /// terrain layer draws its nodes ([`Step::Terrain`]). `awaits` gains
+    /// the rows it left out and what it lacked: while a pipeline it needs
+    /// compiles it records nothing, or draws with a stand-in for the one
+    /// it wants ([`Variants::drawn`]), until that one compiles and the
+    /// recording records again.
     fn node_commands(
         &self,
         gpu: &mut dyn Gpu,
-        ready: Ready,
+        ready: &Ready,
+        i: usize,
+        groups: (
+            &[Option<BindGroupId>],
+            (BindGroupId, Option<BindGroupId>),
+            bool,
+        ),
+        (commands, splices): Recording<'_>,
+        awaits: &mut Awaits,
+    ) {
+        let before = commands.len();
+        let lacks = self.node_draws(gpu, ready, i, groups, (commands, splices), awaits);
+        awaits.wait(lacks, commands.len() > before);
+    }
+
+    /// [`node_commands`](Self::node_commands)' draws, and what they lack.
+    fn node_draws(
+        &self,
+        gpu: &mut dyn Gpu,
+        ready: &Ready,
         i: usize,
         (scenes, (group, second_group), in_map): (
             &[Option<BindGroupId>],
             (BindGroupId, Option<BindGroupId>),
             bool,
         ),
-        commands: &mut Vec<RenderCommand>,
-        mut splices: Option<&mut Vec<(usize, u32)>>,
-    ) -> bool {
-        if !ready.cull {
-            return false;
+        (commands, mut splices): Recording<'_>,
+        awaits: &mut Awaits,
+    ) -> Lacks {
+        if !ready.cull.is_empty() {
+            return ready.cull.clone();
         }
         let node = &self.nodes[i];
         if node.terrain_layer.is_some() && in_map {
             // Its terrain layer draws it ([`Step::Terrain`]).
-            return ready.terrain;
+            return ready.terrain.clone();
         }
         if !node.drawn {
             // Nothing to draw yet: drawing records the bundles again.
-            return true;
+            return Lacks::default();
         }
         if let Some(extrusion) = &node.extrusion {
-            if !self.extrusions.ready(gpu, &self.composites) {
-                return false;
+            let lacks = Lacks::of(gpu, self.extrusions.needs(&self.composites));
+            if lacks.is_empty()
+                && let Some(o) = &extrusion.offscreen
+            {
+                commands.extend(self.composites.commands(&o.composite));
             }
-            if let Some(o) = &extrusion.offscreen {
-                let composite = &o.composite;
-                commands.extend(self.composites.commands(composite));
-            }
-            return true;
+            return lacks;
         }
         if let Some(heatmap) = &node.heatmap {
-            if !self.heatmaps.ready(gpu, &self.composites) {
-                return false;
+            let lacks = Lacks::of(gpu, self.heatmaps.needs(&self.composites));
+            if lacks.is_empty()
+                && let Some(o) = &heatmap.apart.offscreen
+            {
+                commands.extend(self.composites.commands(&o.composite));
             }
-            if let Some(o) = &heatmap.apart.offscreen {
-                let composite = &o.composite;
-                commands.extend(self.composites.commands(composite));
-            }
-            return true;
+            return lacks;
         }
         // Without candidates a row's draw draws nothing: on sparse views
         // most of a style's nodes, each a pipeline, bindings and an
@@ -4181,7 +4218,11 @@ impl Renderer {
         let second = self.scene.second_row(i as u32);
         let streams = [Some(i as u32), second]
             .map(|row| row.filter(|&row| self.scene.node_candidates(row) > 0));
-        node.left_out.set(streams.map(|row| row.is_none()));
+        for (row, kept) in [Some(i as u32), second].into_iter().zip(streams) {
+            if let (Some(row), None) = (row, kept) {
+                awaits.leave_out(row);
+            }
+        }
         // A stream's rows in each block, with the block's group; a direct
         // draw of nothing records nothing: the bundles record again when
         // the node's draw changes.
@@ -4195,8 +4236,9 @@ impl Renderer {
         };
         let streams = streams.map(|row| row.map(rows).filter(|rows| !rows.is_empty()));
         if streams.iter().all(Option::is_none) {
-            return true;
+            return Lacks::default();
         }
+        let mut lacks = Lacks::default();
         let buffers = self.scene.buffers();
         if node.family.is_symbol() {
             let rows = streams[0].clone().unwrap_or_default();
@@ -4208,32 +4250,35 @@ impl Renderer {
             let (kind, placings) = self.symbol_kinds(i);
             // Every block's draw, a stand-in's too: the node waits for the
             // variant it wants all the same.
-            let mut wanted = true;
             for (scene, row) in rows {
                 let quads = (self.driver).draw(buffers, row, NodeDraw::Indexed);
-                let recorded = self.symbols.commands(
+                if !self.symbols.commands(
                     gpu,
                     (kind, placings, self.full),
                     (scene, group),
                     apart,
                     quads,
                     commands,
-                );
-                match recorded {
-                    Some(drawn) => wanted &= drawn,
-                    None => return false,
+                    &mut lacks,
+                ) {
+                    break;
                 }
             }
-            return wanted;
+            return lacks;
         }
-        if matches!(node.family, Family::Hillshade | Family::ColorRelief) && !ready.prepare {
-            return false;
+        let family = node.family;
+        // What prepares and samples images' pages.
+        if matches!(family, Family::Hillshade | Family::ColorRelief) {
+            lacks.extend(&ready.prepare);
         }
-        if node.family == Family::Hillshade && !ready.tables {
-            return false;
+        if family == Family::Hillshade {
+            lacks.extend(&ready.tables);
         }
-        if node.family == Family::Raster && !ready.mips {
-            return false;
+        if family == Family::Raster {
+            lacks.extend(&ready.mips);
+        }
+        if !lacks.is_empty() {
+            return lacks;
         }
         // Into the drape atlas, with its format's pipelines if the
         // target's differs.
@@ -4243,36 +4288,28 @@ impl Renderer {
             .filter(|_| !in_map && self.target != drape_attachments());
         let kind = node.paint_kind(&self.patterned, &self.rowed);
         // A split node's untested placements draw in a pipeline that tests
-        // no fragment once it compiled, else in the tested one.
+        // no fragment once it compiled, else in the tested one, which
+        // stands in for it: lacked until it compiles.
         let split = second.is_some() && streams[0].is_some() && !node.shades_on_terrain();
-        let untested = split.then(|| {
-            let pipeline = match (drape, node.family.is_image()) {
-                (Some(d), true) => d.images.untested(node.family).map(|p| (p, true)),
-                (Some(d), false) => d.paint.drawn_untested(gpu, kind, self.full),
-                (None, true) => self.images.untested(node.family).map(|p| (p, true)),
-                (None, false) => self.paint.drawn_untested(gpu, kind, self.full),
-            };
-            let pipeline = pipeline.filter(|&(p, _)| gpu.pipeline_ready(p.into()));
-            self.fell_back
-                .set(self.fell_back.get() || pipeline.is_none());
-            pipeline
-        });
-        let pipeline = match (drape, node.family.is_image()) {
-            _ if node.shades_on_terrain() => self.images.slopes_pipeline().map(|p| (p, true)),
-            (Some(d), true) => d.images.get(node.family).map(|p| (p, true)),
-            (Some(d), false) => d.paint.drawn(gpu, kind, self.full),
-            (None, true) => self.images.pipeline(node.family).map(|p| (p, true)),
-            (None, false) => self.paint.drawn(gpu, kind, self.full),
+        let full = self.full;
+        let untested = match (split, drape, family.is_image()) {
+            (false, ..) => None,
+            (true, Some(d), true) => lacks.need(gpu, d.images.untested(family)),
+            (true, Some(d), false) => d.paint.drawn_untested(gpu, kind, full, &mut lacks),
+            (true, None, true) => lacks.need(gpu, self.images.untested(family)),
+            (true, None, false) => self.paint.drawn_untested(gpu, kind, full, &mut lacks),
         };
-        let Some((pipeline, wanted)) = pipeline.filter(|&(p, _)| gpu.pipeline_ready(p.into()))
-        else {
-            return false;
+        let pipeline = match (drape, family.is_image()) {
+            _ if node.shades_on_terrain() => lacks.need(gpu, self.images.slopes_pipeline()),
+            (Some(d), true) => lacks.need(gpu, d.images.get(family)),
+            (Some(d), false) => d.paint.drawn(gpu, kind, full, &mut lacks),
+            (None, true) => lacks.need(gpu, self.images.pipeline(family)),
+            (None, false) => self.paint.drawn(gpu, kind, full, &mut lacks),
         };
-        let (untested, wanted) = match untested.flatten() {
-            Some((untested, also)) => (untested, wanted && also),
-            None => (pipeline, wanted),
+        let Some(pipeline) = pipeline else {
+            return lacks;
         };
-        let pipelines = [untested, pipeline];
+        let pipelines = [untested.unwrap_or(pipeline), pipeline];
         let groups = [Some(group), second_group];
         let ids = [Some(i as u32), second];
         for (((rows, pipeline), group), id) in
@@ -4313,7 +4350,7 @@ impl Renderer {
                 }
             }
         }
-        wanted
+        lacks
     }
 
     /// Indexed stream `id`'s draws of `segments`, each stretch whole: the
@@ -4570,18 +4607,24 @@ fn composite_group(composite: Option<(u32, f32, Blend)>) -> Option<u32> {
         .map(|(l, _, _)| l)
 }
 
-/// What one bundle record found compiled besides the nodes' own
-/// pipelines.
-#[derive(Clone, Copy)]
+/// Where a node's commands record: a bundle's commands, and a drape
+/// recording's splices ([`Recorded::splices`]).
+type Recording<'a> = (
+    &'a mut Vec<RenderCommand>,
+    Option<&'a mut Vec<(usize, u32)>>,
+);
+
+/// What one bundle record found lacking besides the nodes' own
+/// pipelines: nothing, where it can draw.
 struct Ready {
-    cull: bool,
-    terrain: bool,
+    cull: Lacks,
+    terrain: Lacks,
     /// The DEM prepare's, which hillshade and color relief wait for.
-    prepare: bool,
+    prepare: Lacks,
     /// The hillshade tables', which hillshades wait for.
-    tables: bool,
+    tables: Lacks,
     /// The raster mip levels', which raster nodes wait for.
-    mips: bool,
+    mips: Lacks,
 }
 
 /// Draped families' pipelines for the drape atlas's format, each made for
@@ -4624,6 +4667,9 @@ struct Recorded {
     splices: Vec<(usize, u32)>,
     /// The node groups the commands bind.
     groups: Vec<BindGroupId>,
+    /// The rows it left out for want of candidates: those gaining some
+    /// record it again.
+    left_out: Vec<u32>,
     /// By tile slot, the commands its pass last drew and their bundle
     /// once it drew them again ([`Renderer::slot_draws`]): what they bind
     /// lives as long as these draws.
@@ -4704,26 +4750,44 @@ impl PaintPipelines {
         Some(4 * shader + 2 * usize::from(kind.pattern) + usize::from(kind.rows))
     }
 
-    /// What a frame draws a node of `kind` with, and whether it is the one
-    /// it wants ([`Variants::drawn`]).
+    /// What a frame draws a node of `kind` with, `lacks` gaining what it
+    /// waits for ([`Variants::drawn`]).
     fn drawn(
         &self,
         gpu: &mut dyn Gpu,
         kind: PaintKind,
         full: bool,
-    ) -> Option<(RenderPipelineId, bool)> {
-        self.pipelines[Self::index(kind)?].drawn(gpu, full)
+        lacks: &mut Lacks,
+    ) -> Option<RenderPipelineId> {
+        Self::drawn_of(&self.pipelines, gpu, kind, full, lacks)
     }
 
     /// What a frame draws a split node's untested placements of `kind`
-    /// with, once compiled, and whether it is the variant it wants.
+    /// with, as [`drawn`](Self::drawn).
     fn drawn_untested(
         &self,
         gpu: &mut dyn Gpu,
         kind: PaintKind,
         full: bool,
-    ) -> Option<(RenderPipelineId, bool)> {
-        self.untested[Self::index(kind)?].drawn(gpu, full)
+        lacks: &mut Lacks,
+    ) -> Option<RenderPipelineId> {
+        Self::drawn_of(&self.untested, gpu, kind, full, lacks)
+    }
+
+    fn drawn_of(
+        variants: &[Variants; 20],
+        gpu: &mut dyn Gpu,
+        kind: PaintKind,
+        full: bool,
+        lacks: &mut Lacks,
+    ) -> Option<RenderPipelineId> {
+        match Self::index(kind) {
+            Some(index) => variants[index].drawn(gpu, full, lacks),
+            None => {
+                lacks.push(None);
+                None
+            }
+        }
     }
 
     /// What a frame waits for to draw a node of `kind`

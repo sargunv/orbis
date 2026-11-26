@@ -33,6 +33,11 @@ impl<T> Slots<T> {
         self[id] = item;
     }
 
+    /// A live entry, if `id` names one.
+    pub(crate) fn get(&self, id: u32) -> Option<&T> {
+        self.items.get(&id)
+    }
+
     pub(crate) fn contains(&self, id: u32) -> bool {
         self.items.contains_key(&id)
     }

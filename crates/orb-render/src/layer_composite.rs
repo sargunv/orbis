@@ -123,9 +123,11 @@ impl Group {
 }
 
 impl LayerComposites {
-    /// Whether the pipelines the groups composite with compiled.
-    pub(crate) fn ready(&self, gpu: &mut dyn Gpu, composites: &Composites) -> bool {
-        self.groups.iter().all(|g| composites.ready(gpu, g.mode()))
+    /// The pipelines the groups composite with, `None` for one not made.
+    pub(crate) fn needs(&self, composites: &Composites) -> Vec<Option<PipelineId>> {
+        (self.groups.iter())
+            .map(|g| composites.needs(g.mode()))
+            .collect()
     }
 
     /// Replaces the groups with `runs`, each drawn into a target of `size`

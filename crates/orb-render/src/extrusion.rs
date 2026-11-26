@@ -253,14 +253,24 @@ impl Extrusions {
     /// Whether every shape's pipelines made at the current sample count
     /// in the variant they draw in, and the composites', compiled.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu, composites: &Composites) -> bool {
+        crate::awaits::compiled(gpu, self.needs(composites))
+    }
+
+    /// The pipelines [`ready`](Self::ready) waits for, `None` for one not
+    /// made: until one is, the shapes' pipelines.
+    pub(crate) fn needs(&self, composites: &Composites) -> Vec<Option<PipelineId>> {
         let samples = self.column();
-        let made: Vec<_> = (self.drawing())
+        let mut needs: Vec<_> = (self.drawing())
             .filter(|((_, full), _)| *full == self.drawn_full)
             .flat_map(|(_, p)| p.map(|p| p[samples]))
+            .flatten()
+            .map(|p| Some(p.into()))
             .collect();
-        made.iter().any(Option::is_some)
-            && made.iter().flatten().all(|&p| gpu.pipeline_ready(p.into()))
-            && composites.ready(gpu, Mode::Over)
+        if needs.is_empty() {
+            needs.push(None);
+        }
+        needs.push(composites.needs(Mode::Over));
+        needs
     }
 
     /// What a frame waits for to draw `shape`: the pipelines in the

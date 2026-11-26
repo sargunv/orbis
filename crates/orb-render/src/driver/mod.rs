@@ -170,12 +170,18 @@ impl Driver {
         }
     }
 
-    /// Whether frames can draw: its pipelines compiled.
+    /// Whether frames can draw: what they need compiled.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu) -> bool {
+        (self.needs()).is_none_or(|p| gpu.pipeline_ready(p))
+    }
+
+    /// The pipeline frames need before they draw: the GPU's cull. The CPU
+    /// culls itself; its twin only checks it, so frames don't wait for it.
+    pub(crate) fn needs(&self) -> Option<PipelineId> {
         match self {
-            Self::Gpu(d) => d.ready(gpu),
+            Self::Gpu(d) => Some(d.pipeline()),
             #[cfg(cpu_driven)]
-            Self::Cpu(_) => true,
+            Self::Cpu(_) => None,
         }
     }
 

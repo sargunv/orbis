@@ -808,9 +808,9 @@ impl Targets {
     }
 
     /// The pipeline compositing a process's output into a drawn float
-    /// target, once compiled.
-    pub(crate) fn float_over(&self, gpu: &mut dyn Gpu) -> Option<RenderPipelineId> {
-        self.float_over.filter(|&p| gpu.pipeline_ready(p.into()))
+    /// target, once made.
+    pub(crate) fn float_over(&self) -> Option<RenderPipelineId> {
+        self.float_over
     }
 
     /// The runs in an order where each comes after what it reads: a

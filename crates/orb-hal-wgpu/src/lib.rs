@@ -2102,10 +2102,13 @@ impl Gpu for WgpuGpu {
     }
 
     fn pipeline_ready(&mut self, id: PipelineId) -> bool {
+        // A destroyed one (ids aren't reused) has nothing waiting for it.
         let ready = |gpu: &Self| match id {
             _ if gpu.failed.contains(&id) => true,
-            PipelineId::Render(id) => gpu.render_pipelines[id.0].is_some(),
-            PipelineId::Compute(id) => gpu.compute_pipelines[id.0].is_some(),
+            PipelineId::Render(id) => (gpu.render_pipelines.get(id.0)).is_none_or(Option::is_some),
+            PipelineId::Compute(id) => {
+                (gpu.compute_pipelines.get(id.0)).is_none_or(Option::is_some)
+            }
         };
         if ready(self) {
             return true;

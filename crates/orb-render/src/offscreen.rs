@@ -346,9 +346,9 @@ impl Composites {
         }
     }
 
-    /// Whether the pipelines of stacks compiled.
-    pub(crate) fn stack_ready(&self, gpu: &mut dyn Gpu) -> bool {
-        (self.stacks.iter()).all(|p| p.is_some_and(|p| gpu.pipeline_ready(p.into())))
+    /// The pipelines of stacks, `None` for one not made.
+    pub(crate) fn stack_needs(&self) -> impl Iterator<Item = Option<PipelineId>> + use<> {
+        self.stacks.map(|p| p.map(Into::into)).into_iter()
     }
 
     /// A stack of `layers`, 2 to [`STACK`], bottom first.
@@ -535,7 +535,12 @@ impl Composites {
 
     /// Whether the pipeline of a composite in `mode` compiled.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu, mode: Mode) -> bool {
-        (self.pipeline(mode)).is_some_and(|p| gpu.pipeline_ready(p.into()))
+        crate::awaits::compiled(gpu, [self.needs(mode)])
+    }
+
+    /// The pipeline of a composite in `mode`, `None` until made.
+    pub(crate) fn needs(&self, mode: Mode) -> Option<PipelineId> {
+        self.pipeline(mode).map(Into::into)
     }
 
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {

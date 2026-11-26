@@ -786,18 +786,18 @@ fn shared_geometry_lives_until_its_last_mesh() {
 
 fn red_fill(h: &mut Harness) {
     h.renderer.set_nodes(&mut h.gpu, &[Family::Fill]);
-    h.renderer.set_paint(
-        &mut h.gpu,
-        0,
-        &NodePaint::Fill(FillPaint {
-            color: [1.0, 0.0, 0.0, 1.0],
-            opacity: 1.0,
-            translate: Default::default(),
-            table_mask: 0,
-            curves: [Curve::STEP; 2],
-            state: Default::default(),
-        }),
-    );
+    h.renderer.set_paint(&mut h.gpu, 0, &red_fill_paint());
+}
+
+fn red_fill_paint() -> NodePaint {
+    NodePaint::Fill(FillPaint {
+        color: [1.0, 0.0, 0.0, 1.0],
+        opacity: 1.0,
+        translate: Default::default(),
+        table_mask: 0,
+        curves: [Curve::STEP; 2],
+        state: Default::default(),
+    })
 }
 
 /// A style with more render nodes than the scene was made for grows its
@@ -883,6 +883,70 @@ fn nodes_wait_for_their_pipelines_without_blocking_the_frame() {
     let pixels = pollster::block_on(h.gpu.read_texture(h.target));
     assert_eq!(pixel(&pixels, 4, 32), RED);
     assert_eq!(h.gpu.counters().pipelines_compiled, pipelines);
+}
+
+/// A recording records again once what it waited for compiles, and not
+/// for a pipeline nothing in it waited for: here a circle without
+/// candidates whose pipeline lands while the fill still waits for its own.
+#[test]
+fn bundles_record_again_only_for_what_they_waited_for() {
+    // Workers to spare while two compile slowly.
+    let mut h = Harness::with(4, 2, 8, Harness::SMALL, Some(4));
+    h.gpu.inject_slow_compile(
+        &["fill", "fill untested"],
+        std::time::Duration::from_secs(3),
+    );
+    // A fill, and a circle without meshes, hidden until the fill waits.
+    h.renderer
+        .set_nodes(&mut h.gpu, &[Family::Fill, Family::Circle]);
+    h.renderer.set_paint(&mut h.gpu, 0, &red_fill_paint());
+    h.renderer
+        .set_paint(&mut h.gpu, 1, &circle_paint([0.0, 1.0, 0.0, 1.0]));
+    h.renderer.set_visible(1, false);
+    let tile = h.tile();
+    h.renderer
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .unwrap();
+    h.renderer
+        .add_mesh(
+            &mut h.gpu,
+            tile,
+            (0, EXTENT),
+            &MeshData::new(&left_half_square(), &[], 0),
+            &Default::default(),
+        )
+        .unwrap();
+    // Everything but the fill's pipelines compiles well before them.
+    let wait_for_fill_alone = |h: &mut Harness| {
+        while h.gpu.poll_pipelines().pending > 2 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    };
+    h.render_stats();
+    wait_for_fill_alone(&mut h);
+    assert_eq!(h.render_stats().nodes_waiting, 1);
+    // Shown, the circle records the bundles again and asks for its
+    // pipeline, which may land within that frame or after it.
+    let made = h.gpu.poll_pipelines().made;
+    h.renderer.set_visible(1, true);
+    assert!(h.render_stats().bundle_recorded);
+    wait_for_fill_alone(&mut h);
+    assert!(
+        h.gpu.poll_pipelines().made > made,
+        "the circle's pipeline arrived"
+    );
+    let arrived = h.render_stats();
+    assert!(
+        !arrived.bundle_recorded,
+        "nothing waited for the circle's pipeline"
+    );
+    assert_eq!(arrived.nodes_waiting, 1);
+    h.gpu.finish_pipelines();
+    let drawn = h.render_stats();
+    assert!(drawn.bundle_recorded);
+    assert_eq!(drawn.nodes_waiting, 0);
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    assert_eq!(pixel(&pixels, 4, 32), RED);
 }
 
 #[test]

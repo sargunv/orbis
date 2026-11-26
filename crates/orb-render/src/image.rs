@@ -457,13 +457,6 @@ impl Images {
         self.tables.map(|(p, _)| p)
     }
 
-    /// Whether hillshades can draw: their tables' pipeline compiled, or no
-    /// hillshade asked for it.
-    pub(crate) fn tables_ready(&self, gpu: &mut dyn Gpu) -> bool {
-        self.tables
-            .is_none_or(|(p, _)| gpu.pipeline_ready(p.into()))
-    }
-
     /// The pass that draws hillshade `node`'s table from `words`, its
     /// paint at `uniform`, unless it was drawn from them: GL JS's
     /// `hillshade` methods once a texel, which the node's draws sample
