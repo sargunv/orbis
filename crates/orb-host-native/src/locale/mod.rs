@@ -16,6 +16,7 @@
 //! - `apple.rs`: the system ICU, `libicucore`, through `icu4c.rs`.
 //! - `linux.rs`: the system ICU, `libicuuc` and `libicui18n`, through
 //!   `icu4c.rs`.
+//! - `windows.rs`: the system ICU, `icu.dll`, through `icu4c.rs`.
 //! - `android.rs`: the framework's ICU, `android.icu`, through JNI.
 //!
 //! A backend file provides `open() -> Option<Box<dyn Backend>>`, which
@@ -33,7 +34,12 @@
 
 // A platform without a backend yet uses nothing but `install`.
 #![cfg_attr(
-    not(any(target_vendor = "apple", target_os = "linux", target_os = "android")),
+    not(any(
+        target_vendor = "apple",
+        target_os = "linux",
+        target_os = "android",
+        windows
+    )),
     allow(dead_code, reason = "no backend on this platform yet")
 )]
 
@@ -48,10 +54,12 @@ use orb_expr::{BuiltinLocale, Collator, HostLocale, NumberFormat};
 mod android;
 #[cfg(target_vendor = "apple")]
 mod apple;
-#[cfg(any(target_vendor = "apple", target_os = "linux"))]
+#[cfg(any(target_vendor = "apple", target_os = "linux", windows))]
 mod icu4c;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(windows)]
+mod windows;
 
 /// This platform's backend.
 mod platform {
@@ -61,8 +69,15 @@ mod platform {
     pub(super) use super::apple::open;
     #[cfg(target_os = "linux")]
     pub(super) use super::linux::open;
+    #[cfg(windows)]
+    pub(super) use super::windows::open;
 
-    #[cfg(not(any(target_vendor = "apple", target_os = "linux", target_os = "android")))]
+    #[cfg(not(any(
+        target_vendor = "apple",
+        target_os = "linux",
+        target_os = "android",
+        windows
+    )))]
     pub(super) fn open() -> Option<Box<dyn super::Backend>> {
         None
     }
@@ -611,7 +626,7 @@ mod tests {
 
     /// The platform's library, on platforms with a backend a test binary
     /// can open: Android's needs an app's JVM.
-    #[cfg(any(target_vendor = "apple", target_os = "linux"))]
+    #[cfg(any(target_vendor = "apple", target_os = "linux", windows))]
     mod system {
         use super::super::*;
 
