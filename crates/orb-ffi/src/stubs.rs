@@ -64,7 +64,7 @@ pub unsafe extern "C" fn mln_map_add_image_source_image(
 pub unsafe extern "C" fn mln_map_attach_android_hardware_buffer_ring(
     map: mln_map,
     descriptor: *const mln_android_hardware_buffer_ring_descriptor,
-    device: mln_vulkan_device,
+    device: mln_gpu_device,
     options: *const mln_render_session_attach_options,
     out_session: *mut mln_render_session,
     completion: *const mln_completion,
@@ -78,26 +78,12 @@ pub unsafe extern "C" fn mln_map_attach_android_hardware_buffer_ring(
     }
 }
 
-/// `mln_map_attach_android_surface`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_attach_android_surface(
-    map: mln_map,
-    descriptor: *const mln_android_surface_descriptor,
-    device: mln_vulkan_device,
-    options: *const mln_render_session_attach_options,
-    out_session: *mut mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_android_surface") }
-}
-
 /// `mln_map_attach_dma_buf_ring`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_map_attach_dma_buf_ring(
     map: mln_map,
     descriptor: *const mln_dma_buf_ring_descriptor,
-    device: mln_vulkan_device,
+    device: mln_gpu_device,
     options: *const mln_render_session_attach_options,
     out_session: *mut mln_render_session,
     completion: *const mln_completion,
@@ -111,7 +97,7 @@ pub unsafe extern "C" fn mln_map_attach_dma_buf_ring(
 pub unsafe extern "C" fn mln_map_attach_dxgi_shared_texture_ring(
     map: mln_map,
     descriptor: *const mln_dxgi_shared_texture_ring_descriptor,
-    device: mln_vulkan_device,
+    device: mln_gpu_device,
     options: *const mln_render_session_attach_options,
     out_session: *mut mln_render_session,
     completion: *const mln_completion,
@@ -133,20 +119,6 @@ pub unsafe extern "C" fn mln_map_attach_io_surface_ring(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_io_surface_ring") }
 }
 
-/// `mln_map_attach_ohos_surface`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_attach_ohos_surface(
-    map: mln_map,
-    descriptor: *const mln_ohos_surface_descriptor,
-    device: mln_vulkan_device,
-    options: *const mln_render_session_attach_options,
-    out_session: *mut mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_ohos_surface") }
-}
-
 /// `mln_map_attach_open_gl_borrowed_texture`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_map_attach_open_gl_borrowed_texture(
@@ -158,19 +130,6 @@ pub unsafe extern "C" fn mln_map_attach_open_gl_borrowed_texture(
     out_diagnostic: *mut mln_diagnostic,
 ) -> mln_status {
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_open_gl_borrowed_texture") }
-}
-
-/// `mln_map_attach_open_gl_surface`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_attach_open_gl_surface(
-    map: mln_map,
-    descriptor: *const mln_open_gl_surface_descriptor,
-    options: *const mln_render_session_attach_options,
-    out_session: *mut mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_open_gl_surface") }
 }
 
 /// `mln_map_attach_vulkan_borrowed_texture`: not implemented.
@@ -186,33 +145,6 @@ pub unsafe extern "C" fn mln_map_attach_vulkan_borrowed_texture(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_vulkan_borrowed_texture") }
 }
 
-/// `mln_map_attach_vulkan_surface`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_attach_vulkan_surface(
-    map: mln_map,
-    descriptor: *const mln_vulkan_surface_descriptor,
-    options: *const mln_render_session_attach_options,
-    out_session: *mut mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_vulkan_surface") }
-}
-
-/// `mln_map_attach_wayland_surface`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_attach_wayland_surface(
-    map: mln_map,
-    descriptor: *const mln_wayland_surface_descriptor,
-    device: mln_vulkan_device,
-    options: *const mln_render_session_attach_options,
-    out_session: *mut mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_wayland_surface") }
-}
-
 /// `mln_map_attach_web_gpu_borrowed_texture`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_map_attach_web_gpu_borrowed_texture(
@@ -224,33 +156,6 @@ pub unsafe extern "C" fn mln_map_attach_web_gpu_borrowed_texture(
     out_diagnostic: *mut mln_diagnostic,
 ) -> mln_status {
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_web_gpu_borrowed_texture") }
-}
-
-/// `mln_map_attach_web_gpu_surface`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_attach_web_gpu_surface(
-    map: mln_map,
-    descriptor: *const mln_web_gpu_surface_descriptor,
-    options: *const mln_render_session_attach_options,
-    out_session: *mut mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_web_gpu_surface") }
-}
-
-/// `mln_map_attach_win32_window`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_map_attach_win32_window(
-    map: mln_map,
-    descriptor: *const mln_win32_window_descriptor,
-    device: mln_vulkan_device,
-    options: *const mln_render_session_attach_options,
-    out_session: *mut mln_render_session,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_map_attach_win32_window") }
 }
 
 /// `mln_map_set_image_source_image`: not implemented.
@@ -275,35 +180,6 @@ pub unsafe extern "C" fn mln_ohos_frame_pacer_create(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_ohos_frame_pacer_create") }
 }
 
-/// `mln_render_session_set_android_surface_target`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_set_android_surface_target(
-    session: mln_render_session,
-    replacement: *const mln_android_surface_replacement,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe {
-        crate::base::unsupported(
-            out_diagnostic,
-            "mln_render_session_set_android_surface_target",
-        )
-    }
-}
-
-/// `mln_render_session_set_ohos_surface_target`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_set_ohos_surface_target(
-    session: mln_render_session,
-    replacement: *const mln_ohos_surface_replacement,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe {
-        crate::base::unsupported(out_diagnostic, "mln_render_session_set_ohos_surface_target")
-    }
-}
-
 /// `mln_render_session_set_open_gl_borrowed_texture_target`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_render_session_set_open_gl_borrowed_texture_target(
@@ -316,22 +192,6 @@ pub unsafe extern "C" fn mln_render_session_set_open_gl_borrowed_texture_target(
         crate::base::unsupported(
             out_diagnostic,
             "mln_render_session_set_open_gl_borrowed_texture_target",
-        )
-    }
-}
-
-/// `mln_render_session_set_open_gl_surface_target`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_set_open_gl_surface_target(
-    session: mln_render_session,
-    replacement: *const mln_open_gl_surface_replacement,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe {
-        crate::base::unsupported(
-            out_diagnostic,
-            "mln_render_session_set_open_gl_surface_target",
         )
     }
 }
@@ -352,38 +212,6 @@ pub unsafe extern "C" fn mln_render_session_set_vulkan_borrowed_texture_target(
     }
 }
 
-/// `mln_render_session_set_vulkan_surface_target`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_set_vulkan_surface_target(
-    session: mln_render_session,
-    replacement: *const mln_vulkan_surface_replacement,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe {
-        crate::base::unsupported(
-            out_diagnostic,
-            "mln_render_session_set_vulkan_surface_target",
-        )
-    }
-}
-
-/// `mln_render_session_set_wayland_surface_target`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_set_wayland_surface_target(
-    session: mln_render_session,
-    replacement: *const mln_wayland_surface_replacement,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe {
-        crate::base::unsupported(
-            out_diagnostic,
-            "mln_render_session_set_wayland_surface_target",
-        )
-    }
-}
-
 /// `mln_render_session_set_web_gpu_borrowed_texture_target`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_render_session_set_web_gpu_borrowed_texture_target(
@@ -397,35 +225,6 @@ pub unsafe extern "C" fn mln_render_session_set_web_gpu_borrowed_texture_target(
             out_diagnostic,
             "mln_render_session_set_web_gpu_borrowed_texture_target",
         )
-    }
-}
-
-/// `mln_render_session_set_web_gpu_surface_target`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_set_web_gpu_surface_target(
-    session: mln_render_session,
-    replacement: *const mln_web_gpu_surface_replacement,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe {
-        crate::base::unsupported(
-            out_diagnostic,
-            "mln_render_session_set_web_gpu_surface_target",
-        )
-    }
-}
-
-/// `mln_render_session_set_win32_window_target`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_render_session_set_win32_window_target(
-    session: mln_render_session,
-    replacement: *const mln_win32_window_replacement,
-    completion: *const mln_completion,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe {
-        crate::base::unsupported(out_diagnostic, "mln_render_session_set_win32_window_target")
     }
 }
 
@@ -494,30 +293,6 @@ pub unsafe extern "C" fn mln_runtime_update_offline_region_metadata(
         crate::base::unsupported(out_diagnostic, "mln_runtime_update_offline_region_metadata")
     }
 }
-
-/// `mln_vulkan_device_create`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_vulkan_device_create(
-    options: *const mln_vulkan_device_options,
-    out_device: *mut mln_vulkan_device,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_vulkan_device_create") }
-}
-
-/// `mln_vulkan_device_get_context`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_vulkan_device_get_context(
-    device: mln_vulkan_device,
-    out_result: *mut mln_vulkan_device_context_result,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_vulkan_device_get_context") }
-}
-
-/// `mln_vulkan_device_release`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_vulkan_device_release(device: mln_vulkan_device) {}
 
 // A function item coerces to a function pointer type it shares with another
 // only if their signatures match, so this fails to compile where a
@@ -613,6 +388,26 @@ const _: () = {
         crate::pacer::mln_frame_pacer_release,
     ];
     let _ = [
+        crate::sys::mln_gpu_device_create,
+        crate::gpu_device::mln_gpu_device_create,
+    ];
+    let _ = [
+        crate::sys::mln_gpu_device_get_capabilities,
+        crate::gpu_device::mln_gpu_device_get_capabilities,
+    ];
+    let _ = [
+        crate::sys::mln_gpu_device_get_vulkan_context,
+        crate::gpu_device::mln_gpu_device_get_vulkan_context,
+    ];
+    let _ = [
+        crate::sys::mln_gpu_device_release,
+        crate::gpu_device::mln_gpu_device_release,
+    ];
+    let _ = [
+        crate::sys::mln_gpu_device_wrap_web_gpu,
+        crate::gpu_device::mln_gpu_device_wrap_web_gpu,
+    ];
+    let _ = [
         crate::sys::mln_http_header_transform_response_set_header,
         crate::resources::mln_http_header_transform_response_set_header,
     ];
@@ -660,17 +455,10 @@ const _: () = {
         crate::sys::mln_map_apply_camera_delta,
         crate::map::mln_map_apply_camera_delta,
     ];
+    let _ = [crate::sys::mln_map_attach, crate::session::mln_map_attach];
     let _ = [
         crate::sys::mln_map_attach_metal_borrowed_texture,
         crate::frames::mln_map_attach_metal_borrowed_texture,
-    ];
-    let _ = [
-        crate::sys::mln_map_attach_metal_surface,
-        crate::session::mln_map_attach_metal_surface,
-    ];
-    let _ = [
-        crate::sys::mln_map_attach_offscreen,
-        crate::session::mln_map_attach_offscreen,
     ];
     let _ = [
         crate::sys::mln_map_begin_command_group,
@@ -1008,14 +796,6 @@ const _: () = {
         crate::network::mln_network_set_status,
     ];
     let _ = [
-        crate::sys::mln_offscreen_device_create,
-        crate::session::mln_offscreen_device_create,
-    ];
-    let _ = [
-        crate::sys::mln_offscreen_device_release,
-        crate::session::mln_offscreen_device_release,
-    ];
-    let _ = [
         crate::sys::mln_open_gl_supported_context_provider_mask,
         crate::base::mln_open_gl_supported_context_provider_mask,
     ];
@@ -1136,8 +916,8 @@ const _: () = {
         crate::frames::mln_render_session_set_metal_borrowed_texture_target,
     ];
     let _ = [
-        crate::sys::mln_render_session_set_metal_surface_target,
-        crate::session::mln_render_session_set_metal_surface_target,
+        crate::sys::mln_render_session_set_target,
+        crate::session::mln_render_session_set_target,
     ];
     let _ = [
         crate::sys::mln_resource_request_complete,

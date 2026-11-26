@@ -1197,27 +1197,26 @@ command!(
 );
 
 command!(
-    mln_map_resize(size: mln_logical_size),
+    mln_map_resize(extent: mln_logical_extent),
     false,
     true,
     |map, id| {
-        if size.width == 0 || size.height == 0 {
-            return Err(Failure::argument("the size is empty"));
-        }
+        crate::base::physical(extent)?;
         if handles::map(map.0)?.has_session.load(Ordering::Acquire) {
             return Err(Failure::state(
                 "the map has an attached render session: resize the session instead",
             ));
         }
         Ok(job(move |entry| {
-            entry.unchanged =
-                (entry.extent.width, entry.extent.height) == (size.width, size.height);
-            entry.extent.width = size.width;
-            entry.extent.height = size.height;
+            let was = entry.extent;
+            entry.unchanged = (was.width, was.height, was.scale_factor)
+                == (extent.width, extent.height, extent.scale_factor);
+            // The scale factor is what the map's next session renders at.
+            entry.extent = extent;
             let before = entry.map.camera();
             entry
                 .map
-                .set_viewport(f64::from(size.width), f64::from(size.height));
+                .set_viewport(f64::from(extent.width), f64::from(extent.height));
             // A resize that moves the camera back within its limits
             // cancels its transitions, as in Native.
             if entry.map.camera() != before {

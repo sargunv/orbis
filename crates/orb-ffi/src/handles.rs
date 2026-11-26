@@ -29,7 +29,7 @@ pub(crate) enum Kind {
     Frame = 13,
     Batch = 21,
     Queue = 23,
-    OffscreenDevice = 26,
+    GpuDevice = 26,
     Pacer = 27,
 }
 
@@ -46,7 +46,7 @@ impl Kind {
             Kind::Frame => "mln_acquired_frame",
             Kind::Batch => "mln_render_frame_batch",
             Kind::Queue => "mln_delivery_queue",
-            Kind::OffscreenDevice => "mln_offscreen_device",
+            Kind::GpuDevice => "mln_gpu_device",
             Kind::Pacer => "mln_frame_pacer",
         }
     }
@@ -68,9 +68,9 @@ pub(crate) enum Object {
         Arc<Vec<mln_render_frame_result>>,
     ),
     Queue(Arc<DeliveryQueue>),
-    /// Orbis owns the device of its runtime, so an offscreen device is only a
-    /// token that sessions accept.
-    OffscreenDevice,
+    /// Orbis owns the device of its runtime, so a GPU device is only a
+    /// token that attaches accept.
+    GpuDevice,
     #[cfg_attr(
         not(target_os = "macos"),
         expect(dead_code, reason = "only macOS makes a pacer")
@@ -91,7 +91,7 @@ impl Object {
             Object::Frame(_) => Kind::Frame,
             Object::Batch(_) => Kind::Batch,
             Object::Queue(_) => Kind::Queue,
-            Object::OffscreenDevice => Kind::OffscreenDevice,
+            Object::GpuDevice => Kind::GpuDevice,
             Object::Pacer(_) => Kind::Pacer,
         }
     }
@@ -178,7 +178,7 @@ fn kind_of(byte: u8) -> Option<Kind> {
         Kind::Frame,
         Kind::Batch,
         Kind::Queue,
-        Kind::OffscreenDevice,
+        Kind::GpuDevice,
         Kind::Pacer,
     ]
     .into_iter()
@@ -261,6 +261,6 @@ pub(crate) fn pacer(handle: u64) -> Result<Arc<FramePacer>> {
     }
 }
 
-pub(crate) fn offscreen_device(handle: u64) -> Result<()> {
-    lookup(handle, Kind::OffscreenDevice).map(|_| ())
+pub(crate) fn gpu_device(handle: u64) -> Result<()> {
+    lookup(handle, Kind::GpuDevice).map(|_| ())
 }

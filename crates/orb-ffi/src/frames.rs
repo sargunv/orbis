@@ -383,7 +383,7 @@ pub unsafe extern "C" fn mln_map_attach_metal_borrowed_texture(
             crate::session::attach(
                 map,
                 d.logical_size,
-                TargetSpec::Ring(slots),
+                Ok(TargetSpec::Ring(slots)),
                 options,
                 out_session,
                 completion,

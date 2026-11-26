@@ -27,6 +27,7 @@ mod base;
 mod delivery;
 mod expression;
 mod frames;
+mod gpu_device;
 mod handles;
 mod logging;
 mod map;
