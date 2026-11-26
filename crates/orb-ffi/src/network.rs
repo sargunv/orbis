@@ -79,11 +79,10 @@ pub unsafe extern "C" fn mln_network_set_status(
 }
 
 /// Gives fetching the app's JVM and `Context` (`orb_host_native::android::init`):
-/// HTTPS then verifies servers with Android's verifier (its Kotlin half,
-/// `org.rustls:rustls-platform-verifier`, in the app; before, or without
-/// it, the system store's certificate files), plain HTTP follows the app's
-/// network security config, and `file:///android_asset/` URLs read the
-/// app's assets. Elsewhere there is nothing to give.
+/// HTTP then goes through Android's `HttpURLConnection`, with the
+/// platform's TLS, trust store and proxy settings and the app's network
+/// security config, and `file:///android_asset/` URLs read the app's
+/// assets. Before it, HTTP fails. Elsewhere there is nothing to give.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_android_init(
     jni_env: *mut std::ffi::c_void,
@@ -97,13 +96,7 @@ pub unsafe extern "C" fn mln_android_init(
                 return Err(Failure::argument("jni_env and context must not be null"));
             }
             #[cfg(target_os = "android")]
-            return orb_api::init_android(jni_env, context)
-                .map(|warning| {
-                    if let Some(warning) = warning {
-                        crate::logging::log(MLN_LOG_SEVERITY_WARNING, &warning);
-                    }
-                })
-                .map_err(Failure::native);
+            return orb_api::init_android(jni_env, context).map_err(Failure::native);
             #[cfg(not(target_os = "android"))]
             Err(Failure::unsupported(
                 "Android initialization is not supported",

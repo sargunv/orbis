@@ -5,10 +5,13 @@
 #[cfg(target_os = "android")]
 pub mod android;
 mod cache;
+#[cfg(ureq_transport)]
 mod connect;
 mod fonts;
 mod http;
 mod storage;
+#[cfg(target_os = "android")]
+mod url_connection;
 
 use std::sync::Arc;
 
@@ -23,21 +26,18 @@ use orb_host::{
     Abort, DecodedImage, Fetch, FetchDone, FetchError, Fetched, ImageDecode, ImageDone,
     NetworkAnswer, NetworkHook, NetworkRequest, Prior, Request, RequestTransform, ResourceKind,
 };
-use ureq::tls::RootCerts;
 
-/// Fetches `http(s)://` URLs with ureq and `file://` URLs from disk, on a
-/// small pool of I/O threads, through an [`HttpCache`] when it has one. A
-/// [`NetworkHook`] can serve requests where the network would. An aborted
-/// request still waiting for a thread never starts, and one reading its
-/// body stops reading and drops its connection.
+/// Fetches `http(s)://` URLs with ureq (on Android through the platform's
+/// `HttpURLConnection`) and `file://` URLs from disk, on a small pool of
+/// I/O threads, through an [`HttpCache`] when it has one. A [`NetworkHook`]
+/// can serve requests where the network would. An aborted request still
+/// waiting for a thread never starts, and one reading its body stops
+/// reading and drops its connection.
 pub struct NativeFetch {
-    /// HTTPS verifying servers as the platform does.
-    agent: ureq::Agent,
-    /// On Android until [`android::init`] gives the verifier the app's
-    /// JVM: HTTPS trusting the system store's certificates, read with the
-    /// first request that needs them.
-    #[cfg(target_os = "android")]
-    roots: std::sync::OnceLock<ureq::Agent>,
+    /// HTTPS verifying servers as the platform does, made with the first
+    /// request that goes through ureq.
+    #[cfg(ureq_transport)]
+    agent: std::sync::OnceLock<ureq::Agent>,
     pool: Arc<ThreadPool>,
     cache: Option<Arc<HttpCache>>,
     transform: std::sync::RwLock<Option<Arc<RequestTransform>>>,
@@ -114,10 +114,8 @@ impl NativeFetch {
     /// response said it must revalidate first.
     pub fn with_cache(cache: Option<Arc<HttpCache>>) -> Arc<Self> {
         Arc::new(Self {
-            // Every thread's connection stays open for the next request.
-            agent: connect::agent(fetch_threads(), RootCerts::PlatformVerifier),
-            #[cfg(target_os = "android")]
-            roots: std::sync::OnceLock::new(),
+            #[cfg(ureq_transport)]
+            agent: std::sync::OnceLock::new(),
             pool: Arc::new(ThreadPool::new("fetch", fetch_threads())),
             cache,
             transform: Default::default(),
@@ -150,15 +148,22 @@ impl NativeFetch {
         self.online.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// The agent HTTPS goes through now.
-    fn agent(&self) -> &ureq::Agent {
-        #[cfg(target_os = "android")]
-        if !android::ready() {
-            return self
-                .roots
-                .get_or_init(|| connect::agent(fetch_threads(), android::system_roots()));
+    /// What HTTP goes through now: on Android `HttpURLConnection`, but
+    /// ureq in a `standalone` build before [`android::init`] gave a JVM.
+    fn transport(&self) -> Transport {
+        #[cfg(all(target_os = "android", ureq_transport))]
+        if android::java_vm().is_some() {
+            return Transport::UrlConnection;
         }
-        &self.agent
+        #[cfg(ureq_transport)]
+        // Every thread's connection stays open for the next request.
+        return Transport::Ureq(
+            self.agent
+                .get_or_init(|| connect::agent(fetch_threads()))
+                .clone(),
+        );
+        #[cfg(not(ureq_transport))]
+        Transport::UrlConnection
     }
 
     /// The cache fetches go through.
@@ -168,7 +173,7 @@ impl NativeFetch {
 
     /// One request through the cache and the network, on this thread.
     fn get_blocking(
-        agent: &ureq::Agent,
+        transport: &Transport,
         cache: Option<&HttpCache>,
         request: &Request,
         ask: Ask,
@@ -182,7 +187,7 @@ impl NativeFetch {
         let validators = cached
             .as_ref()
             .map(|c| (c.etag.as_deref(), c.last_modified.as_deref()));
-        let response = http(agent, request, range, validators, abort);
+        let response = http(transport, request, range, validators, abort);
         Self::finish(cache, key, cached, response)
     }
 
@@ -419,89 +424,126 @@ fn read_from(
     Ok(bytes)
 }
 
-/// Redirects a request carrying the host's headers follows: ureq's default.
+/// What sends a GET: ureq, or on Android the platform's
+/// `HttpURLConnection`.
+#[derive(Clone)]
+enum Transport {
+    #[cfg(ureq_transport)]
+    Ureq(ureq::Agent),
+    #[cfg(target_os = "android")]
+    UrlConnection,
+}
+
+impl Transport {
+    /// GETs `url` with `headers`, following its redirects where `follow`
+    /// says and the transport can.
+    fn get(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        follow: bool,
+        abort: &Abort,
+    ) -> Result<Box<dyn Reply>, FetchError> {
+        match self {
+            #[cfg(ureq_transport)]
+            Self::Ureq(agent) => {
+                let _ = abort;
+                connect::get(agent, url, headers, follow)
+            }
+            #[cfg(target_os = "android")]
+            Self::UrlConnection => {
+                let _ = follow;
+                url_connection::get(url, headers, abort)
+            }
+        }
+    }
+
+    /// Whether it can follow redirects itself: `HttpURLConnection` won't
+    /// from `http` to `https`, so [`http`] follows them for it.
+    fn follows_redirects(&self) -> bool {
+        match self {
+            #[cfg(ureq_transport)]
+            Self::Ureq(_) => true,
+            #[cfg(target_os = "android")]
+            Self::UrlConnection => false,
+        }
+    }
+}
+
+/// A transport's response to one GET, its body unread until asked for.
+trait Reply {
+    fn status(&self) -> u16;
+    /// The first value of the header `name`, in any case.
+    fn header(&self, name: &str) -> Option<String>;
+    /// The body, at most `limit` bytes ([`read_body`]).
+    fn body(self: Box<Self>, limit: u64, abort: &Abort) -> Result<Vec<u8>, FetchError>;
+}
+
+/// The user agent requests send.
+const USER_AGENT: &str = concat!("orbis/", env!("CARGO_PKG_VERSION"));
+
+/// Redirects a request followed by [`http`] follows: ureq's default.
 const MAX_REDIRECTS: usize = 10;
 
 /// One HTTP GET, conditional on `validators` (ETag, Last-Modified). An
 /// abort stops it between the body's reads.
 ///
-/// A request carrying the host's headers follows its redirects itself and
+/// A request carrying the host's headers follows its redirects here and
 /// drops those headers once a redirect leaves the URL's origin: ureq strips
 /// only `Authorization` and `Cookie`, so a key in a header of the host's
-/// own (`X-Api-Key`) would reach whatever origin a redirect names. On
-/// Android every request does, since the app's network security config
-/// decides for each URL of a redirect chain whether plain HTTP may go.
+/// own (`X-Api-Key`) would reach whatever origin a redirect names. So does
+/// every request through a transport that can't follow them all.
 fn http(
-    agent: &ureq::Agent,
+    transport: &Transport,
     req: &Request,
     range: Option<(u64, u64)>,
     validators: Option<(Option<&str>, Option<&str>)>,
     abort: &Abort,
 ) -> Result<Response, FetchError> {
-    let manual = !req.headers.is_empty() || cfg!(target_os = "android");
+    let follow = req.headers.is_empty() && transport.follows_redirects();
+    let range_header = range
+        .map(|(offset, length)| {
+            orb_host::range_end(offset, length).map(|end| format!("bytes={offset}-{end}"))
+        })
+        .transpose()?;
     let mut url = encode_url(&req.url).into_owned();
-    let mut headers = req.headers.as_slice();
+    let mut host_headers = req.headers.as_slice();
     let mut redirects = 0;
-    let mut response = loop {
-        #[cfg(target_os = "android")]
-        if let Some(refusal) = android::cleartext_refusal(&url) {
-            return Err(refusal);
-        }
-        // A failed response's headers say when to ask again.
-        let mut request = agent.get(&url).config().http_status_as_error(false);
-        if manual {
-            request = request.max_redirects(0);
-        }
-        let mut request = request.build();
-        for (name, value) in headers {
-            request = request.header(name, value);
-        }
-        if let Some((offset, length)) = range {
-            let end = orb_host::range_end(offset, length)?;
-            request = request
-                .header("Range", format!("bytes={offset}-{end}"))
-                .header("Accept-Encoding", "identity");
+    let reply = loop {
+        let mut headers: Vec<(&str, &str)> = host_headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        if let Some(range) = &range_header {
+            headers.extend([("Range", range.as_str()), ("Accept-Encoding", "identity")]);
         }
         if let Some((etag, last_modified)) = validators {
-            if let Some(etag) = etag {
-                request = request.header("If-None-Match", etag);
-            }
-            if let Some(last_modified) = last_modified {
-                request = request.header("If-Modified-Since", last_modified);
-            }
+            headers.extend(etag.map(|etag| ("If-None-Match", etag)));
+            headers.extend(last_modified.map(|date| ("If-Modified-Since", date)));
         }
-        let response = request
-            .call()
-            .map_err(|e| FetchError::Network(e.to_string()))?;
-        let status = response.status().as_u16();
-        if !manual || !matches!(status, 301 | 302 | 303 | 307 | 308) {
-            break response;
+        let reply = transport.get(&url, &headers, follow, abort)?;
+        let status = reply.status();
+        if follow || !matches!(status, 301 | 302 | 303 | 307 | 308) {
+            break reply;
         }
-        let location = response
-            .headers()
-            .get("location")
-            .and_then(|h| h.to_str().ok())
-            .ok_or(FetchError::Status(status))?;
+        let location = reply.header("location").ok_or(FetchError::Status(status))?;
         redirects += 1;
         if redirects > MAX_REDIRECTS {
             return Err(FetchError::Network("too many redirects".into()));
         }
-        let next = encode_url(&redirect_target(&url, location)).into_owned();
+        let next = encode_url(&redirect_target(&url, &location)).into_owned();
         if !origin(&next).is_some_and(|next| origin(&url) == Some(next)) {
-            headers = &[];
+            host_headers = &[];
         }
         url = next;
     };
-    let header = |name: &str| {
-        response
-            .headers()
-            .get(name)
-            .and_then(|h| h.to_str().ok())
-            .map(str::to_owned)
-    };
-    let (cache_control, expires, date) =
-        (header("cache-control"), header("expires"), header("date"));
-    let (etag, last_modified) = (header("etag"), header("last-modified"));
+    let status = reply.status();
+    let (cache_control, expires, date) = (
+        reply.header("cache-control"),
+        reply.header("expires"),
+        reply.header("date"),
+    );
+    let (etag, last_modified) = (reply.header("etag"), reply.header("last-modified"));
     let headers = http::Headers {
         cache_control: cache_control.as_deref(),
         expires: expires.as_deref(),
@@ -509,7 +551,7 @@ fn http(
         last_modified: last_modified.as_deref(),
     };
     let freshness = http::freshness(headers, cache::now());
-    match response.status().as_u16() {
+    match status {
         200..=203 | 205..=299 => {}
         // No content: a valid, empty tile.
         204 => {
@@ -528,7 +570,7 @@ fn http(
         }
         status => {
             let now = cache::now();
-            let wait = header("retry-after").and_then(|h| {
+            let wait = reply.header("retry-after").and_then(|h| {
                 orb_host::parse_retry_after(&h, |date| {
                     let at = http::http_date(date, now)?;
                     Some(std::time::Duration::from_secs(at.saturating_sub(now)))
@@ -539,13 +581,13 @@ fn http(
     }
     if let Some((offset, length)) = range {
         orb_host::check_range(
-            response.status().as_u16(),
-            header("content-range").as_deref(),
+            status,
+            reply.header("content-range").as_deref(),
             offset,
             length,
         )?;
     }
-    let bytes = read_body(response.body_mut(), range, abort)?;
+    let bytes = reply.body(range.map_or(MAX_BODY, |(_, length)| length), abort)?;
     if range.is_some_and(|(_, length)| bytes.len() as u64 != length) {
         return Err(FetchError::Range("short range body".into()));
     }
@@ -557,29 +599,34 @@ fn http(
     })
 }
 
-/// A response's body, at most a range's `length` or [`MAX_BODY`], read a
-/// chunk at a time until it ends or `abort` fires.
+/// What `body` reads, at most `limit` bytes (a `length` it says beyond
+/// that fails before any read), a chunk at a time until it ends or `abort`
+/// fires.
 fn read_body(
-    body: &mut ureq::Body,
-    range: Option<(u64, u64)>,
+    mut body: impl std::io::Read,
+    length: Option<u64>,
+    limit: u64,
     abort: &Abort,
 ) -> Result<Vec<u8>, FetchError> {
     use std::io::Read;
-    let limit = range.map_or(MAX_BODY, |(_, length)| length + 1);
-    let capacity = range.map_or_else(
-        || body.content_length().unwrap_or(0).min(limit),
-        |(_, length)| length,
-    );
-    let mut reader = body.with_config().limit(limit).reader();
-    let mut bytes = Vec::with_capacity(capacity as usize);
+    let oversized = || FetchError::Range("oversized body".into());
+    if length.is_some_and(|length| length > limit) {
+        return Err(oversized());
+    }
+    let mut bytes = Vec::with_capacity(length.unwrap_or(0) as usize);
     loop {
         if abort.is_aborted() {
             return Err(FetchError::Aborted);
         }
-        // Straight into the body, 64 KiB at most between the checks.
-        match (&mut reader).take(64 << 10).read_to_end(&mut bytes) {
+        // Straight into the body, 64 KiB at most between the checks, and
+        // one byte past the limit at most.
+        let room = (limit + 1 - bytes.len() as u64).min(64 << 10);
+        match (&mut body).take(room).read_to_end(&mut bytes) {
             Ok(0) => return Ok(bytes),
+            Ok(_) if bytes.len() as u64 > limit => return Err(oversized()),
             Ok(_) => {}
+            // An abort can end a read in flight.
+            Err(_) if abort.is_aborted() => return Err(FetchError::Aborted),
             Err(e) => return Err(FetchError::Network(e.to_string())),
         }
     }
@@ -611,14 +658,29 @@ fn redirect_target(base: &str, location: &str) -> String {
 /// A URL's scheme, host and port, the port spelled out where the scheme
 /// implies it.
 fn origin(url: &str) -> Option<(String, String, u16)> {
-    let uri: ureq::http::Uri = url.parse().ok()?;
-    let scheme = uri.scheme_str()?.to_ascii_lowercase();
-    let port = uri.port_u16().or(match scheme.as_str() {
-        "http" => Some(80),
-        "https" => Some(443),
-        _ => None,
-    })?;
-    Some((scheme, uri.host()?.to_ascii_lowercase(), port))
+    let (scheme, rest) = url.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(v6) => {
+            let (host, rest) = v6.split_once(']')?;
+            (host, rest.strip_prefix(':'))
+        }
+        None => match authority.rsplit_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        },
+    };
+    let port = match port.filter(|p| !p.is_empty()) {
+        Some(port) => port.parse().ok()?,
+        None => match scheme.as_str() {
+            "http" => 80,
+            "https" => 443,
+            _ => return None,
+        },
+    };
+    (!host.is_empty()).then(|| (scheme, host.to_ascii_lowercase(), port))
 }
 
 impl Fetch for NativeFetch {
@@ -669,7 +731,7 @@ impl NativeFetch {
             },
         };
         let hook = self.hook.read().expect("hook poisoned").clone();
-        let (agent, cache) = (self.agent().clone(), self.cache.clone());
+        let (transport, cache) = (self.transport(), self.cache.clone());
         let ask = Ask {
             range,
             online: self.online(),
@@ -683,7 +745,7 @@ impl NativeFetch {
             }
             let Some(hook) = hook else {
                 return done(Self::get_blocking(
-                    &agent,
+                    &transport,
                     cache.as_deref(),
                     &request,
                     ask,
@@ -752,7 +814,7 @@ impl NativeFetch {
                                         let validators = cached.as_ref().map(|c| {
                                             (c.etag.as_deref(), c.last_modified.as_deref())
                                         });
-                                        http(&agent, &request, range, validators, &abort)
+                                        http(&transport, &request, range, validators, &abort)
                                     } else {
                                         Err(FetchError::UnsupportedUrl(request.url.clone()))
                                     };
@@ -903,7 +965,8 @@ impl Drop for Scratch {
     }
 }
 
-#[cfg(test)]
+// Through ureq, which Android has only in a `standalone` build.
+#[cfg(all(test, ureq_transport))]
 mod tests {
     use super::*;
     use std::io::{Read, Write};
@@ -935,17 +998,6 @@ mod tests {
         );
         let plain = "https://a.org/t/1/2/3.pbf?k=v%20";
         assert!(matches!(encode_url(plain), std::borrow::Cow::Borrowed(p) if p == plain));
-    }
-
-    /// HTTPS verifies servers as the platform does, not with a copy of
-    /// Mozilla's roots (#188).
-    #[test]
-    fn https_verifies_with_the_platform() {
-        let fetch = NativeFetch::new();
-        let roots = |agent: &ureq::Agent| agent.config().tls_config().root_certs().clone();
-        assert!(matches!(roots(&fetch.agent), RootCerts::PlatformVerifier));
-        #[cfg(not(target_os = "android"))]
-        assert!(matches!(roots(fetch.agent()), RootCerts::PlatformVerifier));
     }
 
     #[test]
@@ -1003,7 +1055,7 @@ mod tests {
         assert_eq!(&*percent_decode("a%20b%2fc%zz%4"), b"a b/c%zz%4");
         let dir = Scratch::new("file-url");
         std::fs::write(dir.join("a b%.json"), b"{}").unwrap();
-        let agent = ureq::Agent::new_with_defaults();
+        let agent = Transport::Ureq(ureq::Agent::new_with_defaults());
         let get = |name: &str| {
             let url = format!("file://{}/{name}", dir.display());
             NativeFetch::get_blocking(&agent, None, &plain(&url), ask(None), &Abort::NEVER)
@@ -1031,7 +1083,7 @@ mod tests {
             let _ = stream.write_all(&body);
         });
         let result = NativeFetch::get_blocking(
-            &ureq::Agent::new_with_defaults(),
+            &Transport::Ureq(ureq::Agent::new_with_defaults()),
             None,
             &plain(&url),
             ask(Some((2, 3))),
@@ -1077,7 +1129,7 @@ mod tests {
         let path = dir.join("abcdef");
         std::fs::write(&path, b"abcdef").unwrap();
         let url = format!("file://{}", path.display());
-        let agent = ureq::Agent::new_with_defaults();
+        let agent = Transport::Ureq(ureq::Agent::new_with_defaults());
         assert_eq!(
             NativeFetch::get_blocking(&agent, None, &plain(&url), ask(Some((2, 3))), &Abort::NEVER)
                 .unwrap()
@@ -1148,7 +1200,7 @@ mod tests {
     fn revalidates_stale_entries_and_answers_offline() {
         let dir = Scratch::new("fetch-cache");
         let cache = HttpCache::open(Arc::new(FileStorage::new(&dir)), 1 << 20).unwrap();
-        let agent = ureq::Agent::new_with_defaults();
+        let agent = Transport::Ureq(ureq::Agent::new_with_defaults());
         let close = "Connection: close\r\n";
         let (url, server) = serve(vec![
             format!(
@@ -1187,7 +1239,7 @@ mod tests {
     fn a_stale_entry_answers_at_once_where_asked_unless_it_must_revalidate() {
         let dir = Scratch::new("fetch-stale");
         let cache = HttpCache::open(Arc::new(FileStorage::new(&dir)), 1 << 20).unwrap();
-        let agent = ureq::Agent::new_with_defaults();
+        let agent = Transport::Ureq(ureq::Agent::new_with_defaults());
         let close = "Connection: close\r\n";
         let get = |url: &str, stale| {
             let ask = Ask { stale, ..ask(None) };
@@ -1239,7 +1291,7 @@ mod tests {
     fn rate_limited_requests_answer_with_the_stale_copy() {
         let dir = Scratch::new("fetch-limited");
         let cache = HttpCache::open(Arc::new(FileStorage::new(&dir)), 1 << 20).unwrap();
-        let agent = ureq::Agent::new_with_defaults();
+        let agent = Transport::Ureq(ureq::Agent::new_with_defaults());
         let close = "Connection: close\r\n";
         let (url, server) = serve(vec![
             format!(
@@ -1272,7 +1324,7 @@ mod tests {
             format!("HTTP/1.1 404 Not Found\r\n{close}Content-Length: 4\r\n\r\ntile"),
             format!("HTTP/1.1 403 Forbidden\r\n{close}Content-Length: 4\r\n\r\ntile"),
         ]);
-        let agent = ureq::Agent::new_with_defaults();
+        let agent = Transport::Ureq(ureq::Agent::new_with_defaults());
         let get = || {
             NativeFetch::get_blocking(&agent, None, &plain(&url), ask(None), &Abort::NEVER)
                 .unwrap_err()
@@ -1307,7 +1359,7 @@ mod tests {
             url,
             headers: vec![("X-Api-Key".into(), "secret".into())],
         };
-        let agent = ureq::Agent::new_with_defaults();
+        let agent = Transport::Ureq(ureq::Agent::new_with_defaults());
         assert_eq!(
             NativeFetch::get_blocking(&agent, None, &request, ask(None), &Abort::NEVER)
                 .unwrap()
@@ -1335,6 +1387,11 @@ mod tests {
         assert_eq!(redirect_target("http://a.org", "x"), "http://a.org/x");
         assert_eq!(origin("HTTP://A.org/x"), origin("http://a.org:80/y"));
         assert_ne!(origin("http://a.org/"), origin("https://a.org/"));
+        assert_eq!(
+            origin("http://user:pass@[::1]:8080?q"),
+            Some(("http".into(), "::1".into(), 8080))
+        );
+        assert_eq!(origin("https://A.org#f"), origin("https://a.org:443/"));
     }
 
     #[test]

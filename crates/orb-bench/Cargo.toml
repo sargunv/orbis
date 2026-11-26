@@ -20,5 +20,9 @@ serde_json.workspace = true
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
 
+# Pushed to a phone with adb, it runs with no JVM to fetch through.
+[target.'cfg(target_os = "android")'.dependencies]
+orb-host-native = { workspace = true, features = ["standalone"] }
+
 [lints]
 workspace = true

@@ -57,7 +57,7 @@ fn android_main(app: AndroidApp) {
     let started = Instant::now();
     std::panic::set_hook(Box::new(|info| log(&format!("panic: {info}"))));
     let _ = APP.set(app.clone());
-    // HTTPS verifies servers with Android's trust store from here on, and
+    // HTTP goes through Android's `HttpURLConnection` from here on, and
     // `file:///android_asset/` reads the app's assets.
     let init = with_activity(&app, |env, activity| {
         // SAFETY: the thread's env and a live reference to the activity.
@@ -65,8 +65,7 @@ fn android_main(app: AndroidApp) {
         Ok(init)
     });
     match init {
-        Ok(Ok(None)) => {}
-        Ok(Ok(Some(warning))) => log(&format!("android init: {warning}")),
+        Ok(Ok(())) => {}
         Ok(Err(e)) => log(&format!("android init: {e}")),
         Err(e) => log(&format!("android init: {e}")),
     }

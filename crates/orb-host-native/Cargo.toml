@@ -1,18 +1,27 @@
 [package]
 name = "orb-host-native"
-description = "Host services on native platforms: HTTP via ureq, files"
+description = "Host services on native platforms: HTTP via ureq, or HttpURLConnection on Android, and files"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 version.workspace = true
+
+[features]
+# On Android, HTTP also in a process no app started, which has no JVM to
+# fetch through (orb-bench pushed with adb): ureq over rustls, trusting the
+# system store's certificate files. Apps leave it off, so ureq, rustls and
+# ring stay out of their library. Elsewhere ureq is HTTP's only way.
+standalone = ["dep:rustls", "dep:ureq"]
 
 [dependencies]
 fontdb = "0.24.0"
 image = { workspace = true, features = ["jpeg"] }
 orb-host = { workspace = true, features = ["fonts"] }
 orb-text = { workspace = true, features = ["fonts"] }
+
 # HTTPS over rustls with ring, verifying servers as the platform does
 # (rustls-platform-verifier: its trust store, settings and revocation).
+[target.'cfg(not(target_os = "android"))'.dependencies]
 rustls = { version = "0.23.46", default-features = false, features = [
   "ring",
   "std",
@@ -23,15 +32,19 @@ ureq = { workspace = true, features = [
   "platform-verifier",
 ] }
 
-# On Android the verifier calls the app's JVM, which the app hands in
-# (`android::init`), as do the network security config and the app's
-# assets (ndk's asset manager); until then HTTPS trusts the system store's
-# certificate files.
+# On Android HTTP goes through the app's HttpURLConnection, in the JVM the
+# app hands in (`android::init`), which also gives the app's assets (ndk's
+# asset manager).
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22.4"
 ndk = { version = "0.9.0", default-features = false }
 ndk-sys = "0.6.0"
-rustls-platform-verifier = "0.7.1"
+rustls = { version = "0.23.46", default-features = false, features = [
+  "ring",
+  "std",
+  "tls12",
+], optional = true }
+ureq = { workspace = true, features = ["rustls-no-provider"], optional = true }
 
 [lints]
 workspace = true

@@ -75,15 +75,11 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         so_size as f64 / 1e6
     );
 
-    let verifier = format!(
-        "-PrustlsPlatformVerifier={}",
-        locked_version(&root, "rustls-platform-verifier-android")?
-    );
-    crate::run(Command::new("gradle").current_dir(&project).args([
-        "--quiet",
-        &verifier,
-        ":app:assembleRelease",
-    ]))?;
+    crate::run(
+        Command::new("gradle")
+            .current_dir(&project)
+            .args(["--quiet", ":app:assembleRelease"]),
+    )?;
     let apk = project.join("app/build/outputs/apk/release/app-release.apk");
     let size = std::fs::metadata(&apk)
         .map_err(|e| format!("{}: {e}", apk.display()))?
@@ -99,20 +95,6 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The version of `package` that `Cargo.lock` pins: the Kotlin half of
-/// rustls-platform-verifier must be its Rust half's.
-fn locked_version(root: &Path, package: &str) -> Result<String, String> {
-    let lock = std::fs::read_to_string(root.join("Cargo.lock")).map_err(|e| e.to_string())?;
-    let name = format!("name = \"{package}\"");
-    let mut lines = lock.lines().skip_while(|l| *l != name).skip(1);
-    lines
-        .next()
-        .and_then(|l| l.strip_prefix("version = \""))
-        .and_then(|v| v.strip_suffix('"'))
-        .map(str::to_string)
-        .ok_or_else(|| format!("android: Cargo.lock pins no {package}"))
-}
-
 /// The 32-bit Android ABIs (armeabi-v7a, x86) as Rust targets, each with
 /// its NDK clang's prefix.
 const THIRTY_TWO_BIT: [(&str, &str); 2] = [
@@ -123,7 +105,7 @@ const THIRTY_TWO_BIT: [(&str, &str); 2] = [
 /// Clippy over orb-ffi for the 32-bit Android ABIs, which hosts such as
 /// maplibre-compose ship: there `usize` is 32 bits and `u64` aligns to 4 on
 /// both, so a dependency's layout assertion or a cast that holds on 64-bit
-/// fails here first. Its C dependencies (ring) build with the NDK's clang.
+/// fails here first. C dependencies build with the NDK's clang.
 /// Skipped, with a note, for a target that isn't installed or without an
 /// NDK.
 pub(crate) fn clippy_32bit() -> Result<(), String> {

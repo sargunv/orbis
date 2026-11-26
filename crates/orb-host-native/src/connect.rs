@@ -3,14 +3,15 @@
 //! ureq alone tries each address in turn, waiting out the first.
 //! HTTPS runs over rustls with ring and verifies servers as the platform
 //! does (rustls-platform-verifier): its trust store, enterprise and user
-//! roots, and revocation, rather than a copy of Mozilla's roots. On
-//! Android plain HTTP follows the app's network security config
-//! (`cleartext_refusal`).
+//! roots, and revocation, rather than a copy of Mozilla's roots. On Android
+//! (a `standalone` build with no JVM) it trusts the system store's
+//! certificate files instead.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
+use orb_host::FetchError;
 use ureq::tls::{RootCerts, TlsConfig};
 use ureq::unversioned::resolver::{DefaultResolver, Resolver};
 use ureq::unversioned::transport::{
@@ -22,15 +23,73 @@ use ureq::unversioned::transport::{
 /// curl's `CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS`.
 const HEAD_START: Duration = Duration::from_millis(200);
 
+/// Android's system certificate store: Conscrypt's, which Android 14 and
+/// later update, then the system image's. Neither has the certificates a
+/// user installed.
+#[cfg(target_os = "android")]
+const SYSTEM_STORES: [&str; 2] = [
+    "/apex/com.android.conscrypt/cacerts",
+    "/system/etc/security/cacerts",
+];
+
 /// An agent whose connections race their host's addresses and that keeps
 /// up to `idle_per_host` connections to a host open between requests. Its
-/// HTTPS verifies servers with `roots`.
-pub(crate) fn agent(idle_per_host: usize, roots: RootCerts) -> ureq::Agent {
+/// HTTPS verifies servers as the platform does, or on Android with the
+/// system store's certificates.
+pub(crate) fn agent(idle_per_host: usize) -> ureq::Agent {
+    #[cfg(target_os = "android")]
+    let roots = certificates_in(&SYSTEM_STORES.map(std::path::Path::new));
+    #[cfg(not(target_os = "android"))]
+    let roots = RootCerts::PlatformVerifier;
     agent_with(
         TcpConnector::default(),
         DefaultResolver::default(),
         (idle_per_host, roots),
     )
+}
+
+/// GETs `url` with `headers`, following its redirects if `follow` says.
+pub(crate) fn get(
+    agent: &ureq::Agent,
+    url: &str,
+    headers: &[(&str, &str)],
+    follow: bool,
+) -> Result<Box<dyn crate::Reply>, FetchError> {
+    // A failed response's headers say when to ask again.
+    let mut request = agent.get(url).config().http_status_as_error(false);
+    if !follow {
+        request = request.max_redirects(0);
+    }
+    let mut request = request.build();
+    for &(name, value) in headers {
+        request = request.header(name, value);
+    }
+    let response = request
+        .call()
+        .map_err(|e| FetchError::Network(e.to_string()))?;
+    Ok(Box::new(response))
+}
+
+impl crate::Reply for ureq::http::Response<ureq::Body> {
+    fn status(&self) -> u16 {
+        ureq::http::Response::status(self).as_u16()
+    }
+
+    fn header(&self, name: &str) -> Option<String> {
+        self.headers()
+            .get(name)
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_owned)
+    }
+
+    fn body(
+        mut self: Box<Self>,
+        limit: u64,
+        abort: &orb_host::Abort,
+    ) -> Result<Vec<u8>, FetchError> {
+        let length = ureq::http::Response::body(&self).content_length();
+        crate::read_body(self.body_mut().as_reader(), length, limit, abort)
+    }
 }
 
 fn agent_with(
@@ -43,7 +102,7 @@ fn agent_with(
         .unversioned_rustls_crypto_provider(Arc::new(rustls::crypto::ring::default_provider()))
         .build();
     let config = ureq::Agent::config_builder()
-        .user_agent(concat!("orbis/", env!("CARGO_PKG_VERSION")))
+        .user_agent(crate::USER_AGENT)
         .max_idle_connections(idle_per_host.max(10))
         .max_idle_connections_per_host(idle_per_host)
         .tls_config(tls)
@@ -56,31 +115,6 @@ fn agent_with(
         })
         .chain(RustlsConnector::default());
     ureq::Agent::with_parts(config, connector, resolver)
-}
-
-/// The error of plain HTTP to `url` that `permitted` refuses for its host
-/// (Android's network security config), worded as Android's own clients
-/// word it, or `None` when it may go; HTTPS isn't asked about.
-#[cfg(any(target_os = "android", test))]
-pub(crate) fn cleartext_refusal(
-    url: &str,
-    permitted: impl FnOnce(&str) -> bool,
-) -> Option<orb_host::FetchError> {
-    let uri = url.parse::<ureq::http::Uri>().ok()?;
-    if !uri.scheme_str()?.eq_ignore_ascii_case("http") {
-        return None;
-    }
-    let host = uri.host()?;
-    let host = host
-        .strip_prefix('[')
-        .and_then(|h| h.strip_suffix(']'))
-        .unwrap_or(host);
-    // The app's policy, which no retry changes.
-    (!permitted(host)).then(|| {
-        orb_host::FetchError::UnsupportedUrl(format!(
-            "Cleartext HTTP traffic to {host} not permitted"
-        ))
-    })
 }
 
 /// The PEM certificates in the first of `dirs` holding any (Android's
@@ -297,24 +331,13 @@ mod tests {
         thread.join().unwrap();
     }
 
+    /// HTTPS verifies servers as the platform does, not with a copy of
+    /// Mozilla's roots (#188).
+    #[cfg(not(target_os = "android"))]
     #[test]
-    fn plain_http_to_a_refused_host_fails_naming_the_host() {
-        let refuse = |expected: &'static str| {
-            move |host: &str| {
-                assert_eq!(host, expected);
-                false
-            }
-        };
-        let refusal = cleartext_refusal("http://localhost:8080/style.json", refuse("localhost"));
-        assert_eq!(
-            refusal.map(|e| e.to_string()).as_deref(),
-            Some("unsupported URL: Cleartext HTTP traffic to localhost not permitted")
-        );
-        assert!(cleartext_refusal("HTTP://Tiles.Example/a", refuse("Tiles.Example")).is_some());
-        assert!(cleartext_refusal("http://[::1]:80/a", refuse("::1")).is_some());
-        assert!(cleartext_refusal("http://localhost/a", |_| true).is_none());
-        let unasked = |_: &str| -> bool { panic!("HTTPS isn't cleartext") };
-        assert!(cleartext_refusal("https://localhost/a", unasked).is_none());
+    fn https_verifies_with_the_platform() {
+        let roots = agent(4).config().tls_config().root_certs().clone();
+        assert!(matches!(roots, RootCerts::PlatformVerifier));
     }
 
     /// A self-signed certificate, followed by text as in Android's store
