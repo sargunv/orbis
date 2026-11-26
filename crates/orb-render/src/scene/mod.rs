@@ -1069,7 +1069,8 @@ impl Block {
 /// alone, drawing them entire.
 ///
 /// A fill, line or image node splits likewise by placement
-/// ([`NodeCull::untested`]): its own row holds the placements whose
+/// ([`NodeCull::untested`]), a line only on a device with clip distances
+/// (`Untesting::of_family` is the rule): its own row holds the placements whose
 /// fragments need no test against their clip, drawn in a pipeline that
 /// tests none, and its second row the rest, which test each fragment
 /// (`types.wgsl`'s `clip_drawn`). The test, its varyings and its discard
@@ -1113,7 +1114,7 @@ pub enum Untested {
     /// distances.
     Rect,
     /// None: a translated fill or line clips where it lands, which only
-    /// its fragments know, as do lines without clip distances.
+    /// its fragments know.
     None,
 }
 

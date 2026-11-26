@@ -262,9 +262,8 @@ pub(crate) struct Images {
     /// Raster, hillshade and color relief into the map's passes as they
     /// are now (the [`Cache`] keeps those for the others).
     pipelines: ImagePipelines,
-    /// Whether nodes draw untested placements apart
-    /// ([`untested_variants`](crate::untested_variants)).
-    untested: bool,
+    /// Which placements of its nodes draw untested.
+    untesting: crate::Untesting,
     /// Shaded hillshades' slopes into the drape atlas, made for the first.
     slopes: Option<RenderPipelineId>,
     /// Hillshade tables and their paint's layout, made for the first
@@ -348,7 +347,7 @@ impl Images {
             image_layout,
             table_layout,
             pipelines: ImagePipelines::new(target),
-            untested: crate::untested_variants(gpu.caps()),
+            untesting: crate::Untesting::of(gpu.caps()),
             slopes: None,
             tables: None,
             linear,
@@ -388,15 +387,16 @@ impl Images {
         pipelines: &mut ImagePipelines,
         family: Family,
     ) {
+        let untested = self.untesting.of_family(family).is_some();
         let made = &mut pipelines.made[image_index(family)];
-        if made[0].is_none() || (self.untested && made[1].is_none()) {
+        if made[0].is_none() || (untested && made[1].is_none()) {
             *made = self.take(&mut Take::Make(gpu, cache), pipelines.target, family);
         }
     }
 
     /// `family`'s tested and untested pipelines into `target`, as `take`
-    /// takes them: the untested one only where nodes draw untested
-    /// placements apart.
+    /// takes them: the untested one only where its nodes have untested
+    /// placements ([`Untesting::of_family`](crate::Untesting::of_family)).
     fn take(
         &self,
         take: &mut Take<'_>,
@@ -419,7 +419,7 @@ impl Images {
         // placement with it until the untested one compiles.
         let tested = take.pipeline(&draw);
         let constants: &[_] = &[(orb_shaders::CLIP_FRAGMENTS, 0.0)];
-        let untested = self.untested.then(|| {
+        let untested = self.untesting.of_family(family).map(|_| {
             take.pipeline(&Draw {
                 label: untested,
                 constants: [&[], constants],
