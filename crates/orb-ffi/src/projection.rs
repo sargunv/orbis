@@ -15,7 +15,7 @@ use orb_crs::{
     Geodetic, MERCATOR_MAX_LATITUDE as MAX_LATITUDE, Projection, Surface, TileMatrixSet,
 };
 
-use crate::base::{Failure, Result, boundary, fresh_out, put, sized};
+use crate::base::{Failure, Result, boundary, fresh_out, lock, put, sized};
 use crate::handles::{self, Object};
 use crate::sys::*;
 
@@ -193,10 +193,7 @@ fn projection(handle: mln_map_projection) -> Result<Arc<ProjectionHandle>> {
 
 impl ProjectionHandle {
     fn view(&self) -> mln_map_view {
-        *self
-            .view
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *lock(&self.view)
     }
 }
 
@@ -288,10 +285,7 @@ pub unsafe extern "C" fn mln_map_projection_set_camera(
         boundary(out_diagnostic, || {
             let p = self::projection(projection)?;
             let o = *sized(camera, "camera")?;
-            let mut view = p
-                .view
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut view = lock(&p.view);
             let mut c = view.camera;
             let has = |bit| o.fields & bit != 0;
             if has(MLN_CAMERA_OPTION_CENTER) {

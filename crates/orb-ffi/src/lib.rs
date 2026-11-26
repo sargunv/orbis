@@ -7,9 +7,11 @@
 //! Each runtime is a thread that runs its maps' commands, as mln-ffi's core
 //! worker does, and each render session a thread that draws its map. Calls
 //! check their arguments on the caller's thread, post their work to the
-//! thread that does it, and report through their `mln_completion`. Handles
-//! are 64-bit ids, so a stale or foreign one is an error, never a dangling
-//! pointer.
+//! thread that does it, and report through their `mln_completion` once,
+//! whatever becomes of the work: work dropped unrun reports
+//! `MLN_STATUS_CANCELLED`, and a panic on a runtime or session thread fails
+//! the work it was doing while the thread goes on. Handles are 64-bit ids,
+//! so a stale or foreign one is an error, never a dangling pointer.
 //!
 //! The declarations come from the pinned headers (`sys`), and every
 //! function this crate doesn't implement is a stub in `stubs.rs` that

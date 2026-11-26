@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
 use crate::base::put;
-use crate::base::{Failure, boundary, sized};
+use crate::base::{Failure, boundary, lock, sized};
 use crate::handles;
 #[cfg(target_os = "macos")]
 use crate::handles::Object;
@@ -38,14 +38,11 @@ pub(crate) struct FramePacer {
 
 impl FramePacer {
     pub(crate) fn add(&self, session: &Arc<SessionHandle>) {
-        self.sessions.lock().unwrap().push(session.clone());
+        lock(&self.sessions).push(session.clone());
     }
 
     pub(crate) fn remove(&self, session: &Arc<SessionHandle>) {
-        self.sessions
-            .lock()
-            .unwrap()
-            .retain(|s| !Arc::ptr_eq(s, session));
+        lock(&self.sessions).retain(|s| !Arc::ptr_eq(s, session));
     }
 
     /// A refresh, on the clock's thread: each session draws at the next
@@ -57,14 +54,14 @@ impl FramePacer {
     fn refresh(&self) {
         if let Some(interval) = self.interval {
             let now = Instant::now();
-            let mut last = self.last.lock().unwrap();
+            let mut last = lock(&self.last);
             // A refresh a little early still counts: refreshes jitter.
             if last.is_some_and(|l| now + interval / 8 < l + interval) {
                 return;
             }
             *last = Some(now);
         }
-        for session in self.sessions.lock().unwrap().iter() {
+        for session in lock(&self.sessions).iter() {
             if !session.tick.swap(true, std::sync::atomic::Ordering::AcqRel) {
                 session.wake();
             }
@@ -214,7 +211,7 @@ pub unsafe extern "C" fn mln_apple_frame_pacer_create(
                     let tick = interval.map_or(NOMINAL_REFRESH, |i| i.max(NOMINAL_REFRESH));
                     start_timer(Arc::downgrade(&pacer), tick)?;
                 }
-                *pacer.clock.lock().unwrap() = link;
+                *lock(&pacer.clock) = link;
                 put(
                     out_pacer,
                     mln_frame_pacer(handles::insert(Object::Pacer(pacer))),

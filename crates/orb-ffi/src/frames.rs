@@ -11,7 +11,7 @@ use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::base::{Failure, Result, UserData, boundary, put, sized};
+use crate::base::{Failure, Result, UserData, boundary, lock, put, sized};
 use crate::delivery::Completion;
 use crate::handles::{self, Object};
 use crate::session::{SessionHandle, TargetSpec};
@@ -207,7 +207,7 @@ impl FrameHandle {
     /// Whether the session still backs the objects the frame lends.
     fn backed(&self) -> Result {
         if self.session.lifecycle() != MLN_RENDER_SESSION_STATE_ATTACHED
-            || self.session.ring.lock().unwrap().generation != self.ring_generation
+            || lock(&self.session.ring).generation != self.ring_generation
         {
             return Err(Failure::new(
                 MLN_STATUS_TARGET_LOST,
@@ -220,7 +220,7 @@ impl FrameHandle {
     /// Gives the frame's slot back to the session, free or quarantined.
     fn give_back(&self, quarantine: bool) {
         {
-            let mut ring = self.session.ring.lock().unwrap();
+            let mut ring = lock(&self.session.ring);
             if ring.generation == self.ring_generation
                 && let Some(slot) = ring.slots.get_mut(self.slot)
             {
@@ -239,7 +239,7 @@ impl FrameHandle {
 /// Ends every frame the host holds of a session that goes: their handles
 /// go stale, and their slots take no frame again.
 pub(crate) fn end_frames(session: &SessionHandle) {
-    let mut ring = session.ring.lock().unwrap();
+    let mut ring = lock(&session.ring);
     for slot in &mut ring.slots {
         if let SlotState::Acquired(frame) = slot.state {
             handles::remove(frame);
@@ -428,10 +428,7 @@ pub unsafe extern "C" fn mln_render_session_set_metal_borrowed_texture_target(
                      attached with"
                 )));
             }
-            let device = handle
-                .ring
-                .lock()
-                .unwrap()
+            let device = lock(&handle.ring)
                 .slots
                 .first()
                 .map(|s| s.info.device.get());
@@ -473,7 +470,7 @@ pub unsafe extern "C" fn mln_render_session_acquire_frame(
                     "the session lacks MLN_RENDER_SESSION_CAPABILITY_FRAME_ACQUISITION",
                 ));
             }
-            let mut ring = handle.ring.lock().unwrap();
+            let mut ring = lock(&handle.ring);
             let generation = ring.generation;
             let Some((slot, s)) = (ring.slots.iter_mut().enumerate())
                 .find(|(_, s)| matches!(s.state, SlotState::Ready))

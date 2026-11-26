@@ -3,6 +3,7 @@
 
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::sys::*;
 
@@ -78,7 +79,7 @@ pub(crate) unsafe fn write_diagnostic(diagnostic: *mut mln_diagnostic, message: 
     }
 }
 
-pub(crate) fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
     panic
         .downcast_ref::<&str>()
         .map(|s| (*s).to_owned())
@@ -86,8 +87,43 @@ pub(crate) fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "a panic in the Orbis implementation".into())
 }
 
+/// Runs `body`, a panic in it becoming its failure, so a thread of the
+/// library keeps serving after one: the completions it dropped as it
+/// unwound report the panic's message.
+pub(crate) fn catch<T>(body: impl FnOnce() -> Result<T>) -> Result<T> {
+    crate::delivery::catching(|| catch_unwind(AssertUnwindSafe(body))).unwrap_or_else(|panic| {
+        let failure = Failure::native(panic_message(&*panic));
+        crate::delivery::unwound(&failure);
+        Err(failure)
+    })
+}
+
+/// Runs `work` on a thread of the library, which a panic in it doesn't
+/// end: the panic is logged and returned, for the caller to fail what the
+/// work was for.
+pub(crate) fn survive(what: &str, work: impl FnOnce()) -> Option<Failure> {
+    let failure = catch(|| {
+        work();
+        Ok(())
+    })
+    .err()?;
+    crate::logging::log(
+        MLN_LOG_SEVERITY_ERROR,
+        &format!("{what} panicked: {}", failure.message),
+    );
+    Some(failure)
+}
+
+/// Locks `mutex`, even after a panic while it was held: [`catch`] lets
+/// the library go on after one, which a poisoned lock would otherwise turn
+/// into a panic in every later call that takes it.
+pub(crate) fn lock<T: ?Sized>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Runs an entry point's body: its failure becomes the status and the
-/// diagnostic, and a panic stops at the C boundary.
+/// diagnostic, and a panic stops at the C boundary. A completion the body
+/// drops unsent belongs to a call that failed, so it never runs.
 ///
 /// # Safety
 /// As [`write_diagnostic`].
@@ -95,8 +131,7 @@ pub(crate) unsafe fn boundary(
     diagnostic: *mut mln_diagnostic,
     body: impl FnOnce() -> Result,
 ) -> mln_status {
-    let outcome = catch_unwind(AssertUnwindSafe(body))
-        .unwrap_or_else(|panic| Err(Failure::native(panic_message(&*panic))));
+    let outcome = crate::delivery::in_call(|| catch(body));
     match outcome {
         Ok(()) => {
             // SAFETY: the caller's contract.

@@ -4,9 +4,9 @@
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Sender, channel};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use crate::base::{Failure, Result, UserData, boundary, sized};
+use crate::base::{Failure, Result, UserData, boundary, lock, sized};
 use crate::delivery::{deliver, deliver_now};
 use crate::sys::*;
 
@@ -78,7 +78,7 @@ thread_local! {
 }
 
 fn handler() -> MutexGuard<'static, Option<Handler>> {
-    HANDLER.lock().unwrap_or_else(PoisonError::into_inner)
+    lock(&HANDLER)
 }
 
 /// Runs a log callback or its release, marking this thread as inside one.
@@ -128,10 +128,7 @@ pub(crate) fn log(severity: mln_log_severity, message: &str) {
     if ASYNC.load(Ordering::Relaxed) & flag(severity) == 0 {
         return write(severity, message);
     }
-    let sent = log_thread()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .send(Record { severity, message });
+    let sent = lock(log_thread()).send(Record { severity, message });
     // Without the log thread, the message goes out here.
     if let Err(unsent) = sent {
         write(severity, unsent.0.message);

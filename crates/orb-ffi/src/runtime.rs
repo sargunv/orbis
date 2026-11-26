@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
-use crate::base::{Failure, Result, UserData, boundary, put, sized, text};
+use crate::base::{Failure, Result, UserData, boundary, lock, put, sized, text};
 use crate::delivery::{self, Completion, Value};
 use crate::handles::{self, Object};
 use crate::map::MapCell;
@@ -56,11 +56,7 @@ impl Core {
         if events.is_empty() {
             return;
         }
-        if let Some(handler) = &*self
-            .handler
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-        {
+        if let Some(handler) = &*lock(&self.handler) {
             handler.send(events);
         }
     }
@@ -73,13 +69,7 @@ impl Core {
     /// Replaces the handler; the old one's user data is released after
     /// the batches already sent to it.
     fn replace_handler(&self, handler: Option<EventHandler>) {
-        let old = std::mem::replace(
-            &mut *self
-                .handler
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-            handler,
-        );
+        let old = std::mem::replace(&mut *lock(&self.handler), handler);
         // Not under the lock: the release may run here.
         drop(old);
     }
@@ -365,10 +355,7 @@ fn run(rx: Receiver<Msg>, temporary: Option<&std::path::Path>) {
         let mut stop = None;
         for msg in first.into_iter().chain(rx.try_iter()) {
             match msg {
-                Msg::Run(job) => STATE.with(|s| {
-                    let mut s = s.borrow_mut();
-                    job(s.as_mut().expect("runtime state"));
-                }),
+                Msg::Run(job) => guarded("a command on the runtime thread", |state| job(state)),
                 Msg::Pump => {}
                 Msg::Stop(completion) => {
                     stop = Some(completion);
@@ -378,6 +365,9 @@ fn run(rx: Receiver<Msg>, temporary: Option<&std::path::Path>) {
             delivery::flush();
         }
         if let Some(completion) = stop {
+            // The work sent after the stop never runs: it reports so, and
+            // later sends fail.
+            drop(rx);
             let state = STATE.with(|s| s.borrow_mut().take());
             if let Some(mut state) = state {
                 // Sessions before maps before the runtime, as their devices
@@ -399,9 +389,18 @@ fn run(rx: Receiver<Msg>, temporary: Option<&std::path::Path>) {
             delivery::flush();
             return;
         }
-        STATE.with(|s| crate::map::advance(s.borrow_mut().as_mut().expect("runtime state")));
+        guarded("a step of the runtime's maps", crate::map::advance);
         delivery::flush();
     }
+}
+
+/// Runs `work` on the runtime thread's state. A panic in it fails what
+/// it was doing, its completions reporting the panic, and the thread goes
+/// on.
+fn guarded(what: &str, work: impl FnOnce(&mut State)) {
+    crate::base::survive(what, || {
+        STATE.with(|s| work(s.borrow_mut().as_mut().expect("runtime state")));
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -536,11 +535,7 @@ fn stop(runtime: mln_runtime, completion: Option<Completion>, wait: bool) -> Res
     let _ = handle.tx.send(Msg::Stop(completion));
     if wait
         && !handle.on_thread()
-        && let Some(join) = handle
-            .join
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+        && let Some(join) = lock(&handle.join).take()
     {
         let _ = join.join();
     }
@@ -621,5 +616,99 @@ pub unsafe extern "C" fn mln_runtime_clear_event_handler(
                 state.complete(completion, Ok(Value::None), 0);
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::delivery::testing::{Report, completion};
+
+    #[test]
+    fn a_command_that_panics_fails_and_the_runtime_goes_on() {
+        let mut runtime = mln_runtime(0);
+        // SAFETY: default options, a fresh out handle, no diagnostic.
+        let status =
+            unsafe { mln_runtime_create(std::ptr::null(), &mut runtime, std::ptr::null_mut()) };
+        assert_eq!(status, MLN_STATUS_OK);
+        let handle = handles::runtime(runtime.0).unwrap();
+        let wait = Duration::from_secs(10);
+
+        let (c, reports) = completion();
+        // SAFETY: a valid completion.
+        let panicking = unsafe { Completion::required(&c) }.unwrap();
+        handle
+            .post(move |_| {
+                let _completion = panicking;
+                panic!("the command broke");
+            })
+            .unwrap();
+        assert_eq!(
+            reports.recv_timeout(wait).unwrap(),
+            Report::Result(MLN_STATUS_NATIVE_ERROR, "the command broke".into())
+        );
+        assert_eq!(reports.recv_timeout(wait).unwrap(), Report::Released);
+
+        let (c, reports) = completion();
+        // SAFETY: the runtime is live; a valid completion.
+        let status = unsafe { mln_runtime_clear_event_handler(runtime, &c, std::ptr::null_mut()) };
+        assert_eq!(status, MLN_STATUS_OK);
+        assert_eq!(
+            reports.recv_timeout(wait).unwrap(),
+            Report::Result(MLN_STATUS_OK, String::new())
+        );
+
+        let (c, reports) = completion();
+        // SAFETY: the runtime is live and has no maps; a valid completion.
+        let status = unsafe { mln_runtime_release(runtime, &c, std::ptr::null_mut()) };
+        assert_eq!(status, MLN_STATUS_OK);
+        assert_eq!(
+            reports.recv_timeout(wait).unwrap(),
+            Report::Result(MLN_STATUS_OK, String::new())
+        );
+    }
+
+    #[test]
+    fn work_sent_behind_a_release_reports_cancelled() {
+        let mut runtime = mln_runtime(0);
+        // SAFETY: default options, a fresh out handle, no diagnostic.
+        let status =
+            unsafe { mln_runtime_create(std::ptr::null(), &mut runtime, std::ptr::null_mut()) };
+        assert_eq!(status, MLN_STATUS_OK);
+        let handle = handles::runtime(runtime.0).unwrap();
+        let wait = Duration::from_secs(10);
+        // The runtime thread waits while the release and a later command
+        // queue behind it.
+        let (hold, held) = std::sync::mpsc::channel::<()>();
+        handle
+            .post(move |_| {
+                let _ = held.recv();
+            })
+            .unwrap();
+        let (c, released) = completion();
+        // SAFETY: the runtime is live and has no maps; a valid completion.
+        let status = unsafe { mln_runtime_release(runtime, &c, std::ptr::null_mut()) };
+        assert_eq!(status, MLN_STATUS_OK);
+        let (c, reports) = completion();
+        // SAFETY: a valid completion.
+        let late = unsafe { Completion::required(&c) }.unwrap();
+        handle
+            .post(move |state| state.complete(Some(late), Ok(Value::None), 0))
+            .unwrap();
+        hold.send(()).unwrap();
+        assert_eq!(
+            reports.recv_timeout(wait).unwrap(),
+            Report::Result(
+                MLN_STATUS_CANCELLED,
+                "the work was dropped before it finished".into()
+            )
+        );
+        assert_eq!(reports.recv_timeout(wait).unwrap(), Report::Released);
+        assert_eq!(
+            released.recv_timeout(wait).unwrap(),
+            Report::Result(MLN_STATUS_OK, String::new())
+        );
     }
 }

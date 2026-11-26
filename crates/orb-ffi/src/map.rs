@@ -12,7 +12,7 @@ use orb_api::{
     AnimationId, CameraTarget, EaseOptions, Easing, FitOptions, FlyOptions, Geodetic, Phase,
 };
 
-use crate::base::{Failure, Result, UserData, boundary, fresh_out, put, sized, text};
+use crate::base::{Failure, Result, UserData, boundary, fresh_out, lock, put, sized, text};
 use crate::delivery::{self, Completion, Value};
 use crate::handles::{self, Object};
 use crate::runtime::{Core, Event, Payload, RuntimeHandle, State};
@@ -61,22 +61,28 @@ impl MapHandle {
                 return state.complete(completion, Err(failure), 0);
             };
             let mut entry = cell.lock();
-            let result = job(&mut entry);
-            // This thread steps a map no session draws: a move the command
-            // started takes its first step now, so its will-change comes
-            // with the command, as Native's does, not with a later step.
-            if entry.session.is_none() && entry.map.is_moving() {
-                let now = entry.core.now();
-                entry.map.advance(now);
-            }
-            let unchanged = std::mem::take(&mut entry.unchanged);
-            if changes && result.is_ok() {
-                entry.generation += 1;
-                if !unchanged {
-                    entry.update();
+            let result = crate::base::catch(|| job(&mut entry));
+            // A panic in what follows fails the command too, which still
+            // counts as applied, so what waits for it goes on.
+            let result = crate::base::catch(|| {
+                // This thread steps a map no session draws: a move the
+                // command started takes its first step now, so its
+                // will-change comes with the command, as Native's does, not
+                // with a later step.
+                if entry.session.is_none() && entry.map.is_moving() {
+                    let now = entry.core.now();
+                    entry.map.advance(now);
                 }
-            }
-            settle(&cell, &mut entry);
+                let unchanged = std::mem::take(&mut entry.unchanged);
+                if changes && result.is_ok() {
+                    entry.generation += 1;
+                    if !unchanged {
+                        entry.update();
+                    }
+                }
+                settle(&cell, &mut entry);
+                result
+            });
             let (generation, update) = (entry.generation, entry.next_update());
             crate::runtime::complete_update(completion, result, generation, update);
             cell.applied.fetch_max(number, Ordering::AcqRel);
@@ -101,9 +107,7 @@ pub(crate) struct MapCell {
 
 impl MapCell {
     pub(crate) fn lock(&self) -> MutexGuard<'_, MapEntry> {
-        self.entry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.entry)
     }
 }
 
@@ -138,10 +142,7 @@ pub(crate) fn settle(cell: &MapCell, entry: &mut MapEntry) {
 
 impl MapHandle {
     pub(crate) fn snapshot(&self) -> Option<mln_map_snapshot> {
-        *self
-            .snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *lock(&self.snapshot)
     }
 }
 
@@ -432,11 +433,7 @@ impl MapEntry {
             globe_rendering: self.globe_amount() > 0.0,
             globe_free_bearing_enabled: self.map.globe_free_bearing(),
         };
-        *self
-            .handle
-            .snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(snapshot);
+        *lock(&self.handle.snapshot) = Some(snapshot);
     }
 
     /// Publishes a render update for a change, or holds it for the end of
@@ -486,9 +483,7 @@ impl MapEntry {
     /// Starts sending the map's data wakes to the session `link` draws on,
     /// or (`None`) to the runtime thread.
     pub(crate) fn set_session(&mut self, link: Option<crate::session::Link>) {
-        (self.waker.session.lock())
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone_from(&link);
+        lock(&self.waker.session).clone_from(&link);
         self.session = link;
     }
 }
@@ -505,11 +500,7 @@ struct Waker {
 
 impl Waker {
     fn wake(&self) {
-        match &*self
-            .session
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-        {
+        match &*lock(&self.session) {
             Some(session) => session.wake(),
             None => {
                 self.woken.store(true, Ordering::Release);

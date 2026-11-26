@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use orb_api::{FetchError, NetworkAnswer, NetworkDone, NetworkHook, NetworkRequest, ResourceKind};
 
-use crate::base::{Failure, Result, UserData, boundary, bytes, put, sized, text};
+use crate::base::{Failure, Result, UserData, boundary, bytes, lock, put, sized, text};
 use crate::delivery::{self, Completion, Value};
 use crate::handles::{self, Kind, Object};
 use crate::sys::*;
@@ -31,9 +31,7 @@ struct Config {
 
 impl Hook {
     fn config(&self) -> std::sync::MutexGuard<'_, Config> {
-        self.config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.config)
     }
 
     /// Releases every registration, as the runtime's teardown does.
@@ -389,9 +387,7 @@ fn ended(cancelled: bool) -> Failure {
 
 impl ResourceRequest {
     fn state(&self) -> std::sync::MutexGuard<'_, RequestState> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.state)
     }
 
     /// Ends the request: its parts, if it is still unanswered, or why it
@@ -781,11 +777,7 @@ pub(crate) struct TransformRequest {
 
 impl TransformRequest {
     fn finish(&self, result: std::result::Result<String, FetchError>) {
-        let then = self
-            .then
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        let then = lock(&self.then).take();
         if let Some(then) = then {
             then(result);
         }

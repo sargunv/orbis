@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::base::{Failure, Result};
+use crate::base::{Failure, Result, lock};
 use crate::delivery::DeliveryQueue;
 use crate::expression::ExpressionHandle;
 use crate::frames::FrameHandle;
@@ -110,9 +110,7 @@ static TABLE: Mutex<Table> = Mutex::new(Table {
 });
 
 fn table() -> std::sync::MutexGuard<'static, Table> {
-    TABLE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    lock(&TABLE)
 }
 
 /// A handle's parts: kind byte, slot index, generation.

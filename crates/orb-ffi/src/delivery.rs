@@ -6,12 +6,17 @@
 // thread, calls wait in its outbox until the work that raised them is done,
 // so a callback can call the library back. Runtime and session threads
 // both have one.
+//
+// A completion reports once whatever becomes of the work it waits for: work
+// dropped unrun, or a panic that unwound it, reports as it goes. Only inside
+// the entry point that took it does a completion go silently, as the call
+// then fails and the C API runs no callback of a failed call.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use crate::base::{Failure, Result, UserData, boundary, put, sized, view};
+use crate::base::{Failure, Result, UserData, boundary, lock, put, sized, view};
 use crate::handles::{self, Object};
 use crate::sys::*;
 
@@ -28,6 +33,44 @@ pub(crate) struct Pending {
 thread_local! {
     /// The calls a library thread delivers once its work is done.
     static OUTBOX: RefCell<Option<Vec<(u64, Pending)>>> = const { RefCell::new(None) };
+    /// The entry points running on this thread: more than one when a
+    /// callback calls the library back.
+    static CALLS: Cell<u32> = const { Cell::new(0) };
+    /// Completions dropped as a panic unwound this thread, for the
+    /// [`catch`](crate::base::catch) that stops it to report with the
+    /// panic's message.
+    static UNWOUND: RefCell<Vec<Completion>> = const { RefCell::new(Vec::new()) };
+    /// The [`catch`](crate::base::catch)es running on this thread: a
+    /// completion a panic drops waits in [`UNWOUND`] only under one.
+    static CATCHES: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Runs a [`catch`](crate::base::catch)'s `body`, which doesn't unwind.
+pub(crate) fn catching<R>(body: impl FnOnce() -> R) -> R {
+    CATCHES.with(|c| c.set(c.get() + 1));
+    let out = body();
+    CATCHES.with(|c| c.set(c.get() - 1));
+    out
+}
+
+/// Runs an entry point's body, inside which a completion dropped unsent
+/// belongs to the failing call and never runs.
+pub(crate) fn in_call<R>(body: impl FnOnce() -> R) -> R {
+    CALLS.with(|c| c.set(c.get() + 1));
+    let out = body();
+    CALLS.with(|c| c.set(c.get() - 1));
+    out
+}
+
+/// Reports the completions a panic dropped on this thread with its
+/// `failure`.
+pub(crate) fn unwound(failure: &Failure) {
+    let dropped = UNWOUND
+        .try_with(|u| std::mem::take(&mut *u.borrow_mut()))
+        .unwrap_or_default();
+    for completion in dropped {
+        completion.complete(Err(failure.clone()), 0);
+    }
 }
 
 /// Makes this thread a library thread, whose deliveries wait for [`flush`].
@@ -78,12 +121,14 @@ pub(crate) fn deliver(queue: u64, call: Call) {
 }
 
 fn deliver_pending(queue: u64, call: Pending) {
-    let call = OUTBOX.with(|o| match o.borrow_mut().as_mut() {
-        Some(outbox) => {
-            outbox.push((queue, call));
-            None
+    // A completion dropped as the thread ends, its outbox gone, goes now.
+    let mut call = Some(call);
+    let _ = OUTBOX.try_with(|o| {
+        if let Ok(mut o) = o.try_borrow_mut()
+            && let Some(outbox) = o.as_mut()
+        {
+            outbox.extend(call.take().map(|call| (queue, call)));
         }
-        None => Some(call),
     });
     if let Some(call) = call {
         send(queue, call);
@@ -273,12 +318,42 @@ impl Value {
     }
 }
 
-/// An `mln_completion`: runs once, then releases its user data.
-pub(crate) struct Completion {
+/// An `mln_completion`: runs once, then releases its user data. Dropped
+/// unsent outside the entry point that took it, it reports
+/// `MLN_STATUS_CANCELLED`, or the panic that dropped it.
+pub(crate) struct Completion(Registered);
+
+#[derive(Clone, Copy)]
+struct Registered {
     callback: unsafe extern "C" fn(*mut std::ffi::c_void, *const mln_completion_result),
     user_data: UserData,
     release_user_data: mln_user_data_release,
     queue: u64,
+}
+
+impl Drop for Completion {
+    fn drop(&mut self) {
+        if CALLS.try_with(Cell::get).unwrap_or(0) > 0 {
+            return;
+        }
+        let panicking = std::thread::panicking();
+        if panicking
+            && CATCHES.try_with(Cell::get).unwrap_or(0) > 0
+            && UNWOUND
+                .try_with(|u| u.try_borrow_mut().map(|mut u| u.push(Self(self.0))))
+                .is_ok_and(|pushed| pushed.is_ok())
+        {
+            return;
+        }
+        let failure = match panicking {
+            true => Failure::native("the work panicked"),
+            false => Failure::new(
+                MLN_STATUS_CANCELLED,
+                "the work was dropped before it finished",
+            ),
+        };
+        self.0.send(Err(failure), 0, 0);
+    }
 }
 
 impl Completion {
@@ -296,12 +371,12 @@ impl Completion {
             .callback
             .ok_or_else(|| Failure::argument("completion.callback is null"))?;
         check_queue(c.queue.0, "completion.queue")?;
-        Ok(Some(Self {
+        Ok(Some(Self(Registered {
             callback,
             user_data: UserData(c.user_data),
             release_user_data: c.release_user_data,
             queue: c.queue.0,
-        }))
+        })))
     }
 
     /// The completion of a query, an operation or a lifecycle call, which
@@ -328,7 +403,15 @@ impl Completion {
         generation: u64,
         render_update: u64,
     ) {
-        let Completion {
+        std::mem::ManuallyDrop::new(self)
+            .0
+            .send(result, generation, render_update);
+    }
+}
+
+impl Registered {
+    fn send(self, result: Result<Value>, generation: u64, render_update: u64) {
+        let Registered {
             callback,
             user_data,
             release_user_data,
@@ -413,10 +496,7 @@ pub(crate) struct DeliveryQueue {
 impl DeliveryQueue {
     fn push(&self, call: Pending) {
         let was_empty = {
-            let mut calls = self
-                .calls
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut calls = lock(&self.calls);
             calls.push_back(call);
             calls.len() == 1
         };
@@ -475,12 +555,7 @@ pub unsafe extern "C" fn mln_delivery_queue_create(
 #[unsafe(no_mangle)]
 pub extern "C" fn mln_delivery_queue_release(queue: mln_delivery_queue) {
     if let Some(Object::Queue(queue)) = handles::remove(queue.0) {
-        let calls = std::mem::take(
-            &mut *queue
-                .calls
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        let calls = std::mem::take(&mut *lock(&queue.calls));
         queue.abandon(calls);
         if let Some(wake) = queue.wake {
             wake.release();
@@ -509,11 +584,7 @@ pub unsafe extern "C" fn mln_delivery_queue_dispatch(
                 if handles::get(id).is_none() {
                     return Ok(());
                 }
-                let call = queue
-                    .calls
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .pop_front();
+                let call = lock(&queue.calls).pop_front();
                 let Some(call) = call else {
                     return Ok(());
                 };
@@ -523,11 +594,130 @@ pub unsafe extern "C" fn mln_delivery_queue_dispatch(
     }
 }
 
+/// A completion that reports to a channel, for tests.
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::sync::mpsc::{Receiver, Sender, channel};
+
+    use crate::sys::*;
+
+    /// What a test completion saw: a result, then its user data's release.
+    #[derive(Debug, PartialEq)]
+    pub(crate) enum Report {
+        Result(mln_status, String),
+        Released,
+    }
+
+    unsafe extern "C" fn callback(
+        user_data: *mut std::ffi::c_void,
+        result: *const mln_completion_result,
+    ) {
+        // SAFETY: `user_data` is the sender `completion` made, and the
+        // result lives for the call.
+        let (tx, result) = unsafe { (&*user_data.cast::<Sender<Report>>(), &*result) };
+        // SAFETY: the diagnostic the library lends for the call.
+        let message = unsafe { crate::base::bytes(result.diagnostic) };
+        let _ = tx.send(Report::Result(
+            result.status,
+            String::from_utf8_lossy(message).into(),
+        ));
+    }
+
+    unsafe extern "C" fn release(user_data: *mut std::ffi::c_void) {
+        // SAFETY: the sender `completion` made, released once.
+        let tx = unsafe { Box::from_raw(user_data.cast::<Sender<Report>>()) };
+        let _ = tx.send(Report::Released);
+    }
+
+    /// An `mln_completion` and the reports it sends. Its user data leaks
+    /// unless it's released.
+    pub(crate) fn completion() -> (mln_completion, Receiver<Report>) {
+        let (tx, rx) = channel();
+        let completion = mln_completion {
+            size: std::mem::size_of::<mln_completion>() as u32,
+            callback: Some(callback),
+            user_data: Box::into_raw(Box::new(tx)).cast(),
+            release_user_data: Some(release),
+            queue: mln_delivery_queue(0),
+        };
+        (completion, rx)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
 
+    use super::testing::{Report, completion};
     use super::*;
+
+    #[test]
+    fn a_dropped_completion_reports_cancelled_and_releases_once() {
+        let (c, reports) = completion();
+        // SAFETY: a valid completion.
+        drop(unsafe { Completion::required(&c) }.unwrap());
+        assert_eq!(
+            reports.try_iter().collect::<Vec<_>>(),
+            [
+                Report::Result(
+                    MLN_STATUS_CANCELLED,
+                    "the work was dropped before it finished".into()
+                ),
+                Report::Released,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_completed_completion_reports_once() {
+        let (c, reports) = completion();
+        // SAFETY: a valid completion.
+        unsafe { Completion::required(&c) }
+            .unwrap()
+            .complete(Ok(Value::None), 1);
+        assert_eq!(
+            reports.try_iter().collect::<Vec<_>>(),
+            [
+                Report::Result(MLN_STATUS_OK, String::new()),
+                Report::Released
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_call_never_runs_its_completion() {
+        let (c, reports) = completion();
+        // SAFETY: a valid completion; no diagnostic.
+        let status = unsafe {
+            boundary(std::ptr::null_mut(), || {
+                let _completion = Completion::required(&c)?;
+                Err(Failure::argument("refused"))
+            })
+        };
+        assert_eq!(status, MLN_STATUS_INVALID_ARGUMENT);
+        assert!(reports.try_recv().is_err());
+        // SAFETY: the user data the call left with the caller.
+        unsafe { (c.release_user_data.unwrap())(c.user_data) };
+    }
+
+    #[test]
+    fn a_completion_a_panic_drops_reports_the_panic() {
+        let (c, reports) = completion();
+        // SAFETY: a valid completion.
+        let completion = unsafe { Completion::required(&c) }.unwrap();
+        let caught = crate::base::catch(move || -> Result {
+            let _completion = completion;
+            panic!("the work broke");
+        });
+        assert!(caught.is_err());
+        assert_eq!(
+            reports.try_iter().collect::<Vec<_>>(),
+            [
+                Report::Result(MLN_STATUS_NATIVE_ERROR, "the work broke".into()),
+                Report::Released,
+            ]
+        );
+    }
 
     static ORDER: Mutex<Vec<&str>> = Mutex::new(Vec::new());
 

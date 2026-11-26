@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::base::{Failure, boundary, put};
+use crate::base::{Failure, boundary, lock, put};
 use crate::runtime::RuntimeHandle;
 use crate::sys::*;
 
@@ -16,17 +16,13 @@ pub(crate) fn online() -> bool {
 }
 
 pub(crate) fn register(runtime: &Arc<RuntimeHandle>) {
-    let mut runtimes = RUNTIMES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut runtimes = lock(&RUNTIMES);
     runtimes.retain(|r| r.strong_count() > 0);
     runtimes.push(Arc::downgrade(runtime));
 }
 
 pub(crate) fn unregister(runtime: &Arc<RuntimeHandle>) {
-    RUNTIMES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    lock(&RUNTIMES)
         .retain(|r| r.strong_count() > 0 && !std::ptr::eq(r.as_ptr(), Arc::as_ptr(runtime)));
 }
 
@@ -66,12 +62,7 @@ pub unsafe extern "C" fn mln_network_set_status(
                 }
             };
             ONLINE.store(online, Ordering::Release);
-            let runtimes: Vec<_> = RUNTIMES
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .iter()
-                .filter_map(Weak::upgrade)
-                .collect();
+            let runtimes: Vec<_> = lock(&RUNTIMES).iter().filter_map(Weak::upgrade).collect();
             for runtime in runtimes {
                 let _ = runtime.post(move |state| {
                     state.runtime().set_online(online);

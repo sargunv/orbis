@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::ThreadId;
 use std::time::Duration;
 
-use crate::base::{Failure, Result, UserData, boundary, put, sized};
+use crate::base::{Failure, Result, UserData, boundary, lock, put, sized};
 use crate::delivery::{self, Completion, Value, Wake};
 use crate::handles::{self, Object};
 use crate::map::{MapCell, MapEntry, MapHandle, settle};
@@ -153,11 +153,11 @@ impl SessionHandle {
 
     /// The textures of its ring, or 0 when it renders into none.
     pub(crate) fn ring_depth(&self) -> u32 {
-        self.ring.lock().unwrap().depth()
+        lock(&self.ring).depth()
     }
 
     fn push(&self, result: mln_render_frame_result) {
-        self.results.lock().unwrap().push(result);
+        lock(&self.results).push(result);
         if !self.notified.swap(true, Ordering::AcqRel)
             && let Some(wake) = &self.frame_wake
         {
@@ -166,15 +166,29 @@ impl SessionHandle {
     }
 
     fn failed(&self) -> Result {
-        match &*self.failure.lock().unwrap() {
+        match &*lock(&self.failure) {
             Some(f) => Err(f.clone()),
             None => Ok(()),
         }
     }
 
+    /// Fails the session for good: a lost target, or a native error.
+    fn fail(&self, failure: Failure) {
+        let status = match failure.status {
+            MLN_STATUS_TARGET_LOST => MLN_STATUS_TARGET_LOST,
+            _ => MLN_STATUS_NATIVE_ERROR,
+        };
+        {
+            let mut s = lock(&self.state);
+            s.state = MLN_RENDER_SESSION_STATE_FAILED;
+            s.failure_status = status;
+        }
+        *lock(&self.failure) = Some(Failure::new(status, failure.message));
+    }
+
     /// The session's lifecycle state.
     pub(crate) fn lifecycle(&self) -> mln_render_session_state {
-        self.state.lock().unwrap().state
+        lock(&self.state).state
     }
 
     /// Whether the session still renders: not detached, abandoned or
@@ -195,7 +209,7 @@ impl SessionHandle {
 
     /// Refuses a call that needs the host's frames back first.
     fn no_frames_held(&self) -> Result {
-        if self.state.lock().unwrap().acquired_frame_count > 0 {
+        if lock(&self.state).acquired_frame_count > 0 {
             return Err(Failure::state(
                 "the host holds acquired frames of the session: release them first",
             ));
@@ -205,12 +219,12 @@ impl SessionHandle {
 
     /// Changes the session's published state.
     pub(crate) fn state_mut(&self, f: impl FnOnce(&mut mln_render_session_snapshot)) {
-        f(&mut self.state.lock().unwrap());
+        f(&mut lock(&self.state));
     }
 
     /// Changes the count of frames the host holds.
     pub(crate) fn count_acquired(&self, delta: i32) {
-        let mut s = self.state.lock().unwrap();
+        let mut s = lock(&self.state);
         s.acquired_frame_count = s.acquired_frame_count.saturating_add_signed(delta);
     }
 
@@ -224,7 +238,7 @@ impl SessionHandle {
     /// Sends `msg` to the session's thread, or once the session ended
     /// answers it as an ended session does.
     fn send(&self, msg: Msg) {
-        let unsent = match &*self.tx.lock().unwrap() {
+        let unsent = match &*lock(&self.tx) {
             Some(tx) => tx.send(msg).err().map(|e| e.0),
             None => Some(msg),
         };
@@ -236,7 +250,7 @@ impl SessionHandle {
     /// Stops taking messages, once the session ended, and answers those
     /// that came meanwhile.
     fn close(&self, rx: &Receiver<Msg>) {
-        self.tx.lock().unwrap().take();
+        lock(&self.tx).take();
         for msg in rx.try_iter() {
             self.after_end(msg);
         }
@@ -253,7 +267,7 @@ impl SessionHandle {
                 completion,
                 done,
             }) => {
-                let mut state = self.state.lock().unwrap();
+                let mut state = lock(&self.state);
                 if state.state != MLN_RENDER_SESSION_STATE_ABANDONED {
                     state.state = state_after;
                 }
@@ -267,7 +281,7 @@ impl SessionHandle {
                 }
             }
             Msg::End(Ending::Abandon { done, .. }) => {
-                self.state.lock().unwrap().state = MLN_RENDER_SESSION_STATE_ABANDONED;
+                lock(&self.state).state = MLN_RENDER_SESSION_STATE_ABANDONED;
                 let _ = done.send(0);
             }
             Msg::End(Ending::Closed(done)) => {
@@ -377,7 +391,7 @@ impl Drop for SessionEntry {
 
 impl SessionEntry {
     fn sync_state(&self) {
-        let mut s = self.handle.state.lock().unwrap();
+        let mut s = lock(&self.handle.state);
         s.generation = self.generation;
         s.extent = mln_logical_extent {
             width: self.logical.width,
@@ -672,7 +686,7 @@ fn run(
     };
     // The new session has the map to draw: it tells a host that waits for
     // its redraw wake.
-    session.work();
+    session.work_through_panics();
     delivery::flush();
     loop {
         let first = if session.steps {
@@ -700,7 +714,7 @@ fn run(
                 msg => session.pending.push_back(msg),
             }
         }
-        session.work();
+        session.work_through_panics();
         delivery::flush();
     }
     session.end(Ending::Closed(None));
@@ -742,7 +756,7 @@ impl Session {
     ) -> Option<Self> {
         let runtime = core.runtime.clone();
         let scale = cell.lock().extent.scale_factor;
-        let target = match start.spec {
+        let target = crate::base::catch(|| match start.spec {
             TargetSpec::Offscreen => physical(start.logical, scale).map(|(w, h)| Target::One {
                 target: orb_api::Target::texture(&runtime, w, h, scale),
                 _layer: None,
@@ -750,7 +764,7 @@ impl Session {
             TargetSpec::Metal(layer, device) => same_device(&runtime, device)
                 .and_then(|()| metal_target(&runtime, layer, start.logical, scale)),
             TargetSpec::Ring(slots) => ring_target(&runtime, &slots),
-        };
+        });
         let mut map = cell.lock();
         let target = target.and_then(|target| match map.released {
             true => Err(Failure::state("the map was released")),
@@ -789,7 +803,7 @@ impl Session {
             generation: 1,
             still: None,
         };
-        handle.state.lock().unwrap().state = MLN_RENDER_SESSION_STATE_ATTACHED;
+        lock(&handle.state).state = MLN_RENDER_SESSION_STATE_ATTACHED;
         entry.sync_state();
         start.completion.complete(Ok(Value::None), 0);
         Some(Self {
@@ -799,6 +813,36 @@ impl Session {
             pending: VecDeque::new(),
             steps: false,
         })
+    }
+
+    /// [`work`](Self::work), which a panic doesn't take the thread down
+    /// with: the session fails, as one whose frame failed does, and its
+    /// thread goes on answering what reaches it. The demands it was asked
+    /// for fail with it, the one it was drawing too, and so does the map's
+    /// still image.
+    fn work_through_panics(&mut self) {
+        let Some(failure) =
+            crate::base::survive("a frame on a render session's thread", || self.work())
+        else {
+            return;
+        };
+        self.steps = false;
+        let entry = &mut self.entry;
+        entry.handle.fail(failure.clone());
+        for demand in std::mem::take(&mut entry.demands) {
+            entry.handle.push(result(
+                demand.token,
+                MLN_RENDER_RESULT_FAILED,
+                entry.frame_generation,
+                None,
+            ));
+        }
+        let mut map = self.cell.lock();
+        let generation = map.generation;
+        if let Some(still) = map.still.take() {
+            drop(map);
+            still.complete(Err(failure), generation);
+        }
     }
 
     /// Runs the demands and calls whose commands the map has applied, in
@@ -818,7 +862,7 @@ impl Session {
                 }) => {
                     // The demands sent before the call render first.
                     map = self.pump(&cell, map);
-                    let result = job(&mut self.entry, &mut map);
+                    let result = crate::base::catch(|| job(&mut self.entry, &mut map));
                     if changes && result.is_ok() {
                         self.entry.generation += 1;
                     }
@@ -887,9 +931,10 @@ impl Session {
     /// Ends the session: what waits for the map's commands ends unrun, the
     /// target goes, and the map can attach another.
     fn end(mut self, ending: Ending) {
-        // What is ready runs first; a detach doesn't wait for the rest.
-        if !matches!(ending, Ending::Closed(_)) {
-            self.work();
+        // What is ready runs first; a detach doesn't wait for the rest,
+        // and a failed session draws nothing more.
+        if !matches!(ending, Ending::Closed(_)) && self.entry.handle.failed().is_ok() {
+            self.work_through_panics();
         }
         for msg in std::mem::take(&mut self.pending) {
             match msg {
@@ -911,8 +956,8 @@ impl Session {
                 completion,
                 done,
             } => {
-                handle.state.lock().unwrap().state = state_after;
-                self.close();
+                lock(&handle.state).state = state_after;
+                self.close_through_panics();
                 crate::runtime::complete_update(completion, Ok(Value::None), 0, 0);
                 if retire {
                     handle.runtime.child_released();
@@ -922,7 +967,7 @@ impl Session {
                 }
             }
             Ending::Abandon { keep, done } => {
-                handle.state.lock().unwrap().state = MLN_RENDER_SESSION_STATE_ABANDONED;
+                lock(&handle.state).state = MLN_RENDER_SESSION_STATE_ABANDONED;
                 // At exit, nothing of the session's is destroyed: its
                 // graphics objects stay until the process ends.
                 let kept = match self.entry.target.take() {
@@ -936,16 +981,22 @@ impl Session {
                     }
                     _ => 0,
                 };
-                self.close();
+                self.close_through_panics();
                 let _ = done.send(kept);
             }
             Ending::Closed(done) => {
-                self.close();
+                self.close_through_panics();
                 if let Some(done) = done {
                     let _ = done.send(());
                 }
             }
         }
+    }
+
+    /// [`close`](Self::close), after which the session's ending goes on
+    /// even if it panicked: the runtime and the map stop counting it.
+    fn close_through_panics(self) {
+        crate::base::survive("a render session's close", || self.close());
     }
 
     /// Lets go of the session's target and map: its demands end, and the
@@ -954,7 +1005,7 @@ impl Session {
         let entry = &mut self.entry;
         // Its graphics objects go first; what it was asked for ends.
         entry.target = None;
-        entry.handle.ring.lock().unwrap().clear();
+        lock(&entry.handle.ring).clear();
         for demand in std::mem::take(&mut entry.demands) {
             entry.handle.push(result(
                 demand.token,
@@ -1115,7 +1166,7 @@ pub unsafe extern "C" fn mln_render_session_release_target(
             handle.no_frames_held()?;
             handle.command(Completion::from_c(completion)?, |entry, _| {
                 entry.target = None;
-                entry.handle.ring.lock().unwrap().release_target();
+                lock(&entry.handle.ring).release_target();
                 entry.sync_state();
                 Ok(Value::None)
             })
@@ -1185,7 +1236,7 @@ pub(crate) fn retarget_ring(
     slots: Vec<crate::frames::SlotInfo>,
 ) -> Result<Value> {
     let (same, format) = {
-        let ring = entry.handle.ring.lock().unwrap();
+        let ring = lock(&entry.handle.ring);
         (
             entry.target.is_some()
                 && (entry.logical.width, entry.logical.height) == (logical.width, logical.height)
@@ -1203,7 +1254,7 @@ pub(crate) fn retarget_ring(
         ));
     }
     entry.target = Some(ring_target(&entry.runtime, &slots)?);
-    entry.handle.ring.lock().unwrap().replace(slots);
+    lock(&entry.handle.ring).replace(slots);
     entry.logical = logical;
     entry.sync_state();
     (map.extent.width, map.extent.height) = (logical.width, logical.height);
@@ -1244,7 +1295,7 @@ pub unsafe extern "C" fn mln_render_session_demand_frame(
                     "the still image token is reserved for the library's still images",
                 ));
             }
-            handle.ring.lock().unwrap().usable()?;
+            lock(&handle.ring).usable()?;
             // It shows the commands sent before it; one that reaches an
             // ended session has nobody to draw it.
             handle.send(Msg::Demand {
@@ -1418,7 +1469,7 @@ fn step<'a>(
     // only with its next still image, and a barrier ends the wait.
     let mut waiting = VecDeque::new();
     while let Some(demand) = entry.demands.pop_front() {
-        if entry.handle.failure.lock().unwrap().is_some() {
+        if lock(&entry.handle.failure).is_some() {
             entry.handle.push(result(
                 demand.token,
                 MLN_RENDER_RESULT_FAILED,
@@ -1475,7 +1526,7 @@ fn step<'a>(
         // demand waits for the host to give one back.
         let (target, slot) = match target {
             Target::One { target, .. } => (target, None),
-            Target::Ring(targets) => match entry.handle.ring.lock().unwrap().begin() {
+            Target::Ring(targets) => match lock(&entry.handle.ring).begin() {
                 crate::frames::Begin::Slot(slot) => (&mut targets[slot], Some(slot)),
                 crate::frames::Begin::Wait => {
                     entry.demands.push_front(demand);
@@ -1500,8 +1551,12 @@ fn step<'a>(
             draw_call_count: 0,
             total_draw_call_count: 0,
         };
+        // The demand stays queued while it draws, so a panic in the draw
+        // fails it with the rest.
+        entry.demands.push_front(demand);
         let (guard, rendered) = render_whole(cell, map, target, now);
         map = guard;
+        entry.demands.pop_front();
         let disposition = match rendered {
             Ok(Some(report)) => {
                 entry.frame_generation += 1;
@@ -1522,18 +1577,7 @@ fn step<'a>(
             }
             Ok(None) => MLN_RENDER_RESULT_TARGET_NOT_READY,
             Err(e) => {
-                let failure = Failure::from(e);
-                let status = if failure.status == MLN_STATUS_TARGET_LOST {
-                    MLN_STATUS_TARGET_LOST
-                } else {
-                    MLN_STATUS_NATIVE_ERROR
-                };
-                {
-                    let mut s = entry.handle.state.lock().unwrap();
-                    s.state = MLN_RENDER_SESSION_STATE_FAILED;
-                    s.failure_status = status;
-                }
-                *entry.handle.failure.lock().unwrap() = Some(Failure::new(status, failure.message));
+                entry.handle.fail(Failure::from(e));
                 MLN_RENDER_RESULT_FAILED
             }
         };
@@ -1548,12 +1592,7 @@ fn step<'a>(
         let frame = result(demand.token, disposition, entry.frame_generation, shown);
         // The ring holds the frame before the host hears of it.
         if let Some(slot) = slot {
-            entry
-                .handle
-                .ring
-                .lock()
-                .unwrap()
-                .end(slot, shown.is_some().then_some(frame));
+            lock(&entry.handle.ring).end(slot, shown.is_some().then_some(frame));
         }
         entry.handle.push(frame);
         if shown.is_some() {
@@ -1598,7 +1637,7 @@ pub unsafe extern "C" fn mln_render_session_drain_frame_results(
             // The view is checked before the results are looked at.
             sized(out_view.cast_const(), "out_view")?;
             let results = {
-                let mut results = handle.results.lock().unwrap();
+                let mut results = lock(&handle.results);
                 handle.notified.store(false, Ordering::Release);
                 std::mem::take(&mut *results)
             };
@@ -1639,7 +1678,7 @@ pub unsafe extern "C" fn mln_render_session_get_snapshot(
     unsafe {
         boundary(out_diagnostic, || {
             let handle = handles::session(session.0)?;
-            put(out_snapshot, *handle.state.lock().unwrap(), "out_snapshot")
+            put(out_snapshot, *lock(&handle.state), "out_snapshot")
         })
     }
 }
@@ -1690,10 +1729,7 @@ pub unsafe extern "C" fn mln_render_session_get_failure(
     unsafe {
         boundary(out_diagnostic, || {
             let handle = handles::session(session.0)?;
-            let message = handle
-                .failure
-                .lock()
-                .unwrap()
+            let message = lock(&handle.failure)
                 .as_ref()
                 .map(|f| f.message.clone())
                 .unwrap_or_default();
@@ -1995,7 +2031,7 @@ fn end(
         handles::remove(session.0);
     }
     if lifecycle != MLN_RENDER_SESSION_STATE_ABANDONED {
-        handle.state.lock().unwrap().state = MLN_RENDER_SESSION_STATE_DETACHING;
+        lock(&handle.state).state = MLN_RENDER_SESSION_STATE_DETACHING;
     }
     // The session's thread ends it at once, whatever waits; a dispose
     // waits for that, but for on the thread itself (from a callback).
