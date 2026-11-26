@@ -29,7 +29,7 @@ const NOMINAL_REFRESH: Duration = Duration::from_micros(16_667);
 pub(crate) struct FramePacer {
     sessions: Mutex<Vec<Arc<SessionHandle>>>,
     /// The shortest time between two demands, from the frame rate limit.
-    interval: Option<Duration>,
+    interval: Mutex<Option<Duration>>,
     /// When it last demanded frames.
     last: Mutex<Option<Instant>>,
     #[cfg(target_os = "macos")]
@@ -52,7 +52,8 @@ impl FramePacer {
         expect(dead_code, reason = "only macOS makes a pacer")
     )]
     fn refresh(&self) {
-        if let Some(interval) = self.interval {
+        let interval = *lock(&self.interval);
+        if let Some(interval) = interval {
             let now = Instant::now();
             let mut last = lock(&self.last);
             // A refresh a little early still counts: refreshes jitter.
@@ -173,8 +174,55 @@ fn start_timer(pacer: std::sync::Weak<FramePacer>, interval: Duration) -> Result
         .map_err(|e| Failure::native(format!("the frame pacer's timer: {e}")))
 }
 
+/// The frame rate limit that options set, as the shortest time between two
+/// demands: `None` when they leave it as it is, `Some(None)` when they
+/// remove it.
+fn limit(o: &mln_frame_pacer_options) -> Result<Option<Option<Duration>>, Failure> {
+    let known = MLN_FRAME_PACER_OPTION_MAXIMUM_FRAMES_PER_SECOND
+        | MLN_FRAME_PACER_OPTION_UNLIMITED_FRAMES_PER_SECOND;
+    if o.fields & !known != 0 {
+        return Err(Failure::argument("options.fields sets an unknown field"));
+    }
+    match (
+        o.fields & MLN_FRAME_PACER_OPTION_MAXIMUM_FRAMES_PER_SECOND != 0,
+        o.fields & MLN_FRAME_PACER_OPTION_UNLIMITED_FRAMES_PER_SECOND != 0,
+    ) {
+        (true, true) => Err(Failure::argument(
+            "options sets both a maximum frame rate and an unlimited one",
+        )),
+        (true, false) if o.maximum_frames_per_second == 0 => Err(Failure::argument(
+            "options.maximum_frames_per_second must be greater than zero",
+        )),
+        (true, false) => Ok(Some(Some(
+            Duration::from_secs(1) / o.maximum_frames_per_second,
+        ))),
+        (false, true) => Ok(Some(None)),
+        (false, false) => Ok(None),
+    }
+}
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_apple_frame_pacer_create(
+pub unsafe extern "C" fn mln_frame_pacer_set_options(
+    pacer: mln_frame_pacer,
+    options: *const mln_frame_pacer_options,
+    out_diagnostic: *mut mln_diagnostic,
+) -> mln_status {
+    // SAFETY: the caller's pointers.
+    unsafe {
+        boundary(out_diagnostic, || {
+            let pacer = handles::pacer(pacer.0)?;
+            // The next refresh follows the new limit, counted from the last
+            // frames the pacer demanded.
+            if let Some(interval) = limit(sized(options, "options")?)? {
+                *lock(&pacer.interval) = interval;
+            }
+            Ok(())
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mln_frame_pacer_create(
     options: *const mln_frame_pacer_options,
     out_pacer: *mut mln_frame_pacer,
     out_diagnostic: *mut mln_diagnostic,
@@ -182,34 +230,24 @@ pub unsafe extern "C" fn mln_apple_frame_pacer_create(
     // SAFETY: the caller's pointers.
     unsafe {
         boundary(out_diagnostic, || {
-            let mut interval = None;
-            if !options.is_null() {
-                let o = sized(options, "options")?;
-                if o.fields & !MLN_FRAME_PACER_OPTION_MAXIMUM_FRAMES_PER_SECOND != 0 {
-                    return Err(Failure::argument("options.fields sets an unknown field"));
-                }
-                if o.fields & MLN_FRAME_PACER_OPTION_MAXIMUM_FRAMES_PER_SECOND != 0 {
-                    if o.maximum_frames_per_second == 0 {
-                        return Err(Failure::argument(
-                            "options.maximum_frames_per_second must be greater than zero",
-                        ));
-                    }
-                    interval = Some(Duration::from_secs(1) / o.maximum_frames_per_second);
-                }
-            }
+            let interval = match options.is_null() {
+                true => None,
+                false => limit(sized(options, "options")?)?.flatten(),
+            };
             crate::base::fresh_out(out_pacer, "out_pacer")?;
             #[cfg(target_os = "macos")]
             {
                 let pacer = Arc::new(FramePacer {
                     sessions: Mutex::default(),
-                    interval,
+                    interval: Mutex::new(interval),
                     last: Mutex::default(),
                     clock: Mutex::new(None),
                 });
                 let link = display_link::Link::start(Arc::as_ptr(&pacer).cast());
                 if link.is_none() {
-                    let tick = interval.map_or(NOMINAL_REFRESH, |i| i.max(NOMINAL_REFRESH));
-                    start_timer(Arc::downgrade(&pacer), tick)?;
+                    // It ticks at the nominal refresh, and the limit, which
+                    // can change, gates the ticks as it gates a display's.
+                    start_timer(Arc::downgrade(&pacer), NOMINAL_REFRESH)?;
                 }
                 *lock(&pacer.clock) = link;
                 put(
@@ -222,7 +260,7 @@ pub unsafe extern "C" fn mln_apple_frame_pacer_create(
             {
                 let _ = interval;
                 Err(Failure::unsupported(
-                    "Orbis's Apple frame pacer is macOS only so far",
+                    "Orbis's frame pacer follows macOS's displays alone so far",
                 ))
             }
         })

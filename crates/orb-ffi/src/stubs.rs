@@ -20,16 +20,6 @@ pub unsafe extern "C" fn mln_acquired_frame_get_opaque_fd(
     unsafe { crate::base::unsupported(out_diagnostic, "mln_acquired_frame_get_opaque_fd") }
 }
 
-/// `mln_android_frame_pacer_create`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_android_frame_pacer_create(
-    options: *const mln_frame_pacer_options,
-    out_pacer: *mut mln_frame_pacer,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_android_frame_pacer_create") }
-}
-
 /// `mln_binding_dart_wake_create`: not implemented.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mln_binding_dart_wake_create(
@@ -79,16 +69,6 @@ pub unsafe extern "C" fn mln_map_set_image_source_image(
     out_diagnostic: *mut mln_diagnostic,
 ) -> mln_status {
     unsafe { crate::base::unsupported(out_diagnostic, "mln_map_set_image_source_image") }
-}
-
-/// `mln_ohos_frame_pacer_create`: not implemented.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mln_ohos_frame_pacer_create(
-    options: *const mln_frame_pacer_options,
-    out_pacer: *mut mln_frame_pacer,
-    out_diagnostic: *mut mln_diagnostic,
-) -> mln_status {
-    unsafe { crate::base::unsupported(out_diagnostic, "mln_ohos_frame_pacer_create") }
 }
 
 /// `mln_runtime_get_offline_region_status`: not implemented.
@@ -222,10 +202,6 @@ const _: () = {
         crate::network::mln_android_init,
     ];
     let _ = [
-        crate::sys::mln_apple_frame_pacer_create,
-        crate::pacer::mln_apple_frame_pacer_create,
-    ];
-    let _ = [
         crate::sys::mln_binding_render_session_abandon_at_exit,
         crate::session::mln_binding_render_session_abandon_at_exit,
     ];
@@ -247,8 +223,16 @@ const _: () = {
         crate::delivery::mln_delivery_queue_release,
     ];
     let _ = [
+        crate::sys::mln_frame_pacer_create,
+        crate::pacer::mln_frame_pacer_create,
+    ];
+    let _ = [
         crate::sys::mln_frame_pacer_release,
         crate::pacer::mln_frame_pacer_release,
+    ];
+    let _ = [
+        crate::sys::mln_frame_pacer_set_options,
+        crate::pacer::mln_frame_pacer_set_options,
     ];
     let _ = [
         crate::sys::mln_gpu_device_create,
