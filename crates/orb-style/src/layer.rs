@@ -38,11 +38,9 @@ pub struct Layer {
     /// The render target the layer draws into rather than the map
     /// (`dev.sargunv.orbis:destination-target`).
     pub destination_target: Option<String>,
-    /// The render target an image-process layer reads, or a fill draws
-    /// through (`dev.sargunv.orbis:source-target`).
-    pub source_target: Option<String>,
-    /// An image-process layer's operations, in order.
-    pub operations: crate::Operations,
+    /// The render target a fill draws through or an image-process layer
+    /// processes; `Some` for every image-process layer.
+    pub reads_target: Option<crate::TargetRead>,
 }
 impl Layer {
     /// A layer of type `ty` with `props`, one slot per property of the
@@ -67,8 +65,7 @@ impl Layer {
             transitions: Vec::new(),
             layout_group: None,
             destination_target: None,
-            source_target: None,
-            operations: crate::Operations::default(),
+            reads_target: None,
         }
     }
 

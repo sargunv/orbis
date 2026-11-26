@@ -184,6 +184,39 @@ v8_enum!(
     }
 );
 
+/// The render target a layer reads (`dev.sargunv.orbis:source-target`),
+/// as only fills and image-process layers do.
+#[derive(Clone, Debug)]
+pub enum TargetRead {
+    /// A fill with no source, drawn everywhere through this target's
+    /// coverage.
+    Fill(String),
+    /// An image-process layer: its source target, put through its
+    /// operations.
+    Process {
+        source: String,
+        operations: Operations,
+    },
+}
+
+impl TargetRead {
+    /// The target read.
+    pub fn source(&self) -> &str {
+        match self {
+            Self::Fill(source) | Self::Process { source, .. } => source,
+        }
+    }
+
+    /// The operations an image-process layer puts its source through;
+    /// none for a fill.
+    pub fn operations(&self) -> &[Operation] {
+        match self {
+            Self::Fill(_) => &[],
+            Self::Process { operations, .. } => operations,
+        }
+    }
+}
+
 /// An image-process layer's operations, in order, and whether any of their
 /// values reads the camera beyond its zoom: they are evaluated again as the
 /// camera turns and tilts. Only the parser makes them, so the two agree.

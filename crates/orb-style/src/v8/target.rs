@@ -681,9 +681,15 @@ mod tests {
         };
         assert_eq!(water.destination_target.as_deref(), Some("paint"));
         assert_eq!(mask.ty, LayerType::ImageProcess);
-        assert_eq!(mask.source_target.as_deref(), Some("paint"));
         assert_eq!(mask.destination_target.as_deref(), Some("land"));
-        let ops = &mask.operations;
+        let Some(TargetRead::Process {
+            source,
+            operations: ops,
+        }) = &mask.reads_target
+        else {
+            panic!("{:?}", mask.reads_target);
+        };
+        assert_eq!(source, "paint");
         assert_eq!(ops.len(), 21);
         let n = |p: &Property<f32>| p.evaluate(10.0);
         let Operation::Select { value, tolerance } = &ops[0] else {
@@ -760,7 +766,7 @@ mod tests {
             matches!(&ops[20], Operation::Bands { count, width } if n(count) == 6.0 && n(width) == 0.25)
         );
         assert_eq!(land.source, None);
-        assert_eq!(land.source_target.as_deref(), Some("land"));
+        assert!(matches!(&land.reads_target, Some(TargetRead::Fill(t)) if t == "land"));
     }
 
     #[test]
@@ -866,7 +872,7 @@ mod tests {
         )
         .unwrap();
         assert!(style.warnings.is_empty(), "{:?}", style.warnings);
-        let anchors: Vec<NoiseAnchor> = (style.layers[0].operations.iter())
+        let anchors: Vec<NoiseAnchor> = (operations_of(&style.layers[0]).iter())
             .map(|op| match op {
                 Operation::Noise { anchor, .. } => *anchor,
                 op => panic!("{op:?}"),
@@ -958,7 +964,7 @@ mod tests {
         let paths: Vec<&str> = style.warnings.iter().map(|w| w.path.as_str()).collect();
         assert_eq!(paths, ["layers[0].dev.sargunv.orbis:operations[0].angle"]);
         assert!(matches!(
-            style.layers[0].operations[..],
+            operations_of(&style.layers[0])[..],
             [Operation::Gradient {
                 kind: Gradient::Radial { .. }
             }]
@@ -980,6 +986,14 @@ mod tests {
                 "layers[0].dev.sargunv.orbis:operations[1].radius"
             ]
         );
+    }
+
+    /// An image-process layer's operations.
+    fn operations_of(layer: &Layer) -> &Operations {
+        let Some(TargetRead::Process { operations, .. }) = &layer.reads_target else {
+            panic!("{:?} processes no target", layer.id);
+        };
+        operations
     }
 
     /// One image-process layer of `ops`.
@@ -1029,9 +1043,9 @@ mod tests {
                         radius: Some(radius),
                     },
             },
-        ] = &style.layers[0].operations[..]
+        ] = &operations_of(&style.layers[0])[..]
         else {
-            panic!("{:?}", style.layers[0].operations);
+            panic!("{:?}", operations_of(&style.layers[0]));
         };
         assert_eq!(
             (
@@ -1059,7 +1073,7 @@ mod tests {
         .unwrap();
         assert!(
             matches!(
-                &style.layers[0].operations[..],
+                &operations_of(&style.layers[0])[..],
                 [
                     Operation::Gradient {
                         kind: Gradient::Linear { length: None, .. }
@@ -1070,7 +1084,7 @@ mod tests {
                 ]
             ),
             "{:?}",
-            style.layers[0].operations
+            operations_of(&style.layers[0])
         );
     }
 
@@ -1088,7 +1102,7 @@ mod tests {
         )
         .unwrap();
         assert!(style.warnings.is_empty(), "{:?}", style.warnings);
-        let ops = &style.layers[0].operations;
+        let ops = operations_of(&style.layers[0]);
         let camera = |pitch, bearing| orb_expr::CameraInputs { pitch, bearing };
         let Operation::Gradient {
             kind: Gradient::Linear { angle, .. },
@@ -1130,7 +1144,11 @@ mod tests {
             ),
         ] {
             let style = operations(op).unwrap();
-            assert_eq!(style.layers[0].operations.reads_camera(), reads, "{op}");
+            assert_eq!(
+                operations_of(&style.layers[0]).reads_camera(),
+                reads,
+                "{op}"
+            );
         }
     }
 
@@ -1147,7 +1165,7 @@ mod tests {
         )
         .unwrap();
         assert!(style.warnings.is_empty(), "{:?}", style.warnings);
-        let op = &style.layers[0].operations[0];
+        let op = &operations_of(&style.layers[0])[0];
         let Operation::Ramp { stops } = op else {
             panic!("{op:?}");
         };
@@ -1161,7 +1179,7 @@ mod tests {
             stops[2].1.evaluate_camera(0.0, camera),
             Color::parse("#fff").unwrap()
         );
-        assert!(style.layers[0].operations.reads_camera());
+        assert!(operations_of(&style.layers[0]).reads_camera());
         for invalid in [
             r#"{"type":"ramp","stops":[[1.5,"red"]]}"#,
             r#"{"type":"ramp","stops":[[0,"nope"]]}"#,
@@ -1204,7 +1222,7 @@ mod tests {
         assert_eq!(land.destination_target, None);
         assert_eq!(land.get(FILL_COLOR).constant(), Some(Color::BLACK));
         assert_eq!(extrusion.destination_target, None);
-        assert_eq!(line.source_target, None);
+        assert!(line.reads_target.is_none());
         let paths: Vec<&str> = style.warnings.iter().map(|w| w.path.as_str()).collect();
         assert_eq!(
             paths,

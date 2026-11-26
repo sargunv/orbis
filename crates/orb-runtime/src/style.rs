@@ -11,7 +11,7 @@ use std::sync::Arc;
 use orb_expr::Kind;
 use orb_layout::Family;
 use orb_shaders::layout;
-use orb_style::{Color, Inputs, LayerType, PropertyRef, SourceKind, Style, Value};
+use orb_style::{Color, Inputs, LayerType, PropertyRef, SourceKind, Style, TargetRead, Value};
 
 use crate::elevation::ElevationColor;
 
@@ -259,12 +259,14 @@ impl StylePlan {
         for (index, layer) in style.layers.iter().enumerate() {
             let key = node_key(layer_keys[index], 0);
             // An image-process layer draws through the target plan; a fill
-            // drawn through a target draws everywhere, as a background,
-            // through the target's coverage.
+            // drawn through a target draws everywhere, as a background
+            // does, through the target's coverage.
             if layer.ty == LayerType::ImageProcess {
                 continue;
             }
-            if layer.source_target.is_some() {
+            if layer.ty == LayerType::Background
+                || matches!(layer.reads_target, Some(TargetRead::Fill(_)))
+            {
                 nodes.push(NodePlan {
                     layer: index,
                     family: Family::Fill,
@@ -275,16 +277,6 @@ impl StylePlan {
                 continue;
             }
             let family = match layer.ty {
-                LayerType::Background => {
-                    nodes.push(NodePlan {
-                        layer: index,
-                        family: Family::Fill,
-                        source: usize::MAX,
-                        key,
-                        elevation: None,
-                    });
-                    continue;
-                }
                 LayerType::FillExtrusion => Family::FillExtrusion,
                 LayerType::Fill => Family::Fill,
                 LayerType::Line => Family::Line,
@@ -294,7 +286,9 @@ impl StylePlan {
                 LayerType::Hillshade => Family::Hillshade,
                 LayerType::ColorRelief => Family::ColorRelief,
                 LayerType::Symbol => Family::SymbolIcon,
-                LayerType::ImageProcess => unreachable!("drawn by the target plan"),
+                LayerType::Background | LayerType::ImageProcess => {
+                    unreachable!("planned above")
+                }
             };
             let source = layer.source.as_deref().expect("drawn layers have sources");
             match style.source(source).map(|s| &s.kind) {

@@ -37,5 +37,7 @@ pub use source::{
 };
 pub use spec::*;
 pub use style::Style;
-pub use target::{Combine, Gradient, NoiseAnchor, Operation, Operations, Precision, RenderTarget};
+pub use target::{
+    Combine, Gradient, NoiseAnchor, Operation, Operations, Precision, RenderTarget, TargetRead,
+};
 pub use transition::{Transition, TransitionOverride};

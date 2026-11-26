@@ -522,7 +522,7 @@ pub(crate) fn parse_layer(
         .collect();
     // A fill drawn through a target has no features: what would vary by
     // feature draws its default.
-    if targets.source.is_some() {
+    if targets.read.is_some() {
         for (id, slot) in ty.properties().zip(&mut props) {
             let per_feature = slot
                 .as_expression()
@@ -539,7 +539,7 @@ pub(crate) fn parse_layer(
         }
     }
     let (source, source_layer, filter) = match ty {
-        _ if targets.source.is_some() => {
+        _ if targets.read.is_some() => {
             for key in ["source", "source-layer", "filter"] {
                 if let Some(m) = members.iter().find(|m| m.key == key) {
                     let message = format!("\"{key}\" is ignored where a layer reads a target");
@@ -594,8 +594,7 @@ pub(crate) fn parse_layer(
     layer.transitions = transitions;
     layer.layout_group = Some(layout_group(json));
     layer.destination_target = targets.destination;
-    layer.source_target = targets.source;
-    layer.operations = targets.operations;
+    layer.reads_target = targets.read;
     (cx.diagnostics.errors.len() == errors).then_some(layer)
 }
 
@@ -603,8 +602,7 @@ pub(crate) fn parse_layer(
 #[derive(Default)]
 struct Targets {
     destination: Option<String>,
-    source: Option<String>,
-    operations: Operations,
+    read: Option<TargetRead>,
 }
 
 /// The render target keys of a `ty` layer, while their preview is on: a
@@ -671,11 +669,11 @@ fn targets(cx: &mut Cx, json: &Json, path: &str, ty: LayerType) -> Targets {
         }
         (_, None) => Operations::default(),
     };
-    Targets {
-        destination,
-        source,
-        operations,
-    }
+    let read = source.map(|source| match ty {
+        LayerType::ImageProcess => TargetRead::Process { source, operations },
+        _ => TargetRead::Fill(source),
+    });
+    Targets { destination, read }
 }
 
 /// A hash of what GL JS's `groupByLayout` keys a layer by: its type,

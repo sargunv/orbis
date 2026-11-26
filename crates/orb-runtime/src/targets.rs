@@ -5,7 +5,7 @@
 
 use orb_render::{CombineMode, ProcessOp, ProcessPlan, TargetPlan};
 use orb_style::{
-    CameraInputs, Color, Combine, Gradient, LayerType, Operation, Precision, Property, Style,
+    CameraInputs, Color, Combine, Gradient, Operation, Precision, Property, Style, TargetRead,
 };
 
 use crate::style::NodePlan;
@@ -96,51 +96,54 @@ pub(crate) fn plan(
     let layers = &style.layers;
     let uses_targets = layers
         .iter()
-        .any(|l| l.destination_target.is_some() || l.source_target.is_some());
+        .any(|l| l.destination_target.is_some() || l.reads_target.is_some());
     if !uses_targets {
         return Default::default();
     }
     let index = |id: &str| style.targets.iter().position(|t| t.id == id);
     let mut warned = Vec::new();
-    let mut resolve = |layer: usize, id: Option<&str>, warn: &mut dyn FnMut(usize, &str)| {
-        let id = id?;
-        Some(match index(id) {
-            Some(i) => i as u32,
-            None => {
-                if !warned.contains(&layer) {
-                    warned.push(layer);
-                    warn(
-                        layer,
-                        &format!("target \"{id}\" not found; the layer draws nothing"),
-                    );
-                }
-                NOWHERE
+    let mut resolve = |layer: usize, id: &str, warn: &mut dyn FnMut(usize, &str)| match index(id) {
+        Some(i) => i as u32,
+        None => {
+            if !warned.contains(&layer) {
+                warned.push(layer);
+                warn(
+                    layer,
+                    &format!("target \"{id}\" not found; the layer draws nothing"),
+                );
             }
-        })
+            NOWHERE
+        }
     };
     let draws: Vec<Option<u32>> = (nodes.iter())
-        .map(|n| resolve(n.layer, layers[n.layer].destination_target.as_deref(), warn))
+        .map(|n| {
+            let id = layers[n.layer].destination_target.as_deref();
+            id.map(|id| resolve(n.layer, id, warn))
+        })
         .collect();
     let masks = (nodes.iter())
-        .map(|n| resolve(n.layer, layers[n.layer].source_target.as_deref(), warn))
+        .map(|n| {
+            let read = layers[n.layer].reads_target.as_ref();
+            read.map(|read| resolve(n.layer, read.source(), warn))
+        })
         .collect();
     let mut processes = Vec::new();
     for (l, layer) in layers.iter().enumerate() {
-        if layer.ty != LayerType::ImageProcess {
-            continue;
-        }
-        let source = resolve(l, layer.source_target.as_deref(), warn);
-        let destination = resolve(l, layer.destination_target.as_deref(), warn);
-        let (Some(source), destination) = (source, destination) else {
+        let Some(TargetRead::Process { source, operations }) = &layer.reads_target else {
             continue;
         };
+        let source = resolve(l, source, warn);
+        let destination = (layer.destination_target.as_deref()).map(|id| resolve(l, id, warn));
         if source == NOWHERE || destination == Some(NOWHERE) {
             continue;
         }
         let mut reads = vec![source];
-        for op in &layer.operations {
-            if let Operation::Combine { target, .. } = op {
-                reads.extend(resolve(l, Some(target), warn).filter(|&t| t != NOWHERE));
+        for op in operations {
+            if let Operation::Combine { target, .. } = op
+                && let t = resolve(l, target, warn)
+                && t != NOWHERE
+            {
+                reads.push(t);
             }
         }
         processes.push(Route {
@@ -178,7 +181,10 @@ pub(crate) fn plan(
         }
         !looped
     });
-    let camera = (processes.iter()).any(|p| layers[p.layer].operations.reads_camera());
+    let camera = (processes.iter()).any(|p| {
+        matches!(&layers[p.layer].reads_target,
+            Some(TargetRead::Process { operations, .. }) if operations.reads_camera())
+    });
     let high: Vec<bool> = (style.targets.iter())
         .map(|t| t.precision == Precision::High)
         .collect();
@@ -224,7 +230,11 @@ pub(crate) fn ops_at(
     let color = |c: &Property<Color>| c.evaluate_camera(zoom, camera).straight();
     let number = |n: &Property<f32>| n.evaluate_camera(zoom, camera);
     let pair = |p: &Property<[f32; 2]>| p.evaluate_camera(zoom, camera);
-    (layer.operations.iter())
+    let ops = layer
+        .reads_target
+        .as_ref()
+        .map_or(&[][..], TargetRead::operations);
+    ops.iter()
         .map(|op| match op {
             Operation::Select { value, tolerance } => {
                 let [r, g, b, _] = color(value);
@@ -335,7 +345,8 @@ pub(crate) fn ops_at(
 pub(crate) fn animates(style: &Style, routes: &Routes, zoom: f64, camera: CameraInputs) -> bool {
     (routes.layers().map(|l| &style.layers[l]))
         .filter(|layer| layer.is_visible_at(zoom))
-        .flat_map(|layer| &layer.operations)
+        .filter_map(|layer| layer.reads_target.as_ref())
+        .flat_map(TargetRead::operations)
         .any(|op| {
             matches!(op, Operation::Noise { speed, .. }
                 if speed.evaluate_camera(zoom, camera) > 0.0)
