@@ -80,7 +80,11 @@ pub unsafe fn init(
         })
         .into_outcome();
     match initialized {
-        jni::Outcome::Ok(()) => Ok(()),
+        jni::Outcome::Ok(()) => {
+            // Locale expressions answer with `android.icu` in this JVM.
+            crate::locale::platform_ready();
+            Ok(())
+        }
         jni::Outcome::Err(e) => Err(format!("android init: {e}")),
         jni::Outcome::Panic(_) => Err("android init panicked".into()),
     }

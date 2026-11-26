@@ -41,9 +41,10 @@ libc = "0.2.191"
 core-foundation = "0.10.1"
 core-foundation-sys = "0.8.7"
 
-# On Android HTTP goes through the app's HttpURLConnection, in the JVM the
-# app hands in (`android::init`), which also gives the app's assets (ndk's
-# asset manager).
+# On Android HTTP goes through the app's HttpURLConnection, and locale
+# expressions through android.icu, in the JVM the app hands in
+# (`android::init`), which also gives the app's assets (ndk's asset
+# manager).
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22.4"
 ndk = { version = "0.9.0", default-features = false }

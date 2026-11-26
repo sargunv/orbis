@@ -16,6 +16,7 @@
 //! - `apple.rs`: the system ICU, `libicucore`, through `icu4c.rs`.
 //! - `linux.rs`: the system ICU, `libicuuc` and `libicui18n`, through
 //!   `icu4c.rs`.
+//! - `android.rs`: the framework's ICU, `android.icu`, through JNI.
 //!
 //! A backend file provides `open() -> Option<Box<dyn Backend>>`, which
 //! loads its library and resolves every function it calls at run time
@@ -32,17 +33,19 @@
 
 // A platform without a backend yet uses nothing but `install`.
 #![cfg_attr(
-    not(any(target_vendor = "apple", target_os = "linux")),
+    not(any(target_vendor = "apple", target_os = "linux", target_os = "android")),
     allow(dead_code, reason = "no backend on this platform yet")
 )]
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use orb_expr::{BuiltinLocale, Collator, HostLocale, NumberFormat};
 
+#[cfg(target_os = "android")]
+mod android;
 #[cfg(target_vendor = "apple")]
 mod apple;
 #[cfg(any(target_vendor = "apple", target_os = "linux"))]
@@ -52,28 +55,57 @@ mod linux;
 
 /// This platform's backend.
 mod platform {
+    #[cfg(target_os = "android")]
+    pub(super) use super::android::open;
     #[cfg(target_vendor = "apple")]
     pub(super) use super::apple::open;
     #[cfg(target_os = "linux")]
     pub(super) use super::linux::open;
 
-    #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
+    #[cfg(not(any(target_vendor = "apple", target_os = "linux", target_os = "android")))]
     pub(super) fn open() -> Option<Box<dyn super::Backend>> {
         None
     }
 }
 
+/// Whether a host asked for the platform's library, and whether it's in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Install {
+    Off,
+    Asked,
+    Done,
+}
+
+static INSTALL: Mutex<Install> = Mutex::new(Install::Off);
+
 /// Answers locale expressions in this process with the platform's locale
 /// library from now on, where it has one. Call it as a host starts, before
-/// any style parses: parsing folds constant expressions. Later calls do
-/// nothing.
+/// any style parses: parsing folds constant expressions. On Android the
+/// library is the app's JVM's, so it comes in once
+/// [`init`](crate::android::init) hands that over, if that is later. Calls
+/// after it's in do nothing.
 pub fn install() {
-    static INSTALLED: OnceLock<()> = OnceLock::new();
-    INSTALLED.get_or_init(|| {
-        if let Some(backend) = platform::open() {
-            orb_expr::set_host_locale(Box::new(SystemLocale::new(backend)));
-        }
-    });
+    let mut install = INSTALL.lock().unwrap_or_else(|e| e.into_inner());
+    if *install == Install::Off {
+        *install = Install::Asked;
+    }
+    open(&mut install);
+}
+
+/// Brings the platform's library in if a host asked for it and it wasn't
+/// there to open: on Android, once the app's JVM is.
+#[cfg(target_os = "android")]
+pub(crate) fn platform_ready() {
+    open(&mut INSTALL.lock().unwrap_or_else(|e| e.into_inner()));
+}
+
+fn open(install: &mut Install) {
+    if *install == Install::Asked
+        && let Some(backend) = platform::open()
+    {
+        orb_expr::set_host_locale(Box::new(SystemLocale::new(backend)));
+        *install = Install::Done;
+    }
 }
 
 /// What a collator tells apart beyond base letters, as `Intl.Collator`'s
@@ -577,7 +609,8 @@ mod tests {
         );
     }
 
-    /// The platform's library, on platforms with a backend.
+    /// The platform's library, on platforms with a backend a test binary
+    /// can open: Android's needs an app's JVM.
     #[cfg(any(target_vendor = "apple", target_os = "linux"))]
     mod system {
         use super::super::*;
