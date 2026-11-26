@@ -18,12 +18,12 @@ import {
   Engine,
   type EngineEvent,
   type EngineSetup,
+  type Given,
   type MapState,
   type Pixels,
   type Report,
 } from "./engine.ts";
 import { Emitter, type Listener } from "./events.ts";
-import type { CoreOptions } from "./hosts.ts";
 import { allowed, attachInput, type Allowed } from "./input.ts";
 import { preloadStyle, styleModules } from "./preload.ts";
 import {
@@ -74,6 +74,7 @@ type Calls = Omit<
   | "call"
   | "remove"
   | "end"
+  | "handover"
   | "takePorts"
 >;
 type Method = keyof Calls;
@@ -219,19 +220,11 @@ export class CameraControl {
   }
 }
 
-/** What a map was made with, and has been given since, to start it again
- * on WebGL 2 after WebGPU is lost for good. */
-interface Restart {
-  core: CoreOptions;
-  jobWorkers: number;
+/** What the page's side of a map keeps of its options. */
+interface Settings {
   interactive: boolean;
-  /** The style last set, as a URL: what starts again where the style as
-   * edits left it can't be read. */
-  style: string;
-  constraints?: Constraints;
+  jobWorkers: number;
   gestures?: GestureOptions;
-  /** Images added, by name: their size, RGBA bytes and options. */
-  images: Map<string, [number, number, Uint8Array, string]>;
 }
 
 /** A map in a container element. Create one with {@link createMap}. */
@@ -240,16 +233,17 @@ export class OrbisMap {
   readonly camera: CameraControl;
   readonly annotations: Annotations;
   #engine: Engine;
-  #restart: Restart;
+  #interactive: boolean;
+  #jobWorkers: number;
   /** The input on the canvas, to move with it. */
   #canvasDetach: (() => void)[] = [];
   /** `load` fired: a map started again on WebGL 2 doesn't fire it again. */
   #loaded = false;
   #fallingBack = false;
-  /** The loss a map started again on WebGL 2 recovers from, until it
-   * draws; then its added images, until its style is in. */
-  #recoveringFrom: number | undefined;
-  #readdImages = false;
+  /** While the map starts again on WebGL 2: calls wait for it, to run on
+   * whichever map draws once it has (the new one hands over what the old
+   * one was given before). */
+  #restarting: Promise<void> | undefined;
   /** Video sources' players, on the page's thread. */
   #videos: Videos;
   #events = new Emitter<MapEvents>();
@@ -269,6 +263,8 @@ export class OrbisMap {
   #cssSize: [number, number] | undefined;
   #showBox: ((corners: number[] | null) => void) | undefined;
   #allow: ((allowed: Allowed) => void) | undefined;
+  /** What gestures may move, as last set: a new canvas's input takes it. */
+  #allowed: Allowed | undefined;
   #removed = false;
   /** Why the map stopped, if its wasm trapped. */
   #stopped: string | undefined;
@@ -277,11 +273,9 @@ export class OrbisMap {
   constructor(
     container: HTMLElement,
     frame: HTMLElement,
-    canvas: HTMLCanvasElement,
     overlay: HTMLElement,
-    engine: Engine,
-    reports: Reports,
-    restart: Restart,
+    { canvas, engine, reports }: Started,
+    settings: Settings,
     size: Size,
     pixelRatio?: number,
   ) {
@@ -289,7 +283,8 @@ export class OrbisMap {
     this.#frame = frame;
     this.#canvas = canvas;
     this.#engine = engine;
-    this.#restart = restart;
+    this.#interactive = settings.interactive;
+    this.#jobWorkers = settings.jobWorkers;
     this.#pixelRatio = pixelRatio;
     this.#size = size;
     const fail = (e: unknown) => this.#error(e);
@@ -318,6 +313,7 @@ export class OrbisMap {
         if (pixels) this.annotations.place(pixels);
       }, fail);
     });
+    if (settings.gestures) this.#allowed = allowed(settings.gestures);
     this.#attachCanvas();
     this.#followSize();
     // Tiles that failed while offline load again when the network returns.
@@ -359,120 +355,55 @@ export class OrbisMap {
     this.#detach.push(() => query.removeEventListener("change", changed));
   }
 
-  /** Takes the canvas's input. */
+  /** Takes the canvas's input, for gestures as last set. */
   #attachCanvas(): void {
-    const canvas = this.#canvas;
-    if (this.#restart.interactive) {
-      const input = attachInput(canvas, (kind, args, time) => {
-        if (!this.#removed) this.#engine.input(kind, args, time);
-      });
-      this.#showBox = input.showBox;
-      const allow = input.allow;
-      this.#allow = allow;
-      if (this.#restart.gestures) allow(allowed(this.#restart.gestures));
-      this.#canvasDetach.push(input.detach);
-    }
+    if (!this.#interactive) return;
+    const input = attachInput(this.#canvas, (kind, args, time) => {
+      if (!this.#removed) this.#engine.input(kind, args, time);
+    });
+    this.#showBox = input.showBox;
+    this.#allow = input.allow;
+    if (this.#allowed) input.allow(this.#allowed);
+    this.#canvasDetach.push(input.detach);
   }
 
   #call: Call = (method, ...args) => {
     if (this.#removed) return Promise.reject(new Error("the map was removed"));
-    const call = this.#engine.call(method, args) as Promise<never>;
-    void call.then(
-      () => this.#remember(method, args),
-      () => {},
-    );
-    return call;
+    if (this.#restarting)
+      return this.#restarting.then(() => this.#call(method, ...args));
+    return this.#engine.call(method, args) as Promise<never>;
   };
 
-  /** Keeps what a call gave the map that its style doesn't hold, to give
-   * a map started again on WebGL 2. */
-  #remember(method: Method, args: unknown[]): void {
-    const restart = this.#restart;
-    switch (method) {
-      case "setStyleUrl":
-        restart.style = args[0] as string;
-        break;
-      case "setConstraints":
-        restart.constraints = args[0] as Constraints;
-        break;
-      case "setGestures":
-        restart.gestures = args[0] as GestureOptions;
-        break;
-      case "setTileLod":
-        restart.core.tileLod = {
-          ...restart.core.tileLod,
-          ...(args[0] as TileLod),
-        };
-        break;
-      case "addImage": {
-        const [name, width, height, pixels, options] = args as [
-          string,
-          number,
-          number,
-          Uint8Array,
-          string,
-        ];
-        restart.images.set(name, [width, height, pixels.slice(), options]);
-        break;
-      }
-      case "updateImage": {
-        const [name, , , pixels] = args as [string, number, number, Uint8Array];
-        const image = restart.images.get(name);
-        if (image) image[2] = pixels.slice();
-        break;
-      }
-      case "removeImage":
-        restart.images.delete(args[0] as string);
-        break;
-    }
-  }
-
   /** WebGPU is lost for good (`why`, since `lostAt`): the map starts
-   * again on WebGL 2 in a new canvas (a canvas that had a WebGPU context
-   * takes no other), with its style as edits left it, camera, constraints,
-   * gestures, added images and annotations, and the ports apps feed heights
-   * through. `restored` says so once it draws; failing that, the map stops
-   * with an `error` saying why. */
-  async #fallBack({ why, lostAt }: { why: string; lostAt: number }) {
+   * again on WebGL 2 with what the old one hands over (its style as edits
+   * left it, camera, constraints, gestures, added images and tile LOD),
+   * its annotations, and the ports apps feed heights through. `restored`
+   * says so once it draws; failing that, the map stops with an `error`
+   * saying why. */
+  #fallBack(fallback: { why: string; lostAt: number }): void {
     if (this.#fallingBack || this.#removed) return;
     this.#fallingBack = true;
+    this.#restarting = this.#restart(fallback)
+      .catch((e) => this.#error(e))
+      .finally(() => {
+        this.#restarting = undefined;
+      });
+  }
+
+  async #restart({ why, lostAt }: { why: string; lostAt: number }) {
     const old = this.#engine;
-    const restart = this.#restart;
-    const style = await old.call("getStyle", []).then(
-      (json) => `data:application/json,${encodeURIComponent(json as string)}`,
-      () => restart.style,
-    );
+    const { modules, ...given } = await old.handover();
     if (this.#removed) return;
-    const { camera, clamped } = old.state();
-    const canvas = newCanvas();
-    this.#canvas.replaceWith(canvas);
-    for (const detach of this.#canvasDetach.splice(0)) detach();
-    this.#canvas = canvas;
     const size = this.#bufferSize();
-    const held = reports();
-    let engine: Engine;
+    let started: Started;
     try {
-      engine = await launch(
-        fallbackBuild(why),
-        canvas,
-        {
-          style,
-          options: restart.core,
-          camera: {
-            center: camera.center,
-            zoom: camera.zoom,
-            bearing: camera.bearing,
-            pitch: camera.pitch,
-            roll: camera.roll,
-            fov: camera.fov,
-            padding: camera.padding,
-          },
-          constraints: restart.constraints,
-        },
+      started = await restartOnWebgl2(
+        why,
+        this.#canvas,
+        { ...given, lostAt },
         size,
-        restart.jobWorkers,
-        held.deliver,
-        [...old.modules()],
+        this.#jobWorkers,
+        modules,
       );
     } catch (e) {
       const message = String(e instanceof Error ? e.message : e);
@@ -483,29 +414,25 @@ export class OrbisMap {
       );
       return;
     }
+    const { canvas, engine, reports } = started;
     if (this.#removed) {
       engine.remove();
       return;
     }
     for (const port of old.takePorts()) engine.elevationPort(port);
     old.remove();
+    for (const detach of this.#canvasDetach.splice(0)) detach();
     this.#engine = engine;
+    this.#canvas = canvas;
     this.#fallingBack = false;
     this.#size = size;
     this.#attachCanvas();
     // What the frame did while the map started again.
     this.#resize();
-    if (!clamped) {
-      engine.setCenterClampedToGround(false);
-      engine.jumpTo({ elevation: camera.elevation });
-    }
-    if (restart.gestures) engine.setGestures(restart.gestures);
     for (const resolve of this.#animations.values()) resolve(false);
     this.#animations.clear();
-    this.#recoveringFrom = lostAt;
-    this.#readdImages = restart.images.size > 0;
     if (this.annotations.size) this.annotations.changed();
-    held.listen((report) => this.#receive(report));
+    reports.listen((report) => this.#receive(report));
   }
 
   /** Sets what the map's gestures may move, how releases continue and
@@ -514,7 +441,8 @@ export class OrbisMap {
    * is off scrolls the page as it would without the map. A change cancels
    * a gesture under way. */
   setGestures(options: GestureOptions): void {
-    this.#allow?.(allowed(options));
+    this.#allowed = allowed(options);
+    this.#allow?.(this.#allowed);
     this.#call("setGestures", options).catch((e) => this.#error(e));
   }
 
@@ -1009,14 +937,9 @@ export class OrbisMap {
     if (report.stats) this.#stats = report.stats;
     for (const event of report.events) this.#emit(event);
     this.#stopped ??= report.stopped;
-    if (report.stats && this.#recoveringFrom !== undefined) {
-      const recoveredMs = performance.now() - this.#recoveringFrom;
-      this.#recoveringFrom = undefined;
-      this.#events.emit("restored", { recoveredMs, backend: this.backend });
-    }
     if (report.stats && this.#events.has("render"))
       this.#events.emit("render", report.stats);
-    if (report.fallback) void this.#fallBack(report.fallback);
+    if (report.fallback) this.#fallBack(report.fallback);
   }
 
   #emit(event: EngineEvent): void {
@@ -1038,16 +961,6 @@ export class OrbisMap {
         if (this.#loaded) break;
         this.#loaded = true;
         this.#events.emit("load", event.data);
-        break;
-      case "styleload":
-        // A map started again on WebGL 2 takes the images added to the
-        // last once its style is in.
-        if (this.#readdImages) {
-          this.#readdImages = false;
-          for (const [name, image] of this.#restart.images)
-            this.#call("addImage", name, ...image).catch(() => {});
-        }
-        this.#events.emit("styleload", event.data);
         break;
       default:
         this.#events.emit(event.type, event.data as never);
@@ -1119,7 +1032,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
     inset: "0",
     pointerEvents: "none",
   });
-  let canvas = newCanvas();
+  const canvas = newCanvas();
   frame.append(canvas, overlay);
   options.container.append(frame);
   const size = bufferSize(frame, ratio);
@@ -1139,20 +1052,19 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
     () => {},
   );
   const jobWorkers = options.jobWorkers ?? defaultJobWorkers();
-  const setup = {
+  const given: Given = {
     style,
     options: core,
     camera: options.camera,
     constraints: options.constraints,
+    gestures: options.gestures,
   };
-  let held = reports();
-  let engine: Engine;
+  let started: Started;
   try {
-    engine = await launch(build, canvas, setup, size, jobWorkers, held.deliver);
+    started = await launch(build, canvas, given, size, jobWorkers);
   } catch (e) {
     // WebGPU gave an adapter, yet its map didn't start on it (no device,
-    // say): WebGL 2 in a new canvas, as a canvas that had a WebGPU context
-    // takes no other. A trap is a bug, which WebGL 2 would hit too.
+    // say): WebGL 2. A trap is a bug, which WebGL 2 would hit too.
     const picked = await build.catch(() => undefined);
     const trapped =
       e instanceof Error && e.cause instanceof WebAssembly.RuntimeError;
@@ -1160,45 +1072,27 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
       frame.remove();
       throw e;
     }
-    const fresh = newCanvas();
-    canvas.replaceWith(fresh);
-    canvas = fresh;
-    held = reports();
     const why = `its map didn't start: ${e instanceof Error ? e.message : e}`;
     try {
-      engine = await launch(
-        fallbackBuild(why),
-        canvas,
-        setup,
-        size,
-        jobWorkers,
-        held.deliver,
-      );
+      started = await restartOnWebgl2(why, canvas, given, size, jobWorkers);
     } catch (e) {
       frame.remove();
       throw e;
     }
   }
-  const map = new OrbisMap(
+  return new OrbisMap(
     options.container,
     frame,
-    canvas,
     overlay,
-    engine,
-    held,
+    started,
     {
-      core,
-      jobWorkers,
       interactive: options.interactive ?? true,
-      style,
-      constraints: options.constraints,
-      images: new Map(),
+      jobWorkers,
+      gestures: options.gestures,
     },
     size,
     options.pixelRatio,
   );
-  if (options.gestures) map.setGestures(options.gestures);
-  return map;
 }
 
 /** A canvas for the map's frame; {@link fitCanvas} sizes its box. */
@@ -1249,18 +1143,25 @@ function fitCanvas(canvas: HTMLCanvasElement, [width, height, ratio]: Size) {
   canvas.style.height = `${height / ratio}px`;
 }
 
+/** A map started: the canvas it draws into, and its reports, held until
+ * the page's side listens. */
+interface Started {
+  canvas: HTMLCanvasElement;
+  engine: Engine;
+  reports: Reports;
+}
+
 /** The map drawing into `canvas`, in the page, at `size` (fitted to it),
- * once `build` has compiled, with `jobWorkers` job workers and `modules`
- * fetched at once; `deliver` hears its reports. */
-function launch(
+ * once `build` has compiled, with what the page gave it, `jobWorkers` job
+ * workers and `modules` fetched at once. */
+async function launch(
   build: Promise<Build>,
   canvas: HTMLCanvasElement,
-  setup: Omit<EngineSetup, "canvas" | "size">,
+  given: Omit<EngineSetup, "canvas" | "size">,
   size: Size,
   jobWorkers: number,
-  deliver: (report: Report) => void,
   modules: ModuleName[] = [],
-): Promise<Engine> {
+): Promise<Started> {
   fitCanvas(canvas, size);
   build.catch(() => {});
   void build.then(
@@ -1269,7 +1170,34 @@ function launch(
     () => {},
   );
   const workers = spawnWorkers(build, jobWorkers);
-  return Engine.start(build, workers, { ...setup, canvas, size }, deliver);
+  const held = reports();
+  const setup = { ...given, canvas, size };
+  const engine = await Engine.start(build, workers, setup, held.deliver);
+  return { canvas, engine, reports: held };
+}
+
+/** The map started again on WebGL 2, as {@link launch} starts it, because
+ * of `why` WebGPU failed it, in a new canvas that takes `canvas`'s place
+ * once it has started: a canvas that had a WebGPU context takes no other. */
+async function restartOnWebgl2(
+  why: string,
+  canvas: HTMLCanvasElement,
+  given: Omit<EngineSetup, "canvas" | "size">,
+  size: Size,
+  jobWorkers: number,
+  modules: ModuleName[] = [],
+): Promise<Started> {
+  const fresh = newCanvas();
+  const started = await launch(
+    fallbackBuild(why),
+    fresh,
+    given,
+    size,
+    jobWorkers,
+    modules,
+  );
+  canvas.replaceWith(fresh);
+  return started;
 }
 
 /** A style as the map loads it: a URL resolved against the page's, or a

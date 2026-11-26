@@ -45,7 +45,7 @@
 //   dismissable; where maps draw with WebGPU, WebGPU that never answers
 //   for an adapter starting the map on WebGL 2, and WebGPU lost with no
 //   adapter after starting it again on WebGL 2 in a new canvas at its
-//   camera, taking input; and a WebGL 2 context never restored stopping
+//   camera, with the app's images and constraints, taking input; and a WebGL 2 context never restored stopping
 //   the map, saying why.
 // - `options`: the Globe's map options, offline (the Tokyo extract's style
 //   standing in for Protomaps Light): by default it loads with every
@@ -1961,7 +1961,8 @@ async function copyDetails(page) {
  * waits on (no frame yet, then a source that never answers), which can be
  * dismissed; WebGPU that never answers for an adapter starts the map on
  * WebGL 2; WebGPU lost with no new adapter starts it again on WebGL 2 in a
- * new canvas, at the same camera, taking input; and a WebGL 2 context the
+ * new canvas, at the same camera, with the app's images and constraints,
+ * taking input; and a WebGL 2 context the
  * browser never restores stops the map, saying why, in bounded time.
  */
 async function recovery(browser, server) {
@@ -2093,12 +2094,19 @@ async function recovery(browser, server) {
 
   if (webgpu) {
     // WebGPU lost, and no adapter after: the map starts again on WebGL 2
-    // in a new canvas, at its camera, and takes input there.
+    // in a new canvas, at its camera, with the image and constraints the
+    // app gave the old one, and takes input there.
     const { page, errors } = await open(browser, { width: 600, height: 400 });
     await page.goto(`${server.url}?style=tokyo#14/35.6830/139.7520`);
     await idle(page);
     const fell = await page.evaluate(async () => {
       const { map } = app;
+      await map.addImage("e2e-dot", {
+        width: 1,
+        height: 1,
+        data: new Uint8Array([255, 0, 0, 255]),
+      });
+      map.camera.setConstraints({ maxZoom: 15 });
       const before = { canvas: map.canvas, camera: map.camera.current };
       GPU.prototype.requestAdapter = async () => null;
       const restored = map.once("restored");
@@ -2124,6 +2132,15 @@ async function recovery(browser, server) {
     );
     assert.ok(Math.abs(fell.zoom[0] - fell.zoom[1]) < 1e-6, fell.zoom);
     await idle(page);
+    const kept = await page.evaluate(async () => {
+      const { map } = app;
+      const image = await map.hasImage("e2e-dot");
+      map.camera.jumpTo({ zoom: 18 });
+      // Calls run in order: once a later one answers, the jump has.
+      await map.project([139.752, 35.683]);
+      return { image, zoom: map.camera.current.zoom };
+    });
+    assert.deepEqual(kept, { image: true, zoom: 15 });
     // A drag on the new canvas moves the camera.
     const center = await page.evaluate(() => app.map.camera.current.center);
     await page.mouse.move(300, 200);

@@ -89,6 +89,8 @@ type CoreEvent =
   | { type: "sourcedata"; source: string; loaded: boolean }
   | { type: "error" | "warning"; message: string }
   | { type: "styleimagemissing"; id: string }
+  /** Ignored: the engine says `restored` from its first frame drawn after
+   * a loss, a map started again on WebGL 2's too. */
   | { type: "restored" }
   | { type: "degraded"; gaps: Degradation[] }
   | {
@@ -114,16 +116,61 @@ export type InputKind =
   | "key"
   | "blur";
 
-/** How the map starts. */
-export interface EngineSetup {
-  canvas: HTMLCanvasElement;
+/** An image the page added to the style, as the wasm map takes it. */
+export interface AddedImage {
+  width: number;
+  height: number;
+  /** Its RGBA bytes, the map's own copy. */
+  pixels: Uint8Array;
+  /** Its options, as JSON. */
+  options: string;
+}
+
+/** What the page gave a map, at its creation and since, that a map
+ * started again on WebGL 2 takes from it ({@link Engine.handover}). */
+export interface Given {
+  /** The style as a URL: as edits left it, where it can be read. */
   style: string;
   options: CoreOptions;
   camera?: CameraOptions;
+  /** False: the center keeps `camera.elevation` rather than standing on
+   * the terrain. */
+  clamped?: boolean;
   constraints?: Constraints;
+  gestures?: GestureOptions;
+  /** Images added to the style, by name: a new map adds them once its
+   * style is in. */
+  images?: ReadonlyMap<string, AddedImage>;
+}
+
+/** How the map starts. */
+export interface EngineSetup extends Given {
+  canvas: HTMLCanvasElement;
   /** Physical width and height and device pixels per CSS pixel. */
   size: [number, number, number];
+  /** For a map started again on WebGL 2: when the map it replaces lost
+   * WebGPU, on the page's clock. Its first frame reports `restored`. */
+  lostAt?: number;
 }
+
+/** What a map started again on WebGL 2 takes from the one it replaces. */
+export interface Handover extends Given {
+  /** The feature modules it had, which the new map fetches at once. */
+  modules: ModuleName[];
+}
+
+/** Where the map is in its life. Unless it runs, the wasm map is held:
+ * it draws no frames and takes no input, and its state stays as last
+ * read. */
+type Phase =
+  | { is: "running" }
+  /** A snapshot draws its own frames, and asks for one when it ends. */
+  | { is: "snapshotting" }
+  /** The GPU was lost at `lostAt`, and a new device is on its way. */
+  | { is: "lost"; lostAt: number }
+  /** It draws no more: every call fails with `message`. */
+  | { is: "stopped"; message: string }
+  | { is: "removed" };
 
 /** A wasm-bindgen object's getters as a plain object, which outlives
  * it. */
@@ -194,12 +241,24 @@ export class Engine {
    * on the page's clock. */
   #alarm: ReturnType<typeof setTimeout> | undefined;
   #alarmAt = Infinity;
-  #snapshotting = false;
+  #phase: Phase = { is: "running" };
   #snapshots: Promise<unknown> = Promise.resolve();
-  /** A device loss's start, while the host recovers. */
-  #lostAt: number | undefined;
-  /** The last device loss's start, until the new device draws. */
-  #recovering: number | undefined;
+  /** The canvas's buffer and ratio, which a new device takes too. */
+  #size: [number, number, number];
+  /** The last loss's start, until a frame draws on the new device. */
+  #restoring: number | undefined;
+  /** What the page gave the map, for a map that takes its place. */
+  #style: string;
+  #options: CoreOptions;
+  #constraints: Constraints | undefined;
+  #gestures: GestureOptions | undefined;
+  /** Kept only where the map can hand over (`#handsOver`),
+   * and the handed-over ones until they are added. */
+  #images: Map<string, AddedImage>;
+  /** The images this map takes from the one it replaced, by name, which
+   * it adds once its style is in, unless the page has added or removed
+   * them since. */
+  #imagesToAdd: Set<string> | undefined;
   /** The gaps warned of on the console: each once per map. */
   #warnedGaps = new Set<Gap>();
   /** What the map draws otherwise than on WebGPU now. */
@@ -209,9 +268,6 @@ export class Engine {
   #losses = 0;
   /** A pipeline failed, and the map was handed to WebGL 2. */
   #pipelineFailed = false;
-  #removed = false;
-  /** Why the map stopped: every call fails with it. */
-  #stopped: string | undefined;
   /** The annotations' points, [lon, lat, …]. */
   #annotations: Float64Array = new Float64Array(0);
   /** The box zoom's corners last reported, as text. */
@@ -240,6 +296,14 @@ export class Engine {
     this.#host = host;
     this.#canvas = setup.canvas;
     this.#report = report;
+    this.#size = setup.size;
+    this.#restoring = setup.lostAt;
+    this.#style = setup.style;
+    this.#options = setup.options;
+    this.#constraints = setup.constraints;
+    this.#gestures = setup.gestures;
+    this.#images = new Map(setup.images);
+    if (setup.images?.size) this.#imagesToAdd = new Set(setup.images.keys());
     // The map's one beat: all its work (what arrived, the camera, loads,
     // labels, the draw) runs in a frame on the display's refresh, within
     // the frame's budget (orb-runtime's `Budget`). Input, calls and
@@ -275,11 +339,13 @@ export class Engine {
         },
         setup: (core) => {
           if (setup.constraints) core.setConstraints(setup.constraints);
+          if (setup.gestures) core.setGestures(setup.gestures);
+          if (setup.clamped === false) core.setCenterClampedToGround(false);
           if (setup.camera) core.jumpTo(setup.camera);
+          core.resize(...setup.size);
         },
       },
     );
-    host.resize(...setup.size);
     engine = new Engine(host, setup, report);
     // WebGPU expected to draw didn't: the page hears why.
     if (host.unexpected)
@@ -302,11 +368,27 @@ export class Engine {
     return this.#host.core;
   }
 
+  /** The wasm map is held (see {@link Phase}). */
+  get #held(): boolean {
+    return this.#phase.is !== "running";
+  }
+
+  /** WebGPU that `auto` picked: once lost for good, the map hands over
+   * to one started again on WebGL 2. */
+  get #handsOver(): boolean {
+    return this.backend === "webgpu" && !this.#host.forced;
+  }
+
+  /** The map stopped or was removed: it has no wasm map to call. */
+  get #ended(): boolean {
+    return this.#phase.is === "stopped" || this.#phase.is === "removed";
+  }
+
   /** Calls `method`: at once, or once the API's module is in, for a call
    * that needs it, and any call made while one waits. */
   call(method: string, args: unknown[]): Promise<unknown> {
-    if (this.#stopped !== undefined)
-      return Promise.reject(new Error(this.#stopped));
+    if (this.#phase.is === "stopped")
+      return Promise.reject(new Error(this.#phase.message));
     const run = () =>
       (this[method as keyof Engine] as (...a: unknown[]) => unknown)(...args);
     const needs = API_CALLS.has(method) && !this.#host.modules().has("api");
@@ -334,7 +416,7 @@ export class Engine {
       return this.#host.loadModules([name]).then(
         () => {
           this.#failed.delete(name);
-          if (this.#removed) return;
+          if (this.#ended) return;
           const loaded = this.#host.modules();
           let bits = 0;
           MODULE_NAMES.forEach((name, i) => {
@@ -348,7 +430,7 @@ export class Engine {
           // the error.
           setTimeout(() => {
             this.#asked.delete(name);
-            if (!this.#removed) this.#request();
+            if (!this.#ended) this.#request();
           }, MODULE_RETRY);
           if (!this.#failed.has(name))
             this.#fail(`core-${name}.wasm didn't load: ${e}`);
@@ -377,13 +459,7 @@ export class Engine {
 
   /** What the page reads without asking. */
   state(): MapState {
-    // A snapshot's end and a recovery hold the wasm map while they wait:
-    // the state stays as it was, as it does once the map is gone.
-    if (
-      this.#state &&
-      (this.#removed || this.#snapshotting || this.#lostAt !== undefined)
-    )
-      return this.#state;
+    if (this.#state && this.#held) return this.#state;
     const core = this.#core;
     const c = core.camera();
     const camera: Camera = {
@@ -409,8 +485,7 @@ export class Engine {
   // Input, at the page's event times.
 
   input(kind: InputKind, args: (number | string)[], time: number): void {
-    if (this.#removed || this.#lostAt !== undefined || this.#snapshotting)
-      return;
+    if (this.#held) return;
     this.#inputTime = time;
     const core = this.#core as unknown as Record<
       InputKind,
@@ -447,6 +522,7 @@ export class Engine {
   }
   setGestures(options: GestureOptions): void {
     this.#core.setGestures(options);
+    this.#gestures = options;
     this.#request();
   }
   setCenterElevation(elevation: number): void {
@@ -473,6 +549,7 @@ export class Engine {
   }
   setConstraints(constraints: Constraints): void {
     this.#core.setConstraints(constraints);
+    this.#constraints = constraints;
     this.#request();
   }
   cameraForBounds(
@@ -543,6 +620,7 @@ export class Engine {
 
   setStyleUrl(url: string): void {
     this.#core.setStyleUrl(url);
+    this.#style = url;
     this.#request();
   }
   /** The generation whose frames show the edit. */
@@ -559,6 +637,15 @@ export class Engine {
     options: string,
   ): void {
     this.#core.addImage(name, width, height, pixels, options);
+    this.#imagesToAdd?.delete(name);
+    if (this.#handsOver)
+      this.#images.set(name, {
+        width,
+        height,
+        pixels: pixels.slice(),
+        options,
+      });
+    else this.#images.delete(name);
     this.#request();
   }
   updateImage(
@@ -568,10 +655,14 @@ export class Engine {
     pixels: Uint8Array,
   ): void {
     this.#core.updateImage(name, width, height, pixels);
+    const image = this.#images.get(name);
+    if (image) image.pixels = pixels.slice();
     this.#request();
   }
   removeImage(name: string): void {
     this.#core.removeImage(name);
+    this.#imagesToAdd?.delete(name);
+    this.#images.delete(name);
     this.#request();
   }
   hostTile(
@@ -633,8 +724,7 @@ export class Engine {
   /** A video source's new frame, in its element. A source the style
    * dropped is ignored: its close is on the way. */
   videoFrame(source: string, video: HTMLVideoElement): void {
-    if (this.#removed || this.#lostAt !== undefined || this.#snapshotting)
-      return;
+    if (this.#held) return;
     try {
       this.#core.videoFrame(source, video);
       this.#request();
@@ -659,9 +749,11 @@ export class Engine {
 
   // The canvas, frames and annotations.
 
+  /** A new device after a loss takes the size given meanwhile. */
   resize(width: number, height: number, ratio: number): void {
-    if (this.#removed || this.#lostAt !== undefined) return;
-    this.#host.resize(width, height, ratio);
+    this.#size = [width, height, ratio];
+    if (this.#ended || this.#phase.is === "lost") return;
+    this.#core.resize(width, height, ratio);
     this.#request();
   }
   triggerRepaint(): void {
@@ -682,6 +774,8 @@ export class Engine {
   }
   setTileLod(lod: TileLod): void {
     this.#core.setTileLod(lod);
+    const options = this.#options;
+    this.#options = { ...options, tileLod: { ...options.tileLod, ...lod } };
     this.#request();
   }
   async gpuTimings(): Promise<GpuSubmission[]> {
@@ -700,8 +794,13 @@ export class Engine {
    * everything in it has loaded; frames wait meanwhile. One at a time. */
   snapshot(width: number, height: number, scale: number): Promise<Pixels> {
     const run = async () => {
+      const phase = this.#phase;
+      if (phase.is === "stopped") throw new Error(phase.message);
+      if (phase.is === "removed") throw new Error("the map was removed");
+      if (phase.is === "lost")
+        throw new Error("the map's GPU was lost, and no new one draws yet");
       const core = this.#core;
-      this.#snapshotting = true;
+      this.#phase = { is: "snapshotting" };
       core.beginSnapshot(width, height, scale);
       try {
         const deadline = performance.now() + 60_000;
@@ -719,8 +818,10 @@ export class Engine {
         core.cancelSnapshot();
         throw e;
       } finally {
-        this.#snapshotting = false;
-        this.#loop.request();
+        if (this.#phase.is === "snapshotting") {
+          this.#phase = { is: "running" };
+          this.#loop.request();
+        }
       }
     };
     const next = this.#snapshots.then(run, run);
@@ -731,7 +832,7 @@ export class Engine {
   // Tests.
 
   loseDevice(): void {
-    this.#host.loseDevice();
+    this.#core.loseDevice();
   }
   trapPlacementWorker(): void {
     this.#host.trapPlacementWorker();
@@ -747,6 +848,38 @@ export class Engine {
     this.#frameClock = time;
   }
 
+  /** What a map started again on WebGL 2 in this one's place takes from
+   * it: the style as edits left it (as the URL last set where it can't be
+   * read), the camera, and what the page gave it that the style doesn't
+   * hold. */
+  async handover(): Promise<Handover> {
+    const style = await this.call("getStyle", []).then(
+      (json) => `data:application/json,${encodeURIComponent(json as string)}`,
+      () => this.#style,
+    );
+    const { camera: c, clamped } = this.state();
+    return {
+      style,
+      options: this.#options,
+      camera: {
+        center: c.center,
+        zoom: c.zoom,
+        bearing: c.bearing,
+        pitch: c.pitch,
+        roll: c.roll,
+        fov: c.fov,
+        padding: c.padding,
+        // Clamped, the terrain gives the center its elevation.
+        ...(clamped ? {} : { elevation: c.elevation }),
+      },
+      clamped,
+      constraints: this.#constraints,
+      gestures: this.#gestures,
+      images: new Map(this.#images),
+      modules: [...this.modules()],
+    };
+  }
+
   /** Ports apps' workers feed heights through, which the map no longer
    * answers: for another map to take. */
   takePorts(): MessagePort[] {
@@ -756,16 +889,19 @@ export class Engine {
   /** Stops the map for good, saying why with one `error`: every call
    * fails with `message` from now on. */
   end(message: string): void {
-    if (this.#removed) return;
+    if (this.#ended) return;
     this.#halt(message);
     this.#host.destroy();
   }
 
   /** Stops drawing and releases the map's workers. */
   remove(): void {
-    if (this.#removed) return;
-    this.#removed = true;
+    const was = this.#phase;
+    if (was.is === "removed") return;
+    this.#phase = { is: "removed" };
     for (const port of this.#ports.splice(0)) port.close();
+    // A map that stopped has let them go already.
+    if (was.is === "stopped") return;
     this.#loop.stop();
     this.#setAlarm(undefined);
     this.#host.destroy();
@@ -805,9 +941,7 @@ export class Engine {
 
   /** One frame, shown at `now`; returns whether another is needed. */
   #tick(now: number): boolean {
-    // A snapshot draws its own frames, and asks for one when it ends.
-    if (this.#removed || this.#lostAt !== undefined || this.#snapshotting)
-      return false;
+    if (this.#held) return false;
     // A test's frame clock may have run ahead of the display's: animations
     // and fades must not step back once it stops.
     now = this.#shown = Math.max(this.#frameClock ?? now, this.#shown);
@@ -844,14 +978,23 @@ export class Engine {
     // The data a drawn tile shows expires then: a frame loads it again.
     this.#setAlarm(stats.wakeInMs);
     this.#drain();
-    // A frame held back while compiles run drew nothing: no `render`.
+    // A frame held back while compiles run drew nothing: no `render`, and
+    // a map that lost its GPU isn't restored until a frame draws.
+    if (stats.drew !== false && this.#restoring !== undefined) {
+      const recoveredMs = performance.now() - this.#restoring;
+      this.#restoring = undefined;
+      this.#events.push({
+        type: "restored",
+        data: { recoveredMs, backend: this.backend },
+      });
+    }
     this.#send(stats.drew === false ? {} : { stats });
     return stats.needsFrame;
   }
 
   /** Sends the page a report with the events since the last one. */
   #send(report: Omit<Report, "state" | "events">): void {
-    if (this.#removed) return;
+    if (this.#ended) return;
     const points =
       this.#annotations.length && this.#stats ? this.#project() : undefined;
     const events = this.#events;
@@ -876,8 +1019,9 @@ export class Engine {
    * an `error` event, so a driver that loses every device doesn't reset
    * the map forever. Native runtimes answer losses the same way. */
   #recover(): void {
-    if (this.#lostAt !== undefined) return;
-    const now = (this.#lostAt = performance.now());
+    if (this.#phase.is !== "running") return;
+    const now = performance.now();
+    this.#phase = { is: "lost", lostAt: now };
     this.#losses = now - this.#deviceAt < STABLE_MS ? this.#losses + 1 : 1;
     this.#events.push({ type: "lost", data: {} });
     const wait = BACKOFF_MS[this.#losses - 1];
@@ -890,15 +1034,20 @@ export class Engine {
     }
     this.#send({});
     setTimeout(() => {
-      if (this.#removed) return;
-      this.#host.recover().then(
-        () => {
-          this.#recovering = this.#lostAt;
-          this.#lostAt = undefined;
+      if (this.#ended) return;
+      // The map takes calls while its new device is made.
+      const core = this.#core;
+      core.newDevice().then(
+        (device: Parameters<Core["recovered"]>[0]) => {
+          if (this.#ended) return;
+          core.recovered(device);
+          core.resize(...this.#size);
+          this.#restoring = now;
+          this.#phase = { is: "running" };
           this.#deviceAt = performance.now();
           this.#request();
         },
-        (e) =>
+        (e: unknown) =>
           this.#gone(
             `the GPU was lost and no other could be made: ${e instanceof Error ? e.message : e}`,
           ),
@@ -908,17 +1057,19 @@ export class Engine {
 
   /** The GPU is lost for good: WebGPU picked by `auto` hands the map to
    * the page to start again on WebGL 2; anything else stops it. */
-  #gone(why: string, at = this.#lostAt ?? 0): void {
-    if (this.#removed) return;
-    if (this.backend === "webgpu" && !this.#host.forced)
-      this.#send({ fallback: { why, lostAt: at } });
+  #gone(
+    why: string,
+    at = this.#phase.is === "lost" ? this.#phase.lostAt : 0,
+  ): void {
+    if (this.#ended) return;
+    if (this.#handsOver) this.#send({ fallback: { why, lostAt: at } });
     else this.end(`the map stopped: ${why}`);
   }
 
   /** The wasm map trapped: it draws no more, and says why once. Its
    * calls throw `e` from now on. */
   #trapped(e: Error): void {
-    if (this.#removed) return;
+    if (this.#ended) return;
     this.#halt(e.message);
   }
 
@@ -932,8 +1083,7 @@ export class Engine {
     } catch {
       // It trapped.
     }
-    this.#removed = true;
-    this.#stopped = message;
+    this.#phase = { is: "stopped", message };
     this.#loop.stop();
     this.#setAlarm(undefined);
     const events = this.#events;
@@ -945,7 +1095,7 @@ export class Engine {
   /** A failure, as an `error` event. */
   #fail(e: unknown): void {
     // Once the map is gone, what fails is a call into it.
-    if (this.#removed) return;
+    if (this.#ended) return;
     const message = String(e instanceof Error ? e.message : e);
     this.#events.push({ type: "error", data: { message } });
     this.#send({});
@@ -960,7 +1110,20 @@ export class Engine {
           void this.#want(["api"]).catch(() => {});
           out.push({ type: event.type, data: {} });
           break;
-        case "styleload":
+        case "styleload": {
+          // A map started again on WebGL 2 takes the images added to the
+          // one it replaced once its style is in.
+          const names = this.#imagesToAdd ?? [];
+          this.#imagesToAdd = undefined;
+          for (const name of names) {
+            const i = this.#images.get(name);
+            if (!i) continue;
+            const args = [name, i.width, i.height, i.pixels, i.options];
+            this.call("addImage", args).catch(() => {});
+          }
+          out.push({ type: event.type, data: {} });
+          break;
+        }
         case "load":
           out.push({ type: event.type, data: {} });
           break;
@@ -1004,16 +1167,6 @@ export class Engine {
           }
           this.#gaps = event.gaps;
           out.push({ type: "gaps", data: { gaps: event.gaps } });
-          break;
-        }
-        case "restored": {
-          if (this.#recovering === undefined) break;
-          const recoveredMs = performance.now() - this.#recovering;
-          this.#recovering = undefined;
-          out.push({
-            type: "restored",
-            data: { recoveredMs, backend: this.backend },
-          });
           break;
         }
         case "camera": {

@@ -1,5 +1,6 @@
 // The wasm map, with its job workers and placement worker (workers.ts),
-// and its recovery from a lost GPU, on the page's thread.
+// on the page's thread: what keeps the workers it talks to alive, replaced
+// when one dies, and gives them the feature modules it loads.
 
 import type { OrbisMap as Core } from "../pkg/core.js";
 import {
@@ -52,7 +53,7 @@ export interface HostCallbacks {
   setup(core: Core): void;
 }
 
-/** The wasm map and what it runs on. */
+/** The wasm map and the workers it runs on. */
 export interface Host {
   readonly core: Core;
   /** The GPU API it draws with: its build's. */
@@ -62,9 +63,6 @@ export interface Host {
   /** Why it draws with WebGL 2 where WebGPU was expected to work: WebGPU
    * failed or didn't answer for an adapter, or the map fell back. */
   readonly unexpected: string | undefined;
-  resize(width: number, height: number, ratio: number): void;
-  /** Loses the GPU on purpose, to exercise recovery. */
-  loseDevice(): void;
   /** Traps the placement worker's wasm, as a bug would, to exercise its
    * replacement. */
   trapPlacementWorker(): void;
@@ -72,8 +70,6 @@ export interface Host {
   trapJobWorker(index: number): void;
   /** How many job workers the map has. */
   readonly jobWorkers: number;
-  /** Draws on a new GPU after a loss, on the same canvas. */
-  recover(): Promise<void>;
   /** Loads feature modules into the map and its workers: resolves once
    * every one of them has them. */
   loadModules(names: readonly ModuleName[]): Promise<void>;
@@ -223,27 +219,16 @@ export async function startHost(
       w.terminate();
   };
   callbacks.setup(core);
-  let size: [number, number, number] | undefined;
   const loaded = new Set<ModuleName>();
   return {
     core,
     backend: build.backend,
     forced: !!build.forced,
     unexpected: build.unexpected && build.noWebgpu,
-    resize: (width, height, ratio) => {
-      size = [width, height, ratio];
-      core.resize(width, height, ratio);
-    },
-    loseDevice: () => core.loseDevice(),
     trapPlacementWorker: () => placement.port.postMessage({ trap: true }),
     trapJobWorker: (index) =>
       at(ports, index % ports.length).postMessage({ trap: true }),
     jobWorkers: ports.length,
-    async recover() {
-      // The map takes calls while its new device is made.
-      core.recovered(await core.newDevice());
-      if (size) core.resize(...size);
-    },
     async loadModules(names) {
       await Promise.all(
         names.map(async (name) => {
