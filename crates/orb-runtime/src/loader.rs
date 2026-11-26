@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use orb_crs::TileIndex;
-use orb_host::{Abort, Fetch, FetchDone, FetchError, Fetched, ResourceKind};
+use orb_host::{Abort, Fetch, FetchDone, FetchError, Fetched, ResourceKind, TileFormat};
 use orb_source::endpoint::HostTile;
 use orb_source::pmtiles::{self, Lookup, Range, Reader, TileType};
 use orb_style::Encoding;
@@ -64,6 +64,14 @@ pub(crate) struct TileLoader {
 impl std::fmt::Debug for TileLoader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TileLoader").finish_non_exhaustive()
+    }
+}
+
+/// The format of a vector tile in `encoding`.
+pub(crate) fn tile_format(encoding: Encoding) -> TileFormat {
+    match encoding {
+        Encoding::Mvt => TileFormat::Mvt,
+        Encoding::Mlt => TileFormat::Mlt,
     }
 }
 
@@ -346,7 +354,7 @@ impl TileLoader {
                 };
                 // An archive holds tiles alone: an image source is one image.
                 self.share(
-                    ResourceKind::Tile,
+                    ResourceKind::Tile(TileFormat::Archive),
                     &url,
                     Read::Range(range),
                     &abort,
@@ -466,7 +474,7 @@ fn read_until<T: 'static>(
     };
     let next = Arc::clone(loader);
     loader.share(
-        ResourceKind::Tile,
+        ResourceKind::Tile(TileFormat::Archive),
         &url.clone(),
         Read::Range(range),
         &abort.clone(),
@@ -586,7 +594,7 @@ mod tests {
         for (i, &tile) in tiles.iter().enumerate() {
             let got = Arc::clone(&got);
             loader.load(
-                ResourceKind::Tile,
+                ResourceKind::Tile(TileFormat::Mvt),
                 TileLocation::Pmtiles("a".into()),
                 tile,
                 Encoding::Mvt,
@@ -671,7 +679,7 @@ mod tests {
         for (i, abort) in aborts.iter().enumerate() {
             let got = Arc::clone(&got);
             loader.load(
-                ResourceKind::Tile,
+                ResourceKind::Tile(TileFormat::Mvt),
                 TileLocation::Pmtiles("a".into()),
                 TileIndex::new(9, 0, 0),
                 Encoding::Mvt,
@@ -736,7 +744,7 @@ mod tests {
         for (z, x, y, found) in [(2, 1, 2, true), (2, 3, 0, true), (2, 0, 0, false)] {
             let (tx, rx) = std::sync::mpsc::channel();
             loader.load(
-                ResourceKind::Tile,
+                ResourceKind::Tile(TileFormat::Mvt),
                 TileLocation::Mbtiles(url.clone()),
                 TileIndex::new(z, x, y),
                 Encoding::Mvt,

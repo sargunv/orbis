@@ -33,11 +33,19 @@ export function takePreload(url: string): Promise<Response> | undefined {
   return preloaded.response;
 }
 
-function preload(url: string): void {
+/** What a sprite sheet's request accepts unless the transform says:
+ * orb-host's `ResourceKind::accept`, which the map's own request sends. */
+const ACCEPT_IMAGE = "image/webp, image/png, image/jpeg, */*;q=0.1";
+
+/** Fetches `url` ahead, accepting `accept` unless the transform's headers
+ * name an `Accept`, as the map's request would. */
+function preload(url: string, accept?: string): void {
   if (preloads.has(url) || !/^https?:/.test(url)) return;
   const response = transformed(url).then((request) => {
     if (!request) throw new Error(`${url}: refused`);
-    return fetch(request.url, { headers: request.headers });
+    const headers = new Headers(request.headers);
+    if (accept && !headers.has("accept")) headers.set("accept", accept);
+    return fetch(request.url, { headers });
   });
   // Unclaimed, it fails quietly: the map fetches again.
   response.catch(() => {});
@@ -150,8 +158,10 @@ function preloadParts(
     // orb-runtime's `sprite::resource_url`.
     const split = url.search(/[?#]/) < 0 ? url.length : url.search(/[?#]/);
     const scale = pixelRatio > 1 ? "@2x" : "";
-    for (const extension of [".json", ".png"])
-      preload(`${url.slice(0, split)}${scale}${extension}${url.slice(split)}`);
+    const sheet = (extension: string) =>
+      `${url.slice(0, split)}${scale}${extension}${url.slice(split)}`;
+    preload(sheet(".json"));
+    preload(sheet(".png"), ACCEPT_IMAGE);
   }
   // The template's braces stay as the map has them.
   const template =

@@ -28,7 +28,9 @@ use crate::modules::{Load, Modules};
 
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_expr::json::{self, Json, JsonValue};
-use orb_host::{Abort, Fetch, FetchDone, FetchError, Fetched, ResourceKind, Storage, StorageDone};
+use orb_host::{
+    Abort, Fetch, FetchDone, FetchError, Fetched, ResourceKind, Storage, StorageDone, TileFormat,
+};
 use orb_source::endpoint::TileEndpoint;
 use orb_source::pmtiles::{self, Contents, Entry, Lookup, Reader};
 use orb_style::{GeoJsonData, Scheme, SourceKind};
@@ -460,11 +462,13 @@ enum Task {
         range: Option<(u64, u64)>,
         then: Then,
     },
-    /// A templated source's tile, into archive `archive`.
+    /// A templated source's tile, a `kind` of resource, into archive
+    /// `archive`.
     Tile {
         archive: usize,
         tile: TileIndex,
         url: String,
+        kind: ResourceKind,
     },
     /// A `pmtiles://` source's tile, read through its directories.
     ArchiveTile { source: usize, tile: TileIndex },
@@ -619,10 +623,10 @@ impl Job {
                     None => self.fetch.get(kind, &url, &self.abort, done),
                 }
             }
-            Task::Tile { url, .. } => {
+            &Task::Tile { ref url, kind, .. } => {
                 let url = url.clone();
                 self.fetch.get(
-                    ResourceKind::Tile,
+                    kind,
                     &url,
                     &self.abort,
                     Box::new(move |result| job.arrived(task, tries, result)),
@@ -675,7 +679,7 @@ impl Job {
                         let resource = Task::Resource {
                             url,
                             range: Some((range.offset, range.length)),
-                            then: Then::Keep(ResourceKind::Tile),
+                            then: Then::Keep(ResourceKind::Tile(TileFormat::Archive)),
                         };
                         // Counted once: as this task.
                         self.start(resource, tries);
@@ -996,9 +1000,13 @@ impl Job {
             let rest = t.replace("{z}", "").replace("{x}", "").replace("{y}", "");
             !rest.contains('{')
         });
+        let kind = ResourceKind::Tile(match def.kind {
+            SourceKind::Vector(_) => crate::loader::tile_format(endpoint.encoding),
+            _ => TileFormat::Image,
+        });
         if !templated {
             for tile in tiles {
-                self.resource(endpoint.url(tile), Then::Keep(ResourceKind::Tile));
+                self.resource(endpoint.url(tile), Then::Keep(kind));
             }
             return;
         }
@@ -1025,7 +1033,12 @@ impl Job {
         };
         for tile in tiles {
             let url = endpoint.url(tile);
-            self.enqueue(Task::Tile { archive, tile, url });
+            self.enqueue(Task::Tile {
+                archive,
+                tile,
+                url,
+                kind,
+            });
         }
     }
 

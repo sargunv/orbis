@@ -642,7 +642,7 @@ impl JobHost {
         let key = load_key(&request);
         if let Some(kind) = worker.image_kind(request.source) {
             let (source, tile, warp) = (request.source, request.tile, request.warp);
-            let resource = worker.resource_kind(source);
+            let resource = worker.resource_kind(&request);
             let fetch: Start = Box::new(move |turn| {
                 let Some(turn) = turn else {
                     fetched();
@@ -692,6 +692,7 @@ impl JobHost {
             return self.turns.wait(rank, key, fetch);
         }
         let newest = Arc::clone(&self.newest);
+        let resource = worker.resource_kind(&request);
         let fetch: Start = Box::new(move |turn| {
             let Some(turn) = turn else {
                 fetched();
@@ -700,7 +701,7 @@ impl JobHost {
             let data_tile = request.data_tile();
             let (abort, rank) = (turn.abort().clone(), turn.rank());
             loader.load(
-                ResourceKind::Tile,
+                resource,
                 request.location.clone(),
                 data_tile,
                 request.encoding,
@@ -885,7 +886,7 @@ impl JobHost {
         }
         let tile = &request.tile;
         self.loader.load(
-            worker.resource_kind(tile.source),
+            worker.resource_kind(tile),
             tile.location.clone(),
             tile.data_tile(),
             tile.encoding,
@@ -916,7 +917,7 @@ impl JobHost {
         }
         let tile = &request.tile;
         self.loader.load(
-            worker.resource_kind(tile.source),
+            worker.resource_kind(tile),
             tile.location.clone(),
             tile.data_tile(),
             tile.encoding,

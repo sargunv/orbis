@@ -258,26 +258,32 @@ pub(crate) async fn decode_bitmap(
 }
 
 impl Fetch for WebFetch {
-    fn get(&self, _: orb_host::ResourceKind, url: &str, abort: &Abort, done: FetchDone) {
-        start(url, None, abort, done);
+    fn get(&self, kind: orb_host::ResourceKind, url: &str, abort: &Abort, done: FetchDone) {
+        start(url, (None, kind.accept()), abort, done);
     }
 
     fn get_range(
         &self,
-        _: orb_host::ResourceKind,
+        kind: orb_host::ResourceKind,
         url: &str,
         offset: u64,
         length: u64,
         abort: &Abort,
         done: FetchDone,
     ) {
-        start(url, Some((offset, length)), abort, done);
+        start(url, (Some((offset, length)), kind.accept()), abort, done);
     }
 }
 
-/// Fetches `url` (its `range`) until it ends or `abort` fires, which
-/// aborts the browser's request through an `AbortController`.
-fn start(url: &str, range: Option<(u64, u64)>, abort: &Abort, done: FetchDone) {
+/// Fetches `url` (its `range`, accepting `accept`) until it ends or
+/// `abort` fires, which aborts the browser's request through an
+/// `AbortController`.
+fn start(
+    url: &str,
+    (range, accept): (Option<(u64, u64)>, Option<&'static str>),
+    abort: &Abort,
+    done: FetchDone,
+) {
     let done = abort.answer(done);
     if abort.is_aborted() {
         return;
@@ -287,7 +293,7 @@ fn start(url: &str, range: Option<(u64, u64)>, abort: &Abort, done: FetchDone) {
         use std::task::Poll;
         let controller = web_sys::AbortController::new().ok();
         let signal = controller.as_ref().map(web_sys::AbortController::signal);
-        let mut fetched = std::pin::pin!(fetch_body(&url, range, signal.as_ref()));
+        let mut fetched = std::pin::pin!(fetch_body(&url, (range, accept), signal.as_ref()));
         let mut aborted = std::pin::pin!(abort.aborted());
         let first = std::future::poll_fn(|cx| match fetched.as_mut().poll(cx) {
             Poll::Ready(result) => Poll::Ready(Some(result)),
@@ -341,7 +347,7 @@ pub(crate) fn set_request_hook(hook: Option<js_sys::Function>) {
 
 async fn fetch_body(
     url: &str,
-    range: Option<(u64, u64)>,
+    (range, accept): (Option<(u64, u64)>, Option<&str>),
     signal: Option<&web_sys::AbortSignal>,
 ) -> Result<Fetched, FetchError> {
     let early = match range {
@@ -350,16 +356,17 @@ async fn fetch_body(
     };
     let response = match early {
         Some(response) => response,
-        None => request(url, range, signal).await?,
+        None => request(url, (range, accept), signal).await?,
     };
     read(response, range).await
 }
 
 /// Fetches `url` (its `range`), through the request hook, until `signal`
-/// aborts it.
+/// aborts it, accepting `accept` unless the hook's headers name an
+/// `Accept` (CORS-safelisted, so it adds no preflight).
 async fn request(
     url: &str,
-    range: Option<(u64, u64)>,
+    (range, accept): (Option<(u64, u64)>, Option<&str>),
     signal: Option<&web_sys::AbortSignal>,
 ) -> Result<web_sys::Response, FetchError> {
     let network = |e: JsValue| FetchError::Network(format!("{e:?}"));
@@ -394,6 +401,11 @@ async fn request(
                 }
             }
         }
+    }
+    if let Some(accept) = accept
+        && !headers.has("accept").map_err(network)?
+    {
+        headers.set("Accept", accept).map_err(network)?;
     }
     if let Some((offset, length)) = range {
         let end = orb_host::range_end(offset, length)?;

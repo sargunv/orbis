@@ -258,7 +258,7 @@ fn run(
                 let url = format!("{MAPTERHORN}/{}/{}/{}.webp", tile.z, tile.col, tile.row);
                 let loads = loads.clone();
                 fetch.get(
-                    orb_api::ResourceKind::Tile,
+                    orb_api::ResourceKind::Tile(orb_api::TileFormat::Image),
                     &url,
                     &orb_api::Abort::NEVER,
                     Box::new(move |fetched| {

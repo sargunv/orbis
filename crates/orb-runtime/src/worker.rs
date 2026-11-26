@@ -631,14 +631,24 @@ impl TileWorker {
         )
     }
 
-    /// What a fetch of `source`'s data is (a source key): an image
-    /// source's image, a GeoJSON document, or a tile.
-    pub(crate) fn resource_kind(&self, source: u32) -> orb_host::ResourceKind {
-        let at = self.plan.source_keys.iter().position(|&k| k == source);
+    /// What a fetch of `request`'s data is: an image source's image, a
+    /// GeoJSON document, or a tile in its source's format.
+    pub(crate) fn resource_kind(&self, request: &TileRequest) -> orb_host::ResourceKind {
+        use orb_host::{ResourceKind, TileFormat};
+        let at = self
+            .plan
+            .source_keys
+            .iter()
+            .position(|&k| k == request.source);
         match at.map(|at| &self.plan.style.sources[at].kind) {
-            Some(orb_style::SourceKind::Image(_)) => orb_host::ResourceKind::Image,
-            Some(orb_style::SourceKind::GeoJson(_)) => orb_host::ResourceKind::Source,
-            _ => orb_host::ResourceKind::Tile,
+            Some(SourceKind::Image(_)) => ResourceKind::Image,
+            Some(SourceKind::GeoJson(_)) => ResourceKind::Source,
+            Some(SourceKind::Raster(_) | SourceKind::RasterDem(_)) => {
+                ResourceKind::Tile(TileFormat::Image)
+            }
+            Some(SourceKind::Vector(_)) | None => {
+                ResourceKind::Tile(crate::loader::tile_format(request.encoding))
+            }
         }
     }
 

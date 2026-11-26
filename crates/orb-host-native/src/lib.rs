@@ -400,12 +400,13 @@ fn read_from(
     Ok(bytes)
 }
 
-/// What the network answers `request`, `range` of it when given: a
-/// `file://` URL's file (what a [`NetworkHook`] may hand back), or an HTTP
-/// GET, conditional on the stale copy `cached` when there is one. Other
-/// schemes are refused.
+/// What the network answers `request` for a `kind` of resource, `range`
+/// of it when given: a `file://` URL's file (what a [`NetworkHook`] may
+/// hand back), or an HTTP GET, conditional on the stale copy `cached` when
+/// there is one. Other schemes are refused.
 fn network(
     transport: &Transport,
+    kind: ResourceKind,
     request: &Request,
     range: Option<(u64, u64)>,
     cached: Option<&cache::Cached>,
@@ -423,7 +424,7 @@ fn network(
         return Err(FetchError::UnsupportedUrl(request.url.clone()));
     }
     let validators = cached.map(|c| (c.etag.as_deref(), c.last_modified.as_deref()));
-    http(transport, request, range, validators, abort)
+    http(transport, kind, request, range, validators, abort)
 }
 
 /// What sends a GET: ureq, or on Android the platform's
@@ -488,7 +489,8 @@ const USER_AGENT: &str = concat!("orbis/", env!("CARGO_PKG_VERSION"));
 const MAX_REDIRECTS: usize = 10;
 
 /// One HTTP GET, conditional on `validators` (ETag, Last-Modified). An
-/// abort stops it between the body's reads.
+/// abort stops it between the body's reads. It accepts what `kind` says
+/// ([`ResourceKind::accept`]) unless the host's headers name an `Accept`.
 ///
 /// A request carrying the host's headers follows its redirects here and
 /// drops those headers once a redirect leaves the URL's origin: ureq strips
@@ -497,6 +499,7 @@ const MAX_REDIRECTS: usize = 10;
 /// every request through a transport that can't follow them all.
 fn http(
     transport: &Transport,
+    kind: ResourceKind,
     req: &Request,
     range: Option<(u64, u64)>,
     validators: Option<(Option<&str>, Option<&str>)>,
@@ -516,6 +519,12 @@ fn http(
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
             .collect();
+        if !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("accept"))
+        {
+            headers.extend(kind.accept().map(|accept| ("Accept", accept)));
+        }
         if let Some(range) = &range_header {
             headers.extend([("Range", range.as_str()), ("Accept-Encoding", "identity")]);
         }
@@ -750,7 +759,7 @@ impl NativeFetch {
                 Err(stale) => stale,
             };
             let Some(hook) = hook else {
-                let response = network(&transport, &request, range, cached.as_ref(), &abort);
+                let response = network(&transport, kind, &request, range, cached.as_ref(), &abort);
                 return done(Self::finish(cache.as_deref(), key, cached, response));
             };
             let prior = cached.as_ref().map(|c| Prior {
@@ -799,8 +808,14 @@ impl NativeFetch {
                                 if abort.is_aborted() {
                                     return;
                                 }
-                                let response =
-                                    network(&transport, &request, range, cached.as_ref(), &abort);
+                                let response = network(
+                                    &transport,
+                                    kind,
+                                    &request,
+                                    range,
+                                    cached.as_ref(),
+                                    &abort,
+                                );
                                 done(Self::finish(cache.as_deref(), key, cached, response));
                             }));
                         }
@@ -952,7 +967,10 @@ impl Drop for Scratch {
 #[cfg(all(test, ureq_transport))]
 mod tests {
     use super::*;
+    use orb_host::TileFormat;
     use std::io::{Read, Write};
+
+    const MVT: ResourceKind = ResourceKind::Tile(TileFormat::Mvt);
     use std::net::TcpListener;
     use std::sync::mpsc::channel;
 
@@ -1217,7 +1235,7 @@ mod tests {
         let (fetch, _) = cached(&dir);
         let close = "Connection: close\r\n";
         let get = |url: &str, stale| match stale {
-            true => wait(|done| fetch.get_or_stale(ResourceKind::Tile, url, &Abort::NEVER, done)),
+            true => wait(|done| fetch.get_or_stale(MVT, url, &Abort::NEVER, done)),
             false => get(&fetch, url),
         };
         let (url, server) = serve(vec![
@@ -1336,6 +1354,51 @@ mod tests {
         assert!(origin[1].starts_with("get /moved "), "{}", origin[1]);
         assert!(origin[1].contains("x-api-key: secret"), "{}", origin[1]);
         assert!(!elsewhere[0].contains("x-api-key"), "{}", elsewhere[0]);
+    }
+
+    #[test]
+    fn requests_accept_their_kind_unless_the_host_says_otherwise() {
+        let reply = "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 4\r\n\r\ntile";
+        let kinds = [
+            MVT,
+            ResourceKind::Tile(TileFormat::Mlt),
+            ResourceKind::Tile(TileFormat::Image),
+            ResourceKind::SpriteImage,
+            ResourceKind::Style,
+        ];
+        let (url, server) = serve(vec![reply.into(); kinds.len() + 1]);
+        let fetch = NativeFetch::new();
+        for kind in kinds {
+            wait(|done| fetch.get(kind, &url, &Abort::NEVER, done)).unwrap();
+        }
+        fetch.set_transform(Some(Arc::new(|url: &str| {
+            Some(Request {
+                url: url.into(),
+                headers: vec![("accept".into(), "application/x-protobuf".into())],
+            })
+        })));
+        wait(|done| fetch.get(MVT, &url, &Abort::NEVER, done)).unwrap();
+        let accepts: Vec<Vec<String>> = (server.join().unwrap().iter())
+            .map(|request| {
+                let lines = request.lines().filter_map(|l| l.strip_prefix("accept: "));
+                lines.map(str::to_string).collect()
+            })
+            .collect();
+        let accepts: Vec<Vec<&str>> = accepts
+            .iter()
+            .map(|a| a.iter().map(String::as_str).collect())
+            .collect();
+        assert_eq!(
+            accepts,
+            [
+                vec!["application/vnd.mapbox-vector-tile, application/x-protobuf;q=0.9, */*;q=0.1"],
+                vec!["application/vnd.maplibre-tile, */*;q=0.1"],
+                vec!["image/webp, image/png, image/jpeg, */*;q=0.1"],
+                vec!["image/webp, image/png, image/jpeg, */*;q=0.1"],
+                vec!["*/*"],
+                vec!["application/x-protobuf"],
+            ]
+        );
     }
 
     #[test]
@@ -1482,12 +1545,7 @@ mod tests {
         let fetch = NativeFetch::new();
         let abort = Abort::new();
         let (tx, rx) = channel();
-        fetch.get(
-            ResourceKind::Tile,
-            &url,
-            &abort,
-            Box::new(move |r| tx.send(r).unwrap()),
-        );
+        fetch.get(MVT, &url, &abort, Box::new(move |r| tx.send(r).unwrap()));
         started_rx.recv().unwrap();
         abort.abort();
         assert_eq!(rx.recv().unwrap(), Err(FetchError::Aborted));
@@ -1498,7 +1556,7 @@ mod tests {
         let abort = Abort::new();
         abort.abort();
         fetch.get(
-            ResourceKind::Tile,
+            MVT,
             "http://127.0.0.1:9/never",
             &abort,
             Box::new(move |r| tx.send(r).unwrap()),

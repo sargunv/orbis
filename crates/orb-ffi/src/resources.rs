@@ -48,7 +48,7 @@ fn kind_of(kind: ResourceKind) -> mln_resource_kind {
         ResourceKind::Unknown => MLN_RESOURCE_KIND_UNKNOWN,
         ResourceKind::Style => MLN_RESOURCE_KIND_STYLE,
         ResourceKind::Source => MLN_RESOURCE_KIND_SOURCE,
-        ResourceKind::Tile => MLN_RESOURCE_KIND_TILE,
+        ResourceKind::Tile(_) => MLN_RESOURCE_KIND_TILE,
         ResourceKind::Glyphs => MLN_RESOURCE_KIND_GLYPHS,
         ResourceKind::SpriteImage => MLN_RESOURCE_KIND_SPRITE_IMAGE,
         ResourceKind::SpriteJson => MLN_RESOURCE_KIND_SPRITE_JSON,

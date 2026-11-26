@@ -95,12 +95,52 @@ pub enum ResourceKind {
     /// A source's TileJSON or GeoJSON data, or a tile archive's header and
     /// directories.
     Source,
-    Tile,
+    /// A tile, in the format given.
+    Tile(TileFormat),
     Glyphs,
     SpriteImage,
     SpriteJson,
-    /// An image or video source's image, or a font face file.
+    /// An image source's image.
     Image,
+}
+
+impl ResourceKind {
+    /// The `Accept` header a request for this kind sends when its host's
+    /// headers have none: its formats first, then anything else at
+    /// q=0.1, so a server that negotiates sends what Orbis reads best and
+    /// one that offers none of them still answers. Every value is
+    /// CORS-safelisted, so a browser asks no preflight for it.
+    pub fn accept(self) -> Option<&'static str> {
+        match self {
+            Self::Tile(TileFormat::Mvt) => {
+                Some("application/vnd.mapbox-vector-tile, application/x-protobuf;q=0.9, */*;q=0.1")
+            }
+            Self::Tile(TileFormat::Mlt) => Some("application/vnd.maplibre-tile, */*;q=0.1"),
+            Self::Tile(TileFormat::Image) | Self::SpriteImage | Self::Image => {
+                Some("image/webp, image/png, image/jpeg, */*;q=0.1")
+            }
+            Self::Tile(TileFormat::Archive)
+            | Self::Unknown
+            | Self::Style
+            | Self::Source
+            | Self::Glyphs
+            | Self::SpriteJson => None,
+        }
+    }
+}
+
+/// What a tile fetch brings back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TileFormat {
+    /// A Mapbox Vector Tile.
+    Mvt,
+    /// A MapLibre Tile.
+    Mlt,
+    /// A raster or raster-dem tile: PNG, WebP or JPEG.
+    Image,
+    /// Bytes of a tile archive (PMTiles, MBTiles) that hold tiles, read by
+    /// range: no format of their own to ask for.
+    Archive,
 }
 
 /// Loads resources by URL. Each load ends when `abort` fires, if it
@@ -515,6 +555,32 @@ impl FontFiles for FontFileFaces {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accept_headers_need_no_cors_preflight() {
+        // Fetch's CORS-safelisted request-header rules for `Accept`.
+        let unsafe_byte =
+            |b: u8| (b < 0x20 && b != b'\t') || b == 0x7f || br#""():<>?@[\]{}"#.contains(&b);
+        let formats = [
+            TileFormat::Mvt,
+            TileFormat::Mlt,
+            TileFormat::Image,
+            TileFormat::Archive,
+        ];
+        let kinds = formats.map(ResourceKind::Tile).into_iter().chain([
+            ResourceKind::Unknown,
+            ResourceKind::Style,
+            ResourceKind::Source,
+            ResourceKind::Glyphs,
+            ResourceKind::SpriteImage,
+            ResourceKind::SpriteJson,
+            ResourceKind::Image,
+        ]);
+        for accept in kinds.filter_map(ResourceKind::accept) {
+            assert!(accept.len() <= 128, "{accept}");
+            assert!(!accept.bytes().any(unsafe_byte), "{accept}");
+        }
+    }
 
     #[test]
     fn statuses_ask_to_wait_as_rfc_9110_and_native_do() {

@@ -75,7 +75,7 @@ fn native_database(path: &std::path::Path) {
 fn fetched(regions: &Regions, url: &str) -> Vec<u8> {
     let (tx, rx) = std::sync::mpsc::channel();
     regions.fetch.get(
-        ResourceKind::Tile,
+        ResourceKind::Tile(orb_host::TileFormat::Mvt),
         url,
         &Abort::new(),
         Box::new(move |r| tx.send(r).unwrap()),
