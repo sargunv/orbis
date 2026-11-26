@@ -1,6 +1,6 @@
 //! Typed property values.
 
-use orb_expr::{Bound, Color, Kind, PropertyExpression, Value};
+use orb_expr::{Bound, Color, Inputs, Kind, PropertyExpression, Value};
 
 /// A value type a property can hold.
 pub trait PropertyValue: Clone + Sized {
@@ -643,7 +643,7 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
     /// a `StateLookup`.
     pub fn is_state_lookup(&self) -> bool {
         self.as_expression()
-            .is_some_and(|e| e.reads_feature_state() && !e.reads_feature_properties())
+            .is_some_and(|e| e.reads().contains(Inputs::STATE) && !e.reads().contains(Inputs::DATA))
     }
 
     /// An owned copy, to hold apart from its layer.

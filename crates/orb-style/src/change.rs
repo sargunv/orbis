@@ -2,7 +2,7 @@
 //! layer and source identity and by [`PropertyId`], each in a class of
 //! what it costs.
 
-use orb_expr::{Diagnostic, PropertyExpression, Value};
+use orb_expr::{Diagnostic, Inputs, PropertyExpression, Value};
 
 use crate::{PropertyId, Slot};
 
@@ -52,7 +52,7 @@ pub enum Binding {
 impl Binding {
     /// How a parsed paint value binds.
     pub fn of(value: &PropertyExpression) -> Self {
-        if value.reads_feature_state() && !value.reads_feature_properties() {
+        if value.reads().contains(Inputs::STATE) && !value.reads().contains(Inputs::DATA) {
             return Self::State;
         }
         match value.kind() {

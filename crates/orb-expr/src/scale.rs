@@ -441,18 +441,18 @@ impl Splitter {
 #[cfg(test)]
 mod tests {
     use super::Scale;
-    use crate::{EvaluationContext, Kind, PropertyExpression, PropertySpec, PropertyType, Value};
+    use crate::{
+        EvaluationContext, Inputs, Kind, PropertyExpression, PropertySpec, PropertyType, Value,
+    };
 
     fn width(text: &str) -> Result<PropertyExpression, String> {
         let spec = PropertySpec {
             ty: PropertyType::Number,
             default: Some("1".into()),
-            zoom: true,
-            feature: true,
-            state: true,
-            camera: true,
-            camera_data: true,
-            elevation: false,
+            inputs: Inputs::ZOOM
+                .union(Inputs::DATA)
+                .union(Inputs::STATE)
+                .union(Inputs::CAMERA_DATA),
             interpolated: true,
             tokens: false,
         };
@@ -506,7 +506,7 @@ mod tests {
         let text = r#"["/", ["get", "w"], ["bearing"]]"#;
         let value = width(text).unwrap();
         assert_eq!(value.kind(), Kind::Source);
-        assert!(value.reads_camera());
+        assert!(value.reads().contains(Inputs::CAMERA_DATA));
         let (part, scale) = split(text, r#"{"w": 12}"#, &camera(14.0, 0.0, 4.0));
         assert_eq!((part, scale.factor), (12.0, 0.25));
         assert_eq!(scale.apply(part), 3.0);

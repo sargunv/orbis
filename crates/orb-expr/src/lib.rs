@@ -25,6 +25,7 @@ mod eval;
 mod eval_extra;
 mod filter;
 mod geometry;
+mod inputs;
 mod ir;
 mod js;
 pub mod json;
@@ -45,6 +46,7 @@ pub use context::{CameraInputs, CanonicalTile, EvaluationContext, FeatureGeometr
 pub use elevation::{ElevationCurve, ElevationOp};
 pub use eval::{EvalError, interpolation_factor};
 pub use filter::{CameraFilter, Filter, FilterGroups};
+pub use inputs::Inputs;
 pub use ir::Interpolation;
 pub use locale::{Collator, HostLocale, NumberFormat, set_host_locale};
 pub use property::{Kind, PropertyExpression, PropertySpec, PropertyType, ZoomCurve};
@@ -92,19 +94,6 @@ impl fmt::Display for Diagnostic {
             write!(f, "{}: {}", self.path, self.message)
         }
     }
-}
-
-/// What an expression reads beyond its literals.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Reads {
-    pub zoom: bool,
-    /// The feature's own data: its properties, id or geometry type.
-    pub properties: bool,
-    pub feature_state: bool,
-    /// `heatmap-density`, `line-progress` or `elevation`.
-    pub ramp: bool,
-    /// The feature's geometry (`within`, `distance`).
-    pub geometry: bool,
 }
 
 /// A GeoJSON feature as an expression reads it.
@@ -192,17 +181,17 @@ impl Expression {
     }
 
     /// The inputs the expression reads, which evaluation needs given.
-    pub fn reads(&self) -> Reads {
+    pub fn reads(&self) -> Inputs {
+        Inputs::of(self.deps())
+    }
+
+    /// Whether the expression reads a ramp's input: `heatmap-density`,
+    /// `line-progress` or `elevation`.
+    pub fn reads_ramp(&self) -> bool {
         let deps = self.deps();
-        Reads {
-            zoom: deps.contains(Deps::ZOOM),
-            properties: deps.contains(Deps::PROPERTIES),
-            feature_state: deps.contains(Deps::FEATURE_STATE),
-            ramp: deps.contains(Deps::HEATMAP)
-                || deps.contains(Deps::LINE_PROGRESS)
-                || deps.contains(Deps::ELEVATION),
-            geometry: deps.contains(Deps::GEOMETRY),
-        }
+        deps.contains(Deps::HEATMAP)
+            || deps.contains(Deps::LINE_PROGRESS)
+            || deps.contains(Deps::ELEVATION)
     }
 
     /// Evaluates against `feature`, a GeoJSON feature (its properties, id
@@ -228,7 +217,7 @@ impl Expression {
 
     /// Whether the expression reads the feature's geometry (`within`,
     /// `distance`), which evaluation then needs in its context.
-    pub(crate) fn reads_geometry(&self) -> bool {
+    pub fn reads_geometry(&self) -> bool {
         self.deps().contains(Deps::GEOMETRY)
     }
 

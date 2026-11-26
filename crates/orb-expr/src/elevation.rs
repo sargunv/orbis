@@ -97,11 +97,6 @@ impl PropertyExpression {
         Self::from_parts(Expression { ir }, kind, curve)
     }
 
-    /// Whether the value reads `["elevation"]`.
-    pub fn reads_elevation(&self) -> bool {
-        self.expression().deps().contains(Deps::ELEVATION)
-    }
-
     /// The value as a curve over the elevation, or why it isn't one: it
     /// must read `["elevation"]` once, as the input of a `step` or
     /// `interpolate`, through `+`, `-`, `*`, `/`, `%`, `min` and `max` with
@@ -203,18 +198,16 @@ impl PropertyExpression {
 #[cfg(test)]
 mod tests {
     use super::ElevationOp as E;
-    use crate::{Kind, PropertyExpression, PropertySpec, PropertyType, Value};
+    use crate::{Inputs, Kind, PropertyExpression, PropertySpec, PropertyType, Value};
 
     fn color(text: &str) -> PropertyExpression {
         let spec = PropertySpec {
             ty: PropertyType::Color,
             default: None,
-            zoom: true,
-            feature: true,
-            state: true,
-            camera: false,
-            camera_data: false,
-            elevation: true,
+            inputs: Inputs::ZOOM
+                .union(Inputs::DATA)
+                .union(Inputs::STATE)
+                .union(Inputs::ELEVATION),
             interpolated: true,
             tokens: false,
         };
@@ -233,7 +226,7 @@ mod tests {
         // Not folded to its colour at the ground.
         let e = color(r#"["interpolate", ["linear"], ["elevation"], 0, "red", 10, "blue"]"#);
         assert_eq!(e.kind(), Kind::Source);
-        assert!(e.reads_elevation());
+        assert!(e.reads().contains(Inputs::ELEVATION));
         let e = color(
             r#"["interpolate", ["linear"], ["zoom"], 15, ["step", ["elevation"], "red", 3, "blue"], 16, "white"]"#,
         );

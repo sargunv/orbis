@@ -10,7 +10,7 @@ use orb_render::{
     RowScale, Translate, ZoomBlend,
 };
 use orb_style::{
-    CameraInputs, Kind, LINE_CAP, LINE_DASHARRAY, LINE_GRADIENT, LINE_PATTERN, LINE_WIDTH,
+    CameraInputs, Inputs, Kind, LINE_CAP, LINE_DASHARRAY, LINE_GRADIENT, LINE_PATTERN, LINE_WIDTH,
     LayerType, LineCap, TranslateAnchor, Value,
 };
 
@@ -398,12 +398,17 @@ fn camera_free(plan: &StylePlan, node: &crate::style::NodePlan) -> bool {
             | Family::Heatmap
             | Family::FillExtrusion
     ) && layer.slots().all(|(_, slot)| match slot.kind() {
-        _ if slot.as_expression().is_some_and(|e| e.reads_camera()) => false,
+        _ if slot
+            .as_expression()
+            .is_some_and(|e| e.reads().contains(Inputs::CAMERA)) =>
+        {
+            false
+        }
         orb_expr::Kind::Constant | orb_expr::Kind::Source => true,
         // Rows hold it at two zooms; a state lookup's default is per zoom.
         orb_expr::Kind::Composite => slot
             .as_expression()
-            .is_some_and(|e| e.reads_feature_properties()),
+            .is_some_and(|e| e.reads().contains(Inputs::DATA)),
         orb_expr::Kind::Camera => false,
     }) && plan.pattern(node).is_none()
         && !crate::line::has_textures(layer)

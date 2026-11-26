@@ -7,7 +7,7 @@
 //! renderer and the generated support matrix all read it.
 
 use orb_expr::json::{self, Json};
-use orb_expr::{PropertyExpression, PropertySpec, PropertyType, Type};
+use orb_expr::{Inputs, PropertyExpression, PropertySpec, PropertyType, Type};
 
 use std::marker::PhantomData;
 
@@ -107,64 +107,6 @@ impl Phase {
     }
 }
 
-/// What a property value may read, beside constants and global state.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Inputs(u8);
-
-impl Inputs {
-    pub const NONE: Self = Self(0);
-    /// `["zoom"]`.
-    pub const ZOOM: Self = Self(1);
-    /// The camera beyond its zoom: `["pitch"]` and `["bearing"]`, in values
-    /// the same for every feature.
-    pub const CAMERA: Self = Self(2);
-    /// The feature's properties, id and geometry.
-    pub const DATA: Self = Self(4);
-    /// `["feature-state"]`.
-    pub const STATE: Self = Self(8);
-    /// `["elevation"]`: a DEM's, or the height on an extrusion.
-    pub const ELEVATION: Self = Self(16);
-    /// The camera and data in one value: a per-feature value scaled, and
-    /// bounded, by values of the camera (`orb_expr::CameraScale`).
-    /// Implies [`CAMERA`](Self::CAMERA).
-    pub const CAMERA_DATA: Self = Self(32 | 2);
-
-    pub const ALL: [(Self, &'static str); 6] = [
-        (Self::ZOOM, "zoom"),
-        (Self::CAMERA, "camera"),
-        (Self::CAMERA_DATA, "camera × data"),
-        (Self::DATA, "data"),
-        (Self::STATE, "state"),
-        (Self::ELEVATION, "elevation"),
-    ];
-
-    #[must_use]
-    pub const fn union(self, other: Self) -> Self {
-        Self(self.0 | other.0)
-    }
-
-    #[must_use]
-    pub const fn minus(self, other: Self) -> Self {
-        Self(self.0 & !other.0)
-    }
-
-    pub const fn contains(self, other: Self) -> bool {
-        self.0 & other.0 == other.0
-    }
-
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    /// The names of the inputs it holds.
-    pub fn names(self) -> impl Iterator<Item = &'static str> {
-        Self::ALL
-            .into_iter()
-            .filter(move |(i, _)| self.contains(*i))
-            .map(|(_, name)| name)
-    }
-}
-
 impl Prop {
     /// The fields a root-level property (light, sky, terrain) leaves at
     /// their defaults.
@@ -211,19 +153,19 @@ impl Prop {
     }
 
     /// The parsing rules for a value reading `inputs`. As the spec's
-    /// validator does, data-driven paint parses reading state, which the
-    /// front end then warns of where the value never sees it.
+    /// validator does, data-driven paint parses reading state even where
+    /// it is laid out per tile, which the front end then warns of where
+    /// the value never sees it.
     pub fn spec_with(&self, inputs: Inputs) -> PropertySpec {
-        let data = inputs.contains(Inputs::DATA);
+        let inputs = if self.paint && inputs.contains(Inputs::DATA) {
+            inputs.union(Inputs::STATE)
+        } else {
+            inputs
+        };
         PropertySpec {
             ty: self.ty.clone(),
             default: self.default.map(Into::into),
-            zoom: inputs.contains(Inputs::ZOOM),
-            feature: data || inputs.contains(Inputs::STATE),
-            state: inputs.contains(Inputs::STATE) || (self.paint && data),
-            camera: inputs.contains(Inputs::CAMERA),
-            camera_data: inputs.contains(Inputs::CAMERA_DATA),
-            elevation: inputs.contains(Inputs::ELEVATION),
+            inputs,
             interpolated: self.interpolated,
             tokens: self.tokens,
         }

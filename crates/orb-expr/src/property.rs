@@ -8,7 +8,7 @@ use crate::legacy::lower_function;
 use crate::parse::{Annotation, Parser, is_expression};
 use crate::scale::CameraScale;
 use crate::value::Type;
-use crate::{Diagnostic, Expression};
+use crate::{Diagnostic, Expression, Inputs};
 
 /// A property's value type, as the v8 spec declares it.
 #[derive(Clone, Debug, PartialEq)]
@@ -38,24 +38,13 @@ pub struct PropertySpec {
     /// The spec default as JSON text, which legacy categorical functions
     /// fall back to.
     pub default: Option<std::borrow::Cow<'static, str>>,
-    /// `zoom` is among the expression parameters.
-    pub zoom: bool,
-    /// The property is data-driven: it may depend on the feature.
-    pub feature: bool,
-    /// It may read `feature-state` (data-driven paint, as the spec's
-    /// validator has it; not layout).
-    pub state: bool,
-    /// It may read the camera beyond its zoom (`pitch`, `bearing`), for a
-    /// value the same for every feature: Orbis's own extension.
-    pub camera: bool,
-    /// It may read the camera and feature data in one value, as a
-    /// per-feature value scaled by one of the camera
-    /// ([`CameraScale`]): Orbis's own.
-    pub camera_data: bool,
-    /// It reads `["elevation"]` per point, which varies within a feature
-    /// as its data does between them: a colour relief's ramp, an
-    /// extrusion's colour.
-    pub elevation: bool,
+    /// What a value may read. [`DATA`](Inputs::DATA) makes it data-driven;
+    /// [`STATE`](Inputs::STATE) without it lets it read `feature-state`
+    /// alone. [`CAMERA`](Inputs::CAMERA) and
+    /// [`CAMERA_DATA`](Inputs::CAMERA_DATA) are Orbis's own. A value reading
+    /// `["elevation"]` where [`ELEVATION`](Inputs::ELEVATION) isn't allowed
+    /// parses, but the value doesn't vary per point.
+    pub inputs: Inputs,
     /// The property may use `interpolate`.
     pub interpolated: bool,
     /// Strings expand `{token}`s: legacy string stops (`convertFunction`)
@@ -252,27 +241,32 @@ impl PropertyExpression {
     ) -> Result<Self, &'static str> {
         let ir = &expression.ir;
         let deps = ir.node(ir.root()).deps;
-        let feature_constant = !deps.contains(Deps::FEATURE);
-        if !feature_constant && !spec.feature {
+        let reads = expression.reads();
+        let allowed = spec.inputs;
+        // In GL JS's order, so its messages stand.
+        if reads.contains(Inputs::DATA) && !allowed.contains(Inputs::DATA) {
             return Err("data expressions not supported");
         }
-        if deps.contains(Deps::FEATURE_STATE) && !spec.state {
-            return Err(
-                "\"feature-state\" data expressions are not supported with layout properties.",
-            );
+        if reads.contains(Inputs::STATE) && !allowed.contains(Inputs::STATE) {
+            return Err(if allowed.contains(Inputs::DATA) {
+                "\"feature-state\" data expressions are not supported with layout properties."
+            } else {
+                "data expressions not supported"
+            });
         }
-        let zoom_constant = !deps.contains(Deps::ZOOM);
-        if !zoom_constant && !spec.zoom {
+        let feature_constant = !deps.contains(Deps::FEATURE);
+        let zoom_constant = !reads.contains(Inputs::ZOOM);
+        if !zoom_constant && !allowed.contains(Inputs::ZOOM) {
             return Err("zoom expressions not supported");
         }
-        let camera = deps.contains(Deps::CAMERA);
-        if camera && !spec.camera {
+        let camera = reads.contains(Inputs::CAMERA);
+        if camera && !allowed.contains(Inputs::CAMERA) {
             return Err("camera expressions not supported");
         }
-        if camera && !feature_constant && !spec.camera_data {
+        if reads.contains(Inputs::CAMERA_DATA) && !allowed.contains(Inputs::CAMERA_DATA) {
             return Err("camera expressions cannot read the feature");
         }
-        let elevation = spec.elevation && deps.contains(Deps::ELEVATION);
+        let elevation = reads.contains(Inputs::ELEVATION) && allowed.contains(Inputs::ELEVATION);
         if camera && elevation {
             return Err("camera expressions cannot read the elevation");
         }
@@ -343,10 +337,14 @@ impl PropertyExpression {
         }
     }
 
-    /// Whether the value reads the camera beyond its zoom: `pitch` or
-    /// `bearing`.
-    pub fn reads_camera(&self) -> bool {
-        self.scale.is_some() || self.expression.deps().contains(Deps::CAMERA)
+    /// The inputs the value reads: its expression's, and for a value with
+    /// a camera scale, [`CAMERA_DATA`](Inputs::CAMERA_DATA).
+    pub fn reads(&self) -> Inputs {
+        let reads = self.expression.reads();
+        match self.scale {
+            Some(_) => reads.union(Inputs::CAMERA_DATA),
+            None => reads,
+        }
     }
 
     /// The camera scale of a per-feature value that reads the camera:
@@ -366,7 +364,7 @@ impl PropertyExpression {
                 ..self.clone()
             });
         }
-        if !self.reads_camera() {
+        if !self.reads().contains(Inputs::CAMERA) {
             return None;
         }
         Some(Self {
@@ -381,17 +379,6 @@ impl PropertyExpression {
             curve: self.curve.clone(),
             scale: None,
         })
-    }
-
-    /// Whether the value reads `feature-state`.
-    pub fn reads_feature_state(&self) -> bool {
-        self.expression.deps().contains(Deps::FEATURE_STATE)
-    }
-
-    /// Whether the value reads the feature's properties, id or geometry,
-    /// as opposed to only its state.
-    pub fn reads_feature_properties(&self) -> bool {
-        self.expression.deps().contains(Deps::PROPERTIES)
     }
 
     pub fn expression(&self) -> &Expression {

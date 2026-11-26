@@ -562,12 +562,10 @@ mod tests {
         let spec = crate::PropertySpec {
             ty: crate::PropertyType::Number,
             default: None,
-            zoom: true,
-            feature: true,
-            state: true,
-            camera: true,
-            camera_data: true,
-            elevation: false,
+            inputs: crate::Inputs::ZOOM
+                .union(crate::Inputs::DATA)
+                .union(crate::Inputs::STATE)
+                .union(crate::Inputs::CAMERA_DATA),
             interpolated: true,
             tokens: false,
         };

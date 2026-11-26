@@ -169,7 +169,12 @@ fn property_at_one(
                 .flatten();
             match extended {
                 Some(parsed) => {
-                    let beyond = reads(&parsed).minus(prop.spec_inputs());
+                    // Elevation read where it isn't honoured parses but
+                    // doesn't vary per point, so it goes unnamed.
+                    let beyond = parsed
+                        .reads()
+                        .intersect(prop.orbis_inputs())
+                        .minus(prop.spec_inputs());
                     if !beyond.is_empty() {
                         cx.not_portable(path, json.span, prop, beyond);
                     }
@@ -199,7 +204,9 @@ fn property_at_one(
             // The spec's validator lets data-driven paint read state, but
             // values laid out per tile (patterns, dashes) and values read
             // per feature beyond the spec never see it.
-            if parsed.reads_feature_state() && !prop.orbis_inputs().contains(Inputs::STATE) {
+            if parsed.reads().contains(Inputs::STATE)
+                && !prop.orbis_inputs().contains(Inputs::STATE)
+            {
                 let per_tile = if prop.phase() == Phase::Tile {
                     "per tile, "
                 } else {
@@ -217,26 +224,6 @@ fn property_at_one(
             Ok(Slot::expression(parsed))
         }
     }
-}
-
-/// The inputs a parsed value reads.
-fn reads(parsed: &PropertyExpression) -> Inputs {
-    let mut inputs = Inputs::NONE;
-    if parsed.zoom_curve().is_some() {
-        inputs = inputs.union(Inputs::ZOOM);
-    }
-    if parsed.camera_scale().is_some() {
-        inputs = inputs.union(Inputs::CAMERA_DATA);
-    } else if parsed.reads_camera() {
-        inputs = inputs.union(Inputs::CAMERA);
-    }
-    if parsed.reads_feature_properties() {
-        inputs = inputs.union(Inputs::DATA);
-    }
-    if parsed.reads_feature_state() {
-        inputs = inputs.union(Inputs::STATE);
-    }
-    inputs
 }
 
 /// What makes a constant invalid: a value outside the property's enum

@@ -741,10 +741,7 @@ impl Cx {
         if prop.preview.is_some() || !self.not_portable.insert(prop.name) {
             return;
         }
-        let mut inputs: Vec<&str> = beyond.names().collect();
-        if inputs.is_empty() {
-            inputs.push("inputs");
-        }
+        let inputs: Vec<&str> = beyond.names().collect();
         self.warn(
             path,
             span,

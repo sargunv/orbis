@@ -11,7 +11,7 @@ use std::sync::Arc;
 use orb_expr::Kind;
 use orb_layout::Family;
 use orb_shaders::layout;
-use orb_style::{Color, LayerType, PropertyRef, SourceKind, Style, Value};
+use orb_style::{Color, Inputs, LayerType, PropertyRef, SourceKind, Style, Value};
 
 use crate::elevation::ElevationColor;
 
@@ -147,7 +147,7 @@ impl PaintProperty<'_> {
     /// and captured data.
     pub(crate) fn mixes_state(&self) -> bool {
         self.expression()
-            .is_some_and(|e| e.reads_feature_state() && e.reads_feature_properties())
+            .is_some_and(|e| e.reads().contains(Inputs::STATE.union(Inputs::DATA)))
     }
 
     /// Whether features with state take the value from the state table.
@@ -409,8 +409,10 @@ impl StylePlan {
         let targets = crate::targets::plan(&style, &nodes, &mut warn);
         let camera_layers: Vec<usize> = (style.layers.iter().enumerate())
             .filter(|(_, l)| {
-                l.slots()
-                    .any(|(_, s)| s.as_expression().is_some_and(|e| e.reads_camera()))
+                l.slots().any(|(_, s)| {
+                    s.as_expression()
+                        .is_some_and(|e| e.reads().contains(Inputs::CAMERA))
+                })
             })
             .map(|(i, _)| i)
             .collect();

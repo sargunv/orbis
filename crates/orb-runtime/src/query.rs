@@ -15,7 +15,7 @@ use glam::{DVec2, Vec2};
 use orb_camera::{CameraState, View};
 use orb_crs::{Metres, TileIndex, TileMatrixSet};
 use orb_expr::Scale;
-use orb_style::{Kind, LayerType, Property, TranslateAnchor};
+use orb_style::{Inputs, Kind, LayerType, Property, TranslateAnchor};
 
 use crate::state::FeatureState;
 
@@ -946,9 +946,10 @@ impl HitPaint {
     /// Whether a dimension reads feature state: features' extents are
     /// known only when picked.
     fn reads_state(&self) -> bool {
-        self.dimensions()
-            .iter()
-            .any(|p| p.as_expression().is_some_and(|e| e.reads_feature_state()))
+        self.dimensions().iter().any(|p| {
+            p.as_expression()
+                .is_some_and(|e| e.reads().contains(Inputs::STATE))
+        })
     }
 
     fn translate(&self) -> Option<(&Property<[f32; 2]>, &Property<TranslateAnchor>)> {
@@ -1058,7 +1059,10 @@ pub(crate) struct Scene<'a> {
 /// else `fallback` (the layer's value, or the feature's at layout).
 fn live(p: &Property<f32>, zoom: f64, state: FeatureState<'_>, fallback: f32) -> f32 {
     let p_ref = p.get();
-    if !p.as_expression().is_some_and(|e| e.reads_feature_state()) {
+    if !p
+        .as_expression()
+        .is_some_and(|e| e.reads().contains(Inputs::STATE))
+    {
         return fallback;
     }
     match state {

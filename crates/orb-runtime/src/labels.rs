@@ -465,7 +465,7 @@ fn draws_by_viewport_y(symbol: &orb_style::Layer, zoom: f64) -> bool {
         || l.get(orb_style::ICON_IGNORE_PLACEMENT).evaluate(zoom)
         // Per feature or following the camera, any symbol may.
         || symbol_flag_values(symbol)
-            .any(|e| e.reads_camera() || matches!(e.kind(), orb_style::Kind::Source | orb_style::Kind::Composite));
+            .any(|e| e.reads().contains(orb_style::Inputs::CAMERA) || matches!(e.kind(), orb_style::Kind::Source | orb_style::Kind::Composite));
     by_y && can_overlap
 }
 

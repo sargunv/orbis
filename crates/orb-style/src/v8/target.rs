@@ -449,7 +449,8 @@ impl<'a> Params<'a> {
         prop: &Prop,
     ) -> Property<T> {
         let value: Property<T> = typed_property_at(self.cx, json, path, prop);
-        self.reads_camera |= (value.as_expression()).is_some_and(PropertyExpression::reads_camera);
+        self.reads_camera |=
+            (value.as_expression()).is_some_and(|e| e.reads().contains(Inputs::CAMERA));
         value
     }
 

@@ -434,12 +434,7 @@ mod tests {
         let spec = orb_expr::PropertySpec {
             ty: orb_expr::PropertyType::Color,
             default: None,
-            zoom: false,
-            feature: false,
-            state: false,
-            camera: false,
-            camera_data: false,
-            elevation: true,
+            inputs: orb_expr::Inputs::ELEVATION,
             interpolated: true,
             tokens: false,
         };

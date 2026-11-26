@@ -2,7 +2,7 @@
 use crate::json::{self, Json};
 use crate::property::{PropertyExpression, PropertySpec, PropertyType};
 use crate::value::{Type, Value};
-use crate::{CanonicalTile, Color, Expression, Filter, Kind};
+use crate::{CanonicalTile, Color, Expression, Filter, Inputs, Kind};
 use orb_tile::{GeometryType, LayerBuilder};
 use std::borrow::Cow;
 fn parse(text: &str) -> Json {
@@ -10,15 +10,17 @@ fn parse(text: &str) -> Json {
 }
 
 fn spec(ty: PropertyType, zoom: bool, feature: bool, interpolated: bool) -> PropertySpec {
+    let mut inputs = Inputs::NONE;
+    if zoom {
+        inputs = inputs.union(Inputs::ZOOM);
+    }
+    if feature {
+        inputs = inputs.union(Inputs::DATA).union(Inputs::STATE);
+    }
     PropertySpec {
         ty,
         default: None,
-        zoom,
-        feature,
-        state: feature,
-        camera: false,
-        camera_data: false,
-        elevation: false,
+        inputs,
         interpolated,
         tokens: false,
     }

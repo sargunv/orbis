@@ -952,6 +952,12 @@ fn extended_inputs_are_drawn_and_warn_once() {
             Value::Number(0.75)
         );
     }
+    // Elevation read where it isn't honoured goes unnamed: it doesn't vary
+    // per point there.
+    let elevated = r#""fill-opacity": ["*", ["interpolate", ["linear"], ["pitch"], 0, 1, 60, 0.5], ["max", 1, ["elevation"]]]"#;
+    let style = parse(&layer(elevated, "")).unwrap();
+    assert_eq!(style.warnings.len(), 1, "{:?}", style.warnings);
+    assert!(style.warnings[0].message.contains("reads camera,"));
     // Another property warns once of its own.
     let color = r#""fill-color": ["case", [">", ["bearing"], 90], "red", "blue"]"#;
     let style = parse(&layer(&format!("{pitch}, {color}"), "")).unwrap();

@@ -9,7 +9,7 @@ use crate::legacy::lower_function;
 use crate::parse::{Annotation, Parser};
 use crate::property::{PropertyExpression, PropertySpec, PropertyType};
 use crate::value::{Type, Value};
-use crate::{Expression, Kind};
+use crate::{Expression, Inputs, Kind};
 
 #[cfg(test)]
 pub(crate) const FIXTURES: &str = include_str!("../tests/data/expression-fixtures.json");
@@ -77,16 +77,23 @@ pub(crate) fn fixture_spec(fixture: &Json) -> (PropertySpec, Option<Type>) {
             .unwrap_or(false),
         None => true,
     };
+    let mut inputs = Inputs::NONE;
+    if parameters.contains(&"zoom") {
+        inputs = inputs.union(Inputs::ZOOM);
+    }
+    // GL JS evaluates state wherever data is allowed; only the style
+    // validator rejects it in layout.
+    if matches!(property_type, "data-driven" | "cross-faded-data-driven") {
+        inputs = inputs.union(Inputs::DATA).union(Inputs::STATE);
+    }
+    if parameters.contains(&"elevation") {
+        inputs = inputs.union(Inputs::ELEVATION);
+    }
     let expected = ty.as_ref().map(|ty| {
         PropertySpec {
             ty: ty.clone(),
             default: None,
-            zoom: false,
-            feature: false,
-            state: false,
-            camera: false,
-            camera_data: false,
-            elevation: false,
+            inputs: Inputs::NONE,
             interpolated: false,
             tokens: false,
         }
@@ -97,14 +104,7 @@ pub(crate) fn fixture_spec(fixture: &Json) -> (PropertySpec, Option<Type>) {
         // their fixtures all declare one.
         ty: ty.unwrap_or(PropertyType::Number),
         default: field("default").map(|d| d.to_string().into()),
-        zoom: parameters.contains(&"zoom"),
-        feature: matches!(property_type, "data-driven" | "cross-faded-data-driven"),
-        // GL JS evaluates state wherever data is allowed; only the style
-        // validator rejects it in layout.
-        state: matches!(property_type, "data-driven" | "cross-faded-data-driven"),
-        camera: false,
-        camera_data: false,
-        elevation: parameters.contains(&"elevation"),
+        inputs,
         interpolated,
         tokens: field("tokens").and_then(Json::as_bool).unwrap_or(false),
     };

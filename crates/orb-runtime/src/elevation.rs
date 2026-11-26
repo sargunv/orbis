@@ -7,7 +7,7 @@
 use orb_expr::{ElevationOp, Interpolation, Kind, PropertyExpression};
 use orb_render::{Curve, ElevationPaint, pack_color};
 use orb_shaders::layout::{MAX_ELEVATION_OPS, MAX_ELEVATION_STOPS};
-use orb_style::{LayerType, Slot, Value};
+use orb_style::{Inputs, LayerType, Slot, Value};
 
 use crate::style::PaintProperty;
 
@@ -41,7 +41,9 @@ impl ElevationColor {
             return None;
         }
         let color = layer.get(orb_style::EXTRUSION_COLOR);
-        let expression = color.as_expression().filter(|e| e.reads_elevation())?;
+        let expression = color
+            .as_expression()
+            .filter(|e| e.reads().contains(Inputs::ELEVATION))?;
         Some(Self::from_expression(expression))
     }
 
@@ -91,7 +93,7 @@ impl ElevationColor {
         // What reads feature state alone comes from the state table.
         let rows = self.colors[1..].iter().any(|s| {
             s.as_expression()
-                .is_some_and(PropertyExpression::reads_feature_properties)
+                .is_some_and(|e| e.reads().contains(Inputs::DATA))
         });
         if rows { 2 * (self.colors.len() - 1) } else { 0 }
     }

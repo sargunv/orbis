@@ -6,7 +6,9 @@
 use std::sync::Arc;
 
 use orb_expr::json::{self, Json};
-use orb_expr::{CanonicalTile, EvaluationContext, Expression, FeatureGeometry, Type, Value};
+use orb_expr::{
+    CanonicalTile, EvaluationContext, Expression, FeatureGeometry, Inputs, Type, Value,
+};
 
 use crate::base::{Failure, Result, boundary, fresh_out, put, sized, text};
 use crate::handles::{self, Kind, Object};
@@ -130,8 +132,9 @@ pub unsafe extern "C" fn mln_style_expression_get_info(
             let reads = e.expression.reads();
             out_info.write(mln_style_expression_info {
                 size,
-                is_feature_constant: !reads.properties && !reads.feature_state,
-                is_zoom_constant: !reads.zoom,
+                is_feature_constant: !reads.contains(Inputs::DATA)
+                    && !reads.contains(Inputs::STATE),
+                is_zoom_constant: !reads.contains(Inputs::ZOOM),
             });
             Ok(())
         })
@@ -261,13 +264,13 @@ pub unsafe extern "C" fn mln_style_expression_evaluate(
             }
 
             let reads = e.expression.reads();
-            if reads.zoom && zoom.is_none() {
+            if reads.contains(Inputs::ZOOM) && zoom.is_none() {
                 return Err(unavailable("zoom level"));
             }
-            if reads.ramp && ramp.is_none() {
+            if e.expression.reads_ramp() && ramp.is_none() {
                 return Err(unavailable("color ramp parameter"));
             }
-            if reads.properties && feature.is_none() {
+            if reads.contains(Inputs::DATA) && feature.is_none() {
                 return Err(unavailable("feature"));
             }
             let geometry = match (&feature, tile) {
@@ -276,7 +279,7 @@ pub unsafe extern "C" fn mln_style_expression_evaluate(
                     .and_then(|g| FeatureGeometry::from_geojson(g, tile)),
                 _ => None,
             };
-            if reads.geometry && geometry.is_none() {
+            if e.expression.reads_geometry() && geometry.is_none() {
                 return Err(unavailable("feature geometry in a canonical tile"));
             }
             let ramp = ramp.unwrap_or(0.0);
