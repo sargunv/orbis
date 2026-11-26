@@ -233,13 +233,15 @@ pub struct Camera {
     /// Drags and their glides on the sphere turn the bearing with the
     /// planet.
     globe_free_bearing: bool,
-    /// The camera the app last asked for, and what the constraints made
-    /// of it then, while nothing has moved it since: a surface, viewport or
-    /// constraints that change keep to the camera asked for, not to what
-    /// the ones before made of it. A map made before its style says it is
-    /// a globe takes the camera given, not the one Mercator's limits held
-    /// it to; at rest it shows the same whichever came first.
-    asked: Option<(CameraState, CameraState)>,
+    /// The camera the app last asked for (a new camera or a jump), before
+    /// the limits, while nothing has moved it since: gestures and
+    /// animations let go of it. A surface, viewport, constraints or terrain
+    /// that change keep to the camera asked for, not to what the ones
+    /// before made of it, so a map made before its style says it is a
+    /// globe takes the camera given, not the one Mercator's limits held it
+    /// to: at rest it shows the same whichever came first. Its height and
+    /// projection are the state's.
+    asked: Option<CameraState>,
 }
 
 impl Camera {
@@ -262,37 +264,29 @@ impl Camera {
             elevation_held: false,
             clamped: true,
             globe_free_bearing: false,
-            asked: Some((state, state)),
+            asked: Some(state),
         }
     }
 
-    /// Writes the state again under what changed: the camera asked for,
-    /// while nothing moved it since, or else the camera as it is.
-    fn rewrite(&mut self) {
-        // The terrain moves the target's elevation without moving it.
-        let flat = |s: CameraState| CameraState {
-            elevation: 0.0,
-            ..s
-        };
-        let next = match self.asked {
-            Some((asked, answered)) if flat(answered) == flat(self.state) => CameraState {
+    /// The camera asked for, while nothing moved it since, or else the
+    /// camera as it is. The target's height is the state's, which the
+    /// terrain or [`set_center_elevation`](Self::set_center_elevation)
+    /// gives it, and so is the projection.
+    fn asked_or_state(&self) -> CameraState {
+        match self.asked {
+            Some(asked) => CameraState {
                 elevation: self.state.elevation,
+                axonometric: self.state.axonometric,
                 ..asked
             },
-            _ => {
-                self.asked = None;
-                self.state
-            }
-        };
-        self.write(next);
-        if let Some((_, answered)) = &mut self.asked {
-            *answered = self.state;
+            None => self.state,
         }
     }
 
-    /// Records `asked`, just written, as the camera the app asked for.
-    fn asked_for(&mut self, asked: CameraState) {
-        self.asked = Some((asked, self.state));
+    /// Writes the state again under what changed, from the camera asked
+    /// for while nothing moved it since.
+    fn rewrite(&mut self) {
+        self.write(self.asked_or_state());
     }
 
     /// Stands the target on `terrain`, or on the surface without it. Call
@@ -464,7 +458,31 @@ impl Camera {
 
     /// Where a jump to `target` would put the camera, without moving it.
     pub fn state_for(&self, target: &CameraTarget) -> CameraState {
-        self.resolve(target, true).0
+        self.jump_target(target).1
+    }
+
+    /// What a jump to `target` asks for, past limits that may not be the
+    /// map's for long (Mercator's before a globe style arrives), where it
+    /// lands within them, and the pixel and ground point it turns about.
+    /// What it doesn't set comes from the camera asked for, while nothing
+    /// moved it since, so a partial jump keeps the rest of that; one that
+    /// turns about a point or pans by an offset moves from the camera on
+    /// screen, where its pixels are. The landing limits the zoom before it
+    /// turns about the point, as MapLibre Native's anchored jumps do, so
+    /// the point stays put.
+    fn jump_target(
+        &self,
+        target: &CameraTarget,
+    ) -> (CameraState, CameraState, Option<(Geodetic, DVec2)>) {
+        let on_screen =
+            (target.center.is_none() && target.around.is_some()) || target.offset != DVec2::ZERO;
+        let from = match on_screen {
+            true => self.state,
+            false => self.asked_or_state(),
+        };
+        let (asked, _) = self.resolve(&from, target, false);
+        let (to, around) = self.resolve(&from, target, true);
+        (asked, to, around)
     }
 
     /// The camera's eye and orientation now.
@@ -480,16 +498,19 @@ impl Camera {
     }
 
     /// Moves to `target` at once (GL JS `jumpTo`). Animations go on
-    /// moving the properties it doesn't set, as in MapLibre Native.
+    /// moving the properties it doesn't set, as in MapLibre Native. With
+    /// none running, those come from the camera last asked for while
+    /// nothing has moved it since, before the limits, so they don't
+    /// depend on whether the style came first; an ease, even of no
+    /// duration, moves from the camera on screen.
     pub fn jump_to(&mut self, target: &CameraTarget) {
-        let (to, around) = self.resolve(target, true);
+        let (asked, to, around) = self.jump_target(target);
         self.yield_fields(Self::claims(target, around.is_some(), self.aims(target)).0);
         self.modified = true;
         self.user = false;
         self.write(to);
-        // What was asked for, past limits that may not be the map's for
-        // long: Mercator's before a globe style arrives.
-        self.asked_for(self.resolve(target, false).0);
+        // Animations left moving the rest move it on from here.
+        self.asked = self.running.is_empty().then_some(asked);
     }
 
     /// Moves to `state` at once, as [`jump_to`](Self::jump_to) does, for
@@ -499,7 +520,7 @@ impl Camera {
         self.modified = true;
         self.user = false;
         self.write(state);
-        self.asked_for(state);
+        self.asked = Some(state);
     }
 
     /// Animates to `target` (GL JS `easeTo`), starting at `start` on the
@@ -532,7 +553,7 @@ impl Camera {
         start: Option<f64>,
         user: bool,
     ) -> AnimationId {
-        let (to, around) = self.resolve(target, true);
+        let (to, around) = self.resolve(&self.state, target, true);
         let aims = self.aims(target);
         let (fields, coupled) = match user {
             // Input takes the whole camera.
@@ -588,7 +609,7 @@ impl Camera {
         options: &FlyOptions,
         start: Option<f64>,
     ) -> AnimationId {
-        let (to, _) = self.resolve(target, true);
+        let (to, _) = self.resolve(&self.state, target, true);
         let aims = self.aims(target);
         // A flight's center and zoom move along one curve, and the
         // height it lands at with them.
@@ -750,7 +771,14 @@ impl Camera {
 
     pub fn release(&mut self) {
         self.held = false;
-        self.write(self.state);
+        if self.asked.is_some() {
+            // A hold that never moved the camera held no elevation of its
+            // own: the target settles where the camera asked for stands.
+            self.elevation_held = false;
+            self.rewrite();
+        } else {
+            self.write(self.state);
+        }
     }
 
     pub fn is_held(&self) -> bool {
@@ -938,6 +966,7 @@ impl Camera {
         self.next_id += 1;
         let id = AnimationId(self.next_id);
         self.modified = true;
+        self.asked = None;
         self.user = user;
         self.running.push(Running {
             id,
@@ -954,6 +983,7 @@ impl Camera {
 
     fn user_write(&mut self, next: CameraState) {
         self.modified = true;
+        self.asked = None;
         self.user = true;
         self.write(next);
     }
@@ -993,16 +1023,18 @@ impl Camera {
         self.clamped || target.elevation.is_none()
     }
 
-    /// The end state of a move to `target`, kept to the limits or not, and
-    /// the pixel and ground point a zoom or rotation keeps in place.
+    /// The end state of a move from `from` to `target`, kept to the limits
+    /// or not, and the pixel and ground point a zoom or rotation keeps in
+    /// place.
     fn resolve(
         &self,
+        from: &CameraState,
         target: &CameraTarget,
         limited: bool,
     ) -> (CameraState, Option<(Geodetic, DVec2)>) {
         let (surface, viewport) = (&self.surface, self.viewport);
         let projection = &surface.projection;
-        let mut to = self.state;
+        let mut to = *from;
         if let Some(fov) = target.fov {
             to.fov = fov.clamp(0.01, 179.0);
         }
@@ -1013,8 +1045,8 @@ impl Camera {
         // Limits bound the scale at the destination.
         let zoom = target.zoom.map(|z| {
             let mut at = CameraState {
-                target: target.center.unwrap_or(self.state.target),
-                ..self.state
+                target: target.center.unwrap_or(from.target),
+                ..*from
             };
             at.set_zoom(projection, z);
             if limited {
@@ -1029,15 +1061,14 @@ impl Camera {
                 to.target = c;
                 if let Some(zoom) = zoom {
                     to.set_zoom(projection, zoom);
-                } else if !self.state.on_sphere(surface) {
+                } else if !from.on_sphere(surface) {
                     // Keep the scale on screen, as a pan does (on the
                     // sphere, its size: the ground resolution).
-                    to.resolution =
-                        self.state.world_per_px(projection) / projection.scale_factor(c);
+                    to.resolution = from.world_per_px(projection) / projection.scale_factor(c);
                 }
             }
             (None, Some(ground)) => {
-                let at = self.project(ground).unwrap_or(center);
+                let at = self.project_with(from, ground).unwrap_or(center);
                 around = Some((ground, at));
                 to.holding(surface, viewport, at, |c| {
                     if let Some(zoom) = zoom {
@@ -1204,6 +1235,150 @@ mod tests {
         camera.set_surface(globe);
         assert!((camera.state().target.lat - 30.0).abs() < 1e-9);
         assert!(camera.state().zoom(&mercator()).abs() < 1e-9);
+    }
+
+    /// A z0 camera at 30°N in a tall viewport, which Mercator's limits
+    /// hold at the equator, and the globe surface that lifts them.
+    fn tall_mercator_at_30n() -> (Camera, Surface) {
+        let asked = CameraState::new(Geodetic::new(-90.0, 30.0), 0.0, &mercator());
+        let viewport = Viewport {
+            width: 800.0,
+            height: 1440.0,
+        };
+        let camera = Camera::new(asked, Surface::from(mercator()), viewport);
+        let globe = Surface {
+            projection: mercator(),
+            globe: Some(orb_crs::Globe::V8),
+        };
+        (camera, globe)
+    }
+
+    /// Setting the axonometric projection before the style, as hosts that
+    /// take it from their options do, doesn't move the camera, so it keeps
+    /// the camera asked for.
+    #[test]
+    fn the_projection_keeps_the_camera_asked_for() {
+        let (mut camera, globe) = tall_mercator_at_30n();
+        camera.set_constraints(Constraints::default());
+        assert!(camera.state().target.lat.abs() < 1e-6);
+        camera.set_axonometric(Some(Skew::default()));
+        camera.set_surface(globe);
+        assert!((camera.state().target.lat - 30.0).abs() < 1e-9);
+        assert_eq!(camera.state().axonometric, Some(Skew::default()));
+    }
+
+    /// A jump that sets only some of the camera keeps the rest of the one
+    /// asked for, not of what limits made of it, and lands where asking
+    /// for both at once would.
+    #[test]
+    fn a_partial_jump_keeps_the_rest_of_the_camera_asked_for() {
+        let (mut camera, globe) = tall_mercator_at_30n();
+        camera.set_constraints(Constraints::default());
+        let bearing = CameraTarget {
+            bearing: Some(10.0),
+            ..CameraTarget::default()
+        };
+        assert_eq!(camera.state_for(&bearing).bearing, 10.0);
+        camera.jump_to(&bearing);
+        assert!(camera.state().target.lat.abs() < 1e-6);
+        assert_eq!(camera.state().bearing, 10.0);
+        camera.set_surface(globe);
+        let (mut fresh, _) = tall_mercator_at_30n();
+        fresh.jump_to(&CameraTarget {
+            bearing: Some(10.0),
+            ..CameraTarget::default()
+        });
+        fresh.set_surface(globe);
+        assert!((camera.state().target.lat - 30.0).abs() < 1e-9);
+        assert_eq!(camera.state(), fresh.state());
+    }
+
+    /// A jump about a point on screen keeps it under its pixel there,
+    /// though limits hold the camera on screen away from the one asked
+    /// for.
+    #[test]
+    fn an_anchored_jump_turns_about_the_point_on_screen() {
+        let (mut camera, _) = tall_mercator_at_30n();
+        camera.set_constraints(Constraints::default());
+        let at = DVec2::new(300.0, 650.0);
+        let ground = camera.unproject(at).unwrap();
+        camera.jump_to(&CameraTarget {
+            zoom: Some(2.0),
+            bearing: Some(20.0),
+            around: Some(ground),
+            ..CameraTarget::default()
+        });
+        assert!(camera.project(ground).unwrap().distance(at) < 1e-6);
+    }
+
+    /// A press that never moves the camera, held while DEM data arrives,
+    /// leaves it where it stands on a map never pressed, then and as more
+    /// arrives.
+    #[test]
+    fn a_still_press_leaves_the_camera_asked_for() {
+        #[derive(Debug)]
+        struct Slope;
+        impl Elevation for Slope {
+            fn at(&self, world: DVec2) -> Option<orb_crs::Metres> {
+                Some(orb_crs::Metres(1000.0 + world.y * 1e-3))
+            }
+            fn range(
+                &self,
+                _: orb_crs::WorldRect,
+                _: u8,
+            ) -> Option<(orb_crs::Metres, orb_crs::Metres)> {
+                Some((orb_crs::Metres(0.0), orb_crs::Metres(5000.0)))
+            }
+        }
+        let tilted = || {
+            let mut camera = camera();
+            camera.jump_to(&CameraTarget {
+                pitch: Some(50.0),
+                ..CameraTarget::default()
+            });
+            camera
+        };
+        let (mut pressed, mut untouched) = (tilted(), tilted());
+        pressed.hold();
+        pressed.set_terrain(Some(Arc::new(Slope)));
+        pressed.release();
+        untouched.set_terrain(Some(Arc::new(Slope)));
+        assert_eq!(pressed.state(), untouched.state());
+        pressed.set_terrain(Some(Arc::new(Slope)));
+        untouched.set_terrain(Some(Arc::new(Slope)));
+        assert_eq!(pressed.state(), untouched.state());
+    }
+
+    /// A jump that leaves an animation moving the rest of the camera
+    /// doesn't hold it: once the animation has moved it, a new viewport
+    /// keeps to where it is.
+    #[test]
+    fn a_jump_during_an_animation_lets_it_move_on() {
+        let mut camera = camera();
+        camera.ease_to(
+            &CameraTarget {
+                pitch: Some(40.0),
+                ..CameraTarget::default()
+            },
+            EaseOptions {
+                duration: 100.0,
+                easing: Easing::Linear,
+            },
+            Some(0.0),
+        );
+        camera.jump_to(&CameraTarget {
+            bearing: Some(30.0),
+            ..CameraTarget::default()
+        });
+        camera.frame(0.0);
+        camera.frame(100.0);
+        assert_eq!(camera.state().pitch, 40.0);
+        camera.set_viewport(Viewport {
+            width: 600.0,
+            height: 600.0,
+        });
+        assert_eq!(camera.state().pitch, 40.0);
+        assert_eq!(camera.state().bearing, 30.0);
     }
 
     /// On the globe the least zoom bounds its size at any latitude, for

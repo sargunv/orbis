@@ -82,7 +82,8 @@ fn bezier(x1: f64, y1: f64, x2: f64, y2: f64, t: f64) -> f64 {
 }
 
 /// Where a camera move ends: GL JS's `CameraOptions`. Unset properties keep
-/// their current values.
+/// their current values, for a jump those of the camera asked for (see
+/// [`Camera::jump_to`](crate::Camera::jump_to)).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CameraTarget {
     pub center: Option<Geodetic>,
@@ -107,7 +108,7 @@ pub struct CameraTarget {
 /// GL JS's `easeTo` timing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EaseOptions {
-    /// Milliseconds; zero jumps.
+    /// Milliseconds; zero ends at the first frame.
     pub duration: f64,
     pub easing: Easing,
 }
