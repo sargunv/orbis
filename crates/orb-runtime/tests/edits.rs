@@ -33,10 +33,10 @@ fn settle(offscreen: &mut Offscreen) -> (u32, FrameReport) {
         frames += 1;
         let warnings = crate::common::take_warnings(&mut offscreen.map);
         assert!(warnings.is_empty(), "{warnings:?}");
-        if report.idle && was_idle {
+        if report.idle() && was_idle {
             return (frames, report);
         }
-        was_idle = report.idle;
+        was_idle = report.idle();
         assert!(started.elapsed().as_secs() < 60, "edit did not settle");
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -66,7 +66,7 @@ fn measure(offscreen: &mut Offscreen, commands: &str) -> (u32, FrameReport, JobC
     let before = offscreen.map.job_counts();
     let generation = edit(offscreen, commands);
     let first = offscreen.frame();
-    let (frames, last) = if first.idle {
+    let (frames, last) = if first.idle() {
         (1, first)
     } else {
         let (frames, last) = settle(offscreen);
@@ -306,7 +306,7 @@ fn paint_reads_feature_state_and_data_together() {
     edit(&mut map, &format!("[{}]", all.join(",")));
     // Without a fade, the very next frame draws the state: the scene
     // evaluates the features' captured data, with no job.
-    assert!(map.frame().idle);
+    assert!(map.frame().idle());
     assert_eq!(
         delta(before, map.map.job_counts()),
         JobCounts {
@@ -356,7 +356,7 @@ fn feature_state_changes_fade() {
     loop {
         let report = map.frame();
         frames.push(map.pixels());
-        if report.idle {
+        if report.idle() {
             break;
         }
         assert!(started.elapsed().as_secs() < 10, "the fade never ended");
@@ -425,7 +425,7 @@ fn frames_until_idle(map: &mut Offscreen) -> Vec<Vec<u8>> {
     loop {
         let report = map.frame();
         frames.push(map.pixels());
-        if report.idle {
+        if report.idle() {
             return frames;
         }
         assert!(started.elapsed().as_secs() < 10, "the edit never settled");

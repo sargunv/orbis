@@ -601,7 +601,7 @@ fn render_native(
             let done = match until {
                 Next::Continue => true,
                 Next::Loaded => report.loaded,
-                Next::Idle => report.idle,
+                Next::Idle => report.idle(),
                 Next::Wait(_) => waited,
             };
             if done {

@@ -12,7 +12,7 @@ fn settle(offscreen: &mut Offscreen) {
     let started = std::time::Instant::now();
     let mut was_idle = false;
     loop {
-        let idle = offscreen.frame().idle;
+        let idle = offscreen.frame().idle();
         if idle && was_idle {
             return;
         }

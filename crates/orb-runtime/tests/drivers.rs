@@ -105,7 +105,7 @@ impl Checked {
             Err(e) => panic!("{what}, frame {}: {e}", self.frames),
         }
         self.frames += 1;
-        report.idle
+        report.idle()
     }
 
     /// Frames until the map is idle three times in a row, each compared.

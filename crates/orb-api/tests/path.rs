@@ -1173,7 +1173,7 @@ fn frames_until_idle(map: &mut Map, target: &mut Target, mut t: f64, name: &str)
         };
         t += 1000.0 / 60.0;
         frames.push(target.read_pixels().unwrap());
-        if report.idle {
+        if report.idle() {
             break;
         }
     }
@@ -1645,7 +1645,7 @@ fn an_alpine_view_at_rest_redoes_nothing() {
     let mut dispatches = None;
     for frame in 1..=4 {
         let report = map.render(&mut target, 0.0).unwrap().unwrap();
-        assert!(report.idle, "frame {frame}");
+        assert!(report.idle(), "frame {frame}");
         assert_eq!(report.frame.prepared, 0, "frame {frame}");
         assert_eq!(report.frame.placements_written, 0, "frame {frame}");
         assert!(report.frame.dispatches <= culls(), "frame {frame}");

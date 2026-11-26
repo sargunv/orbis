@@ -295,7 +295,7 @@ fn idle_comes_once_after_an_ease() {
                 match event {
                     Event::Map(MapEvent::Idle) => {
                         idles += 1;
-                        assert!(report.idle, "idle on a frame with work left");
+                        assert!(report.idle(), "idle on a frame with work left");
                     }
                     Event::Map(MapEvent::Camera(CameraEvent::AnimationEnd {
                         interrupted, ..

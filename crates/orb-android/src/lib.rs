@@ -329,7 +329,7 @@ impl State {
             ));
         }
         if let Some(at) = self.load.lost_at
-            && report.idle
+            && report.idle()
         {
             self.load.lost_at = None;
             log(&format!(
@@ -337,7 +337,7 @@ impl State {
                 at.elapsed().as_millis()
             ));
         }
-        if !report.idle || self.load.idle {
+        if !report.idle() || self.load.idle {
             return;
         }
         self.load.idle = true;

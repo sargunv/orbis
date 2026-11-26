@@ -348,7 +348,7 @@ fn swing(network: &Network, map: &mut Offscreen, start: CameraState, frames: u32
 fn at_rest(network: &Network, map: &mut Offscreen) -> FrameReport {
     for _ in 0..600 {
         let report = frame(network, map);
-        if report.idle {
+        if report.idle() {
             return report;
         }
     }

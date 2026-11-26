@@ -42,9 +42,10 @@ pub use orb_host::{
     RATE_LIMIT_WAIT, Request, RequestTransform, ResourceKind, redacted_url,
 };
 pub use orb_runtime::{
-    CameraState, ClusterQuery, FeatureTarget, FetchCounts, FrameReport, FrameTimes, HOST_TILES,
-    Hit, HostElevations, HostTile, MapEvent, MapOptions, Memory, MissingTiles, Op, PoolMemory,
-    Preview, Previews, Progress, Resized, StyleDoc, StyleImage, Transaction, VideoRequest, json,
+    Activity, CameraState, ClusterQuery, FeatureTarget, FetchCounts, FrameReport, FrameTimes,
+    HOST_TILES, Hit, HostElevations, HostTile, MapEvent, MapOptions, Memory, MissingTiles, Op,
+    PoolMemory, Preview, Previews, Progress, Resized, StyleDoc, StyleImage, Transaction,
+    VideoRequest, json,
 };
 pub use regions::{RegionDefinition, RegionEvent, RegionInfo};
 pub use target::Target;

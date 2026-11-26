@@ -254,10 +254,10 @@ impl Offscreen {
                     eprintln!("{message}");
                 }
             }
-            if report.idle && was_idle {
+            if report.idle() && was_idle {
                 return Ok((report, frames));
             }
-            was_idle = report.idle;
+            was_idle = report.idle();
             if started.elapsed().as_secs() > 60 {
                 return Err("timed out waiting for tiles".into());
             }

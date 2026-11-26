@@ -279,7 +279,7 @@ pub(crate) fn settle<G: orb_hal::Gpu>(gpu: &mut G, scene: &Scene) {
         for warning in super::take_warnings(&mut map) {
             eprintln!("{url}: {warning}");
         }
-        idle = if report.idle { idle + 1 } else { 0 };
+        idle = if report.idle() { idle + 1 } else { 0 };
         assert!(
             started.elapsed().as_secs() < 60,
             "{url}: timed out settling"

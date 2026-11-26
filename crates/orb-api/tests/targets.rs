@@ -5,7 +5,7 @@
 mod common;
 
 use orb_api::{
-    CameraTarget, Constraints, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target,
+    Activity, CameraTarget, Constraints, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target,
 };
 
 const WIDTH: u32 = 256;
@@ -543,13 +543,13 @@ fn moving_noise_keeps_the_map_drawing() {
         time += 16.0;
     }
     let (a, report) = frame(&mut map, &mut target, time);
-    assert!(!report.idle, "a map with moving noise idles");
+    assert!(!report.idle(), "a map with moving noise idles");
     assert!(
-        report.animating,
+        report.activity == Activity::Animating,
         "a loaded map with moving noise isn't animating"
     );
     let settled = map.render_until_idle(&mut target, std::time::Duration::from_secs(60));
-    assert!(settled.unwrap().animating);
+    assert_eq!(settled.unwrap().activity, Activity::Animating);
     let (b, _) = frame(&mut map, &mut target, time + 500.0);
     let (again, _) = frame(&mut map, &mut target, time);
     assert_eq!(a, again, "the same time draws differently");
@@ -565,12 +565,12 @@ fn moving_noise_keeps_the_map_drawing() {
     .unwrap();
     map.edit(&hide).unwrap();
     let report = (map.render_until_idle(&mut target, std::time::Duration::from_secs(60))).unwrap();
-    assert!(report.idle && !report.animating);
+    assert!(report.idle());
     // Still noise idles, and draws the same at any time.
     let mut still = map_of(&style(0.0));
     common::settle(&mut still, &mut target);
     let (a, report) = frame(&mut still, &mut target, 1000.0);
-    assert!(report.idle);
+    assert!(report.idle());
     let (b, _) = frame(&mut still, &mut target, 5000.0);
     assert_eq!(a, b, "still noise changed with time");
 }

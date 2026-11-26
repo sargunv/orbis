@@ -6,7 +6,7 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use orb_api::{Error, Map, MapOptions, Runtime, RuntimeOptions, Target};
+use orb_api::{Activity, Error, Map, MapOptions, Runtime, RuntimeOptions, Target};
 
 const STYLE: &str = r##"{"version":8,"sources":{"box":{"type":"geojson","data":{"type":"Polygon",
   "coordinates":[[[-10,-10],[10,-10],[10,10],[-10,10],[-10,-10]]]}}},
@@ -52,7 +52,7 @@ fn a_hung_compile_is_reported() {
             if runtime.lost() {
                 break started.elapsed();
             }
-            assert!(report.is_none_or(|r| !r.idle), "nothing compiles");
+            assert!(report.is_none_or(|r| !r.idle()), "nothing compiles");
             frames += 1;
         };
         let hung = runtime
@@ -126,7 +126,7 @@ fn a_failed_pipeline_leaves_its_layer_out() {
             continue;
         }
         if let Some(report) = map.render(&mut target, 0.0).unwrap()
-            && report.idle
+            && report.idle()
         {
             break report;
         }
@@ -376,7 +376,7 @@ fn a_drape_pipeline_arriving_last_still_idles() {
             }
             let report = map.render(&mut target, 0.0).unwrap();
             frames += 1;
-            if report.is_some_and(|r| r.idle) {
+            if report.is_some_and(|r| r.idle()) {
                 break true;
             }
         };
@@ -456,7 +456,7 @@ fn hidden_layers_compile_ahead_of_need() {
             }
             if let Some(report) = map.render(target, 0.0).unwrap() {
                 compiling |= report.frame.pipelines_pending > 0;
-                if report.idle {
+                if report.idle() {
                     return compiling;
                 }
             }
@@ -541,7 +541,7 @@ fn a_map_that_never_rests_compiles_its_whole_set() {
         let report = map
             .render(&mut target, elapsed.as_secs_f64() * 1000.0)
             .unwrap();
-        assert!(!report.is_some_and(|r| r.idle), "the map rested");
+        assert!(!report.is_some_and(|r| r.idle()), "the map rested");
         let counters = runtime.stats().counters;
         // The background's and the cull's, then the circle's.
         if counters.pipelines_requested > 1
@@ -606,7 +606,7 @@ fn a_device_whose_compiles_hold_presents_shows_its_whole_set_compiled() {
             continue;
         };
         let counters = runtime.stats().counters;
-        if report.compiling {
+        if report.activity == Activity::Compiling {
             held += 1;
             assert_eq!(center(&target), [0, 0, 0], "a frame drew while compiling");
             continue;
@@ -615,7 +615,7 @@ fn a_device_whose_compiles_hold_presents_shows_its_whole_set_compiled() {
             counters.pipelines_compiled, counters.pipelines_requested,
             "a frame drew before the whole set compiled"
         );
-        if report.idle {
+        if report.idle() {
             break;
         }
     }

@@ -19,7 +19,7 @@ use orb_runtime::{
     RenderMode, StyleImage, Transaction, VideoRequest, Viewport,
 };
 
-use crate::{Error, Runtime, Skew, Target};
+use crate::{Activity, Error, Runtime, Skew, Target};
 
 /// Something a map, its camera or a gesture did.
 #[derive(Clone, Debug, PartialEq)]
@@ -99,7 +99,7 @@ pub struct Map {
     /// The last frame waited for a compile, or the device's replacement.
     waiting: bool,
     /// The last frame left nothing to change but by the camera
-    /// ([`orb_runtime::FrameReport::settled`]).
+    /// ([`orb_runtime::Activity::Idle`]).
     settled: bool,
     /// The scale of the target the map last drew into.
     scale: f64,
@@ -914,7 +914,7 @@ impl Map {
     /// Draws frames into `target` until the map is idle (its loads,
     /// pipelines, fades and camera motion done, and a last frame drawing
     /// what the one before brought), or at rest but for moving noise
-    /// ([`FrameReport::animating`]), waiting for data between frames, and
+    /// ([`FrameReport::rests`]), waiting for data between frames, and
     /// returns the last frame's report. Frames are timed on the runtime's
     /// clock. For tools and tests: hosts draw on their display link. An
     /// error after `timeout`.
@@ -1216,7 +1216,7 @@ impl Map {
                 .map_err(Error::InvalidArgument)?;
             match report {
                 Some(report) if settled => return Ok(Some(report)),
-                Some(report) if report.idle || report.animating => {}
+                Some(report) if report.rests() => {}
                 _ => return Ok(None),
             }
         }
@@ -1332,11 +1332,11 @@ impl Map {
             .extend(self.map.take_events().into_iter().map(Event::Map));
         self.dirty = lost;
         // A map waiting only for pipelines draws again when one compiles.
-        self.waiting = report.compiling;
-        self.settled = report.settled;
+        self.waiting = report.activity == Activity::Compiling;
+        self.settled = report.activity == Activity::Idle;
         self.scale = target.scale();
-        self.busy = !report.idle && !report.compiling;
-        if report.idle {
+        self.busy = report.needs_frame();
+        if report.idle() {
             // A failed write costs the next run its warm start, nothing else.
             let _ = self.runtime.save_pipeline_cache();
         }

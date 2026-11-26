@@ -98,16 +98,13 @@ pub struct FrameReport {
     /// The style generation the frame shows in full: every edit up to it
     /// has all its jobs applied.
     pub generation: u64,
-    /// Nothing is loading: the style, its sources and every tile the view
-    /// needs have arrived, so the frame is complete.
-    pub idle: bool,
-    /// Everything `idle` waits for is done, but the style's moving
-    /// image-process noise changes every frame a continuous map draws, so
-    /// it never idles: the frames to come differ by time alone. A tool
-    /// that waits for a map to settle takes this as settled.
-    pub animating: bool,
-    /// As `idle`, but fades may still run: labels are placed for this
-    /// view and cross-fades need only time (GL JS `loaded()`).
+    /// What keeps what the map shows changing in frames to come, the
+    /// camera aside ([`moved`](Self::moved)).
+    pub activity: Activity,
+    /// The frame shows everything the view needs in full: the style, its
+    /// sources, the tiles, labels placed for this view and the drape
+    /// drawn of them, with no pipeline left out. Fades, transitions and
+    /// the camera may still move it (GL JS `loaded()`).
     pub loaded: bool,
     /// GPU memory by pool, and the tile cache.
     pub memory: Memory,
@@ -127,22 +124,15 @@ pub struct FrameReport {
     /// can't go up in pieces (an image tile's texels, an edit's, a
     /// commit).
     pub tile_bytes: u64,
-    /// Only compiling pipelines keep the frame from being complete: a
-    /// host whose GPU wakes it when a pipeline compiles needs no frames
-    /// until then.
-    pub compiling: bool,
     /// Pipelines the frame, and the frames prepared since the last one
     /// drawn, asked the device for besides the style's pipeline set's: what
     /// the set left out, none for a complete one.
     pub pipelines_late: u32,
-    /// As `idle` but for the camera: nothing the map draws changes in
-    /// frames to come unless the camera moves (MapLibre Native's
-    /// `needsRepaint` unset).
-    pub settled: bool,
     /// The tiles under the view's centre have arrived, for every source
     /// the frame draws: what time-to-centre waits for.
     pub centre_loaded: bool,
-    /// The camera moved for this frame: input, a glide or an animation.
+    /// The camera moves for this frame: input, a glide or an animation
+    /// that goes on, or terrain arriving under it.
     pub moved: bool,
     /// Input holds the camera: a drag, a pinch or wheel zooming is under
     /// way. What the device did meanwhile (`gpu`) happened mid-gesture.
@@ -164,6 +154,62 @@ pub struct FrameReport {
     /// What they did in [`Map::prepare`]'s frames since the last frame
     /// drawn (part of `gpu` too).
     pub prepared_resized: orb_render::Resized,
+}
+
+impl FrameReport {
+    /// Nothing the map shows changes in frames to come: everything has
+    /// loaded, nothing runs and the camera rests.
+    pub fn idle(&self) -> bool {
+        self.activity == Activity::Idle && !self.moved
+    }
+
+    /// As [`idle`](Self::idle), but moving image-process noise may still
+    /// change frames by time alone: what still output and a tool waiting
+    /// for a map to settle take as settled.
+    pub fn rests(&self) -> bool {
+        matches!(self.activity, Activity::Idle | Activity::Animating) && !self.moved
+    }
+
+    /// The map needs another frame of its own accord or because the
+    /// camera moves on, except while only pipelines compile: then the
+    /// device's wake, and the host's own camera check, ask instead.
+    pub fn needs_frame(&self) -> bool {
+        match self.activity {
+            Activity::Loading | Activity::Busy | Activity::Animating => true,
+            Activity::Compiling => false,
+            Activity::Idle => self.moved,
+        }
+    }
+}
+
+/// What keeps a frame's picture changing, the camera aside: the first
+/// that holds of these, in order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Activity {
+    /// Not everything the view needs has arrived: the style, its
+    /// sources, the tiles, labels' placement or the drape's redraw of
+    /// them. A frame held back from drawing (`Caps::compiles_hold_presents`)
+    /// before its style asks for its pipelines is loading too.
+    #[default]
+    Loading,
+    /// Everything has arrived, but frames to come still change it:
+    /// fades, style transitions, drape slots redrawing or refused,
+    /// terrain waiting for its cover, or the frame left out what a
+    /// pipeline brings while frames come anyway (one arrived during the
+    /// frame, to draw from the next, or moving noise animates).
+    Busy,
+    /// Only compiling pipelines keep the frame from being complete, or a
+    /// device whose compiles hold presents held it back from drawing: a
+    /// host whose device wakes it when a pipeline compiles needs no
+    /// frames until then.
+    Compiling,
+    /// Complete, but the style's moving image-process noise changes every
+    /// frame a continuous map draws: the frames to come differ by time
+    /// alone.
+    Animating,
+    /// Nothing the map shows changes in frames to come unless the camera
+    /// moves (MapLibre Native's `needsRepaint` unset).
+    Idle,
 }
 
 /// Where a frame's CPU time went on this thread, in microseconds of the
@@ -1913,7 +1959,6 @@ impl Map {
             }
             None => false,
         };
-        let held = self.camera.is_held() || self.input.is_active();
 
         // Tiles' patches are on the low-zoom surface the style draws on.
         let plane = self.surface.globe().and_then(|g| g.plane);
@@ -2014,7 +2059,9 @@ impl Map {
             prepared.times.add_prepared(&times);
             prepared.tiles_arrived += self.tiles_arrived;
             prepared.resized += renderer.take_resized();
-            report.compiling = compiling;
+            if compiling {
+                report.activity = Activity::Compiling;
+            }
             return report;
         };
         let prepared = std::mem::take(&mut self.prepared);
@@ -2044,8 +2091,8 @@ impl Map {
             }
             picking.drew(view.clone(), *self.camera.state(), drawn, report.generation);
         }
-        // Loaded once the drape, too, shows all of it.
-        report.loaded = data_loaded && labels_settled && !redrew.deferred;
+        // Complete once the drape, too, shows all of it.
+        let complete = data_loaded && labels_settled && !redrew.deferred;
         // Moving noise changes every frame a continuous map draws; still
         // output takes it as it is.
         let animating = self.mode == RenderMode::Continuous
@@ -2054,7 +2101,7 @@ impl Map {
                 let camera = crate::paint::camera_inputs(self.camera.state());
                 crate::targets::animates(&plan.style, &plan.targets, zoom, camera)
             });
-        let rests = report.loaded
+        let rests = complete
             && !redrew.refused
             && !(self.style.as_ref()).is_some_and(|s| s.terrain.waits())
             && !redrew.redrew
@@ -2064,8 +2111,6 @@ impl Map {
             && !self.root.running()
             && !(self.style.as_ref()).is_some_and(|s| s.states.fading(self.shader_time()))
             && now >= self.image_fades_until;
-        report.idle = rests && !animating;
-        report.animating = rests && animating;
         self.source_events();
 
         let frame = self.frame_block(
@@ -2090,8 +2135,9 @@ impl Map {
         renderer.request_pipelines(gpu);
         // A frame that leaves the map nothing to do gives back the memory
         // it holds free, as the last before it idles.
-        renderer.set_settling(report.idle);
-        if report.idle {
+        let settling = rests && !animating;
+        renderer.set_settling(settling);
+        if settling {
             self.trim_drape(gpu, renderer);
         }
         report.frame = renderer.render(gpu, &frame, target, clear, &|| clock.now());
@@ -2102,11 +2148,26 @@ impl Map {
         // A frame that left something out for a compiling pipeline isn't
         // complete. Only a compile still pending wakes the host when it
         // finishes: a frame that waited with none pending (a pipeline's
-        // arrival blanked the drape slots, to draw from the next frame)
+        // arrival made drape slots stale, redrawn from the next frame)
         // asks for that frame itself.
+        let waited = report.frame.waited;
+        report.loaded = complete && !waited;
+        report.activity = if !complete {
+            Activity::Loading
+        } else if waited {
+            match rests && !animating && report.frame.pipelines_pending > 0 {
+                true => Activity::Compiling,
+                false => Activity::Busy,
+            }
+        } else if !rests {
+            Activity::Busy
+        } else if animating {
+            Activity::Animating
+        } else {
+            Activity::Idle
+        };
         report.resized = renderer.take_resized();
         self.settle_report(renderer, &mut report, moving);
-        (report.moved, report.input) = (moving, held);
         report.centre_loaded = self.centre_loaded();
         let counted = gpu.counters();
         report.gpu = counted.since(&self.counted);
@@ -2305,24 +2366,16 @@ impl Map {
         }
     }
 
-    /// Settles a drawn frame's report on what the renderer did: whether it
-    /// waited for a compile, whether the camera rests (`moving` it moved
-    /// this frame), its scene and memory.
+    /// Settles a drawn frame's report on whether the camera rests
+    /// (`moving` it moves on from this frame), its events, scene and
+    /// memory.
     fn settle_report(&mut self, renderer: &Renderer, report: &mut FrameReport, moving: bool) {
-        report.compiling = report.idle && report.frame.waited && report.frame.pipelines_pending > 0;
-        report.loaded &= !report.frame.waited;
-        report.idle &= !report.frame.waited;
-        report.animating &= !report.frame.waited;
-        // Idle once the camera rests too. DEM data that arrived after the
-        // camera advanced may move it onto the ground it lands on: then
-        // this frame isn't a rest.
-        let moving = self.stand_on_terrain() || moving;
-        let held = self.camera.is_held() || self.input.is_active();
-        report.settled = report.idle;
+        // DEM data that arrived after the camera advanced may move it onto
+        // the ground it lands on: then this frame isn't a rest.
+        report.moved = self.stand_on_terrain() || moving;
+        report.input = self.camera.is_held() || self.input.is_active();
         self.events
-            .frame(report.loaded, report.settled && !moving && !held);
-        report.idle &= !moving;
-        report.animating &= !moving;
+            .frame(report.loaded, report.idle() && !report.input);
         self.globe_warps.end_frame();
         report.scene = renderer.stats();
         report.memory = self.memory(renderer);
@@ -4005,7 +4058,7 @@ mod gpu_tests {
         let centre = |map: &mut Map, gpu: &mut WgpuGpu, renderer: &mut Renderer| {
             let mut idle = false;
             for _ in 0..200 {
-                idle = map.render(gpu, renderer, target, viewport, 1.0, 0.0).idle;
+                idle = map.render(gpu, renderer, target, viewport, 1.0, 0.0).idle();
                 if idle {
                     break;
                 }
@@ -4019,7 +4072,7 @@ mod gpu_tests {
         for _ in 0..3 {
             assert!(
                 !map.render(&mut gpu, &mut renderer, target, viewport, 1.0, 0.0)
-                    .idle
+                    .idle()
             );
         }
         let urls = vec!["a.mp4".to_string(), "a.webm".to_string()];
@@ -4103,7 +4156,7 @@ mod gpu_tests {
         let settle = |map: &mut Map, gpu: &mut WgpuGpu, renderer: &mut Renderer| {
             let mut was_idle = false;
             for _ in 0..200 {
-                let idle = map.render(gpu, renderer, target, viewport, 1.0, 0.0).idle;
+                let idle = map.render(gpu, renderer, target, viewport, 1.0, 0.0).idle();
                 if idle && was_idle {
                     return pollster::block_on(gpu.read_texture(target));
                 }

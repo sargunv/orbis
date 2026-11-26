@@ -116,11 +116,11 @@ mod tests {
         let mut was_idle = false;
         loop {
             let report = offscreen.frame();
-            if report.idle && was_idle {
+            if report.idle() && was_idle {
                 assert!(crate::common::take_warnings(&mut offscreen.map).is_empty());
                 return report;
             }
-            was_idle = report.idle;
+            was_idle = report.idle();
             assert!(started.elapsed().as_secs() < 60, "tiles did not settle");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -139,7 +139,7 @@ mod tests {
         let projection = offscreen.map.projection();
         crate::common::move_camera(&mut offscreen.map, |c| c.set_zoom(&projection, -1e-9));
         let mut report = offscreen.frame();
-        while !report.idle {
+        while !report.idle() {
             std::thread::sleep(std::time::Duration::from_millis(5));
             report = offscreen.frame();
         }
@@ -174,10 +174,10 @@ mod tests {
             let report = pieces.frame();
 
             most = most.max(report.tile_bytes);
-            if report.idle && was_idle {
+            if report.idle() && was_idle {
                 break;
             }
-            was_idle = report.idle;
+            was_idle = report.idle();
             assert!(started.elapsed().as_secs() < 60, "did not settle");
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
@@ -218,7 +218,7 @@ mod tests {
             for _ in 0..6 {
                 zoom_by(&mut offscreen.map, viewport, center, -0.5);
                 report = offscreen.frame();
-                while !report.idle {
+                while !report.idle() {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                     report = offscreen.frame();
                 }
@@ -344,7 +344,7 @@ mod tests {
                     *c = crate::common::camera(&at(13.0 + 2.0 * t, 45.0 * t)).unwrap();
                 });
                 let mut report = offscreen.frame();
-                while !report.idle {
+                while !report.idle() {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                     report = offscreen.frame();
                 }
@@ -384,7 +384,7 @@ mod tests {
                     errors.push(message);
                 }
             }
-            if report.idle {
+            if report.idle() {
                 break;
             }
             assert!(started.elapsed().as_secs() < 60, "did not settle");
@@ -436,7 +436,7 @@ mod tests {
             loop {
                 let report = offscreen.frame();
                 warnings.extend(crate::common::take_warnings(&mut offscreen.map));
-                if report.idle {
+                if report.idle() {
                     return (report, warnings);
                 }
                 assert!(started.elapsed().as_secs() < 60, "did not settle");
@@ -714,7 +714,7 @@ mod tests {
         assert!(grown > first, "the page grew: {first} -> {grown} bytes");
         offscreen.map.jump_to_state(at(1.0, 0.0));
         let started = std::time::Instant::now();
-        while !offscreen.frame().idle {
+        while !offscreen.frame().idle() {
             assert!(started.elapsed().as_secs() < 60, "tiles did not settle");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -777,10 +777,10 @@ mod tests {
         loop {
             let report = offscreen.frame();
             events.extend(offscreen.map.take_events());
-            if report.idle && was_idle {
+            if report.idle() && was_idle {
                 break;
             }
-            was_idle = report.idle;
+            was_idle = report.idle();
             assert!(started.elapsed().as_secs() < 60, "tiles did not settle");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -803,7 +803,7 @@ mod tests {
             "no wake-ups while idle"
         );
         // The next frame, were one drawn, is still idle and reports nothing.
-        assert!(offscreen.frame().idle);
+        assert!(offscreen.frame().idle());
         assert!(offscreen.map.take_events().is_empty());
     }
 
@@ -835,7 +835,7 @@ mod tests {
             )
             .unwrap();
         let first = offscreen.frame();
-        assert!(!first.idle);
+        assert!(!first.idle());
         assert_eq!(first.tiles_drawn, 0);
         assert!(first.tiles_loading > 0);
         let waiting = offscreen.frame();
@@ -849,7 +849,7 @@ mod tests {
         // Each frame applies at least one arrived tile.
         let published = (0..first.tiles_loading)
             .map(|_| offscreen.frame())
-            .find(|report| report.idle)
+            .find(|report| report.idle())
             .expect("one frame per arrived tile at most");
         assert_eq!(published.tiles_loading, 0);
         assert!(published.tiles_drawn > 0);
@@ -875,7 +875,7 @@ mod tests {
             let report = offscreen.frame();
             assert!(!gpu_driven() || !report.frame.bundle_recorded);
             assert_eq!(report.frame.paints_written, 0);
-            assert!(report.idle);
+            assert!(report.idle());
         }
     }
 
@@ -1098,7 +1098,7 @@ mod tests {
             let mut loaded = false;
             for _ in 0..8 {
                 let report = offscreen.frame();
-                if report.idle && report.tiles_drawn > 0 {
+                if report.idle() && report.tiles_drawn > 0 {
                     loaded = true;
                     break;
                 }
@@ -1137,7 +1137,7 @@ mod tests {
         let mut shown = 0.0;
         while shown < 1.0 && started.elapsed() < std::time::Duration::from_secs(10) {
             let report = offscreen.frame();
-            if report.idle && report.tiles_drawn > 0 {
+            if report.idle() && report.tiles_drawn > 0 {
                 shown = offscreen
                     .map
                     .shown_labels()
@@ -1162,7 +1162,7 @@ mod tests {
         );
         let timeout = std::time::Duration::from_secs(10);
         let started = std::time::Instant::now();
-        while !offscreen.frame().idle && started.elapsed() < timeout {
+        while !offscreen.frame().idle() && started.elapsed() < timeout {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         let mut camera = *offscreen.map.camera();
@@ -1222,7 +1222,7 @@ mod tests {
             while started.elapsed() < std::time::Duration::from_secs(10) {
                 let report = offscreen.frame();
                 offscreen.time -= 1000.0 / 60.0;
-                assert!(!report.idle, "the raster keeps the map from idling");
+                assert!(!report.idle(), "the raster keeps the map from idling");
                 let labels = offscreen.map.shown_labels();
                 let opacities: Vec<f32> = labels.values().copied().filter(|&o| o > 0.0).collect();
                 if opacities.len() == shown {
@@ -1253,7 +1253,7 @@ mod tests {
             "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
             "layers":[{"id":"label","type":"symbol","source":"s","layout":{"text-field":"Null Island"}}]}"#,
         );
-        assert!(!offscreen.frame().idle);
+        assert!(!offscreen.frame().idle());
         // Until prepare has the label shown, not for a fixed time, which
         // a loaded machine can overrun.
         let started = std::time::Instant::now();
@@ -1268,7 +1268,7 @@ mod tests {
         }
         let report = offscreen.frame();
         let shown = offscreen.map.shown_labels().get("Null Island").copied();
-        assert_eq!((report.idle, shown), (true, Some(1.0)));
+        assert_eq!((report.idle(), shown), (true, Some(1.0)));
     }
 
     /// Before the first frame, `prepare` takes the style in and asks for
@@ -1303,7 +1303,7 @@ mod tests {
         offscreen.time = origin.elapsed().as_secs_f64() * 1000.0;
         let report = offscreen.frame();
         let shown = offscreen.map.shown_labels().get("Null Island").copied();
-        assert_eq!((report.idle, shown), (true, Some(1.0)));
+        assert_eq!((report.idle(), shown), (true, Some(1.0)));
     }
 
     /// A canvas's (or video's) tile that `prepare` asks for before any
@@ -1429,7 +1429,7 @@ mod tests {
             while started.elapsed() < std::time::Duration::from_secs(10) && settled < 10 {
                 let report = offscreen.frame();
                 offscreen.time -= 1000.0 / 60.0;
-                if report.idle {
+                if report.idle() {
                     return true;
                 }
                 if report.tiles_loading == 0 && report.tiles_drawn > 0 {
@@ -1498,7 +1498,7 @@ mod tests {
         let mut loaded = false;
         for _ in 0..8 {
             let report = offscreen.frame();
-            if report.idle && report.tiles_drawn > 0 {
+            if report.idle() && report.tiles_drawn > 0 {
                 loaded = true;
                 break;
             }
@@ -1731,10 +1731,10 @@ mod tests {
             let mut was_idle = false;
             loop {
                 let (report, _) = self.frame(ground);
-                if report.idle && was_idle {
+                if report.idle() && was_idle {
                     return report;
                 }
-                was_idle = report.idle;
+                was_idle = report.idle();
                 assert!(started.elapsed().as_secs() < 120, "did not settle");
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
