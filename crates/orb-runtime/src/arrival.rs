@@ -238,7 +238,7 @@ impl Map {
             .as_ref()
             .filter(|_| *generation == self.tile_generation);
         let (endpoint, tier) = style.and_then(|style| match terrain {
-            true => (style.terrain.as_ref())
+            true => (style.terrain.get())
                 .filter(|t| t.key == *source)
                 .map(|t| (&t.endpoint, crate::frame::Tier::View)),
             false => {

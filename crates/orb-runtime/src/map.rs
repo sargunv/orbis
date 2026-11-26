@@ -223,12 +223,15 @@ struct Prepared {
     pipelines_late: u32,
 }
 
-/// What a frame's drape drew: whether it redrew slots, and whether it
-/// left any blank, stale or out of place for the frames after.
+/// What a frame's drape drew: whether it redrew slots, whether it left
+/// any blank, stale or out of place for the frames after, and whether
+/// the device refused it a texture, so that the next frame draws the
+/// terrain within the slots the drape held ([`Map::plan_drape`]).
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct DrapeDrawn {
     redrew: bool,
     deferred: bool,
+    refused: bool,
 }
 
 /// The map's GPU memory, in bytes.
@@ -472,8 +475,8 @@ pub(crate) struct LoadedStyle {
     /// The zoom whose tiles each source keeps loaded to stand in, as its
     /// last plan had it ([`Map::coarse_level`]).
     pub(crate) coarse: Vec<Option<u8>>,
-    /// The terrain, once its DEM source is ready.
-    pub(crate) terrain: Option<crate::terrain::Terrain>,
+    /// The style's terrain, on, off or turning.
+    pub(crate) terrain: crate::terrain_phase::TerrainPhase,
     /// Whether the background and image tiles' meshes are grids for a
     /// globe to bend.
     pub(crate) globe_meshes: bool,
@@ -796,13 +799,6 @@ pub struct Map {
     pub(crate) release_cached: bool,
     /// Tiles out of view stay cached ([`Map::set_tile_cache`]).
     pub(crate) tile_cache: bool,
-    /// The device refused the drape a texture, and the next frame draws the
-    /// terrain within the slots the drape held ([`Map::plan_drape`]).
-    pub(crate) drape_refused: bool,
-    /// The terrain waits to turn on, or to go, for the pipelines the map
-    /// draws with then ([`orb_render::Renderer::terrain_ready_as`]): the
-    /// map isn't idle, and a terrain turned on rises once it stops.
-    terrain_waits: bool,
     /// The last frame's viewport, which the views' worths of cached tiles
     /// are counted by ([`Map::cache_limit`]).
     pub(crate) cache_viewport: orb_camera::Viewport,
@@ -1014,8 +1010,6 @@ impl Map {
             arrivals_began: None,
             release_cached: false,
             tile_cache: true,
-            drape_refused: false,
-            terrain_waits: false,
             cache_viewport: orb_camera::Viewport {
                 width: 0.0,
                 height: 0.0,
@@ -1170,7 +1164,7 @@ impl Map {
                 pyramid.retry_failed(f64::INFINITY);
             }
         }
-        if let Some(terrain) = &mut style.terrain {
+        if let Some(terrain) = style.terrain.get_mut() {
             terrain.pyramid.retry_failed(f64::INFINITY);
         }
         style.glyph_retry = GlyphRetry {
@@ -1644,7 +1638,7 @@ impl Map {
             symbol_tiles: Vec::new(),
             draws: Vec::new(),
             coarse: Vec::new(),
-            terrain: None,
+            terrain: crate::terrain_phase::TerrainPhase::Off,
             globe_meshes: self.surface.globe().is_some(),
             pipelines: None,
             targets: None,
@@ -1913,31 +1907,20 @@ impl Map {
         let plane = self.surface.globe().and_then(|g| g.plane);
         let surface = *self.surface.projection();
         self.globe_warps.set_planes(renderer, surface, plane);
-        // Views need the full projection on a low-zoom surface, for tiles
-        // that warp onto the surface (likely on any surface but Web
-        // Mercator, known for a source once it resolves), and on terrain,
-        // which the style says it has before its DEM source resolves.
+        // Views need the full projection on a low-zoom surface, and for
+        // tiles that warp onto the surface (likely on any surface but Web
+        // Mercator, known for a source once it resolves).
         let warped = surface != crate::frame::mercator_projection()
             || (self.style.as_ref()).is_some_and(|s| {
                 (s.sources.iter()).any(|s| matches!(s, SourceState::Ready { warped: true, .. }))
             });
-        // The style's terrain, unless its DEM source failed or can't be
-        // the surface's.
-        let terrain = (self.style.as_ref()).is_some_and(|s| {
-            let plan = s.worker.plan();
-            plan.terrain()
-                .is_some_and(|(index, _)| match &s.sources[index] {
-                    SourceState::Resolving => true,
-                    SourceState::Ready { endpoint, .. } => endpoint.tms == *self.surface.tms(),
-                    SourceState::Failed => false,
-                })
-        });
-        renderer.set_full_projection(self.surface.globe().is_some() || warped || terrain);
-        let reachable = renderer.set_terrain_reachable(gpu, terrain);
-        self.terrain_waits = terrain && !reachable;
+        let zoom = self.zoom();
+        let surface_full = self.surface.globe().is_some() || warped;
+        let declared = self.declare_terrain(gpu, renderer, surface_full);
         // The style's pipeline set, in what the map now declares, before
         // anything the frame shows asks for its own.
         self.pipeline_set(gpu, renderer);
+        let root = self.step_terrain(gpu, renderer, declared, zoom);
         // A present while compiles run would wait behind them, and the
         // page's own frames behind that present, on a device that compiles
         // on the thread that presents (Firefox's,
@@ -1958,17 +1941,8 @@ impl Map {
         let view = self.view(viewport);
         // What this frame draws, for picking.
         let mut drawn = Vec::new();
-        let zoom = self.zoom();
         let mut report = FrameReport::default();
         let clear = self.clear_color;
-        let model = self
-            .style
-            .as_ref()
-            .map(|s| Arc::clone(&s.worker.plan().style));
-        if self.terrain_waits {
-            self.root.hold_terrain();
-        }
-        let root = self.root.frame(model.as_deref(), zoom, frame_time);
         let at = crate::light::atmosphere_view(
             &root.light,
             root.terrain_presence,
@@ -2069,8 +2043,8 @@ impl Map {
                 crate::targets::animates(&plan.style, &plan.targets, zoom, camera)
             });
         let rests = report.loaded
-            && !self.drape_refused
-            && !self.terrain_waits
+            && !redrew.refused
+            && !(self.style.as_ref()).is_some_and(|s| s.terrain.waits())
             && !redrew.redrew
             && !fading
             && !self.labels.fading(now)
@@ -2236,12 +2210,19 @@ impl Map {
         }
         let draping = clock.now();
         times.plan = micros(planning, draping);
-        let drape = drawing.and_then(|ratio| self.plan_drape(gpu, renderer, (view, ratio)));
+        let (drape, refused) = match drawing {
+            Some(ratio) => match self.plan_drape(gpu, renderer, (view, ratio)) {
+                Ok(drape) => (drape, false),
+                Err(full) => (None, self.drape_full(gpu, renderer, full)),
+            },
+            None => (None, false),
+        };
         let placing = clock.now();
         times.drape = micros(draping, placing);
         let redrew = DrapeDrawn {
             redrew: drape.as_ref().is_some_and(|d| !d.redraw.is_empty()),
             deferred: drape.as_ref().is_some_and(|d| d.deferred),
+            refused,
         };
         if drawing.is_some() {
             self.place_background(
@@ -2918,7 +2899,7 @@ impl Map {
                 ranks.insert((style.id, key, tile), order(tile, tier));
             }
         }
-        if let Some(terrain) = &style.terrain {
+        if let Some(terrain) = style.terrain.get() {
             let order = fetch_order(&terrain.endpoint.tms, focus);
             for tile in terrain.pyramid.loading_tiles() {
                 ranks.insert((style.id, terrain.key, tile), order(tile, Tier::View));
@@ -3033,7 +3014,7 @@ impl Map {
         // Symbols stand on the terrain as drawn.
         frame.ground = style
             .terrain
-            .as_ref()
+            .get()
             .map(|t| orb_symbol::GroundRef(t.snapshot() as Arc<dyn orb_symbol::Ground>));
         // Without symbol tiles there is nothing to place.
         if frame.layers.iter().all(|l| l.tiles.is_empty()) {
@@ -3099,9 +3080,9 @@ impl Map {
             .sum()
     }
 
-    /// Keeps the terrain to the style's `terrain`, as `root` eases it:
-    /// made once its DEM source is ready and its DEM tiles requested for
-    /// this view. Returns the frame's terrain.
+    /// Brings the terrain the map holds ([`Map::step_terrain`]) to this
+    /// view, at the height `root` eases it to: its DEM tiles requested and
+    /// its cover made. Returns the frame's terrain.
     fn update_terrain(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -3110,75 +3091,15 @@ impl Map {
         root: &crate::root::RootFrame,
         report: &mut FrameReport,
     ) -> Option<orb_render::FrameTerrain> {
-        // Asked only of a map with terrain, the style's or one still
-        // falling flat after the style dropped it: the drape's room is the
-        // DEM module's code (`crate::modules`).
-        let terrain = (self.style.as_ref())
-            .is_some_and(|s| s.terrain.is_some() || s.worker.plan().terrain().is_some());
-        let cover_room = match terrain {
+        // Asked only of a map that holds a terrain, rising or falling: the
+        // drape's room is the DEM module's code (`crate::modules`).
+        let cover_room = match (self.style.as_ref()).is_some_and(|s| s.terrain.get().is_some()) {
             true => self.cover_room(gpu, renderer),
             false => 0,
         };
         let style = self.style.as_mut()?;
         let plan = style.worker.plan();
-        let mut wanted = plan.terrain().map(|(index, _)| index);
-        // Terrain tiles are the surface's; their DEM must be too.
-        let unusable = match wanted.map(|index| &style.sources[index]) {
-            Some(SourceState::Ready { endpoint, .. }) if endpoint.tms != *self.surface.tms() => {
-                Some(format!(
-                    "terrain: the DEM source's tiles ({}) are not the map's ({}); the map is flat",
-                    endpoint.tms.id(),
-                    self.surface.tms().id()
-                ))
-            }
-            _ => None,
-        };
-        if let Some(warning) = unusable {
-            self.warnings.push(warning);
-            wanted = None;
-        }
-        // Terrain turned on waits for the pipelines it draws with.
-        if style.terrain.is_none() && self.terrain_waits {
-            wanted = None;
-        }
-        // Terrain turned off falls flat before it goes, and goes once the
-        // pipelines the map draws with without it are made.
-        let same = match (&mut style.terrain, wanted) {
-            (Some(t), Some(index)) => {
-                t.source = index;
-                t.key == plan.sources[index].key
-            }
-            (Some(_), None) => {
-                let falling = root.terrain_presence > 0.0;
-                let stays = falling || !renderer.terrain_ready_as(gpu, false);
-                self.terrain_waits |= stays && !falling;
-                stays
-            }
-            (None, None) => true,
-            (None, Some(_)) => false,
-        };
-        if !same {
-            if let Some(old) = style.terrain.take() {
-                old.release(gpu, renderer);
-            }
-            if let Some(index) = wanted
-                && let SourceState::Ready { endpoint, .. } = &style.sources[index]
-            {
-                // Raster sources cover with `tileSize / √2` (GL JS's
-                // rounded raster cover).
-                let tile_px = endpoint.cover_px * std::f64::consts::SQRT_2;
-                self.terrains += 1;
-                style.terrain = Some(crate::terrain::Terrain::new(
-                    self.terrains,
-                    (index, plan.sources[index].key),
-                    root.exaggeration,
-                    Arc::clone(endpoint),
-                    self.surface.tms(),
-                    tile_px,
-                ));
-            }
-        }
-        let Some(terrain) = &mut style.terrain else {
+        let Some(terrain) = style.terrain.get_mut() else {
             renderer.set_terrain(gpu, None);
             return None;
         };
@@ -3292,7 +3213,7 @@ impl Map {
         self.style
             .as_mut()?
             .terrain
-            .as_mut()
+            .get_mut()
             .map(|t| Arc::clone(t.elevation(tms)))
     }
 
@@ -3301,14 +3222,14 @@ impl Map {
     /// terrain. A new snapshot comes with each
     /// [`elevation_revision`](Self::elevation_revision).
     pub fn elevation(&self) -> Option<Arc<dyn orb_camera::Elevation>> {
-        let terrain = self.style.as_ref()?.terrain.as_ref()?;
+        let terrain = self.style.as_ref()?.terrain.get()?;
         Some(terrain.snapshot() as Arc<dyn orb_camera::Elevation>)
     }
 
     /// The terrain as the last frame drew it, for benches that measure how
     /// still its cover holds from frame to frame; `None` without terrain.
     pub fn terrain_probe(&self, viewport: Viewport) -> Option<TerrainProbe> {
-        let terrain = self.style.as_ref()?.terrain.as_ref()?;
+        let terrain = self.style.as_ref()?.terrain.get()?;
         Some(TerrainProbe {
             view: self.view(viewport),
             tms: self.surface.tms().clone(),
@@ -3340,7 +3261,7 @@ impl Map {
                 .collect(),
             terrain: style
                 .terrain
-                .as_ref()
+                .get()
                 .map(|t| (t.revision, t.pyramid.revision())),
             applied: self.applied,
             draping: renderer.terrain_on(),
@@ -3357,7 +3278,7 @@ impl Map {
     pub fn elevation_revision(&self) -> u64 {
         self.style
             .as_ref()
-            .and_then(|s| s.terrain.as_ref())
+            .and_then(|s| s.terrain.get())
             .map_or(0, |t| t.id << 32 | t.revision)
     }
 
@@ -3378,7 +3299,7 @@ impl Map {
             .style
             .as_mut()
             .filter(|s| s.worker.plan().source(source).is_some());
-        let terrain = style.and_then(|s| s.terrain.as_mut());
+        let terrain = style.and_then(|s| s.terrain.get_mut());
         if let Some(terrain) = terrain.filter(|t| t.key == source)
             && let Err(e) = terrain.arrive(gpu, renderer, tile, result, now)
         {
@@ -3634,7 +3555,7 @@ impl Map {
                 }
             }
         }
-        if let Some(terrain) = &mut style.terrain {
+        if let Some(terrain) = style.terrain.get_mut() {
             for tile in terrain.pyramid.give_up_loads() {
                 self.services.jobs.cancel(style.id, terrain.key, tile);
             }

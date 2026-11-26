@@ -51,6 +51,7 @@ mod surface;
 mod symbol;
 mod targets;
 mod terrain;
+mod terrain_phase;
 #[cfg(test)]
 mod testing;
 mod tile;

@@ -280,7 +280,7 @@ impl Map {
             ));
         }
         let key = plan.sources[index].key;
-        let terrain = (style.terrain.as_ref()).filter(|t| t.key == key);
+        let terrain = style.terrain.get().filter(|t| t.key == key);
         let held = |tile: TileIndex| {
             pyramid.get(tile).is_some()
                 || pyramid.is_loading(tile)
@@ -408,7 +408,7 @@ impl Map {
     /// elevations in: the terrain's page's, and the source's.
     fn heights_layers(&self, renderer: &Renderer, key: u32, tile: TileIndex) -> Layers {
         let terrain = (self.style.as_ref())
-            .and_then(|s| s.terrain.as_ref())
+            .and_then(|s| s.terrain.get())
             .filter(|t| t.key == key);
         let on_terrain = terrain.and_then(|t| Some((t.page?, t.pyramid.get(tile)?.layer)));
         (on_terrain, renderer.image_layer(key, tile))
@@ -483,7 +483,7 @@ impl Map {
     fn show_batch(&mut self, renderer: &mut Renderer, key: u32, batch: Batch) {
         let mut pages: FxHashMap<PageId, Vec<u32>> = FxHashMap::default();
         let mut terrain = (self.style.as_mut())
-            .and_then(|s| s.terrain.as_mut())
+            .and_then(|s| s.terrain.get_mut())
             .filter(|t| t.key == key);
         for staged in &batch.staged {
             // The tile left since: its layer went to another, which
