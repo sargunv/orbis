@@ -30,7 +30,7 @@ use crate::jobs::TileOutcome;
 use crate::map::{LoadedStyle, Map, NodeState, revise};
 use crate::resident::{SourceState, record_maxima, remove_resident, resolve_rows, upload_mesh};
 use crate::style::StylePlan;
-use crate::worker::StyleUpdate;
+use crate::worker::{StyleUpdate, TileJob};
 
 /// The class a paint change costs this renderer for one node:
 /// `orb-style`'s, raised where property rows hold more than the property
@@ -280,14 +280,22 @@ impl Map {
             nodes.sort_unstable();
             nodes.dedup();
             for tile in self.resident_tiles(source, None) {
-                self.send_edit_job(source, tile, Some(nodes.clone()), false, version);
+                let job = TileJob::Relayout {
+                    edit: version,
+                    nodes: nodes.clone(),
+                };
+                self.send_edit_job(source, tile, job);
             }
         }
         for (source, mut nodes) in columns {
             nodes.sort_unstable();
             nodes.dedup();
             for tile in self.resident_tiles(source, Some(&nodes)) {
-                self.send_edit_job(source, tile, Some(nodes.clone()), true, version);
+                let job = TileJob::Columns {
+                    edit: version,
+                    nodes: nodes.clone(),
+                };
+                self.send_edit_job(source, tile, job);
             }
         }
     }
@@ -330,7 +338,11 @@ impl Map {
         self.style = Some(style);
         for (source, nodes) in relayout {
             for tile in self.resident_tiles(source, None) {
-                self.send_edit_job(source, tile, Some(nodes.clone()), false, version);
+                let job = TileJob::Relayout {
+                    edit: version,
+                    nodes: nodes.clone(),
+                };
+                self.send_edit_job(source, tile, job);
             }
         }
         self.events.wake();
@@ -354,13 +366,13 @@ impl Map {
             .collect()
     }
 
-    /// Applies a relayout or column job's result to its resident tile.
+    /// Applies the result of `job`, a drawn tile's, to its resident tile.
     pub(crate) fn apply_edit(
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut orb_render::Renderer,
-        source: u32,
-        tile: TileIndex,
+        (source, tile): (u32, TileIndex),
+        job: &TileJob,
         result: Result<TileOutcome, String>,
     ) {
         let Some(style) = &mut self.style else {
@@ -429,7 +441,7 @@ impl Map {
         let tile_zoom = resident.zoom;
         let namespace = style.image_namespace.expect("namespace");
         let mut stale_rows = Vec::new();
-        if build.rows_only {
+        if matches!(job, TileJob::Columns { .. }) {
             // A node's meshes split by features alike in every job, so the
             // rows' n-th mesh of a node is the tile's n-th.
             let mut seen: HashMap<u32, usize> = HashMap::default();
@@ -487,7 +499,7 @@ impl Map {
         } else {
             // A whole tile's data loaded again (it expired) brings its
             // lifetime, if it has one.
-            if build.reload {
+            if *job == TileJob::Revalidate {
                 resident.reload_at = build.fresh_until;
                 resident.reloads_tried = 0;
             }
@@ -600,12 +612,16 @@ impl Map {
         let later: Vec<u32> = (build.labels_later.iter().copied())
             .filter(|&key| plan.node(key).is_some())
             .collect();
-        let version = self.version;
+        let edit = self.version;
         if !later.is_empty() {
-            self.send_edit_job(index, tile, Some(later), false, version);
+            self.send_edit_job(index, tile, TileJob::Relayout { edit, nodes: later });
         }
         if !stale_rows.is_empty() {
-            self.send_edit_job(index, tile, Some(stale_rows), true, version);
+            let job = TileJob::Columns {
+                edit,
+                nodes: stale_rows,
+            };
+            self.send_edit_job(index, tile, job);
         }
     }
 }

@@ -24,8 +24,9 @@ use crate::glyphs::{GlyphRaster, LocalGlyphs, RasterDone};
 use crate::loader::TileLoader;
 use crate::modules::{Load, Modules};
 use crate::style::ImageKind;
+use crate::tile::Select;
 use crate::turns::{FetchCounts, LoadKey, Start, Turns};
-use crate::worker::{Built, StyleUpdate, TileRequest, TileWorker};
+use crate::worker::{Built, StyleUpdate, TileJob, TileRequest, TileWorker};
 use crate::{FeatureRequest, FeaturesDone, SpriteIcons, TileBuild};
 use orb_crs::TileIndex;
 
@@ -156,17 +157,17 @@ impl BidiLoad {
     }
 }
 
-/// The whole-tile loads under way, each with whether its map still wants
-/// it: one it gave up ([`JobHost::cancel`]) after its fetch is neither
-/// decoded nor laid out, at whatever stage it waits, and answers
-/// [`Loaded::Cancelled`].
+/// The loads under way ([`TileRequest::load_key`]), each with whether
+/// its map still wants it: one it gave up ([`JobHost::cancel`]) after its
+/// fetch is neither decoded nor laid out, at whatever stage it waits, and
+/// answers [`Loaded::Cancelled`].
 #[derive(Default)]
 struct Wants(Mutex<HashMap<LoadKey, bool>>);
 
 impl Wants {
     /// Counts `request`'s load as under way, wanted, until `done` answers.
     fn track(self: &Arc<Self>, request: &TileRequest, done: LoadedDone) -> LoadedDone {
-        let Some(key) = load_key(request) else {
+        let Some(key) = request.load_key() else {
             return done;
         };
         self.0.lock().expect("wants poisoned").insert(key, true);
@@ -177,10 +178,12 @@ impl Wants {
         })
     }
 
-    /// Whether `request`'s map still wants it: a relayout always.
+    /// Whether `request`'s map still wants it: a drawn tile's job always.
     fn wanted(&self, request: &TileRequest) -> bool {
         let wants = self.0.lock().expect("wants poisoned");
-        load_key(request).is_none_or(|key| wants.get(&key).copied().unwrap_or(true))
+        request
+            .load_key()
+            .is_none_or(|key| wants.get(&key).copied().unwrap_or(true))
     }
 
     fn give_up(&self, key: LoadKey) {
@@ -188,13 +191,6 @@ impl Wants {
             *wanted = false;
         }
     }
-}
-
-/// A whole tile's load, which its map may give up; not a relayout.
-fn load_key(request: &TileRequest) -> Option<LoadKey> {
-    request
-        .loads_whole()
-        .then_some((request.style, request.source, request.tile))
 }
 
 /// The glyph ranges fetched last, up to [`RecentRanges::BUDGET`] bytes.
@@ -358,15 +354,16 @@ impl GlyphLoads {
         // Labels never hold up a whole tile's other layers: those go now,
         // and its map lays the labels out again once their glyphs are in,
         // which these fetches bring, and the bidirectional algorithm.
-        if load_key(&request).is_some()
+        if request.loads_whole()
             && !request.neighbour
             && let Some((others, labels)) = worker.labels_apart(request.source)
         {
-            let geometry = TileRequest {
-                nodes: Some(others),
-                ..request.clone()
+            let geometry = Select {
+                nodes: Some(&others),
+                ..request.select()
             };
-            if let Ok(Built::Tile(mut build)) = worker.build(&bytes, request.encoding, &geometry) {
+            let geometry = worker.build_with(&bytes, request.encoding, &request, geometry);
+            if let Ok(Built::Tile(mut build)) = geometry {
                 // They stand for the whole load: its data's lifetime goes
                 // with them, from the frame they were laid out from.
                 let frame = worker.frame(&bytes, request.encoding, &request);
@@ -639,7 +636,7 @@ impl JobHost {
             return;
         }
         let (executor, loader) = (Arc::clone(&self.executor), Arc::clone(&self.loader));
-        let key = load_key(&request);
+        let key = request.load_key();
         if let Some(kind) = worker.image_kind(request.source) {
             let (source, tile, warp) = (request.source, request.tile, request.warp);
             let resource = worker.resource_kind(&request);
@@ -737,12 +734,11 @@ impl JobHost {
                                 };
                                 // A reload no server answered, a cached copy
                                 // standing in, leaves the tile as drawn too.
-                                if request.reload
+                                if request.job == TileJob::Revalidate
                                     && (fetched.stale || worker.renew(&request, &fetched.bytes))
                                 {
                                     let build = TileBuild {
                                         fresh_until,
-                                        reload: true,
                                         renewed: true,
                                         stale: fetched.stale,
                                         ..TileBuild::default()
@@ -755,7 +751,7 @@ impl JobHost {
                             // the tile stands in, expired as it is, as the
                             // native cache's stale copy does: drawn, it loads
                             // again.
-                            Err(e) if e.transient() && !request.reload => {
+                            Err(e) if e.transient() && request.job != TileJob::Revalidate => {
                                 let kept = TileRequest {
                                     asked_at: 0,
                                     ..request

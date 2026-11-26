@@ -25,8 +25,6 @@ pub struct TileBuild {
     pub(crate) revision: u64,
     /// Keys of the nodes laid out; those without a mesh have no features.
     pub(crate) nodes: Vec<u32>,
-    /// Only property rows: meshes have no geometry.
-    pub(crate) rows_only: bool,
     /// Laid out as a neighbour ([`Select::neighbour`]).
     pub(crate) neighbour: bool,
     /// Feature ids, as GL JS keys feature state, that meshes refer to.
@@ -55,16 +53,12 @@ pub struct TileBuild {
     ///
     /// [`TileResult::fresh_until`]: crate::TileResult::fresh_until
     pub(crate) fresh_until: Option<u64>,
-    /// It answers a reload ([`TileResult::reload`]).
-    ///
-    /// [`TileResult::reload`]: crate::TileResult::reload
-    pub(crate) reload: bool,
-    /// The reload brought the data drawn again, and nothing is laid out
+    /// A revalidation brought the data drawn again, and nothing is laid out
     /// ([`TileResult::renewed`]).
     ///
     /// [`TileResult::renewed`]: crate::TileResult::renewed
     pub(crate) renewed: bool,
-    /// No server answered the reload ([`TileResult::stale`]).
+    /// No server answered the revalidation ([`TileResult::stale`]).
     ///
     /// [`TileResult::stale`]: crate::TileResult::stale
     pub(crate) stale: bool,
@@ -744,7 +738,6 @@ pub(crate) fn build(
     let mut laid = Laid::default();
     let mut build = TileBuild {
         revision: plan.revision,
-        rows_only: select.rows_only,
         neighbour: select.neighbour,
         ..TileBuild::default()
     };

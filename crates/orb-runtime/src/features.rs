@@ -51,7 +51,7 @@ pub struct QueryCamera {
 /// to read from it.
 #[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct FeatureRequest {
-    /// The tile's load request (`nodes` and `rows_only` unused).
+    /// The tile's load, unbent, at the zoom it laid out at.
     pub tile: TileRequest,
     pub select: FeatureSelect,
     /// The style revision the drawn tile's features were laid out with:

@@ -730,7 +730,7 @@ impl TileWorker {
         })
     }
 
-    /// Whether `bytes`, fetched for `request` (a reload, [`TileRequest::reload`]),
+    /// Whether `bytes`, fetched for `request` (a [`TileJob::Revalidate`]),
     /// are those its tile's kept frame was decoded from: the frame's data
     /// then stays fresh as long as the fetch said, if it said, and what
     /// its map draws stays as it is (MapLibre Native's 304).
@@ -767,6 +767,18 @@ impl TileWorker {
         encoding: Encoding,
         request: &TileRequest,
     ) -> Result<Built, String> {
+        self.build_with(bytes, encoding, request, request.select())
+    }
+
+    /// [`build`](Self::build), laying out what `select` picks rather than
+    /// what `request`'s job does.
+    pub(crate) fn build_with(
+        &self,
+        bytes: &[u8],
+        encoding: Encoding,
+        request: &TileRequest,
+        select: Select<'_>,
+    ) -> Result<Built, String> {
         let index = self
             .plan
             .source(request.source)
@@ -785,11 +797,7 @@ impl TileWorker {
             }
             _ => frame,
         };
-        let select = Select {
-            nodes: request.nodes.as_deref(),
-            rows_only: request.rows_only,
-            neighbour: request.neighbour,
-        };
+        let whole = select.nodes.is_none() && !select.rows_only;
         let icons = self.icons();
         let words = self.data.words.lock().expect("words poisoned").clone();
         let symbols = tile::Symbols {
@@ -818,10 +826,9 @@ impl TileWorker {
             Ok(mut build) => {
                 warnings.extend(self.data.glyphs.take_warnings());
                 build.warnings.splice(0..0, warnings);
-                // What loads whole stays fresh as long as its data; what
-                // lays out some nodes again says nothing of the rest.
-                build.fresh_until = fresh_until.filter(|_| request.loads_whole());
-                build.reload = request.reload;
+                // What lays out every node stays fresh as long as its
+                // data; what lays out some again says nothing of the rest.
+                build.fresh_until = fresh_until.filter(|_| whole);
                 Ok(Built::Tile(build))
             }
             Err(tile::Missing { urls, bidi: false }) => Ok(Built::Fetch(urls)),
@@ -1111,10 +1118,9 @@ pub struct TileRequest {
     pub(crate) data_zoom: u8,
     pub location: TileLocation,
     pub encoding: Encoding,
-    /// Lay out only these nodes (by key); `None` for all of the source's.
-    pub nodes: Option<Vec<u32>>,
-    /// Only property rows: a column job.
-    pub(crate) rows_only: bool,
+    /// What the job does with the tile: loads it, or does an edit's work
+    /// on it as drawn.
+    pub job: TileJob,
     /// A neighbour of the tile Tile mode draws: only what reaches into the
     /// tiles beside it lays out, the nodes whose content crosses tile
     /// edges and the features at its edges of those whose features reach
@@ -1123,9 +1129,6 @@ pub struct TileRequest {
     /// [`Family::crosses_tiles`]: orb_layout::Family::crosses_tiles
     /// [`Family::reaches_edges`]: orb_layout::Family::reaches_edges
     pub(crate) neighbour: bool,
-    /// A terrain DEM tile: also decode its elevations with this unpack
-    /// vector, for the CPU ([`TileResult::dem`](crate::TileResult::dem)).
-    pub dem_unpack: Option<DemUnpack>,
     /// The set of sprite icons (`SpriteIcons::epoch`) the layout waits
     /// for, fetched and decoded meanwhile: a style's sprites still loading
     /// hold symbol layout, not the tile's request. 0 waits for none.
@@ -1139,11 +1142,6 @@ pub struct TileRequest {
     /// and fetches its tile again ([`TileWorker::has_data`]). 0, as
     /// queries ask, takes any.
     pub(crate) asked_at: u64,
-    /// Loads a drawn tile again whole because its data expired: the
-    /// answer says so ([`TileResult::reload`](crate::TileResult::reload)),
-    /// and bytes the same as those drawn renew it alone
-    /// ([`TileWorker::renew`]).
-    pub(crate) reload: bool,
     /// Data that expired answers it at once, a frame kept or the HTTP
     /// cache's stale copy ([`Fetch::get_or_stale`](orb_host::Fetch::get_or_stale)),
     /// and the tile drawn from it loads again as soon as it draws, which
@@ -1157,6 +1155,35 @@ pub struct TileRequest {
     /// host that fetched them, kept with the frame decoded from them and
     /// reported with every tile laid out from it.
     pub(crate) fresh_until: Option<u64>,
+}
+
+/// What a [`TileRequest`]'s job does with its tile. Each kind is
+/// fetched, counted, given up and applied otherwise: a load is of a tile
+/// its map waits for and may give up ([`load_key`](TileRequest::load_key)),
+/// the rest are of a tile it draws; a relayout and a column job lay out
+/// from the frame the drawn layers came from, the rest from the tile's
+/// data ([`loads_whole`](TileRequest::loads_whole)).
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
+pub enum TileJob {
+    /// Loads the tile and lays out every node of its source.
+    Load,
+    /// Loads a terrain DEM tile and decodes its elevations with this
+    /// unpack vector, for the CPU ([`TileResult::dem`](crate::TileResult::dem)).
+    Dem(DemUnpack),
+    /// Loads a drawn tile again whole because its data expired: its
+    /// answer brings the tile's new lifetime, and bytes the same as those
+    /// drawn renew it alone ([`TileResult::renewed`](crate::TileResult::renewed),
+    /// [`TileWorker::renew`]).
+    Revalidate,
+    /// Loads a drawn tile again whole for edit generation `edit`: the
+    /// app's data for it changed.
+    Reload { edit: u64 },
+    /// Lays out `nodes` (by key) of a drawn tile again for edit
+    /// generation `edit`, from the frame they were laid out from.
+    Relayout { edit: u64, nodes: Vec<u32> },
+    /// Evaluates the property rows of `nodes` (by key) of a drawn tile
+    /// again for edit generation `edit`.
+    Columns { edit: u64, nodes: Vec<u32> },
 }
 
 /// GL JS's unpack vector of a DEM encoding: metres are
@@ -1174,10 +1201,44 @@ impl PartialEq for DemUnpack {
 impl Eq for DemUnpack {}
 
 impl TileRequest {
-    /// Whether it loads its whole tile, which a map may give up and whose
-    /// fetch takes a turn ([`Turns`](crate::Turns)): a relayout has its data.
+    /// Whether it loads its whole tile from the tile's data, whose fetch
+    /// takes a turn ([`Turns`](crate::Turns)) and which takes no frame
+    /// whose data had expired when it was asked ([`asked_at`](Self::asked_at)):
+    /// a relayout or a column job has its data.
     pub fn loads_whole(&self) -> bool {
-        self.nodes.is_none() && !self.rows_only
+        match self.job {
+            TileJob::Load | TileJob::Dem(_) | TileJob::Revalidate | TileJob::Reload { .. } => true,
+            TileJob::Relayout { .. } | TileJob::Columns { .. } => false,
+        }
+    }
+
+    /// The key of a load its map may give up ([`Jobs::cancel`](crate::Jobs::cancel)):
+    /// a tile it waits for. A drawn tile's jobs have none: they go on
+    /// whatever its map gives up.
+    pub fn load_key(&self) -> Option<crate::LoadKey> {
+        match self.job {
+            TileJob::Load | TileJob::Dem(_) => Some((self.style, self.source, self.tile)),
+            TileJob::Revalidate
+            | TileJob::Reload { .. }
+            | TileJob::Relayout { .. }
+            | TileJob::Columns { .. } => None,
+        }
+    }
+
+    /// What of its source's nodes it lays out.
+    pub(crate) fn select(&self) -> Select<'_> {
+        let (nodes, rows_only) = match &self.job {
+            TileJob::Relayout { nodes, .. } => (Some(&nodes[..]), false),
+            TileJob::Columns { nodes, .. } => (Some(&nodes[..]), true),
+            TileJob::Load | TileJob::Dem(_) | TileJob::Revalidate | TileJob::Reload { .. } => {
+                (None, false)
+            }
+        };
+        Select {
+            nodes,
+            rows_only,
+            neighbour: self.neighbour,
+        }
     }
 
     /// The whole of `tile`, every node of source `source` of style `style`
@@ -1201,14 +1262,11 @@ impl TileRequest {
             data_zoom: tile.z,
             location,
             encoding,
-            nodes: None,
-            rows_only: false,
+            job: TileJob::Load,
             neighbour: false,
-            dem_unpack: None,
             icons: 0,
             rank: 0,
             asked_at: 0,
-            reload: false,
             takes_stale: false,
             fresh_until: None,
         }
@@ -1307,9 +1365,10 @@ pub(crate) mod tests {
                 &[],
                 Encoding::Mvt,
                 &TileRequest {
-                    nodes: Some(vec![crate::style::node_key(1, 0)]),
-                    rows_only: true,
-                    neighbour: false,
+                    job: TileJob::Columns {
+                        edit: 1,
+                        nodes: vec![crate::style::node_key(1, 0)],
+                    },
                     ..request(tile)
                 },
             )
@@ -1788,7 +1847,10 @@ pub(crate) mod tests {
         assert!(!tile.labels_later.is_empty());
         assert!(tile.labels_later.iter().all(|k| !tile.nodes.contains(k)));
         let relayout = TileRequest {
-            nodes: Some(tile.labels_later.clone()),
+            job: TileJob::Relayout {
+                edit: 1,
+                nodes: tile.labels_later.clone(),
+            },
             ..symbol_request()
         };
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1957,6 +2019,48 @@ pub(crate) mod tests {
         );
     }
 
+    /// A drawn tile's reload is no load its map gives up: giving up a
+    /// load of the same tile leaves the reload fetching.
+    #[test]
+    fn reloads_go_on_when_a_load_of_their_tile_is_given_up() {
+        let fetch = Arc::new(HeldTiles::default());
+        let host = crate::JobHost::new(fetch.clone(), Arc::new(orb_host::jobs::Inline));
+        host.set_style(1, Arc::new(TileWorker::new(SYMBOLS).unwrap()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tile = TileIndex::new(14, 0, 0);
+        for (name, job) in [
+            ("load", TileJob::Load),
+            ("reload", TileJob::Reload { edit: 1 }),
+        ] {
+            let tx = tx.clone();
+            let request = TileRequest {
+                location: TileLocation::Url(format!("local://{name}")),
+                job,
+                ..request(tile)
+            };
+            host.load(
+                request,
+                None,
+                Box::new(move |r| tx.send((name, r)).unwrap()),
+            );
+        }
+        host.cancel(1, 1, tile);
+        let answered: Vec<_> = rx.try_iter().collect();
+        assert!(
+            matches!(answered[..], [("load", Ok(crate::Loaded::Cancelled))]),
+            "{answered:?}"
+        );
+        let held = std::mem::take(&mut *fetch.0.lock().unwrap());
+        assert!(held[0].1.is_aborted() && !held[1].1.is_aborted());
+        let (reload, _) = held.into_iter().nth(1).unwrap();
+        reload(Err(orb_host::FetchError::NotFound));
+        let answered: Vec<_> = rx.try_iter().collect();
+        assert!(
+            matches!(answered[..], [("reload", Ok(crate::Loaded::Missing))]),
+            "{answered:?}"
+        );
+    }
+
     /// A load whose server asked to wait says for how long, so the map
     /// asks again no sooner.
     #[test]
@@ -2042,18 +2146,21 @@ pub(crate) mod tests {
         let sibling = ask(child)();
         assert_eq!(sibling.fresh_until, Some(200), "from the cache, as fetched");
         let relayout = TileRequest {
-            nodes: Some(vec![circles]),
+            job: TileJob::Relayout {
+                edit: 1,
+                nodes: vec![circles],
+            },
             ..whole(250)
         };
         assert_eq!(ask(relayout)().fresh_until, None);
         assert_eq!(fetches(), 1, "what's drawn");
         let reload = ask(TileRequest {
-            reload: true,
+            job: TileJob::Revalidate,
             ..whole(250)
         });
         fetched(Some(300));
         let renewed = reload();
-        assert!(renewed.reload && renewed.renewed && renewed.meshes.is_empty());
+        assert!(renewed.renewed && renewed.meshes.is_empty());
         assert_eq!(renewed.fresh_until, Some(300));
         assert_eq!(ask(whole(260))().fresh_until, Some(300), "renewed");
         assert_eq!(fetches(), 1);
@@ -2111,7 +2218,7 @@ pub(crate) mod tests {
         })();
         assert_eq!(sibling.fresh_until, Some(90));
         let reload = ask(TileRequest {
-            reload: true,
+            job: TileJob::Revalidate,
             takes_stale: false,
             ..first(150, TileIndex::new(z, x, y))
         });

@@ -336,13 +336,7 @@ impl Map {
 
     /// A tile's load answered with heights given before: its result, made
     /// here and applied as any arrival.
-    pub(crate) fn load_heights(
-        &mut self,
-        request: crate::TileRequest,
-        edit: Option<u64>,
-        terrain: bool,
-        packed: &Arc<Packed>,
-    ) {
+    pub(crate) fn load_heights(&mut self, request: crate::TileRequest, packed: &Arc<Packed>) {
         let result = match request.warp {
             true => Err("heights the app gives draw on the surface's own plane".to_string()),
             false => {
@@ -353,12 +347,13 @@ impl Map {
                         height: side,
                         pixels: crate::jobs::ImagePixels::Core(packed.bytes().to_vec()),
                     }),
-                    dem: terrain.then(|| Arc::clone(packed.grid())),
+                    dem: matches!(request.job, crate::TileJob::Dem(_))
+                        .then(|| Arc::clone(packed.grid())),
                     ..crate::TileResult::default()
                 }))
             }
         };
-        self.tile_done(&request, edit, terrain)(result);
+        self.tile_done(&request)(result);
     }
 
     /// Writes what the frame's budget allows of the batches going in, and
@@ -529,9 +524,9 @@ impl Map {
             self.host_heights
                 .shown
                 .insert((key, tile), Arc::clone(&packed));
-            for (request, edit, terrain) in self.host_tiles.answered_by_heights(key, tile) {
+            for request in self.host_tiles.answered_by_heights(key, tile) {
                 if Some(request.style) == current {
-                    self.load_heights(request, edit, terrain, &packed);
+                    self.load_heights(request, &packed);
                 }
             }
         }

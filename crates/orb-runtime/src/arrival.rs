@@ -15,6 +15,7 @@ use crate::map::*;
 use crate::meshes::*;
 use crate::resident::*;
 use crate::schedule::upload_bytes;
+use crate::worker::TileJob;
 use crate::{MapEvent, Progress};
 use orb_source::Awaited;
 use orb_source::endpoint::TileEndpoint;
@@ -39,8 +40,10 @@ impl Map {
         let clock = Arc::clone(&self.services.clock);
         while let Ok(message) = self.receiver.try_recv() {
             match message {
-                Message::Tile { edit: Some(_), .. } => self.inbox.edits.push_back(message),
-                Message::Tile { .. } => self.inbox.loads.push(message),
+                Message::Tile { ref job, .. } => match job.edit() {
+                    Some(_) => self.inbox.edits.push_back(message),
+                    None => self.inbox.loads.push(message),
+                },
                 message => self.apply_message(gpu, renderer, message),
             }
         }
@@ -163,14 +166,11 @@ impl Map {
     /// Whether `message` is a vector tile's result that may go up in
     /// pieces: one the view waits for, while no other tile does.
     fn splits(&self, message: &Message) -> bool {
-        let Message::Tile {
-            result, terrain, ..
-        } = message
-        else {
+        let Message::Tile { result, job, .. } = message else {
             return false;
         };
         let built = matches!(&**result, Ok(TileOutcome::Built(b)) if b.image.is_none());
-        built && !terrain && self.uploading.is_none()
+        built && *job == TileJob::Load && self.uploading.is_none()
     }
 
     /// What applying a result may write of a vector tile's words this
@@ -190,8 +190,7 @@ impl Map {
             generation,
             source,
             tile,
-            edit,
-            terrain,
+            job,
             result,
         } = message
         else {
@@ -201,7 +200,7 @@ impl Map {
             return 0;
         };
         let wanted = *generation == self.tile_generation
-            && (edit.is_some() || *terrain || self.awaited(*source, *tile) == Awaited::Wanted);
+            && (*job != TileJob::Load || self.awaited(*source, *tile) == Awaited::Wanted);
         if wanted { upload_bytes(build) } else { 0 }
     }
 
@@ -227,7 +226,7 @@ impl Map {
             generation,
             source,
             tile,
-            terrain,
+            job,
             ..
         } = message
         else {
@@ -237,6 +236,7 @@ impl Map {
             .style
             .as_ref()
             .filter(|_| *generation == self.tile_generation);
+        let terrain = matches!(job, TileJob::Dem(_));
         let (endpoint, tier) = style.and_then(|style| match terrain {
             true => (style.terrain.get())
                 .filter(|t| t.key == *source)
@@ -255,7 +255,7 @@ impl Map {
                 }
             }
         })?;
-        (*terrain || self.awaited(*source, *tile) == Awaited::Wanted).then_some(())?;
+        (terrain || self.awaited(*source, *tile) == Awaited::Wanted).then_some(())?;
         let order = crate::frame::fetch_order(&endpoint.tms, self.camera.state().target);
         Some(order(*tile, tier))
     }
@@ -431,8 +431,7 @@ impl Map {
             generation,
             source,
             tile,
-            edit,
-            terrain,
+            job,
             result,
         } = message
         else {
@@ -449,17 +448,17 @@ impl Map {
             Ok(TileOutcome::Built(build)) => Some(HostData::of(build)),
             _ => None,
         };
-        if let Some(edit) = edit {
+        if let Some(edit) = job.edit() {
             self.finish_job(edit);
         }
         let mut kept = false;
         if generation == self.tile_generation {
             // Loads given up, missing or failed brought nothing.
             self.tiles_arrived +=
-                u32::from(edit.is_none() && matches!(result, Ok(TileOutcome::Built(_))));
-            match edit {
+                u32::from(job.edit().is_none() && matches!(result, Ok(TileOutcome::Built(_))));
+            match job {
                 // A DEM tile's texels go up whole, against the frame's bytes.
-                None if terrain => {
+                TileJob::Dem(_) => {
                     let bytes = match &result {
                         Ok(TileOutcome::Built(build)) => upload_bytes(build),
                         _ => 0,
@@ -467,7 +466,7 @@ impl Map {
                     self.apply_terrain_tile(gpu, renderer, source, tile, result);
                     self.beat.spend(bytes);
                 }
-                None => {
+                TileJob::Load => {
                     let mut reserved = None;
                     let applied = self.apply_tile_with(
                         gpu,
@@ -479,7 +478,12 @@ impl Map {
                     );
                     kept = self.settle_applied(renderer, (generation, source, tile), applied);
                 }
-                Some(_) => self.apply_edit(gpu, renderer, source, tile, result),
+                TileJob::Revalidate
+                | TileJob::Reload { .. }
+                | TileJob::Relayout { .. }
+                | TileJob::Columns { .. } => {
+                    self.apply_edit(gpu, renderer, (source, tile), &job, result)
+                }
             }
         }
         // Uploaded or dropped, the result's host data is done.
@@ -1086,8 +1090,12 @@ impl Map {
                 .extend(remove_resident(renderer, unwanted, &mut style.states));
         }
         if !stale.is_empty() {
-            let version = self.version;
-            self.send_edit_job(source, tile, Some(stale), false, version);
+            let edit = self.version;
+            self.send_edit_job(
+                source,
+                tile,
+                crate::TileJob::Relayout { edit, nodes: stale },
+            );
         }
         Applied::Done
     }

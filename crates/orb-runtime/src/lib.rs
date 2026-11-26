@@ -105,4 +105,4 @@ pub use symbol::SpriteIcons;
 pub use terrain::{TerrainElevation, apply_pyramid_delta, pyramid_delta};
 pub use tile::TileBuild;
 pub use turns::{FetchCounts, LoadKey, Start, Turn, Turns, YIELDING};
-pub use worker::{Built, DemUnpack, StyleUpdate, TileRequest, TileWorker};
+pub use worker::{Built, DemUnpack, StyleUpdate, TileJob, TileRequest, TileWorker};

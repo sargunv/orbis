@@ -324,7 +324,11 @@ impl Jobs for PoolJobs {
 
     fn load(&self, request: TileRequest, done: TileDone) {
         let (decode, executor) = (Arc::clone(&self.decode), Arc::clone(&self.executor));
-        let (dem_unpack, rank) = (request.dem_unpack, request.rank);
+        let dem_unpack = match request.job {
+            crate::TileJob::Dem(unpack) => Some(unpack),
+            _ => None,
+        };
+        let rank = request.rank;
         self.host.load(
             request,
             None,
@@ -446,14 +450,12 @@ pub struct TileResult {
     /// (Unix seconds), if it came fresh: a map drawing it then loads it
     /// again. `None` for a relayout of some of its nodes.
     pub fresh_until: Option<u64>,
-    /// It answers a reload of a drawn tile whose data expired
-    /// ([`TileRequest::reload`](crate::TileRequest)): `fresh_until` is the
-    /// tile's new lifetime.
-    pub reload: bool,
-    /// The reload brought the bytes drawn again: nothing is laid out, and
-    /// the tile stays as drawn, fresh until `fresh_until` if it says.
+    /// A revalidation of a drawn tile whose data expired
+    /// ([`TileJob::Revalidate`](crate::TileJob::Revalidate)) brought the
+    /// bytes drawn again: nothing is laid out, and the tile stays as
+    /// drawn, fresh until `fresh_until` if it says.
     pub renewed: bool,
-    /// The reload renewed nothing: no server answered it, a cached copy
+    /// The revalidation renewed nothing: no server answered it, a cached copy
     /// standing in ([`orb_host::Fetched::stale`]), so the tile stays as
     /// drawn and loads again later.
     pub stale: bool,
@@ -461,8 +463,6 @@ pub struct TileResult {
     pub revision: u64,
     /// Keys of the nodes laid out; those without a mesh have no features.
     pub nodes: Vec<u32>,
-    /// Meshes carry property rows only (a column job).
-    pub rows_only: bool,
     /// Laid out as a neighbour of the tile Tile mode draws: only what
     /// reaches into the tiles beside it.
     pub neighbour: bool,
@@ -718,7 +718,6 @@ impl From<TileBuild> for TileResult {
             symbols,
             revision: build.revision,
             nodes: build.nodes,
-            rows_only: build.rows_only,
             neighbour: build.neighbour,
             ids: build.ids,
             payload: Payload::Core(arena.words),
@@ -727,7 +726,6 @@ impl From<TileBuild> for TileResult {
             glyphs_failed: build.glyphs_failed,
             labels_later: build.labels_later,
             fresh_until: build.fresh_until,
-            reload: build.reload,
             renewed: build.renewed,
             stale: build.stale,
             image: None,

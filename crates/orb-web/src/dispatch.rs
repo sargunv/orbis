@@ -100,10 +100,12 @@ struct State {
     done: u32,
 }
 
-/// A load's style, source and tile.
+/// A job's style, source and tile.
 type LoadKey = (u64, u32, TileIndex);
 
-fn load_key(request: &TileRequest) -> LoadKey {
+/// The tile `request`'s job is of, whatever its kind: losing its worker
+/// counts against the tile ([`QUARANTINE`]).
+fn tile_key(request: &TileRequest) -> LoadKey {
     (request.style, request.source, request.tile)
 }
 
@@ -183,7 +185,7 @@ impl WorkerJobs {
                     failed.push(id);
                     continue;
                 };
-                let n = state.lost_loads.entry(load_key(&request)).or_default();
+                let n = state.lost_loads.entry(tile_key(&request)).or_default();
                 *n = n.saturating_add(1);
                 if let Some(done) = state.pending.remove(&id) {
                     loads.push((request, done));
@@ -212,7 +214,7 @@ impl WorkerJobs {
             self.raster(request, done);
         }
         for (request, done) in loads {
-            if self.quarantined(load_key(&request)) {
+            if self.quarantined(tile_key(&request)) {
                 done(Ok(quarantine(format!(
                     "tile {} is left out from now on: {message} loading it a second time",
                     request.tile
@@ -303,7 +305,7 @@ impl WorkerJobs {
         if answered {
             state.suspect = None;
             if let Some((_, Some(request))) = &sent {
-                state.lost_loads.remove(&load_key(request));
+                state.lost_loads.remove(&tile_key(request));
             }
         }
         drop(state);
@@ -421,8 +423,9 @@ impl State {
 }
 
 impl WorkerJobs {
-    /// Sends a load to its tile's worker, in its `turn` (none for a
-    /// relayout), which it holds until the worker's fetch ends.
+    /// Sends a job to its tile's worker, in its `turn` (none for a
+    /// relayout or a column job), which it holds until the worker's fetch
+    /// ends.
     fn send_load(
         &self,
         mut request: TileRequest,
@@ -432,7 +435,7 @@ impl WorkerJobs {
     ) {
         request.rank = turn.as_ref().map_or(request.rank, Turn::rank);
         let (source, tile) = (request.source, request.data_tile());
-        let (key, abort) = (load_key(&request), turn.as_ref().map(|t| t.abort().clone()));
+        let abort = (request.load_key()).zip(turn.as_ref().map(|t| t.abort().clone()));
         self.send(
             |state| state.home(source, tile),
             Some(request.clone()),
@@ -449,7 +452,7 @@ impl WorkerJobs {
         );
         // A turn taken back (a load beside the view yielding to one of
         // the view's, or given up) stops the worker's fetch.
-        if let Some(abort) = abort {
+        if let Some((key, abort)) = abort {
             let me = self.me.clone();
             abort.on_abort(move || {
                 if let Some(jobs) = me.upgrade() {
@@ -459,14 +462,12 @@ impl WorkerJobs {
         }
     }
 
-    /// Tells the worker a sent whole load of `key` went to that it's given
-    /// up.
+    /// Tells the worker a sent load of `key` went to that it's given up.
     fn stop_sent(&self, key: LoadKey) {
         let worker = {
             let state = self.state.lock().expect("jobs poisoned");
-            state.sent_to.values().find_map(|(worker, request)| {
-                let request = request.as_ref()?;
-                (load_key(request) == key && request.nodes.is_none()).then_some(*worker)
+            (state.sent_to.values()).find_map(|(worker, request)| {
+                (request.as_ref()?.load_key() == Some(key)).then_some(*worker)
             })
         };
         if let Some(worker) = worker {
@@ -578,7 +579,7 @@ impl Jobs for WorkerJobs {
     fn load(&self, request: TileRequest, done: TileDone) {
         let suspect = {
             let mut state = self.state.lock().expect("jobs poisoned");
-            match state.lost_loads.get(&load_key(&request)) {
+            match state.lost_loads.get(&tile_key(&request)) {
                 Some(&n) if n >= QUARANTINE => {
                     drop(state);
                     return done(Ok(quarantine(String::new())));
@@ -593,7 +594,7 @@ impl Jobs for WorkerJobs {
         if !request.loads_whole() {
             return self.send_load(request, done, suspect, None);
         }
-        let (me, key, rank) = (self.me.clone(), load_key(&request), request.rank);
+        let (me, key, rank) = (self.me.clone(), request.load_key(), request.rank);
         let start: orb_runtime::Start = Box::new(move |turn| {
             let Some(turn) = turn else {
                 return done(Ok(TileOutcome::Cancelled));
@@ -603,7 +604,7 @@ impl Jobs for WorkerJobs {
                 None => done(Ok(TileOutcome::Cancelled)),
             }
         });
-        self.turns.wait(rank, Some(key), start);
+        self.turns.wait(rank, key, start);
     }
 
     fn cancel(&self, style: u64, source: u32, tile: TileIndex) {

@@ -21,18 +21,13 @@ const KEPT: usize = 1024;
 /// A source's key and a data tile.
 type Key = (u32, TileIndex);
 
-/// A job held for the app's answer: its request, its edit, and whether
-/// it loads a DEM tile for the terrain.
-pub(crate) type Waiting = (TileRequest, Option<u64>, bool);
-
 #[derive(Debug, Default)]
 pub(crate) struct HostTiles {
     answers: HashMap<Key, HostTile>,
     /// Oldest answer first.
     order: VecDeque<Key>,
-    /// Jobs held for an answer, their edits, and whether each is the
-    /// terrain's.
-    waiting: HashMap<Key, Vec<Waiting>>,
+    /// Jobs held for an answer.
+    waiting: HashMap<Key, Vec<TileRequest>>,
     /// Loads under way with an answer a reload forgot, by source and
     /// tile: each lands nowhere, and its tile is asked for again.
     stale: HashSet<Key>,
@@ -44,7 +39,7 @@ impl HostTiles {
     }
 
     /// Holds a job until the app answers; true when the app must be asked.
-    pub(crate) fn wait(&mut self, source: u32, tile: TileIndex, job: Waiting) -> bool {
+    pub(crate) fn wait(&mut self, source: u32, tile: TileIndex, job: TileRequest) -> bool {
         let waiting = self.waiting.entry((source, tile)).or_default();
         waiting.push(job);
         waiting.len() == 1
@@ -57,7 +52,7 @@ impl HostTiles {
 
     /// The jobs that waited for a tile the app answered with heights
     /// ([`crate::host_heights`]), which keeps them itself.
-    pub(crate) fn answered_by_heights(&mut self, source: u32, tile: TileIndex) -> Vec<Waiting> {
+    pub(crate) fn answered_by_heights(&mut self, source: u32, tile: TileIndex) -> Vec<TileRequest> {
         self.answers.remove(&(source, tile));
         self.waiting.remove(&(source, tile)).unwrap_or_default()
     }
@@ -68,7 +63,7 @@ impl HostTiles {
         source: u32,
         tile: TileIndex,
         answer: HostTile,
-    ) -> Vec<Waiting> {
+    ) -> Vec<TileRequest> {
         let key = (source, tile);
         if self.answers.insert(key, answer).is_none() {
             self.order.push_back(key);
@@ -96,7 +91,7 @@ impl HostTiles {
         let mut held = HashSet::default();
         for (key, jobs) in &self.waiting {
             if key.0 == source {
-                held.extend(jobs.iter().map(|(request, ..)| request.tile));
+                held.extend(jobs.iter().map(|request| request.tile));
                 if which(key.1) {
                     asked.push(key.1);
                 }

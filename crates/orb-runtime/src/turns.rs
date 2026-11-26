@@ -211,8 +211,8 @@ impl Turns {
 
     /// Runs `start` in its turn: at once while fewer than the limit run,
     /// or once one ends and none ranked lower waits. A load (`key`) its
-    /// map may give up, reorder and count; a fetch with none (a relayout's
-    /// data, say) just takes a turn.
+    /// map may give up, reorder and count; a fetch with none (a drawn
+    /// tile's reload, say) just takes a turn.
     pub fn wait(&self, rank: u64, key: Option<LoadKey>, start: Start) {
         let mut state = self.0.lock().expect("turns poisoned");
         let order = state.queued;

@@ -19,7 +19,7 @@ use js_sys::ArrayBuffer;
 use orb_hal::Gpu as _;
 use orb_runtime::{
     DemUnpack, ImageKind, ImagePixels, JobHost, JobReply, JobRequest, Loaded, TileBuild, TileImage,
-    TileResult, pack, packed_header, unpack,
+    TileJob, TileResult, pack, packed_header, unpack,
 };
 use orb_wire as wire;
 use wasm_bindgen::JsCast;
@@ -278,7 +278,10 @@ impl JobWorker {
                 (id, None)
             }
             JobRequest::Load { id, request } => {
-                let dem_unpack = request.dem_unpack;
+                let dem_unpack = match request.job {
+                    TileJob::Dem(unpack) => Some(unpack),
+                    _ => None,
+                };
                 let fetched = Box::new(move || {
                     let message = reply(&JobReply::Fetched { id }, None, None);
                     NOTIFY.with(|n| {

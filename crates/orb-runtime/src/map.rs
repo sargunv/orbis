@@ -28,7 +28,7 @@ use crate::resident::*;
 use crate::state::FeatureStates;
 use crate::style::StylePlan;
 use crate::turns::FetchCounts;
-use crate::worker::{StyleUpdate, TileRequest, TileWorker};
+use crate::worker::{StyleUpdate, TileJob, TileRequest, TileWorker};
 use orb_source::endpoint::{TileEndpoint, TileLocation};
 
 /// Logical pixel size of vector/background tiles and pattern origins.
@@ -38,6 +38,20 @@ pub(crate) const TILE_PX: f64 = 512.0;
 /// edit's, so the map waits for them but [`Map::generation`] passes over
 /// them, no edit having been made.
 const RELOAD: u64 = 0;
+
+impl TileJob {
+    /// The edit generation the job counts under until it applies
+    /// ([`Map::generation`]): `None` for a load.
+    pub(crate) fn edit(&self) -> Option<u64> {
+        match self {
+            TileJob::Load | TileJob::Dem(_) => None,
+            TileJob::Revalidate => Some(RELOAD),
+            TileJob::Reload { edit }
+            | TileJob::Relayout { edit, .. }
+            | TileJob::Columns { edit, .. } => Some(*edit),
+        }
+    }
+}
 
 /// GPU images shared by the maps in one Runtime / host-service set. The
 /// first render initializes them on that Runtime's device.
@@ -401,11 +415,8 @@ pub(crate) enum Message {
         /// The source's key.
         source: u32,
         tile: TileIndex,
-        /// The style generation of the edit a relayout or column job is
-        /// for; `None` for a load.
-        edit: Option<u64>,
-        /// A DEM tile for the terrain rather than for the source's layers.
-        terrain: bool,
+        /// What the job did.
+        job: TileJob,
         /// Boxed: the other messages are much smaller.
         result: Box<Result<crate::TileOutcome, String>>,
     },
@@ -1275,7 +1286,14 @@ impl Map {
         self.services.jobs.retry_glyphs();
         let version = self.version;
         for (index, tile, nodes) in relayout {
-            self.send_edit_job(index, tile, Some(nodes), false, version);
+            self.send_edit_job(
+                index,
+                tile,
+                TileJob::Relayout {
+                    edit: version,
+                    nodes,
+                },
+            );
         }
     }
 
@@ -2663,43 +2681,34 @@ impl Map {
             .style_height_scale(self.camera.state().target)
     }
 
-    /// Sends the job edit generation `edit` asks of resident tile `tile`
-    /// of source `index`: laying out `nodes` (every node for `None`) again,
-    /// or with `rows_only` evaluating their property rows.
-    pub(crate) fn send_edit_job(
-        &mut self,
-        index: usize,
-        tile: TileIndex,
-        nodes: Option<Vec<u32>>,
-        rows_only: bool,
-        edit: u64,
-    ) {
+    /// Sends `job`, an edit's, to resident tile `tile` of source `index`.
+    pub(crate) fn send_edit_job(&mut self, index: usize, tile: TileIndex, job: TileJob) {
         // A neighbour's relayouts and rows lay out as it did: its meshes
         // hold its features at the edges alone.
         let style = self.style.as_ref().expect("jobs need a style");
         let neighbour = matches!(&style.sources[index],
             SourceState::Ready { pyramid, .. } if pyramid.get(tile).is_some_and(|r| r.neighbour));
         // Relayouts are of tiles drawn now: they go first.
-        self.send_tile_job(index, tile, (nodes, rows_only, neighbour), Some(edit), 0);
+        self.send_tile_job(index, tile, job, neighbour, 0);
     }
 
-    /// Sends a tile job for source `index`: a load, or edit generation
-    /// `edit`'s job ([`send_edit_job`](Self::send_edit_job)); for a
-    /// neighbour of the tile Tile mode draws if `neighbour`
-    /// ([`TileRequest::neighbour`]), in its place `rank` in the load order
-    /// ([`TileRequest::rank`]).
+    /// Sends `job` for tile `tile` of source `index`: a load, or an edit's
+    /// job ([`send_edit_job`](Self::send_edit_job)); for a neighbour of
+    /// the tile Tile mode draws if `neighbour` ([`TileRequest::neighbour`]),
+    /// in its place `rank` in the load order ([`TileRequest::rank`]).
     pub(crate) fn send_tile_job(
         &mut self,
         index: usize,
         tile: TileIndex,
-        (nodes, rows_only, neighbour): (Option<Vec<u32>>, bool, bool),
-        edit: Option<u64>,
+        job: TileJob,
+        neighbour: bool,
         rank: u64,
     ) {
         let style = self.style.as_mut().expect("jobs need a style");
         let key = style.worker.plan().sources[index].key;
+        let load = job == TileJob::Load;
         // A video's tile waits for a frame from the host.
-        if edit.is_none()
+        if load
             && self
                 .videos
                 .want(style.worker.plan(), index, tile, &mut self.events.queue)
@@ -2751,13 +2760,10 @@ impl Map {
             // there (on a globe, through a grid the sphere bends).
             warp: warped && !vector && endpoint.quad.is_none() && self.surface.globe().is_none(),
             data_zoom: tile.z.min(endpoint.maxzoom),
-            nodes,
-            rows_only,
             neighbour,
             rank,
             asked_at: (self.services.clock.unix_ms() / 1000.0) as u64,
-            reload: edit == Some(RELOAD),
-            takes_stale: edit.is_none() && self.mode == RenderMode::Continuous,
+            takes_stale: load && self.mode == RenderMode::Continuous,
             ..TileRequest::whole(style.id, key, tile, location, endpoint.encoding)
         };
         // Symbol layout needs the sprites' metadata: while the sprites load,
@@ -2769,46 +2775,39 @@ impl Map {
         {
             request.icons = style.icons.epoch + 1;
         }
-        match (edit, rows_only) {
-            (None, _) => self.counts.loads += 1,
-            (Some(_), false) => self.counts.relayouts += 1,
-            (Some(_), true) => self.counts.columns += 1,
+        match &job {
+            TileJob::Load | TileJob::Dem(_) => self.counts.loads += 1,
+            TileJob::Revalidate | TileJob::Reload { .. } | TileJob::Relayout { .. } => {
+                self.counts.relayouts += 1
+            }
+            TileJob::Columns { .. } => self.counts.columns += 1,
         }
-        if let Some(edit) = edit {
+        if let Some(edit) = job.edit() {
             *self.pending.entry(edit).or_default() += 1;
         }
+        request.job = job;
         // A tile of a source the app feeds goes with the app's answer.
         match host {
-            true => self.load_host(index, key, request, edit, false),
-            false => self.load(request, edit, false),
+            true => self.load_host(index, key, request),
+            false => self.load(request),
         }
     }
 
     /// Loads a tile of source `index` (keyed `key`), which the app feeds,
     /// with the app's answer: its heights or tile, or once it answers.
-    fn load_host(
-        &mut self,
-        index: usize,
-        key: u32,
-        mut request: TileRequest,
-        edit: Option<u64>,
-        terrain: bool,
-    ) {
+    fn load_host(&mut self, index: usize, key: u32, mut request: TileRequest) {
         let data_tile = request.data_tile();
         if let Some(packed) = self.host_heights.answer(key, data_tile) {
             let packed = Arc::clone(packed);
-            return self.load_heights(request, edit, terrain, &packed);
+            return self.load_heights(request, &packed);
         }
         match self.host_tiles.answer(key, data_tile) {
             Some(answer) => {
                 request.location = crate::TileLocation::Host(answer.clone());
-                self.load(request, edit, terrain);
+                self.load(request);
             }
             None => {
-                if self
-                    .host_tiles
-                    .wait(key, data_tile, (request, edit, terrain))
-                {
+                if self.host_tiles.wait(key, data_tile, request) {
                     let style = self.style.as_ref().expect("jobs need a style");
                     let source = style.worker.plan().source_def(index).id.clone();
                     self.events.push(crate::MapEvent::TileRequest {
@@ -2854,11 +2853,11 @@ impl Map {
         }
         let (key, current) = (plan.sources[index].key, style.id);
         self.host_heights.forget(key, &|t| t == tile);
-        for (mut request, edit, terrain) in self.host_tiles.answered(key, tile, answer.clone()) {
+        for mut request in self.host_tiles.answered(key, tile, answer.clone()) {
             // Jobs of a replaced style have nothing to lay out.
             if request.style == current {
                 request.location = crate::TileLocation::Host(answer.clone());
-                self.load(request, edit, terrain);
+                self.load(request);
             }
         }
         self.events.wake();
@@ -2945,12 +2944,12 @@ impl Map {
                 self.host_tiles.stale(key, tile);
             }
         }
-        // Relayouts of the resident tiles, as an edit's: each replaces its
-        // tile's layers when it arrives.
-        let version = self.version;
+        // The resident tiles load again, as an edit's relayouts: each
+        // replaces its tile's layers when it arrives.
+        let edit = self.version;
         for tile in self.resident_tiles(index, None) {
             if picks(tile) {
-                self.send_edit_job(index, tile, None, false, version);
+                self.send_edit_job(index, tile, TileJob::Reload { edit });
             }
         }
         self.events.wake();
@@ -2988,7 +2987,7 @@ impl Map {
             }
         }
         for (index, tile) in expired {
-            self.send_edit_job(index, tile, None, false, RELOAD);
+            self.send_edit_job(index, tile, TileJob::Revalidate);
         }
         next.map(|until| std::time::Duration::from_secs_f64((until as f64 - now / 1000.0).max(0.0)))
     }
@@ -3032,25 +3031,20 @@ impl Map {
     }
 
     /// Sends a request to the jobs; its result comes back as a message.
-    pub(crate) fn load(&mut self, request: TileRequest, edit: Option<u64>, terrain: bool) {
-        let done = self.tile_done(&request, edit, terrain);
+    pub(crate) fn load(&mut self, request: TileRequest) {
+        let done = self.tile_done(&request);
         self.services.jobs.load(request, done);
     }
 
-    /// What answers `request`'s load into the map's inbox.
-    pub(crate) fn tile_done(
-        &self,
-        request: &TileRequest,
-        edit: Option<u64>,
-        terrain: bool,
-    ) -> crate::TileDone {
+    /// What answers `request`'s job into the map's inbox.
+    pub(crate) fn tile_done(&self, request: &TileRequest) -> crate::TileDone {
         let (generation, source, tile) = (self.tile_generation, request.source, request.tile);
+        let job = request.job.clone();
         self.reply(move |result| Message::Tile {
             generation,
             source,
             tile,
-            edit,
-            terrain,
+            job,
             result: Box::new(result),
         })
     }
@@ -3276,7 +3270,7 @@ impl Map {
             let location = endpoint.location(tile);
             loads.push(TileRequest {
                 zoom: endpoint.tms.style_zoom(tile),
-                dem_unpack: endpoint.dem_unpack.map(crate::DemUnpack),
+                job: TileJob::Dem(crate::DemUnpack(endpoint.dem_unpack.expect("raster-dem"))),
                 rank: order(tile, Tier::View),
                 ..TileRequest::whole(style.id, terrain.key, tile, location, endpoint.encoding)
             });
@@ -3290,8 +3284,8 @@ impl Map {
         let (host, index, key) = (endpoint.host(), terrain.source, terrain.key);
         for request in loads {
             match host {
-                true => self.load_host(index, key, request, None, true),
-                false => self.load(request, None, true),
+                true => self.load_host(index, key, request),
+                false => self.load(request),
             }
         }
         Some(frame)

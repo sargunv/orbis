@@ -384,7 +384,7 @@ impl Map {
         };
         for (tile, rank) in requests.into_iter().zip(ranks) {
             let neighbour = neighbours.contains(&tile);
-            self.send_tile_job(index, tile, (None, false, neighbour), None, rank);
+            self.send_tile_job(index, tile, crate::TileJob::Load, neighbour, rank);
         }
     }
 
