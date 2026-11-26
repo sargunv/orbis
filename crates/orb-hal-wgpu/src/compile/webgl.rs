@@ -209,7 +209,7 @@ fn poll_links(
     while at < state.linking.len() {
         let link = &state.linking[at];
         let polled = match &link.built {
-            Built::Render(_, pipeline) if which(link) => poll_link(device, pipeline),
+            Built::Render(pipeline) if which(link) => poll_link(device, pipeline),
             _ => None,
         };
         let Some(result) = polled else {

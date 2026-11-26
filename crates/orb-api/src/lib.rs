@@ -34,9 +34,9 @@ pub use orb_camera::{
 };
 pub use orb_crs::{Geodetic, Projection, TileIndex, TileMatrixSet};
 pub use orb_hal::GpuCounters;
+pub use orb_hal_wgpu::{Fault, RawSurface, SubmitTimes, Surface};
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use orb_hal_wgpu::{MetalTexture, metal_texture};
-pub use orb_hal_wgpu::{RawSurface, SubmitTimes, Surface};
 pub use orb_host::abort::Listening;
 pub use orb_host::{
     Abort, FetchError, NetworkAnswer, NetworkDone, NetworkHook, NetworkRequest, Prior,
@@ -181,10 +181,12 @@ pub struct RuntimeStats {
     /// Each pipeline compiled so far and how long it took, in the order
     /// they finished (pipelines created cold and warm).
     pub pipeline_timings: Vec<(String, std::time::Duration)>,
-    /// The compile the watchdog found hung, or the pipeline the driver
-    /// couldn't make, if one was: the GPU is then lost, and frames fail
-    /// with the reason.
-    pub hung_compile: Option<String>,
+    /// What kept a compile from finishing, if anything did: the compile
+    /// the watchdog found hung, or the pipeline the driver couldn't make.
+    /// A hang loses the GPU, and frames fail with the reason; a failure
+    /// loses it natively, but not on the web or under injected failures,
+    /// where the map draws on without that pipeline.
+    pub compile_fault: Option<Fault>,
     /// What the HTTP cache holds, if there is one.
     pub http_cache: Option<CacheStats>,
     /// Bytes the offline regions keep on disk.
@@ -369,7 +371,7 @@ impl Runtime {
                     counters: GpuCounters::default(),
                     pipeline_time: std::time::Duration::ZERO,
                     pipeline_timings: Vec::new(),
-                    hung_compile: None,
+                    compile_fault: None,
                     http_cache: self.shared.fetch.cache().map(|c| c.stats()),
                     region_bytes: self.region_bytes(),
                     max_texture_size: 0,
@@ -385,7 +387,7 @@ impl Runtime {
             counters: orb_hal::Gpu::counters(&*gpu),
             pipeline_time: gpu.pipeline_time(),
             pipeline_timings: gpu.pipeline_timings().to_vec(),
-            hung_compile: gpu.hung().map(str::to_owned),
+            compile_fault: gpu.fault().cloned(),
             live_resources: orb_hal::Gpu::live_resources(&*gpu),
             http_cache: self.shared.fetch.cache().map(|c| c.stats()),
             region_bytes: self.region_bytes(),
@@ -462,12 +464,12 @@ impl Runtime {
         } else {
             std::time::Duration::ZERO
         };
-        let hung = self.shared.opened().and_then(|mut gpu| {
+        let fault = self.shared.opened().and_then(|mut gpu| {
             gpu.settle_loss(wait);
-            gpu.hung().map(str::to_owned)
+            gpu.fault().cloned()
         });
-        if let Some(hung) = hung {
-            return Err(recovery.fail(format!("the GPU driver hung or failed making {hung}")));
+        if let Some(fault) = fault {
+            return Err(recovery.fail(format!("the GPU driver {fault}")));
         }
         let now = std::time::Instant::now();
         let due = match recovery.due {

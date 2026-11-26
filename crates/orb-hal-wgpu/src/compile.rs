@@ -268,11 +268,11 @@ pub(crate) enum Job {
     Compute(u32, ComputeJob),
 }
 
-/// A compiled pipeline for its slot.
+/// A compiled pipeline.
 #[derive(Debug)]
 pub(crate) enum Built {
-    Render(u32, wgpu::RenderPipeline),
-    Compute(u32, wgpu::ComputePipeline),
+    Render(wgpu::RenderPipeline),
+    Compute(wgpu::ComputePipeline),
 }
 
 /// A finished compile: the pipeline, or why it failed.
@@ -305,11 +305,10 @@ impl Job {
         #[cfg(not(target_arch = "wasm32"))]
         dump::job(self);
         Ok(match self {
-            Self::Render(slot, job) => Built::Render(*slot, job.build(device)?),
-            Self::Compute(slot, job) => {
+            Self::Render(_, job) => Built::Render(job.build(device)?),
+            Self::Compute(_, job) => {
                 let (module, constants) = job.compute.module(device)?;
                 Built::Compute(
-                    *slot,
                     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                         label: Some(&job.label),
                         layout: Some(&job.layout),
@@ -735,13 +734,6 @@ mod native {
             *self.shared.fail.lock().expect("compile watch poisoned") = labels;
         }
 
-        /// Whether compiles of pipelines labelled `label` fail by fault
-        /// injection.
-        pub(crate) fn fails_on_purpose(&self, label: &str) -> bool {
-            let fail = self.shared.fail.lock().expect("compile watch poisoned");
-            fail.iter().any(|l| l == label)
-        }
-
         /// Moves a queued job to the front.
         pub(crate) fn prioritize(&mut self, id: PipelineId) {
             let mut queue = self.shared.queue.lock().expect("compile queue poisoned");
@@ -785,14 +777,15 @@ mod native {
             }
         }
 
-        /// A compile that has run past the watchdog's limit: its label.
-        pub(crate) fn hung(&self) -> Option<String> {
+        /// A compile that has run past the watchdog's limit.
+        pub(crate) fn hung(&self) -> Option<crate::Fault> {
             let limit = *self.shared.limit.lock().expect("compile watch poisoned");
             let busy = self.shared.busy.lock().expect("compile watch poisoned");
             busy.iter()
                 .find(|(.., since)| since.elapsed() > limit)
-                .map(|(_, label, since)| {
-                    format!("{label} ({:.1} s)", since.elapsed().as_secs_f64())
+                .map(|(_, label, since)| crate::Fault::Hung {
+                    label: label.clone(),
+                    after: since.elapsed(),
                 })
         }
     }
@@ -1203,12 +1196,10 @@ mod webgpu {
         let id = job.id();
         let device = state.device.get().expect("set with the job");
         let built = result.map(|pipeline| match &job {
-            Job::Render(slot, _) => Built::Render(
-                *slot,
+            Job::Render(..) => Built::Render(
                 device.create_render_pipeline_from_webgpu_handle(pipeline.unchecked_into()),
             ),
-            Job::Compute(slot, _) => Built::Compute(
-                *slot,
+            Job::Compute(..) => Built::Compute(
                 device.create_compute_pipeline_from_webgpu_handle(pipeline.unchecked_into()),
             ),
         });

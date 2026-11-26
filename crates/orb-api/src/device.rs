@@ -13,7 +13,7 @@ const FAULT: &str = "ORB_FAULT_INJECTION";
 /// A device on the default adapter, and which adapter it is: a phrase for
 /// diagnostics.
 pub(crate) fn make() -> Result<(WgpuGpu, String), Error> {
-    let gpu = pollster::block_on(WgpuGpu::offscreen()).map_err(Error::Native)?;
+    let mut gpu = pollster::block_on(WgpuGpu::offscreen()).map_err(Error::Native)?;
     let info = gpu
         .adapter_info()
         .expect("offscreen devices keep their adapter");

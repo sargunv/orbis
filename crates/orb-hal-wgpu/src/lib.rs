@@ -152,15 +152,17 @@ pub struct WgpuGpu {
     shader_modules: Slots<compile::Shared<compile::Module>>,
     bind_group_layouts: Slots<BindGroupLayout>,
     bind_groups: Slots<wgpu::BindGroup>,
-    /// `None` while compiling.
-    render_pipelines: Slots<Option<wgpu::RenderPipeline>>,
-    compute_pipelines: Slots<Option<wgpu::ComputePipeline>>,
+    /// Render and compute pipelines, their ids from one count.
+    pipelines: Slots<Compiled>,
     /// Zeros that WebGL 2's shaders read at `@location(0)`, a `u32` per
     /// instance ([`Caps::gl_shaders`], #179): set with every pipeline,
     /// and grown to the most instances a pass or bundle draws.
     attribute_zero: Option<wgpu::Buffer>,
     compiler: compile::Compiler,
-    /// Pipelines asked for and not yet compiled, background ones aside.
+    /// Pipelines asked for and not yet compiled, background ones aside:
+    /// those [`Compiled::Pending`] and not `background`, kept in step by
+    /// [`settle_pipeline`](Self::settle_pipeline) and the other
+    /// transitions.
     pending: u32,
     /// The surface texture a frame draws into, once a pass draws into it
     /// ([`register_surface`](Self::register_surface)).
@@ -169,16 +171,16 @@ pub struct WgpuGpu {
     /// Later requests are background ones
     /// ([`Gpu::set_background_compiles`]).
     background: bool,
-    /// Background pipelines compiling that no frame asked for.
-    background_pending: rustc_hash::FxHashSet<PipelineId>,
     /// Pipelines compiled that a frame asked for ([`PipelineCounts::made`]).
     made: u32,
-    /// A compile that ran past the watchdog's limit, or failed: the device
-    /// is lost.
-    hung: Option<String>,
-    /// Pipelines the driver failed to make, where the device lives on (the
-    /// web's): settled, what draws or dispatches with them does nothing.
-    failed: rustc_hash::FxHashSet<PipelineId>,
+    /// What kept a compile from finishing, if anything did.
+    fault: Option<Fault>,
+    /// A pipeline the driver fails to make loses the device: natively,
+    /// unless faults are injected ([`inject_failed_compile`](Self::inject_failed_compile)).
+    /// On the web the device lives on, and the map with it, drawing
+    /// without the pipeline.
+    #[cfg(not(target_arch = "wasm32"))]
+    failures_lose: bool,
     /// Each pipeline compiled, how long it took, in the order they
     /// finished.
     compiled: Vec<(String, std::time::Duration)>,
@@ -279,6 +281,56 @@ fn write_core(
     let _ = device;
     queue.write_buffer(&buffers[id.0], offset, data);
     true
+}
+
+/// Where a pipeline's compile has come to.
+#[derive(Debug)]
+enum Compiled {
+    /// Compiling; `background` while no frame has asked for it
+    /// ([`Gpu::set_background_compiles`]).
+    Pending {
+        background: bool,
+    },
+    Ready(compile::Built),
+    /// The driver failed to make it: what draws or dispatches with it does
+    /// nothing.
+    Failed,
+}
+
+/// A pipeline's slot in [`WgpuGpu`]'s table.
+fn slot(id: PipelineId) -> u32 {
+    match id {
+        PipelineId::Render(id) => id.0,
+        PipelineId::Compute(id) => id.0,
+    }
+}
+
+/// What kept a compile from finishing ([`WgpuGpu::fault`]). Another device
+/// on the same driver would do the same, so a map doesn't make one for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Fault {
+    /// A compile ran past the watchdog's limit, as in a driver hung in its
+    /// compiler: the device is lost.
+    Hung {
+        label: String,
+        after: std::time::Duration,
+    },
+    /// The driver failed to make a pipeline: natively the device is lost,
+    /// unless failures are injected; on the web, or under injection, it
+    /// lives on, drawing without what draws with it.
+    Failed { label: String, error: String },
+}
+
+/// As in "the GPU driver hung making …".
+impl std::fmt::Display for Fault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hung { label, after } => {
+                write!(f, "hung making {label} ({:.1} s)", after.as_secs_f64())
+            }
+            Self::Failed { label, error } => write!(f, "failed making pipeline {label}: {error}"),
+        }
+    }
 }
 
 /// What hosts registered with a device that lives in host memory rather
@@ -535,18 +587,17 @@ impl WgpuGpu {
             shader_modules: Slots::default(),
             bind_group_layouts: Slots::default(),
             bind_groups: Slots::default(),
-            render_pipelines: Slots::default(),
-            compute_pipelines: Slots::default(),
+            pipelines: Slots::default(),
             attribute_zero: None,
             compiler: compile::Compiler::new(),
             pending: 0,
             #[cfg(target_arch = "wasm32")]
             surface: None,
             background: false,
-            background_pending: Default::default(),
             made: 0,
-            hung: None,
-            failed: Default::default(),
+            fault: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            failures_lose: true,
             compiled: Vec::new(),
             render_bundles: Slots::default(),
             timing: None,
@@ -941,7 +992,7 @@ impl WgpuGpu {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn finish_pipelines(&mut self) {
         self.poll_pipelines();
-        while self.pending > 0 && self.hung.is_none() {
+        while self.pending > 0 && !matches!(self.fault, Some(Fault::Hung { .. })) {
             self.compiler.wait();
             self.poll_pipelines();
         }
@@ -995,12 +1046,13 @@ impl WgpuGpu {
         self.compiler.inject_hang();
     }
 
-    /// Makes later compiles of pipelines labelled one of `labels` fail, as
-    /// a driver that can't make them does on the web, where the device
-    /// lives on: fault injection for tests of maps drawing without them.
-    /// Needs compile threads.
+    /// Makes later compiles of pipelines labelled one of `labels` fail, and
+    /// the device live on past a failed compile, as on the web: fault
+    /// injection for tests of maps drawing without them. Needs compile
+    /// threads.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn inject_failed_compile(&self, labels: &[&str]) {
+    pub fn inject_failed_compile(&mut self, labels: &[&str]) {
+        self.failures_lose = false;
         self.compiler.inject_failure(labels);
     }
 
@@ -1019,21 +1071,21 @@ impl WgpuGpu {
         self.compiler.set_watchdog(limit);
     }
 
-    /// The compile that ran past the watchdog's limit, or failed, if one
-    /// did: the driver is taken to have hung, and the device is lost.
-    pub fn hung(&self) -> Option<&str> {
-        self.hung.as_deref()
+    /// What kept a compile from finishing, if anything did: a hang loses
+    /// the device, as does a failure natively.
+    pub fn fault(&self) -> Option<&Fault> {
+        self.fault.as_ref()
     }
 
     /// On a lost device, lets the compiles running finish (up to `wait`)
-    /// and takes them, so a pipeline whose compile lost the device is
-    /// [`hung`](Self::hung): a loss is checked for before frames take
+    /// and takes them, so a pipeline whose compile lost the device is its
+    /// [`fault`](Self::fault): a loss is checked for before frames take
     /// their compiles. The caller waits once per loss: a compile still
     /// running then (a slow compiler, a hung driver) mustn't stall every
     /// later check.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn settle_loss(&mut self, wait: std::time::Duration) {
-        if self.hung.is_none() && self.lost() {
+        if self.fault.is_none() && self.lost() {
             self.compiler.settle(wait);
             self.take_compiled(false);
         }
@@ -1050,53 +1102,37 @@ impl WgpuGpu {
         #[cfg(webgl)]
         let done = self.compiler.take(&self.device, compile);
         for done in done {
-            if !self.background_pending.remove(&done.id) {
-                self.pending -= 1;
-                self.made += 1;
-            }
             let built = match done.built {
-                Ok(built) => built,
+                Ok(built) => {
+                    self.count(|c| c.pipelines_compiled += 1);
+                    self.compiled.push((done.label, done.took));
+                    Compiled::Ready(built)
+                }
                 // A pipeline the driver can't make goes the way of a hung
-                // compile: natively the device is lost, and recovery
-                // demotes it. On the web the device lives on, and the map
-                // with it, drawing without the pipeline: it is settled,
-                // so nothing waits for it.
+                // compile natively: the device is lost, and recovery
+                // demotes it. Where the device lives on, so does the map,
+                // drawing without the pipeline: it is settled, so nothing
+                // waits for it.
                 Err(e) => {
-                    self.hung
-                        .get_or_insert_with(|| format!("pipeline {}: {e}", done.label));
                     #[cfg(not(target_arch = "wasm32"))]
-                    if !self.compiler.fails_on_purpose(&done.label) {
+                    if self.failures_lose {
                         self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                    let live = match done.id {
-                        PipelineId::Render(id) => self.render_pipelines.contains(id.0),
-                        PipelineId::Compute(id) => self.compute_pipelines.contains(id.0),
-                    };
-                    if live {
-                        self.failed.insert(done.id);
-                    }
-                    continue;
+                    self.fault.get_or_insert(Fault::Failed {
+                        label: done.label,
+                        error: e,
+                    });
+                    Compiled::Failed
                 }
             };
-            // A pipeline destroyed while it compiled is dropped.
-            match built {
-                compile::Built::Render(slot, p) if self.render_pipelines.contains(slot) => {
-                    self.render_pipelines.set(slot, Some(p));
-                }
-                compile::Built::Compute(slot, p) if self.compute_pipelines.contains(slot) => {
-                    self.compute_pipelines.set(slot, Some(p));
-                }
-                _ => {}
-            }
-            self.count(|c| c.pipelines_compiled += 1);
-            self.compiled.push((done.label, done.took));
+            self.settle_pipeline(done.id, built);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if self.hung.is_none()
+        if !matches!(self.fault, Some(Fault::Hung { .. }))
             && self.pending > 0
-            && let Some(label) = self.compiler.hung()
+            && let Some(hung) = self.compiler.hung()
         {
-            self.hung = Some(label);
+            self.fault = Some(hung);
             self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         self.gate_background();
@@ -1110,11 +1146,24 @@ impl WgpuGpu {
         self.compiler.open_background(&self.device, open);
     }
 
+    /// Settles a pipeline's compile (`state` is ready or failed): one
+    /// destroyed while it compiled is dropped.
+    fn settle_pipeline(&mut self, id: PipelineId, state: Compiled) {
+        let Some(entry) = self.pipelines.get_mut(slot(id)) else {
+            return;
+        };
+        if let Compiled::Pending { background: false } = entry {
+            self.pending -= 1;
+            self.made += 1;
+        }
+        *entry = state;
+    }
+
+    /// Asks for the compile of a pipeline just made pending: background,
+    /// or one a frame waits for.
     fn submit_job(&mut self, job: compile::Job, layouts: &[BindGroupLayoutId]) {
         let background = self.background;
-        if background {
-            self.background_pending.insert(job.id());
-        } else {
+        if !background {
             self.pending += 1;
             self.gate_background();
         }
@@ -1464,15 +1513,6 @@ impl WgpuGpu {
         }));
     }
 
-    /// Checks that `id`, a pipeline without its compiled one, is one the
-    /// driver failed to make, rather than one used before it compiled.
-    fn check_failed(&self, id: PipelineId) {
-        assert!(
-            self.failed.contains(&id),
-            "a pipeline used before it compiled"
-        );
-    }
-
     /// Encodes a command bundles may hold. `skip`, the encoder's: the
     /// pipeline set last failed, so its draws are left out until another
     /// is set.
@@ -1484,11 +1524,14 @@ impl WgpuGpu {
     ) {
         match command {
             RenderCommand::SetPipeline(id) => {
-                match &self.render_pipelines[id.0] {
-                    Some(pipeline) => pass.set_pipeline(pipeline),
-                    None => self.check_failed((*id).into()),
-                }
-                *skip = self.render_pipelines[id.0].is_none();
+                *skip = match &self.pipelines[id.0] {
+                    Compiled::Ready(compile::Built::Render(pipeline)) => {
+                        pass.set_pipeline(pipeline);
+                        false
+                    }
+                    Compiled::Failed => true,
+                    _ => panic!("render pipeline {} used before it compiled", id.0),
+                };
                 if let Some(zeros) = &self.attribute_zero {
                     pass.set_vertex_buffer(0, Some(zeros.slice(..)));
                 }
@@ -1936,10 +1979,12 @@ impl Gpu for WgpuGpu {
     }
 
     fn destroy_pipeline(&mut self, id: PipelineId) {
-        self.failed.remove(&id);
-        match id {
-            PipelineId::Render(id) => drop(self.render_pipelines.remove(id.0)),
-            PipelineId::Compute(id) => drop(self.compute_pipelines.remove(id.0)),
+        // Nothing waits for it now; its compile, when it lands, finds no
+        // slot and is dropped. Until then it is outside `pending`, so the
+        // watchdog and the present and background gates no longer cover it.
+        if let Compiled::Pending { background: false } = self.pipelines.remove(slot(id)) {
+            self.pending -= 1;
+            self.gate_background();
         }
     }
 
@@ -1950,8 +1995,7 @@ impl Gpu for WgpuGpu {
             self.shader_modules.len(),
             self.bind_group_layouts.len(),
             self.bind_groups.len(),
-            self.render_pipelines.len(),
-            self.compute_pipelines.len(),
+            self.pipelines.len(),
             self.render_bundles.len(),
             self.samplers.len(),
         ];
@@ -2078,7 +2122,9 @@ impl Gpu for WgpuGpu {
             cache: self.cache(),
         };
         self.count(|c| c.pipelines_requested += 1);
-        let slot = self.render_pipelines.insert(None);
+        let slot = self.pipelines.insert(Compiled::Pending {
+            background: self.background,
+        });
         self.submit_job(compile::Job::Render(slot, job), desc.bind_group_layouts);
         RenderPipelineId(slot)
     }
@@ -2096,33 +2142,33 @@ impl Gpu for WgpuGpu {
             cache: self.cache(),
         };
         self.count(|c| c.pipelines_requested += 1);
-        let slot = self.compute_pipelines.insert(None);
+        let slot = self.pipelines.insert(Compiled::Pending {
+            background: self.background,
+        });
         self.submit_job(compile::Job::Compute(slot, job), desc.bind_group_layouts);
         ComputePipelineId(slot)
     }
 
     fn pipeline_failed(&self, id: PipelineId) -> bool {
-        self.failed.contains(&id)
+        matches!(self.pipelines.get(slot(id)), Some(Compiled::Failed))
     }
 
     fn pipeline_ready(&mut self, id: PipelineId) -> bool {
         // A destroyed one (ids aren't reused) has nothing waiting for it.
-        let ready = |gpu: &Self| match id {
-            _ if gpu.failed.contains(&id) => true,
-            PipelineId::Render(id) => (gpu.render_pipelines.get(id.0)).is_none_or(Option::is_some),
-            PipelineId::Compute(id) => {
-                (gpu.compute_pipelines.get(id.0)).is_none_or(Option::is_some)
-            }
+        let settled = |gpu: &Self| {
+            (gpu.pipelines.get(slot(id))).is_none_or(|p| !matches!(p, Compiled::Pending { .. }))
         };
-        if ready(self) {
+        if settled(self) {
             return true;
         }
         self.take_compiled(false);
-        if ready(self) {
+        if settled(self) {
             return true;
         }
         // A frame asks for a background pipeline: it waits for it now.
-        if self.background_pending.remove(&id) {
+        if let Some(Compiled::Pending { background }) = self.pipelines.get_mut(slot(id))
+            && std::mem::take(background)
+        {
             self.pending += 1;
             self.gate_background();
             #[cfg(not(target_arch = "wasm32"))]
@@ -2434,11 +2480,16 @@ impl Gpu for WgpuGpu {
                     for command in commands {
                         match command {
                             ComputeCommand::SetPipeline(id) => {
-                                match &self.compute_pipelines[id.0] {
-                                    Some(pipeline) => pass.set_pipeline(pipeline),
-                                    None => self.check_failed((*id).into()),
-                                }
-                                skip = self.compute_pipelines[id.0].is_none();
+                                skip = match &self.pipelines[id.0] {
+                                    Compiled::Ready(compile::Built::Compute(pipeline)) => {
+                                        pass.set_pipeline(pipeline);
+                                        false
+                                    }
+                                    Compiled::Failed => true,
+                                    _ => {
+                                        panic!("compute pipeline {} used before it compiled", id.0)
+                                    }
+                                };
                             }
                             ComputeCommand::SetBindGroup { index, group } => {
                                 pass.set_bind_group(*index, &self.bind_groups[group.0], &[]);

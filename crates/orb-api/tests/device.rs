@@ -6,7 +6,7 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use orb_api::{Activity, Error, Map, MapOptions, Runtime, RuntimeOptions, Target};
+use orb_api::{Activity, Error, Fault, Map, MapOptions, Runtime, RuntimeOptions, Target};
 
 const STYLE: &str = r##"{"version":8,"sources":{"box":{"type":"geojson","data":{"type":"Polygon",
   "coordinates":[[[-10,-10],[10,-10],[10,10],[-10,10],[-10,-10]]]}}},
@@ -55,10 +55,9 @@ fn a_hung_compile_is_reported() {
             assert!(report.is_none_or(|r| !r.idle()), "nothing compiles");
             frames += 1;
         };
-        let hung = runtime
-            .stats()
-            .hung_compile
-            .expect("the watchdog names the compile");
+        let Some(Fault::Hung { label: hung, .. }) = runtime.stats().compile_fault else {
+            panic!("the watchdog names the compile");
+        };
         eprintln!(
             "{frames} frames drawn and {idle} polls idle while {hung} compiled; \
              lost after {lost:?}"
@@ -134,8 +133,10 @@ fn a_failed_pipeline_leaves_its_layer_out() {
     assert!(report.loaded, "idle but not loaded");
     assert_eq!(report.frame.nodes_waiting, 0);
     assert!(!runtime.lost(), "the device was lost");
-    let failed = runtime.stats().hung_compile.expect("the failure is named");
-    assert!(failed.contains("circle"), "{failed}");
+    let Some(Fault::Failed { label, .. }) = runtime.stats().compile_fault else {
+        panic!("the failure is named");
+    };
+    assert!(label.contains("circle"), "{label}");
     let pixels = target.read_pixels().unwrap();
     let i = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;
     assert_eq!(pixels[i..i + 3], [0, 0, 255], "the box, without the circle");
@@ -332,8 +333,10 @@ fn a_failed_terrain_pipeline_draws_flat() {
     map.set_style_json(&style).unwrap();
     settle(&mut map, &mut target).unwrap();
     assert!(!runtime.lost(), "the device was lost");
-    let failed = runtime.stats().hung_compile.expect("the failure is named");
-    assert!(failed.contains("terrain"), "{failed}");
+    let Some(Fault::Failed { label, .. }) = runtime.stats().compile_fault else {
+        panic!("the failure is named");
+    };
+    assert!(label.contains("terrain"), "{label}");
     assert!(map.terrain_probe().is_none(), "the map holds its terrain");
     let pixels = target.read_pixels().unwrap();
     let i = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;

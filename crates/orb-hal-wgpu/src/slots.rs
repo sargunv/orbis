@@ -28,14 +28,14 @@ impl<T> Slots<T> {
         id
     }
 
-    /// Replaces a live entry.
-    pub(crate) fn set(&mut self, id: u32, item: T) {
-        self[id] = item;
-    }
-
     /// A live entry, if `id` names one.
     pub(crate) fn get(&self, id: u32) -> Option<&T> {
         self.items.get(&id)
+    }
+
+    /// A live entry to change, if `id` names one.
+    pub(crate) fn get_mut(&mut self, id: u32) -> Option<&mut T> {
+        self.items.get_mut(&id)
     }
 
     pub(crate) fn contains(&self, id: u32) -> bool {

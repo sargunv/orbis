@@ -61,7 +61,7 @@ pub struct OrbisMap {
     read_next: Option<futures_channel::oneshot::Sender<Vec<u8>>>,
     /// Whether a pipeline the device failed to make was said on the
     /// console: the layers drawing with it are missing.
-    said_hung: bool,
+    said_failed: bool,
 }
 
 impl Drop for OrbisMap {
@@ -550,7 +550,7 @@ pub async fn create_map(
         header_bytes: 0,
         snapshot: None,
         read_next: None,
-        said_hung: false,
+        said_failed: false,
     })
 }
 
@@ -1218,7 +1218,12 @@ impl OrbisMap {
     /// (the terrain's: the map draws flat).
     #[wasm_bindgen(js_name = failedPipeline)]
     pub fn failed_pipeline(&self) -> Option<String> {
-        self.canvas.gpu_ref().hung().map(str::to_owned)
+        match self.canvas.gpu_ref().fault()? {
+            orb_hal_wgpu::Fault::Failed { label, error } => {
+                Some(format!("pipeline {label}: {error}"))
+            }
+            orb_hal_wgpu::Fault::Hung { .. } => None,
+        }
     }
 
     /// Traps while borrowed, as a bug in a frame would: the map stops and
@@ -1290,10 +1295,10 @@ impl OrbisMap {
                 let _ = sender.send(pixels.await);
             });
         }
-        if !self.said_hung
-            && let Some(failed) = self.canvas.gpu_ref().hung()
+        if !self.said_failed
+            && let Some(failed) = self.failed_pipeline()
         {
-            self.said_hung = true;
+            self.said_failed = true;
             let message =
                 format!("orbis: a pipeline failed, and what draws with it is missing: {failed}");
             web_sys::console::error_1(&message.into());
