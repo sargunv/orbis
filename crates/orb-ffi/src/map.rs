@@ -2088,42 +2088,13 @@ struct Delta {
     animation: Animation,
 }
 
-/// The camera `t` sets (its zoom, bearing and pitch) moved so that `keep`
-/// stays at screen point `at`: zoom, rotation and tilt about a point.
-/// Panning by a screen offset is exact only on a flat view, so the pan
-/// is refined until the point sits within a billionth of a pixel.
-fn keeping(entry: &MapEntry, mut t: CameraTarget, keep: Geodetic, at: glam::DVec2) -> CameraTarget {
-    let camera = entry.map.camera();
-    t.center = Some(t.center.unwrap_or(camera.target));
-    t.zoom = Some(t.zoom.unwrap_or_else(|| entry.map.zoom()));
-    t.bearing = Some(t.bearing.unwrap_or(camera.bearing));
-    t.pitch = Some(t.pitch.unwrap_or(camera.pitch));
-    for _ in 0..32 {
-        let (Some(p), Some(middle)) = (
-            entry.map.project_with(&t, keep),
-            t.center.and_then(|c| entry.map.project_with(&t, c)),
-        ) else {
-            break;
-        };
-        let off = at - p;
-        if off.length() < 1e-9 {
-            break;
-        }
-        match entry.map.unproject_with(&t, middle - off) {
-            Some(center) => t.center = Some(center),
-            None => break,
-        }
-    }
-    t
-}
-
 /// A delta on Orbis's camera: the pan moves the map's content by the
-/// offset, then zoom, rotation and tilt turn about the anchor, or the
-/// center.
+/// offset, then zoom, rotation and tilt turn about the ground under the
+/// anchor (the camera's `around`), or the center.
 fn apply_delta(entry: &mut MapEntry, d: &Delta) -> Result {
     let has = |bit| d.fields & bit != 0;
     let animated = d.animation.fields & MLN_ANIMATION_OPTION_DURATION != 0;
-    let mut t = CameraTarget::default();
+    let mut pan = CameraTarget::default();
     if has(MLN_CAMERA_DELTA_OFFSET) && (d.offset.x != 0.0 || d.offset.y != 0.0) {
         let offset = glam::DVec2::new(d.offset.x, d.offset.y);
         let center = entry.map.camera().target;
@@ -2135,13 +2106,14 @@ fn apply_delta(entry: &mut MapEntry, d: &Delta) -> Result {
             let on_planet = has(MLN_CAMERA_DELTA_ANCHOR) && entry.map.unproject(anchor).is_some();
             let grab = if on_planet { anchor } else { middle };
             let turned = entry.map.panned(grab - offset, grab);
-            t.center = Some(turned.target);
-            t.bearing = Some(turned.bearing);
+            pan.center = Some(turned.target);
+            pan.bearing = Some(turned.bearing);
         } else {
-            t.center = entry.map.unproject(middle - offset);
+            pan.center = entry.map.unproject(middle - offset);
         }
     }
     let camera = entry.map.camera();
+    let mut t = pan;
     if has(MLN_CAMERA_DELTA_SCALE) {
         t.zoom = Some(entry.map.zoom() + d.scale.log2());
     }
@@ -2151,23 +2123,31 @@ fn apply_delta(entry: &mut MapEntry, d: &Delta) -> Result {
     if has(MLN_CAMERA_DELTA_PITCH) {
         t.pitch = Some(camera.pitch + d.pitch);
     }
-    if has(MLN_CAMERA_DELTA_ANCHOR) {
-        // The pan comes first: the anchor keeps what the pan put under it.
-        let at = glam::DVec2::new(d.anchor.x, d.anchor.y);
-        let panned = CameraTarget {
-            center: t.center,
-            ..Default::default()
-        };
-        if let Some(keep) = entry.map.unproject_with(&panned, at) {
-            t = keeping(entry, t, keep, at);
-        }
-    }
     let mode = if animated {
         MLN_CAMERA_UPDATE_MODE_EASE
     } else {
         MLN_CAMERA_UPDATE_MODE_JUMP
     };
-    update_camera(entry, mode, &t, &d.animation)
+    if !has(MLN_CAMERA_DELTA_ANCHOR) {
+        return update_camera(entry, mode, &t, &d.animation);
+    }
+    let at = glam::DVec2::new(d.anchor.x, d.anchor.y);
+    if pan.center.is_none() {
+        t.around = entry.map.unproject(at);
+        return update_camera(entry, mode, &t, &d.animation);
+    }
+    // The pan comes first, at once (an anchor takes an offset only so):
+    // the turn keeps what it put under the anchor.
+    jump(entry, |map| {
+        map.jump_to(&pan);
+        map.jump_to(&CameraTarget {
+            center: None,
+            around: map.unproject(at),
+            ..t
+        });
+    });
+    track(entry, None, &d.animation);
+    Ok(())
 }
 
 /// Checks a delta as mln-ffi does: only the fields it selects are read.

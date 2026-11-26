@@ -3,11 +3,10 @@
 //! (`crate::momentum`).
 
 use glam::DVec2;
-use orb_crs::Geodetic;
-use orb_crs::sphere;
+use orb_crs::{Geodetic, Metres, sphere};
 
 use crate::moves::wrap_bearing;
-use crate::{CameraState, View, Viewport};
+use crate::{CameraState, Viewport};
 use orb_crs::Surface;
 
 /// How an animation's progress follows time, from 0 to 1.
@@ -99,7 +98,7 @@ pub struct CameraTarget {
     /// Metres the target stands above the surface (GL JS `elevation`).
     /// While the target is clamped to the ground, the terrain takes it.
     pub elevation: Option<f64>,
-    /// Without a `center`: the point zoom and rotation keep in place.
+    /// Without a `center`: the point zoom, rotation and tilt keep in place.
     pub around: Option<Geodetic>,
     /// Where the center ends up, in pixels from the viewport's middle.
     pub offset: DVec2,
@@ -288,15 +287,19 @@ fn progress<T>(track: &Option<Track<T>>, elapsed: f64) -> f64 {
     }
 }
 
+/// The ground point a move turns about, the pixel it stays under and, on
+/// terrain, the ground's own height there (else it stands level with the
+/// target).
+pub(crate) type Around = (Geodetic, DVec2, Option<Metres>);
+
 /// A running animation's path.
 #[derive(Clone, Debug)]
 pub(crate) enum Motion {
     Ease {
         from: CameraState,
         to: CameraState,
-        /// The ground point and the pixel it stays under, when zooming or
-        /// rotating around a point.
-        around: Option<(Geodetic, DVec2)>,
+        /// The ground point zoom, rotation and tilt keep in place, if any.
+        around: Option<Around>,
         /// The end target's world position, on the near side of the
         /// antimeridian.
         to_world: DVec2,
@@ -430,7 +433,7 @@ impl Motion {
     pub(crate) fn ease(
         from: CameraState,
         to: CameraState,
-        around: Option<(Geodetic, DVec2)>,
+        around: Option<Around>,
         options: EaseOptions,
         surface: &Surface,
     ) -> Self {
@@ -626,18 +629,14 @@ impl Motion {
                 next.fov = lerp(from.fov, to.fov, k);
                 next.padding = from.padding.lerp(to.padding, k);
                 match around {
-                    Some((ground, at)) if *sphere => {
-                        next.put_under(surface, viewport, *ground, *at);
+                    Some((ground, at, height)) if *sphere => {
+                        let height = height.unwrap_or(Metres(next.elevation));
+                        next.put_under(surface, viewport, *ground, *at, height);
                     }
                     None if *sphere => next.target = over_sphere(from.target, to.target, k),
-                    Some((ground, at)) => {
-                        let world = projection.forward(*ground);
-                        let view = View::new(&next, viewport, surface);
-                        if let Some(now) = view.unproject(*at) {
-                            let target =
-                                view.camera_world() + projection.nearest_copy(world, now) - now;
-                            next.set_target_world(projection, target, view.world_per_px());
-                        }
+                    Some((ground, at, height)) => {
+                        let height = height.unwrap_or(Metres(next.elevation));
+                        next.slide_under(surface, viewport, *ground, height, *at);
                     }
                     None => {
                         let start = from.target_world(projection);

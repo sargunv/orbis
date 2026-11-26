@@ -890,15 +890,9 @@ impl Map {
         self.map.unproject(point)
     }
 
-    /// [`project`](Self::project) for the camera a jump to `camera` would
-    /// make, in this map's viewport, on its surface and terrain: where a
-    /// move would put a point, before making it.
-    pub fn project_with(&self, camera: &CameraTarget, point: Geodetic) -> Option<DVec2> {
-        self.map.project_with(&self.map.camera_for(camera), point)
-    }
-
     /// [`unproject`](Self::unproject) for the camera a jump to `camera`
-    /// would make.
+    /// would make, in this map's viewport, on its surface and terrain:
+    /// what a move would show at a point, before making it.
     pub fn unproject_with(&self, camera: &CameraTarget, point: DVec2) -> Option<Geodetic> {
         self.map.unproject_with(&self.map.camera_for(camera), point)
     }

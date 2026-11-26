@@ -2,8 +2,7 @@
 //! from, and the limits every move is kept to.
 
 use glam::DVec2;
-use orb_crs::Geodetic;
-use orb_crs::{Projection, WorldRect, sphere};
+use orb_crs::{Geodetic, Metres, Projection, WorldRect, sphere};
 
 use crate::{CameraState, STYLE_ZOOM_TILE_PX, View, Viewport};
 use orb_crs::Surface;
@@ -233,7 +232,7 @@ impl CameraState {
                     return;
                 }
             }
-            self.put_under(surface, viewport, ground, to);
+            self.put_under(surface, viewport, ground, to, elevation);
             return;
         }
         let span = |a: DVec2, b: DVec2| Some(view.unproject(b)? - view.unproject(a)?);
@@ -300,7 +299,7 @@ impl CameraState {
             let ground = view.low_ground(at, view.elevation());
             change(self);
             if let Some(ground) = ground {
-                self.put_under(surface, viewport, ground, at);
+                self.put_under(surface, viewport, ground, at, view.elevation());
             }
             return;
         }
@@ -313,13 +312,58 @@ impl CameraState {
         }
     }
 
-    /// On a low-zoom surface, moves the camera so `ground` shows at `px`,
-    /// keeping the bearing, and the sphere's size on screen (its ground
-    /// resolution; GL JS's `getZoomAdjustment`) or a plane's zoom: on a
-    /// globe, the arc from what shows there to `ground` turns the target
-    /// (GL JS's `versorSetLocationAtPoint`), on a plane it moves by their
-    /// distance on it; then Newton steps on the target's longitude and
-    /// latitude land it exactly. Nothing moves where `px` is off the
+    /// Moves the camera so `ground`, `height` above the datum, shows at
+    /// `px`, keeping the rest: [`put_under`](Self::put_under) on a low-zoom
+    /// surface, else [`slide_under`](Self::slide_under).
+    pub(crate) fn place(
+        &mut self,
+        surface: &Surface,
+        viewport: Viewport,
+        ground: Geodetic,
+        height: Metres,
+        px: DVec2,
+    ) {
+        match View::new(self, viewport, surface).globe() {
+            Some(_) => self.put_under(surface, viewport, ground, px, height),
+            None => self.slide_under(surface, viewport, ground, height, px),
+        }
+    }
+
+    /// On a plane, moves the target so `ground`, `height` above the datum,
+    /// shows at `px`, keeping the scale on screen: sliding over the level
+    /// plane at that height carries everything on it alike, but for the
+    /// height's scale in world units, which follows the target's latitude,
+    /// so a second step lands it exactly.
+    pub(crate) fn slide_under(
+        &mut self,
+        surface: &Surface,
+        viewport: Viewport,
+        ground: Geodetic,
+        height: Metres,
+        px: DVec2,
+    ) {
+        let projection = &surface.projection;
+        for _ in 0..4 {
+            let view = View::new(self, viewport, surface);
+            let Some(now) = view.unproject_at(px, height) else {
+                return;
+            };
+            let world = projection.nearest_copy(projection.forward(ground), now);
+            if world.distance(now) < 1e-9 * view.world_per_px() {
+                return;
+            }
+            let target = view.camera_world() + world - now;
+            self.set_target_world(projection, target, view.world_per_px());
+        }
+    }
+
+    /// On a low-zoom surface, moves the camera so `ground`, `height` up,
+    /// shows at `px`, keeping the bearing, and the sphere's size on screen
+    /// (its ground resolution; GL JS's `getZoomAdjustment`) or a plane's
+    /// zoom: on a globe, the arc from what shows there to `ground` turns
+    /// the target (GL JS's `versorSetLocationAtPoint`), on a plane it moves
+    /// by their distance on it; then Newton steps on the target's longitude
+    /// and latitude land it exactly. Nothing moves where `px` is off the
     /// surface.
     pub(crate) fn put_under(
         &mut self,
@@ -327,11 +371,12 @@ impl CameraState {
         viewport: Viewport,
         ground: Geodetic,
         px: DVec2,
+        height: Metres,
     ) {
         let projection = &surface.projection;
         let zoom = self.zoom(projection);
         let view = View::new(self, viewport, surface);
-        let Some(now) = view.low_ground(px, view.elevation()) else {
+        let Some(now) = view.low_ground(px, height) else {
             return;
         };
         let sphere = view.low_plane().is_none();
@@ -357,7 +402,7 @@ impl CameraState {
         let shown = |camera: &CameraState| {
             let view = View::new(camera, viewport, surface);
             view.globe()?;
-            view.project(projection.forward(ground))
+            view.project_3d(projection.forward(ground), height)
         };
         let mut best = at(guess);
         for _ in 0..4 {

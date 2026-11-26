@@ -9,7 +9,7 @@ use orb_crs::Geodetic;
 use orb_crs::Projection;
 
 use crate::Skew;
-use crate::animate::{CameraTarget, EaseOptions, FlyOptions, Glide, Motion};
+use crate::animate::{Around, CameraTarget, EaseOptions, FlyOptions, Glide, Motion};
 use crate::fit::FitOptions;
 use crate::momentum::{GestureMomentum, Momentum, MomentumVelocity, Stage};
 use crate::moves::{Bounds, Constraints, wrap_bearing};
@@ -472,12 +472,9 @@ impl Camera {
     /// moved it since, so a partial jump keeps the rest of that; one that
     /// turns about a point or pans by an offset moves from the camera on
     /// screen, where its pixels are. The landing limits the zoom before it
-    /// turns about the point, as MapLibre Native's anchored jumps do, so
-    /// the point stays put.
-    fn jump_target(
-        &self,
-        target: &CameraTarget,
-    ) -> (CameraState, CameraState, Option<(Geodetic, DVec2)>) {
+    /// turns about the point, as MapLibre Native's anchored jumps do, and
+    /// so does the pitch, so the point stays put.
+    fn jump_target(&self, target: &CameraTarget) -> (CameraState, CameraState, Option<Around>) {
         let on_screen =
             (target.center.is_none() && target.around.is_some()) || target.offset != DVec2::ZERO;
         let from = match on_screen {
@@ -574,11 +571,20 @@ impl Camera {
     }
 
     /// The properties a move to `target` takes, and those of them that go
-    /// together: whatever turns about a point goes with the center.
+    /// together: whatever turns about a point goes with the center, and
+    /// so, as a move of the center does, with the elevation it aims at.
     fn claims(target: &CameraTarget, around: bool, aims: bool) -> (Fields, Fields) {
         let fields = Fields::of(target, aims);
         match around {
-            true => (fields | Fields::CENTER, fields | Fields::CENTER),
+            true => {
+                let elevation = if aims {
+                    Fields::ELEVATION
+                } else {
+                    Fields::NONE
+                };
+                let moved = fields | Fields::CENTER | elevation;
+                (moved, moved)
+            }
             false => (fields, Fields::NONE),
         }
     }
@@ -1047,14 +1053,14 @@ impl Camera {
     }
 
     /// The end state of a move from `from` to `target`, kept to the limits
-    /// or not, and the pixel and ground point a zoom or rotation keeps in
-    /// place.
+    /// or not, and the ground point a zoom, rotation or tilt keeps in
+    /// place, with its pixel and its height on the terrain.
     fn resolve(
         &self,
         from: &CameraState,
         target: &CameraTarget,
         limited: bool,
-    ) -> (CameraState, Option<(Geodetic, DVec2)>) {
+    ) -> (CameraState, Option<Around>) {
         let (surface, viewport) = (&self.surface, self.viewport);
         let projection = &surface.projection;
         let mut to = *from;
@@ -1078,6 +1084,14 @@ impl Camera {
             }
             at.zoom(projection)
         });
+        // So does the pitch, so a tilt about a point at a limit keeps it.
+        let pitch = target.pitch.map(|p| match limited {
+            true => p.clamp(
+                self.constraints.min_pitch,
+                self.constraints.max_pitch.max(self.constraints.min_pitch),
+            ),
+            false => p,
+        });
         let mut around = None;
         match (target.center, target.around) {
             (Some(c), _) => {
@@ -1092,12 +1106,29 @@ impl Camera {
             }
             (None, Some(ground)) => {
                 let at = self.project_with(from, ground).unwrap_or(center);
-                around = Some((ground, at));
-                to.holding(surface, viewport, at, |c| {
+                // On terrain the ground stands at its own height, off the
+                // plane through the target.
+                let height = (self.terrain.as_deref())
+                    .map(|terrain| terrain.at(projection.forward(ground)).unwrap_or_default());
+                around = Some((ground, at, height));
+                let change = |c: &mut CameraState| {
                     if let Some(zoom) = zoom {
                         c.set_zoom(projection, zoom);
                     }
-                });
+                    if let Some(bearing) = target.bearing {
+                        c.bearing = wrap_bearing(bearing);
+                    }
+                    if let Some(pitch) = pitch {
+                        c.pitch = pitch;
+                    }
+                };
+                match height {
+                    Some(height) => {
+                        change(&mut to);
+                        to.place(surface, viewport, ground, height, at);
+                    }
+                    None => to.holding(surface, viewport, at, change),
+                }
             }
             (None, None) => {
                 if let Some(zoom) = zoom {
@@ -1105,14 +1136,13 @@ impl Camera {
                 }
             }
         }
-        if let Some(bearing) = target.bearing {
-            match around {
-                Some((_, at)) => to.rotate_around(surface, viewport, at, bearing),
-                None => to.bearing = wrap_bearing(bearing),
+        if around.is_none() {
+            if let Some(bearing) = target.bearing {
+                to.bearing = wrap_bearing(bearing);
             }
-        }
-        if let Some(pitch) = target.pitch {
-            to.pitch = pitch;
+            if let Some(pitch) = pitch {
+                to.pitch = pitch;
+            }
         }
         if let Some(roll) = target.roll {
             to.roll = wrap_bearing(roll);
@@ -1127,7 +1157,23 @@ impl Camera {
         if limited {
             to.constrain(&self.constraints, surface, viewport);
             if let Some(terrain) = self.terrain.as_deref().filter(|_| self.clamped) {
-                to.settle_on(terrain, projection);
+                let mut settled = to.settle_on(terrain, projection);
+                // Standing the target on the terrain lifts or lowers the
+                // view off the held ground, and putting the ground back
+                // moves the target over other terrain, until it rests.
+                let held = around.filter(|_| target.offset == DVec2::ZERO);
+                if let Some((ground, at, Some(height))) = held {
+                    for _ in 0..32 {
+                        if !settled {
+                            break;
+                        }
+                        let elevation = to.elevation;
+                        to.place(surface, viewport, ground, height, at);
+                        to.constrain(&self.constraints, surface, viewport);
+                        to.settle_on(terrain, projection);
+                        settled = (to.elevation - elevation).abs() > 1e-6;
+                    }
+                }
             }
         }
         (to, around)
@@ -1968,6 +2014,129 @@ mod tests {
             t += 16.0;
         }
         assert!((camera.state().zoom(&mercator()) - 12.0).abs() < 1e-9);
+    }
+
+    /// A move about a point keeps it under its pixel through zoom, rotation
+    /// and tilt, on a plane and on the globe, at once and all the way
+    /// through an ease, its last frame included.
+    #[test]
+    fn moves_about_a_point_keep_it_still_as_they_tilt() {
+        let viewport = Viewport {
+            width: 800.0,
+            height: 600.0,
+        };
+        for globe in [None, Some(orb_crs::Globe::V8)] {
+            let surface = Surface {
+                projection: mercator(),
+                globe,
+            };
+            let start = CameraState::new(Geodetic::new(20.0, 10.0), 4.0, &mercator());
+            for eased in [false, true] {
+                let mut camera = Camera::new(start, surface, viewport);
+                let at = DVec2::new(250.0, 380.0);
+                let ground = camera.unproject(at).unwrap();
+                let target = CameraTarget {
+                    zoom: Some(4.5),
+                    bearing: Some(-15.0),
+                    pitch: Some(30.0),
+                    around: Some(ground),
+                    ..CameraTarget::default()
+                };
+                let kept = |camera: &Camera| camera.project(ground).unwrap().distance(at);
+                if eased {
+                    let options = EaseOptions {
+                        duration: 100.0,
+                        easing: Easing::Linear,
+                    };
+                    camera.ease_to(&target, options, Some(0.0));
+                    let mut t = 0.0;
+                    while camera.frame(t) {
+                        assert!(kept(&camera) < 1e-6, "{globe:?} at {t}: {}", kept(&camera));
+                        t += 10.0;
+                    }
+                } else {
+                    camera.jump_to(&target);
+                }
+                let end = camera.state();
+                assert!(
+                    kept(&camera) < 1e-6,
+                    "{globe:?}, eased {eased}: {}",
+                    kept(&camera)
+                );
+                assert!((end.pitch - 30.0).abs() < 1e-9 && (end.bearing + 15.0).abs() < 1e-9);
+            }
+        }
+    }
+
+    /// Over terrain, a move about a point keeps the drawn ground there
+    /// under its pixel, though it stands off the plane through the target
+    /// and the target settles on other ground as it moves.
+    #[test]
+    fn moves_about_a_point_on_terrain_keep_the_drawn_ground_still() {
+        /// Hills some hundred pixels across at a zoom.
+        #[derive(Debug)]
+        struct Hills(f64);
+        impl Elevation for Hills {
+            fn at(&self, world: DVec2) -> Option<orb_crs::Metres> {
+                let size = 2f64.powf(11.0 - self.0);
+                let (x, y) = (world.x / 4000.0 / size, world.y / 5000.0 / size);
+                Some(orb_crs::Metres(1500.0 + 1200.0 * x.sin() * y.cos()))
+            }
+            fn range(
+                &self,
+                _: orb_crs::WorldRect,
+                _: u8,
+            ) -> Option<(orb_crs::Metres, orb_crs::Metres)> {
+                Some((orb_crs::Metres(300.0), orb_crs::Metres(2700.0)))
+            }
+        }
+        let viewport = Viewport {
+            width: 800.0,
+            height: 600.0,
+        };
+        for (globe, zoom) in [(None, 11.0), (Some(orb_crs::Globe::V8), 5.0)] {
+            let surface = Surface {
+                projection: mercator(),
+                globe,
+            };
+            let mut start = CameraState::new(Geodetic::new(8.0, 46.5), zoom, &mercator());
+            start.pitch = 50.0;
+            for eased in [false, true] {
+                let mut camera = Camera::new(start, surface, viewport);
+                camera.set_terrain(Some(Arc::new(Hills(zoom))));
+                let ground = camera.unproject(DVec2::new(250.0, 380.0)).unwrap();
+                // Where it's drawn: on the globe the terrain's ray walk
+                // lands off it.
+                let at = camera.project(ground).unwrap();
+                let target = CameraTarget {
+                    zoom: Some(zoom + 0.7),
+                    bearing: Some(-25.0),
+                    pitch: Some(30.0),
+                    around: Some(ground),
+                    ..CameraTarget::default()
+                };
+                let kept = |camera: &Camera| camera.project(ground).unwrap().distance(at);
+                if eased {
+                    let options = EaseOptions {
+                        duration: 100.0,
+                        easing: Easing::Linear,
+                    };
+                    camera.ease_to(&target, options, Some(0.0));
+                    let mut t = 0.0;
+                    while camera.frame(t) {
+                        assert!(kept(&camera) < 1e-6, "{globe:?} at {t}: {}", kept(&camera));
+                        t += 10.0;
+                    }
+                } else {
+                    camera.jump_to(&target);
+                }
+                assert!(
+                    kept(&camera) < 1e-6,
+                    "{globe:?}, eased {eased}: {}",
+                    kept(&camera)
+                );
+            }
+        }
     }
 
     /// Dragging across the pole of a polar plane keeps the map's scale and
