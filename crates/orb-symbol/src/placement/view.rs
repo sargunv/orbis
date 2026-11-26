@@ -22,6 +22,34 @@ pub struct Camera {
     pub roll: f64,
     /// Distance from the camera to the target, logical pixels.
     pub camera_to_center_distance: f64,
+    /// On a low-zoom surface (the globe), its camera, which tiles with
+    /// patches on that surface project through.
+    pub globe: Option<GlobeCamera>,
+}
+
+/// The camera of a low-zoom surface: the sphere (`orb_crs::sphere`) or a
+/// low-zoom plane.
+#[derive(Clone, Copy, Debug, PartialEq, orb_wire::Wire)]
+pub struct GlobeCamera {
+    /// The camera target's position on the surface (ECEF on the sphere),
+    /// which camera-relative globe space is relative to.
+    pub target: glam::DVec3,
+    /// Camera-relative globe space → clip space.
+    pub view_proj: glam::DMat4,
+    pub surface: Surface,
+}
+
+/// Which low-zoom surface a [`GlobeCamera`] looks at.
+#[derive(Clone, Copy, Debug, PartialEq, orb_wire::Wire)]
+pub enum Surface {
+    /// The sphere, ECEF.
+    Sphere {
+        /// The eye's ECEF position: positions beyond its horizon are
+        /// hidden.
+        eye: glam::DVec3,
+    },
+    /// A low-zoom plane: its world units, z up, with no horizon.
+    Plane,
 }
 
 /// A tile's identity across placements: its zoom, column, row and world
@@ -58,25 +86,17 @@ pub struct TileView {
     /// Tile units ([`EXTENT`] per side) and metres up → clip space, on a
     /// plane.
     pub matrix: Mat4,
-    /// On a globe, where the tile is instead.
+    /// On a globe, where the tile is instead, which the frame's
+    /// [`Camera::globe`] projects.
     pub globe: Option<TileGlobe>,
 }
 
 /// A tile on a low-zoom surface: its patches on the sphere
-/// (`orb_crs::sphere`) or a low-zoom plane, and that surface's camera.
+/// (`orb_crs::sphere`) or a low-zoom plane, whichever the frame's
+/// [`GlobeCamera`] looks at.
 #[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
 pub struct TileGlobe {
     pub series: std::sync::Arc<orb_crs::Series<glam::DVec3>>,
-    /// The camera target's ECEF position, which camera-relative globe space
-    /// is relative to.
-    pub target: glam::DVec3,
-    /// Camera-relative globe space → clip space.
-    pub view_proj: glam::DMat4,
-    /// The eye's ECEF position: positions beyond its horizon are hidden.
-    pub eye: glam::DVec3,
-    /// The patches are on a low-zoom plane rather than the sphere: its
-    /// world units, z up, with no horizon.
-    pub plane: bool,
     /// On the sphere, a Web Mercator tile's units → Web Mercator world
     /// metres: a point past the tile goes on exactly from the tile's edge,
     /// as the shader's `mercator_step` carries it, rather than along the
@@ -85,36 +105,37 @@ pub struct TileGlobe {
 }
 
 impl TileView {
-    /// Tile units and metres up → clip `x, y` over `w`, and `w`. Positions
-    /// beyond a globe's horizon land far off screen.
-    pub(crate) fn project(&self, x: f64, y: f64, z: Option<f64>) -> Projected {
-        let Some(globe) = &self.globe else {
+    /// Tile units and metres up → clip `x, y` over `w`, and `w`, as
+    /// `camera` sees them. Positions beyond a globe's horizon land far off
+    /// screen.
+    pub(crate) fn project(&self, camera: &Camera, x: f64, y: f64, z: Option<f64>) -> Projected {
+        let (Some(tile), Some(globe)) = (&self.globe, &camera.globe) else {
             return project(&self.matrix, x, y, z);
         };
         let p = glam::DVec2::new(x, y);
         let edge = p.clamp(glam::DVec2::ZERO, glam::DVec2::splat(EXTENT));
-        let mut ground = globe.series.position(edge / EXTENT);
-        if let Some(to_world) = globe.mercator.filter(|_| edge != p && !globe.plane) {
-            let sphere = |q: glam::DVec2| {
-                let g = mercator().inverse(to_world.transform_point2(q));
-                orb_crs::sphere::ecef(g, 0.0)
-            };
-            ground += sphere(p) - sphere(edge);
-        }
-        let up = if globe.plane {
-            glam::DVec3::Z
-        } else {
-            ground.normalize()
+        let mut ground = tile.series.position(edge / EXTENT);
+        let raised = match globe.surface {
+            Surface::Plane => ground + glam::DVec3::Z * z.unwrap_or(0.0),
+            Surface::Sphere { eye } => {
+                if let Some(to_world) = tile.mercator.filter(|_| edge != p) {
+                    let sphere = |q: glam::DVec2| {
+                        let g = mercator().inverse(to_world.transform_point2(q));
+                        orb_crs::sphere::ecef(g, 0.0)
+                    };
+                    ground += sphere(p) - sphere(edge);
+                }
+                let raised = ground + ground.normalize() * z.unwrap_or(0.0);
+                if sphere_hides(eye, raised) {
+                    return Projected {
+                        point: Point::new(-10.0, -10.0),
+                        w: 1.0,
+                    };
+                }
+                raised
+            }
         };
-        let raised = ground + up * z.unwrap_or(0.0);
-        if !globe.plane && sphere_hides(globe.eye, raised) {
-            return Projected {
-                point: Point::new(-10.0, -10.0),
-                w: 1.0,
-            };
-        }
-        let p = raised - globe.target;
-        let clip = globe.view_proj * p.extend(1.0);
+        let clip = globe.view_proj * (raised - globe.target).extend(1.0);
         Projected {
             point: Point::new(clip.x / clip.w, clip.y / clip.w),
             w: clip.w,
@@ -258,6 +279,22 @@ mod tests {
         let to_world = tms.data_to_world(tile, EXTENT as u32);
         // Identity view: clip x, y are ECEF x, y; the eye far above the tile.
         let centre = series.position(glam::DVec2::splat(0.5));
+        let camera = Camera {
+            width: 512.0,
+            height: 512.0,
+            zoom: 1.0,
+            bearing: 0.0,
+            pitch: 0.0,
+            roll: 0.0,
+            camera_to_center_distance: 1.0,
+            globe: Some(GlobeCamera {
+                target: glam::DVec3::ZERO,
+                view_proj: glam::DMat4::IDENTITY,
+                surface: Surface::Sphere {
+                    eye: centre * 100.0,
+                },
+            }),
+        };
         let view = |mercator| TileView {
             id: TileId {
                 z: 1,
@@ -268,17 +305,13 @@ mod tests {
             matrix: [0.0; 16],
             globe: Some(TileGlobe {
                 series: std::sync::Arc::new(series.clone()),
-                target: glam::DVec3::ZERO,
-                view_proj: glam::DMat4::IDENTITY,
-                eye: centre * 100.0,
-                plane: false,
                 mercator,
             }),
         };
         let off = |v: &TileView, p: glam::DVec2| {
             let exact =
                 orb_crs::sphere::ecef(mercator().inverse(to_world.transform_point2(p)), 0.0);
-            let at = v.project(p.x, p.y, None).point;
+            let at = v.project(&camera, p.x, p.y, None).point;
             glam::DVec2::new(at.x, at.y) - exact.truncate()
         };
         // A label anchor a fifth of a tile past its east edge is off by just

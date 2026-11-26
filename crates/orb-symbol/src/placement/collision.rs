@@ -202,7 +202,7 @@ impl Viewport {
 
     /// GL JS `projectAndGetPerspectiveRatio`, in padded viewport pixels.
     fn project(&self, tile: &TileView, x: f64, y: f64, elevation: Option<f64>) -> Projected {
-        let p = tile.project(x, y, elevation);
+        let p = tile.project(&self.camera, x, y, elevation);
         Projected {
             x: (p.point.x + 1.0) / 2.0 * self.camera.width + VIEWPORT_PADDING,
             y: (-p.point.y + 1.0) / 2.0 * self.camera.height + VIEWPORT_PADDING,

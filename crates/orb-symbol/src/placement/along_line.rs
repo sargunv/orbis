@@ -112,7 +112,9 @@ impl<'a> LineContext<'a> {
     /// Tile units to screen pixels, untranslated (GL JS
     /// `projectTileCoordinates` as `projectPathSpecialProjection` uses it).
     pub(crate) fn to_screen(&self, x: f64, y: f64) -> PlanePoint {
-        let p = self.tile.project(x, y, self.elevation.at(x, y));
+        let p = self
+            .tile
+            .project(self.camera, x, y, self.elevation.at(x, y));
         PlanePoint {
             point: Point::new(
                 (p.point.x * 0.5 + 0.5) * self.camera.width,

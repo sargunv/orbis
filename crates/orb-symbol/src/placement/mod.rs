@@ -18,4 +18,4 @@ pub use place::{
     PlacementTables, Placer, Scope, ScopeTile, SymbolFlags, ZoomSize, feature_sort_order,
     label_circles, label_translates, state,
 };
-pub use view::{Camera, Ground, Mat4, TileGlobe, TileId, TileView};
+pub use view::{Camera, GlobeCamera, Ground, Mat4, Surface, TileGlobe, TileId, TileView};

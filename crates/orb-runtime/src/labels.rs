@@ -1495,6 +1495,10 @@ impl Labels {
         options: &crate::MapOptions,
     ) -> orb_symbol::Frame {
         let view_proj = view.view_proj();
+        // A tile's patches go to placement only with a globe to see them,
+        // and a Web Mercator tile's transform only on the sphere.
+        let on_globe = view.globe().is_some();
+        let on_sphere = view.globe().is_some_and(|g| g.plane.is_none());
         let viewport = view.viewport();
         let camera_inputs = crate::paint::camera_inputs(camera);
         // World units per view height, and the camera's heading in the
@@ -1554,14 +1558,10 @@ impl Labels {
                                     wrap: t.wrap,
                                 },
                                 matrix: (view_proj * tile).to_cols_array(),
-                                globe: view.globe().zip(t.globe.clone()).map(|(globe, series)| {
+                                globe: t.globe.clone().filter(|_| on_globe).map(|series| {
                                     orb_symbol::TileGlobe {
                                         series,
-                                        target: globe.target,
-                                        view_proj: globe.view_proj,
-                                        eye: globe.target + globe.eye,
-                                        plane: globe.plane.is_some(),
-                                        mercator: t.mercator.then_some(t.to_world),
+                                        mercator: (t.mercator && on_sphere).then_some(t.to_world),
                                     }
                                 }),
                             },
@@ -1593,6 +1593,16 @@ impl Labels {
                 pitch: camera.pitch.to_radians(),
                 roll: camera.roll.to_radians(),
                 camera_to_center_distance: view.camera_to_center(),
+                globe: view.globe().map(|globe| orb_symbol::GlobeCamera {
+                    target: globe.target,
+                    view_proj: globe.view_proj,
+                    surface: match globe.plane {
+                        Some(_) => orb_symbol::Surface::Plane,
+                        None => orb_symbol::Surface::Sphere {
+                            eye: globe.target + globe.eye,
+                        },
+                    },
+                }),
             },
             layers,
             now,
@@ -2109,6 +2119,7 @@ mod tests {
                     pitch: 0.0,
                     roll: 0.0,
                     camera_to_center_distance: 1.0,
+                    globe: None,
                 },
                 layers: vec![LayerFrame {
                     params,

@@ -46,9 +46,10 @@ pub use layout::{
     retain_line_labels_in_tile,
 };
 pub use placement::{
-    BucketStates, Camera, Committed, Frame, Ground, GroundRef, LayerFrame, LayerParams, Mat4,
-    Overlap, PlacedTile, PlacementTables, Placer, Scope, ScopeTile, SymbolFlags, TileGlobe, TileId,
-    TileView, ZoomSize, feature_sort_order, label_circles, label_translates, state,
+    BucketStates, Camera, Committed, Frame, GlobeCamera, Ground, GroundRef, LayerFrame,
+    LayerParams, Mat4, Overlap, PlacedTile, PlacementTables, Placer, Scope, ScopeTile, Surface,
+    SymbolFlags, TileGlobe, TileId, TileView, ZoomSize, feature_sort_order, label_circles,
+    label_translates, state,
 };
 pub use quads::GLYPH_PADDING;
 

@@ -198,6 +198,8 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_camera::View>::cover_low",
             "orb_camera::GlobeFrustum",
             "orb_symbol::placement::view::TileGlobe",
+            "orb_symbol::placement::view::GlobeCamera",
+            "orb_symbol::placement::view::Surface",
             // Vector tiles bent to a warp or the sphere (`Bend`).
             "orb_tile::TileFrame>::subdivided",
             "orb_tile::subdivide::",
