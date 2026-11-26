@@ -394,13 +394,9 @@ impl FeatureStates {
                 .any(|&s| properties[s].kind() != orb_style::Kind::Source);
             let layer = &plan.style.layers[node.layer];
             let transitions = (slots.iter())
-                .map(|&s| {
-                    let name = properties[s].id().map(|id| id.name());
-                    (layer.transitions.iter())
-                        .find(|(n, _)| Some(n.as_str()) == name)
-                        .map_or(plan.style.transition, |(_, t)| {
-                            t.over(plan.style.transition)
-                        })
+                .map(|&s| match properties[s].id() {
+                    Some(id) => layer.transition(id, plan.style.transition),
+                    None => plan.style.transition,
                 })
                 .collect();
             let block = Block {

@@ -266,7 +266,7 @@ impl Map {
                 continue;
             };
             let new = &plan.style.layers[after];
-            let transition = crate::transitions::transition_of(&plan.style, new, *id);
+            let transition = new.transition(*id, plan.style.transition);
             let old = &old_plan.style.layers[before];
             self.transitions
                 .start(&new.id, *id, old.slot(*id), transition, (now, zoom));

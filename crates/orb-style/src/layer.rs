@@ -27,9 +27,9 @@ pub struct Layer {
     props: Box<[Slot]>,
     /// The table index of the type's first property.
     first: u16,
-    /// Paint properties' own `*-transition`, by property name; the rest
-    /// take the style's.
-    pub transitions: Vec<(String, crate::TransitionOverride)>,
+    /// Paint properties' own `*-transition`, one per property that eases;
+    /// the rest take the style's. Read through [`Layer::transition`].
+    pub transitions: Vec<(PropertyId, crate::TransitionOverride)>,
     /// Layers with the same group select the same features and lay them
     /// out alike: their type, source, source layer, zoom range, filter and
     /// layout are the same, as GL JS's and Native's `groupByLayout` key
@@ -79,6 +79,15 @@ impl Layer {
         let above_min = self.minzoom == 0.0 || zoom >= self.minzoom;
         let below_max = self.maxzoom == 0.0 || zoom < self.maxzoom;
         self.visibility == Visibility::Visible && above_min && below_max
+    }
+
+    /// The transition a paint change of property `id` eases by: its own
+    /// `*-transition` over the style's `transition`.
+    pub fn transition(&self, id: PropertyId, style: crate::Transition) -> crate::Transition {
+        self.transitions
+            .iter()
+            .find(|(other, _)| *other == id)
+            .map_or(style, |(_, t)| t.over(style))
     }
 
     #[inline]

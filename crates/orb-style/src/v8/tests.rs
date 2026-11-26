@@ -368,17 +368,55 @@ fn transitions_parse_and_merge_over_the_style() {
             delay: 0.0
         }
     );
-    let (name, t) = &style.layers[0].transitions[0];
-    assert_eq!(name, "background-color");
+    let layer = &style.layers[0];
     assert_eq!(
-        t.over(style.transition),
+        layer.transition(BACKGROUND_COLOR.id(), style.transition),
         crate::v8::Transition {
             duration: 500.0,
             delay: 100.0
         }
     );
+    assert_eq!(
+        layer.transition(BACKGROUND_OPACITY.id(), style.transition),
+        style.transition
+    );
     let default = parse(r#"{"version": 8, "sources": {}, "layers": []}"#).unwrap();
     assert_eq!(default.transition, crate::v8::Transition::default());
+}
+
+#[test]
+fn transitions_keep_the_last_of_each_easing_property() {
+    let style = parse(
+        r#"{"version": 8, "sources": {"s": {"type": "geojson", "data": {"type": "FeatureCollection", "features": []}}}, "layers": [
+            {"id": "f", "type": "fill", "source": "s", "paint": {
+                "fill-color-transition": {"duration": 1},
+                "fill-pattern-transition": {"duration": 2},
+                "foo-transition": {"duration": 3},
+                "fill-color-transition": {"duration": 4}}}]}"#,
+    )
+    .unwrap();
+    let layer = &style.layers[0];
+    assert_eq!(layer.transitions.len(), 1, "{:?}", layer.transitions);
+    assert_eq!(
+        layer.transition(FILL_COLOR.id(), style.transition).duration,
+        4.0
+    );
+    assert_eq!(style.warnings.len(), 1, "{:?}", style.warnings);
+}
+
+#[test]
+fn malformed_transitions_warn_and_override_nothing() {
+    let style = parse(
+        r#"{"version": 8, "sources": {"s": {"type": "geojson", "data": {"type": "FeatureCollection", "features": []}}}, "layers": [
+            {"id": "f", "type": "fill", "source": "s", "paint": {
+                "fill-color-transition": {"duration": 1},
+                "fill-pattern-transition": "bad",
+                "fill-color-transition": 5}}]}"#,
+    )
+    .unwrap();
+    let layer = &style.layers[0];
+    assert!(layer.transitions.is_empty(), "{:?}", layer.transitions);
+    assert_eq!(style.warnings.len(), 2, "{:?}", style.warnings);
 }
 
 #[test]

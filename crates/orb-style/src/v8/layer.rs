@@ -572,24 +572,31 @@ pub(crate) fn parse_layer(
             None => (None, None, None),
         },
     };
-    let transitions = paint
-        .members
-        .iter()
-        .filter_map(|m| {
-            let name = m.key.strip_suffix("-transition")?;
-            match crate::v8::paint::parse_transition(&m.value) {
-                Some(t) => Some((name.to_string(), t)),
-                None => {
-                    cx.warn(
-                        format!("{}.{}", paint.path, m.key),
-                        m.key_span,
-                        "expected {\"duration\", \"delay\"} in milliseconds",
-                    );
-                    None
-                }
-            }
-        })
-        .collect();
+    // Each paint property's own `*-transition`, the last where a key
+    // repeats, as the property's own value does: a malformed last one
+    // leaves the style's transition. Any known property's is checked; one
+    // for a property that doesn't ease is then dropped, and an unknown one
+    // `section` warned about.
+    let mut transitions: Vec<(PropertyId, crate::TransitionOverride)> = Vec::new();
+    for m in paint.members {
+        let Some(id) =
+            (m.key.strip_suffix("-transition")).and_then(|name| PropertyId::find(ty, true, name))
+        else {
+            continue;
+        };
+        transitions.retain(|(other, _)| *other != id);
+        let Some(t) = crate::v8::paint::parse_transition(&m.value) else {
+            cx.warn(
+                format!("{}.{}", paint.path, m.key),
+                m.key_span,
+                "expected {\"duration\", \"delay\"} in milliseconds",
+            );
+            continue;
+        };
+        if id.transitions() && id.prop().preview.is_none_or(|p| cx.previews.contains(p)) {
+            transitions.push((id, t));
+        }
+    }
     let mut layer = Layer::new(id, ty, props);
     layer.source = source;
     layer.source_layer = source_layer;

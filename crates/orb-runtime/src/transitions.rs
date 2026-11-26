@@ -103,20 +103,6 @@ fn fade_properties(ty: LayerType) -> &'static [PropertyId] {
     }
 }
 
-/// The transition a paint change of `layer`'s property `id` eases by: its
-/// own `*-transition` over the style's `transition`.
-pub(crate) fn transition_of(
-    style: &orb_style::Style,
-    layer: &orb_style::Layer,
-    id: PropertyId,
-) -> Transition {
-    layer
-        .transitions
-        .iter()
-        .find(|(n, _)| n == id.name())
-        .map_or(style.transition, |(_, t)| t.over(style.transition))
-}
-
 /// GL JS's `easeCubicInOut`.
 pub(crate) fn ease(t: f64) -> f64 {
     if t <= 0.0 {
@@ -258,7 +244,7 @@ impl Transitions {
                 // GL JS and Native resolve it at their next update: one
                 // changed after the edit, before this frame, holds.
                 if let Some(layer) = plan.style.layers.iter().find(|l| l.id == r.layer) {
-                    r.transition = transition_of(&plan.style, layer, r.id);
+                    r.transition = layer.transition(r.id, plan.style.transition);
                 }
                 let t = r.transition;
                 r.span = Some((now + t.delay, now + t.delay + t.duration));
