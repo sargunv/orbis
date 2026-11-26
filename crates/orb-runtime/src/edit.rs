@@ -28,7 +28,9 @@ use orb_style::{Binding, Change, Class, LayerKey, Patch, PropertyId};
 
 use crate::jobs::TileOutcome;
 use crate::map::{LoadedStyle, Map, NodeState, revise};
-use crate::resident::{SourceState, record_maxima, remove_resident, resolve_rows, upload_mesh};
+use crate::resident::{
+    SourceSlot, SourceState, record_maxima, remove_resident, resolve_rows, upload_mesh,
+};
 use crate::style::StylePlan;
 use crate::worker::{StyleUpdate, TileJob};
 
@@ -170,7 +172,7 @@ impl Map {
         self.style = Some(style);
         for index in added {
             let state = self.start_source(plan, index);
-            self.style.as_mut().expect("restored").sources[index] = state;
+            self.style.as_mut().expect("restored").sources[index].state = state;
         }
 
         self.send_relayouts(relayout, columns, version);
@@ -354,7 +356,7 @@ impl Map {
     /// The ready tiles of a source, or those with a mesh of one of `nodes`.
     pub(crate) fn resident_tiles(&self, source: usize, nodes: Option<&[u32]>) -> Vec<TileIndex> {
         let style = self.style.as_ref().expect("edits need a style");
-        let SourceState::Ready { pyramid, .. } = &style.sources[source] else {
+        let SourceState::Ready { pyramid, .. } = &style.sources[source].state else {
             return Vec::new();
         };
         pyramid
@@ -388,7 +390,7 @@ impl Map {
             // lifetime, as a new body without one does. One no server
             // answered tries again when its reload was due to.
             Ok(TileOutcome::Built(build)) if build.renewed => {
-                let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
+                let SourceState::Ready { pyramid, .. } = &mut style.sources[index].state else {
                     return;
                 };
                 if let Some(resident) = pyramid.get_mut(tile)
@@ -420,7 +422,7 @@ impl Map {
             &mut self.events,
         );
         style.sprites.relayout_after_pixels |= style.awaits_sprite_pixels(&build);
-        let SourceState::Ready { pyramid, .. } = &style.sources[index] else {
+        let SourceState::Ready { pyramid, .. } = &style.sources[index].state else {
             return;
         };
         if pyramid.get(tile).is_none() {
@@ -428,7 +430,7 @@ impl Map {
         }
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
-        let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
+        let SourceState::Ready { pyramid, .. } = &mut style.sources[index].state else {
             unreachable!("checked above");
         };
         let Some(resident) = pyramid.get_mut(tile) else {
@@ -631,38 +633,20 @@ impl Map {
 /// those added, which start loading.
 fn carry_sources(style: &mut LoadedStyle, old_plan: &StylePlan, plan: &StylePlan) -> Vec<usize> {
     let old_keys: Vec<u32> = old_plan.sources.iter().map(|s| s.key).collect();
-    let mut old_sources: Vec<Option<_>> = std::mem::take(&mut style.sources)
+    let mut old_sources: Vec<Option<SourceSlot>> = std::mem::take(&mut style.sources)
         .into_iter()
-        .zip(std::mem::take(&mut style.placed))
-        .zip(std::mem::take(&mut style.held))
         .map(Some)
         .collect();
     let mut added = Vec::new();
     for (index, source) in plan.sources.iter().enumerate() {
-        match old_keys
-            .iter()
-            .position(|k| *k == source.key)
-            .and_then(|i| old_sources[i].take())
-        {
-            Some(((state, placed), held)) => {
-                style.sources.push(state);
-                style.placed.push(placed);
-                style.held.push(held);
-            }
-            None => {
-                style.sources.push(SourceState::Failed);
-                style.placed.push(Vec::new());
-                style.held.push(Vec::new());
-                added.push(index);
-            }
-        }
+        let carried =
+            (old_keys.iter().position(|k| *k == source.key)).and_then(|i| old_sources[i].take());
+        style.sources.push(carried.unwrap_or_else(|| {
+            added.push(index);
+            SourceSlot::new(SourceState::Failed)
+        }));
     }
-    style.retired.extend(
-        old_sources
-            .into_iter()
-            .flatten()
-            .map(|((state, _), _)| state),
-    );
+    (style.retired).extend(old_sources.into_iter().flatten().map(|slot| slot.state));
     added
 }
 

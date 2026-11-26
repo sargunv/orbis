@@ -617,7 +617,7 @@ pub(crate) fn node_paint(
     let node = &plan.nodes[index as usize];
     let state = style.nodes.entry(node.key).or_default();
     if node.family.is_image() {
-        let unpack = match &style.sources[node.source] {
+        let unpack = match &style.sources[node.source].state {
             SourceState::Ready { endpoint, .. } => endpoint.dem_unpack,
             _ => None,
         };

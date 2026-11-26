@@ -109,7 +109,7 @@ impl Map {
             pyramid,
             warped,
             ..
-        } = &style.sources[index]
+        } = &style.sources[index].state
         else {
             return None;
         };
@@ -284,8 +284,8 @@ impl Map {
         report: &mut FrameReport,
     ) {
         let style = self.style.as_mut().expect("called with a style");
-        style.draws.resize_with(style.sources.len(), || None);
-        style.draws[index] = None;
+        let slot = &mut style.sources[index];
+        slot.draws = None;
         let Some(SourcePlan {
             mut update,
             neighbours,
@@ -294,20 +294,17 @@ impl Map {
         else {
             return;
         };
-        style.coarse.resize(style.sources.len(), None);
-        style.coarse[index] = coarse;
+        slot.coarse = coarse;
         // Tiles held for their labels stay until a placement covers what
         // replaced them ([`place_source`](Self::place_source)).
-        update
-            .used
-            .extend(style.held.get(index).into_iter().flatten().copied());
+        update.used.extend(slot.held.iter().copied());
         let vector = style.worker.plan().image_kind(index).is_none();
         let SourceState::Ready {
             endpoint,
             pyramid,
             warped,
             ..
-        } = &mut style.sources[index]
+        } = &mut slot.state
         else {
             return;
         };
@@ -371,7 +368,7 @@ impl Map {
             Some((period / tms.tile_span(z)).round() as u32)
         };
         let unwanted = pyramid.unwanted_loads(vector.then_some(&columns));
-        style.draws[index] = Some(update.draw);
+        slot.draws = Some(update.draw);
         let id = style.id;
         for tile in unwanted {
             self.services.jobs.cancel(id, key, tile);
@@ -403,10 +400,6 @@ impl Map {
         drawn: &mut Vec<crate::query::DrawnTile>,
     ) {
         let style = self.style.as_mut().expect("called with a style");
-        // The plan's draws stand until the next plan.
-        let Some(draws) = style.draws[index].clone() else {
-            return;
-        };
         let draped = drape.filter(|_| {
             let plan = style.worker.plan();
             plan.nodes
@@ -423,12 +416,17 @@ impl Map {
         stacks.dedup();
         let terrain = style.terrain.get();
         let source_key = style.worker.plan().sources[index].key;
-        let SourceState::Ready {
-            pyramid,
-            endpoint,
-            warped,
-            ..
-        } = &mut style.sources[index]
+        let slot = &mut style.sources[index];
+        // The plan's draws stand until the next plan.
+        let (
+            Some(draws),
+            SourceState::Ready {
+                pyramid,
+                endpoint,
+                warped,
+                ..
+            },
+        ) = (&slot.draws, &mut slot.state)
         else {
             return;
         };
@@ -441,7 +439,7 @@ impl Map {
         // Picking reads tiles with features in drawing order, ancestors
         // before descendants.
         let mut order = Vec::new();
-        for draw in &draws {
+        for draw in draws {
             let copies = rows.entry(draw.tile).or_default();
             if copies.is_empty() {
                 order.push(draw.tile);
@@ -472,8 +470,8 @@ impl Map {
             &rows,
         );
         let period = self.surface.period();
-        let whole = whole_draws(tms, &draws);
-        let placed = &mut style.placed[index];
+        let whole = whole_draws(tms, draws);
+        let placed = &mut slot.placed;
         // Labels past a Web Mercator tile go on exactly on a globe.
         let on_mercator = view.globe().is_some() && *tms.projection() == mercator_projection();
         let mut wraps: Vec<i32> = Vec::new();
@@ -562,7 +560,7 @@ impl Map {
                 }
             }
         }
-        let held = &mut style.held[index];
+        let held = &mut slot.held;
         // Label fades run on frame time, which needn't be the services'
         // clock (a host's display link has its own).
         let now = self.frame_time;
@@ -579,7 +577,7 @@ impl Map {
         let place = (view, tms, *warped, terrain);
         place_held(gpu, renderer, surface, place, pyramid, held);
         let mut ordered = Vec::new();
-        for draw in &draws {
+        for draw in draws {
             // Multiple wraps of a tile share its meshes and placements.
             if ordered.last() != Some(&draw.tile) {
                 ordered.push(draw.tile);
@@ -620,7 +618,7 @@ impl Map {
         for (index, source) in style.sources.iter().enumerate() {
             if let SourceState::Ready {
                 pyramid, endpoint, ..
-            } = source
+            } = &source.state
             {
                 let limit = match keeps {
                     true => source_cache_limit(pyramid.used(), endpoint.cover_px, viewport),
@@ -636,7 +634,7 @@ impl Map {
             }
         }
         for (index, tile) in gone {
-            let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
+            let SourceState::Ready { pyramid, .. } = &mut style.sources[index].state else {
                 continue;
             };
             if let Some(resident) = pyramid.evict_unused(tile) {
@@ -730,7 +728,6 @@ impl Map {
         let period = self.surface.period();
         let sources = &style.sources;
         let host_heights = &self.host_heights;
-        let draws = &style.draws;
         let paint = &style.paint;
         let revision = (self.version, style.states.writes(time), images_revision);
         // The farthest a draped fill or line is translated: a slot takes
@@ -748,7 +745,12 @@ impl Map {
         // A DEM tile's border comes from its drawn neighbours
         // (`Renderer::pad_dems`).
         let drawn_tiles: FxHashMap<usize, FxHashSet<TileIndex>> = (draped.iter())
-            .filter_map(|&i| Some((i, draws[i].as_ref()?.iter().map(|d| d.tile).collect())))
+            .filter_map(|&i| {
+                Some((
+                    i,
+                    sources[i].draws.as_ref()?.iter().map(|d| d.tile).collect(),
+                ))
+            })
             .collect();
         // Each draped source's stacks: a slot's stack redraws when what
         // the sources drawing into it drape there changes.
@@ -770,7 +772,7 @@ impl Map {
                     SourceState::Ready {
                         pyramid, endpoint, ..
                     },
-                ) = (&draws[i], &sources[i])
+                ) = (&sources[i].draws, &sources[i].state)
                 else {
                     continue;
                 };

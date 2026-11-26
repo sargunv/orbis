@@ -194,7 +194,7 @@ impl Map {
             self.warnings.push(warning.to_owned());
             return None;
         }
-        match &style.sources[index] {
+        match &style.sources[index].state {
             SourceState::Resolving => Some((index, None)),
             SourceState::Ready { endpoint, .. } if endpoint.tms == *self.surface.tms() => {
                 Some((index, Some(Arc::clone(endpoint))))

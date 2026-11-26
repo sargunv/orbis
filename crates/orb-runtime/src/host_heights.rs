@@ -262,7 +262,7 @@ impl Map {
             .ok_or_else(|| format!("no source {id}"))?;
         let SourceState::Ready {
             endpoint, pyramid, ..
-        } = &style.sources[index]
+        } = &style.sources[index].state
         else {
             return Err(format!("{id} hasn't loaded"));
         };

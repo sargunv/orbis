@@ -210,7 +210,7 @@ impl Map {
             return Awaited::No;
         };
         let index = style.worker.plan().source(source);
-        match index.map(|i| &style.sources[i]) {
+        match index.map(|i| &style.sources[i].state) {
             Some(SourceState::Ready { pyramid, .. }) => pyramid.awaited(tile),
             _ => Awaited::No,
         }
@@ -243,13 +243,13 @@ impl Map {
                 .map(|t| (&t.endpoint, crate::frame::Tier::View)),
             false => {
                 let index = style.worker.plan().source(*source)?;
-                match &style.sources[index] {
+                let slot = &style.sources[index];
+                match &slot.state {
                     SourceState::Ready {
                         endpoint, pyramid, ..
                     } => {
-                        let coarse = style.coarse.get(index).copied().flatten();
                         let used = pyramid.used_last(*tile);
-                        Some((endpoint, crate::frame::Tier::of(*tile, coarse, used)))
+                        Some((endpoint, crate::frame::Tier::of(*tile, slot.coarse, used)))
                     }
                     _ => None,
                 }
@@ -375,7 +375,7 @@ impl Map {
                 let Some(index) = plan.source(source) else {
                     return;
                 };
-                if !matches!(style.sources[index], SourceState::Resolving) {
+                if !matches!(style.sources[index].state, SourceState::Resolving) {
                     return;
                 }
                 let def = plan.source_def(index);
@@ -411,7 +411,8 @@ impl Map {
                         source: def.id.clone(),
                     });
                 }
-                style.sources[index] = ready_source(endpoint, &def.id, image, &mut self.events);
+                style.sources[index].state =
+                    ready_source(endpoint, &def.id, image, &mut self.events);
                 self.events.sources.insert(source);
                 // Color-relief ramps wait for their source's encoding.
                 style.paint.invalidate();
@@ -654,7 +655,7 @@ impl Map {
             .style
             .iter()
             .flat_map(|s| &s.sources)
-            .map(|s| match s {
+            .map(|s| match &s.state {
                 SourceState::Ready { pyramid, .. } => pyramid.loading() as u64,
                 _ => 0,
             })
@@ -751,7 +752,7 @@ impl Map {
             endpoint,
             warped,
             ..
-        } = &mut style.sources[source]
+        } = &mut style.sources[source].state
         else {
             return Applied::Done;
         };
@@ -929,10 +930,9 @@ impl Map {
         // (neither in the cover nor standing in for a tile of it that
         // failed) is forgotten; one it wants gives way, to be tried again
         // later, and its ancestor is asked to stand in.
-        let others_loading = style
-            .sources
-            .iter()
-            .any(|s| matches!(s, SourceState::Ready { pyramid, .. } if pyramid.loading() > 0));
+        let others_loading = style.sources.iter().any(
+            |s| matches!(&s.state, SourceState::Ready { pyramid, .. } if pyramid.loading() > 0),
+        );
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
         let uploading = self.services.clock.now();
@@ -993,10 +993,12 @@ impl Map {
             let victim = match attempt {
                 Ok(uploaded) => break Ok(uploaded),
                 Err(Invalid(e)) => break Err(Some(e)),
-                Err(NoRoom) if image_build.is_some() && !grow => match &mut style.sources[source] {
-                    SourceState::Ready { pyramid, .. } => pyramid.evict_lru(),
-                    _ => None,
-                },
+                Err(NoRoom) if image_build.is_some() && !grow => {
+                    match &mut style.sources[source].state {
+                        SourceState::Ready { pyramid, .. } => pyramid.evict_lru(),
+                        _ => None,
+                    }
+                }
                 Err(NoRoom) => evict_unused(&mut style.sources, source),
             };
             let victim = match victim {
@@ -1006,7 +1008,7 @@ impl Map {
                     continue;
                 }
                 None if others_loading => None,
-                None => match &mut style.sources[source] {
+                None => match &mut style.sources[source].state {
                     SourceState::Ready { pyramid, .. } if pyramid.covers(tile) => pyramid
                         .evict_within(tile)
                         .or_else(|| evict_stand_in(&mut style.sources, source, tile)),
@@ -1029,7 +1031,7 @@ impl Map {
         };
         drop(images);
         self.upload_ms += self.services.clock.now() - uploading;
-        let SourceState::Ready { pyramid, .. } = &mut style.sources[source] else {
+        let SourceState::Ready { pyramid, .. } = &mut style.sources[source].state else {
             unreachable!("checked above");
         };
         let wanted = pyramid.wants(tile);
@@ -1195,4 +1197,67 @@ fn inside_texels(
     let y = |w: f64| at((own.max.y - w) / size.y, height);
     let texels = [x(area.min.x), y(area.max.y), x(area.max.x), y(area.min.y)];
     (texels[0] < texels[2] && texels[1] < texels[3]).then_some(texels)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orb_crs::CoveredTile;
+
+    #[test]
+    fn loads_rank_by_their_own_source_after_an_edit_removes_another() {
+        let fetch = Arc::new(crate::testing::HeldFetch::default());
+        let mut map = Map::new(crate::testing::services(fetch), None);
+        let raster = |name: &str| {
+            format!(
+                r#""{name}": {{"type": "raster", "tiles": ["https://example.com/{name}/{{z}}/{{x}}/{{y}}.png"]}}"#
+            )
+        };
+        let layer =
+            |name: &str| format!(r#"{{"id": "{name}", "type": "raster", "source": "{name}"}}"#);
+        map.set_style_json(&format!(
+            r#"{{"version": 8, "sources": {{{}, {}}}, "layers": [{}, {}]}}"#,
+            raster("a"),
+            raster("b"),
+            layer("a"),
+            layer("b")
+        ))
+        .unwrap();
+        // `b` loads a tile at zoom 2, its coarse stand-ins' level, and one
+        // at zoom 5; `a` keeps no stand-ins.
+        let (coarse, view) = (TileIndex::new(2, 1, 1), TileIndex::new(5, 8, 8));
+        let style = map.style.as_mut().unwrap();
+        let plan = style.worker.plan();
+        let index = (0..plan.sources.len())
+            .find(|&i| plan.source_def(i).id == "b")
+            .unwrap();
+        let b = plan.sources[index].key;
+        let slot = &mut style.sources[index];
+        let SourceState::Ready { pyramid, .. } = &mut slot.state else {
+            panic!("an inline raster source is ready at once");
+        };
+        let cover = [coarse, view].map(|index| CoveredTile { index, wrap: 0 });
+        pyramid.update(&cover);
+        slot.coarse = Some(2);
+        // Removing `a` moves `b` first, before a frame plans again.
+        let remove = r#"[["removeLayer", "a"], ["removeSource", "a"]]"#;
+        map.edit(&crate::Transaction::from_commands(remove).unwrap())
+            .unwrap();
+        let rank = |tile| {
+            let message = Message::Tile {
+                generation: map.tile_generation,
+                source: b,
+                tile,
+                job: TileJob::Load,
+                result: Box::new(Err("held".into())),
+            };
+            map.load_rank(&message).expect("a wanted load")
+        };
+        let view_first = crate::frame::Tier::View.first_rank();
+        assert!(rank(coarse) < view_first, "the stand-in ranks as coarse");
+        assert!(
+            rank(view) >= view_first,
+            "the view's tile ranks in the view"
+        );
+    }
 }

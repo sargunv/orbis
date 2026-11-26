@@ -15,7 +15,6 @@ use orb_render::{
     Family, FrameBlock, FrameStats, PageId, RenderNode, Renderer, SceneCapacity, SceneStats,
     TargetFormat, micros,
 };
-use orb_source::Draw;
 use orb_style::SourceKind;
 use orb_style::v8::{StyleDoc, Transaction};
 
@@ -498,7 +497,7 @@ pub(crate) struct LoadedStyle {
     pub(crate) doc: StyleDoc,
     pub(crate) worker: Arc<TileWorker>,
     /// Parallel to the plan's sources.
-    pub(crate) sources: Vec<SourceState>,
+    pub(crate) sources: Vec<SourceSlot>,
     /// Sources an edit removed, whose tiles leave the scene next frame.
     pub(crate) retired: Vec<SourceState>,
     pub(crate) nodes: HashMap<u32, NodeState>,
@@ -525,23 +524,9 @@ pub(crate) struct LoadedStyle {
     pub(crate) reported_missing: HashSet<String>,
     /// The scene tiles of the background layers' quads.
     pub(crate) background: Option<crate::meshes::Background>,
-    /// The tiles the last frame drew, in drawing order, parallel to
-    /// sources: the next frame hides those it no longer draws, so only a
-    /// frame sets it.
-    pub(crate) placed: Vec<Vec<TileIndex>>,
-    /// Tiles that left the draw list but whose labels still draw until a
-    /// placement covers what replaced them (`Labels::hold`), parallel to
-    /// sources.
-    pub(crate) held: Vec<Vec<TileIndex>>,
     pub(crate) states: FeatureStates,
     /// This frame's drawn symbol buckets, for placement.
     pub(crate) symbol_tiles: Vec<crate::labels::SymbolTile>,
-    /// This frame's tiles to draw, per source, between their update and
-    /// their placement.
-    pub(crate) draws: Vec<Option<Vec<Draw>>>,
-    /// The zoom whose tiles each source keeps loaded to stand in, as its
-    /// last plan had it ([`Map::coarse_level`]).
-    pub(crate) coarse: Vec<Option<u8>>,
     /// The style's terrain, on, off or turning.
     pub(crate) terrain: crate::terrain_phase::TerrainPhase,
     /// Whether the background and image tiles' meshes are grids for a
@@ -1233,7 +1218,7 @@ impl Map {
             return;
         };
         for source in &mut style.sources {
-            if let SourceState::Ready { pyramid, .. } = source {
+            if let SourceState::Ready { pyramid, .. } = &mut source.state {
                 pyramid.retry_failed(f64::INFINITY);
             }
         }
@@ -1269,7 +1254,7 @@ impl Map {
         let plan = style.worker.plan();
         let mut relayout = Vec::new();
         for (index, source) in style.sources.iter().enumerate() {
-            let SourceState::Ready { pyramid, .. } = source else {
+            let SourceState::Ready { pyramid, .. } = &source.state else {
                 continue;
             };
             let symbols = plan.nodes.iter().filter(|n| n.source == index);
@@ -1464,7 +1449,7 @@ impl Map {
             return false;
         };
         let target = self.camera.state().target;
-        style.sources.iter().all(|source| match source {
+        style.sources.iter().all(|source| match &source.state {
             SourceState::Ready {
                 endpoint, pyramid, ..
             } => {
@@ -1492,7 +1477,7 @@ impl Map {
                     && s.sprites.pixels_loading == 0
                     && s.sources
                         .iter()
-                        .all(|source| !matches!(source, SourceState::Resolving))
+                        .all(|source| !matches!(source.state, SourceState::Resolving))
             })
     }
 
@@ -1682,7 +1667,7 @@ impl Map {
         );
 
         let sources = (0..plan.sources.len())
-            .map(|index| self.start_source(plan, index))
+            .map(|index| SourceSlot::new(self.start_source(plan, index)))
             .collect();
         // The feature state kept for its sources, through restyles and
         // device losses alike.
@@ -1693,8 +1678,6 @@ impl Map {
                 .map(|n| (n.key, NodeState::new(plan, n, 0)))
                 .collect(),
             drawn: Vec::new(),
-            placed: vec![Vec::new(); plan.sources.len()],
-            held: vec![Vec::new(); plan.sources.len()],
             id: self.style_id,
             doc,
             worker: Arc::clone(&worker),
@@ -1712,8 +1695,6 @@ impl Map {
             background: None,
             states,
             symbol_tiles: Vec::new(),
-            draws: Vec::new(),
-            coarse: Vec::new(),
             terrain: crate::terrain_phase::TerrainPhase::Off,
             globe_meshes: self.surface.globe().is_some(),
             pipelines: None,
@@ -1987,7 +1968,8 @@ impl Map {
         // Mercator, known for a source once it resolves).
         let warped = surface != crate::frame::mercator_projection()
             || (self.style.as_ref()).is_some_and(|s| {
-                (s.sources.iter()).any(|s| matches!(s, SourceState::Ready { warped: true, .. }))
+                (s.sources.iter())
+                    .any(|s| matches!(s.state, SourceState::Ready { warped: true, .. }))
             });
         let zoom = self.zoom();
         let surface_full = self.surface.globe().is_some() || warped;
@@ -2278,7 +2260,7 @@ impl Map {
         // the labels that drew them.
         let now = self.services.clock.now();
         for source in self.style.iter_mut().flat_map(|s| &mut s.sources) {
-            if let SourceState::Ready { pyramid, .. } = source {
+            if let SourceState::Ready { pyramid, .. } = &mut source.state {
                 pyramid.retry_failed(now);
             }
         }
@@ -2296,7 +2278,7 @@ impl Map {
             self.planned = key;
         } else {
             report.tiles_loading += (self.style.iter().flat_map(|s| &s.sources))
-                .map(|s| match s {
+                .map(|s| match &s.state {
                     SourceState::Ready { pyramid, .. } => pyramid.loading_for_view() as u32,
                     _ => 0,
                 })
@@ -2507,7 +2489,7 @@ impl Map {
             renderer.release_tile(tile);
         }
         for source in &mut style.sources {
-            let SourceState::Ready { pyramid, .. } = source else {
+            let SourceState::Ready { pyramid, .. } = &mut source.state else {
                 continue;
             };
             for (_, resident) in pyramid.ready_mut() {
@@ -2686,7 +2668,7 @@ impl Map {
         // A neighbour's relayouts and rows lay out as it did: its meshes
         // hold its features at the edges alone.
         let style = self.style.as_ref().expect("jobs need a style");
-        let neighbour = matches!(&style.sources[index],
+        let neighbour = matches!(&style.sources[index].state,
             SourceState::Ready { pyramid, .. } if pyramid.get(tile).is_some_and(|r| r.neighbour));
         // Relayouts are of tiles drawn now: they go first.
         self.send_tile_job(index, tile, job, neighbour, 0);
@@ -2718,7 +2700,7 @@ impl Map {
         let vector = style.worker.plan().image_kind(index).is_none();
         let SourceState::Ready {
             endpoint, warped, ..
-        } = &mut style.sources[index]
+        } = &mut style.sources[index].state
         else {
             return;
         };
@@ -2835,7 +2817,7 @@ impl Map {
             .iter()
             .position(|s| s.id == id)
             .ok_or_else(|| format!("no source {id}"))?;
-        let SourceState::Ready { endpoint, .. } = &style.sources[index] else {
+        let SourceState::Ready { endpoint, .. } = &style.sources[index].state else {
             return Err(format!("{id} hasn't loaded"));
         };
         if !endpoint.host() {
@@ -2888,7 +2870,7 @@ impl Map {
             .ok_or_else(|| format!("no source {id}"))?;
         // Another source's tiles would go out as fetches: a video's or a
         // canvas's has no URL.
-        if let SourceState::Ready { endpoint, .. } = &style.sources[index]
+        if let SourceState::Ready { endpoint, .. } = &style.sources[index].state
             && !endpoint.host()
         {
             return Err(format!("{id} isn't a source the app feeds"));
@@ -2914,8 +2896,10 @@ impl Map {
         if let Some(up) = old_upload {
             self.retired.host.push(HostData::of(&up.build));
             self.retired.reserved.push(up.reserved);
-            if let Some(SourceState::Ready { pyramid, .. }) =
-                self.style.as_mut().map(|style| &mut style.sources[index])
+            if let Some(SourceState::Ready { pyramid, .. }) = self
+                .style
+                .as_mut()
+                .map(|style| &mut style.sources[index].state)
             {
                 pyramid.forget_loading(up.tile);
             }
@@ -2929,8 +2913,10 @@ impl Map {
                 tile,
             });
         }
-        if let Some(SourceState::Ready { pyramid, .. }) =
-            self.style.as_mut().map(|style| &mut style.sources[index])
+        if let Some(SourceState::Ready { pyramid, .. }) = self
+            .style
+            .as_mut()
+            .map(|style| &mut style.sources[index].state)
         {
             pyramid.forget_settled(&picks);
             for waiting in old {
@@ -2968,7 +2954,7 @@ impl Map {
         let style = self.style.as_mut()?;
         let (mut expired, mut next) = (Vec::new(), None::<u64>);
         for (index, source) in style.sources.iter_mut().enumerate() {
-            let SourceState::Ready { pyramid, .. } = source else {
+            let SourceState::Ready { pyramid, .. } = &mut source.state else {
                 continue;
             };
             for (tile, resident) in pyramid.used_mut() {
@@ -3005,17 +2991,14 @@ impl Map {
         for (index, source) in style.sources.iter().enumerate() {
             let SourceState::Ready {
                 endpoint, pyramid, ..
-            } = source
+            } = &source.state
             else {
                 continue;
             };
             let order = fetch_order(&endpoint.tms, focus);
-            let (key, coarse) = (
-                plan.sources[index].key,
-                style.coarse.get(index).copied().flatten(),
-            );
+            let key = plan.sources[index].key;
             for tile in pyramid.loading_tiles() {
-                let tier = Tier::of(tile, coarse, pyramid.used_last(tile));
+                let tier = Tier::of(tile, source.coarse, pyramid.used_last(tile));
                 ranks.insert((style.id, key, tile), order(tile, tier));
             }
         }
@@ -3168,7 +3151,7 @@ impl Map {
     fn memory(&self, renderer: &Renderer) -> Memory {
         let (mut cached_tiles, mut cached) = (0, 0);
         for source in self.style.iter().flat_map(|s| &s.sources) {
-            if let SourceState::Ready { pyramid, .. } = source {
+            if let SourceState::Ready { pyramid, .. } = &source.state {
                 for (_, _, r) in pyramid.unused() {
                     cached_tiles += 1;
                     cached += r.cost;
@@ -3196,7 +3179,7 @@ impl Map {
     /// extract's edge) still keeps the city it came from.
     pub(crate) fn cache_limit(&self) -> usize {
         (self.style.iter().flat_map(|s| &s.sources))
-            .map(|source| match source {
+            .map(|source| match &source.state {
                 SourceState::Ready {
                     pyramid, endpoint, ..
                 } => source_cache_limit(pyramid.used(), endpoint.cover_px, self.cache_viewport),
@@ -3253,7 +3236,7 @@ impl Map {
                 == orb_style::IlluminationAnchor::Viewport;
             // Its source covers the terrain tiles' quarters, as the
             // surface's tiles.
-            let on_surface = matches!(&style.sources[node.source],
+            let on_surface = matches!(&style.sources[node.source].state,
                 SourceState::Ready { endpoint, .. } if endpoint.tms == *self.surface.tms());
             renderer.set_shaded_on_terrain(gpu, index as u32, viewport && on_surface);
         }
@@ -3379,7 +3362,7 @@ impl Map {
             mode: std::mem::discriminant(&self.mode),
             version: self.version,
             sources: (style.sources.iter())
-                .map(|s| match s {
+                .map(|s| match &s.state {
                     SourceState::Ready { pyramid, .. } => Some(pyramid.revision()),
                     _ => None,
                 })
@@ -3543,7 +3526,7 @@ impl Map {
         let Some(index) = style.worker.plan().source(key) else {
             return;
         };
-        let SourceState::Ready { pyramid, .. } = &style.sources[index] else {
+        let SourceState::Ready { pyramid, .. } = &style.sources[index].state else {
             return;
         };
         let pixels = frame.pixels.upload(true);
@@ -3659,7 +3642,7 @@ impl Map {
             let Some(index) = plan.source(key) else {
                 continue;
             };
-            let loaded = match &style.sources[index] {
+            let loaded = match &style.sources[index].state {
                 SourceState::Ready { pyramid, .. } => pyramid.loading_for_view() == 0,
                 SourceState::Resolving => false,
                 _ => true,
@@ -3678,7 +3661,7 @@ impl Map {
         let Some(style) = &mut self.style else { return };
         let plan = style.worker.plan();
         for (index, source) in style.sources.iter_mut().enumerate() {
-            if let SourceState::Ready { pyramid, .. } = source {
+            if let SourceState::Ready { pyramid, .. } = &mut source.state {
                 let key = plan.sources[index].key;
                 for tile in pyramid.give_up_loads() {
                     self.services.jobs.cancel(style.id, key, tile);
@@ -3696,7 +3679,8 @@ impl Map {
     fn clear_style_tiles(&mut self) {
         self.cancel_tile_loads();
         let Some(style) = &mut self.style else { return };
-        for source in style.sources.iter_mut().chain(&mut style.retired) {
+        let sources = style.sources.iter_mut().map(|s| &mut s.state);
+        for source in sources.chain(&mut style.retired) {
             if let SourceState::Ready { pyramid, .. } = source {
                 for tile in pyramid.drain() {
                     self.retired.tiles.push(tile.gpu);
@@ -3706,8 +3690,9 @@ impl Map {
                 }
             }
         }
-        for placed in style.placed.iter_mut().chain(&mut style.held) {
-            placed.clear();
+        for source in &mut style.sources {
+            source.placed.clear();
+            source.held.clear();
         }
         if let Some(terrain) = style.terrain.take() {
             // Destroyed once the renderer's terrain is off.
@@ -4284,7 +4269,7 @@ fn shades_on_terrain(style: &LoadedStyle, tms: &orb_crs::TileMatrixSet) -> bool 
             anchor.evaluate(f64::from(zoom)) == orb_style::IlluminationAnchor::Viewport
         });
         viewport
-            && match &style.sources[node.source] {
+            && match &style.sources[node.source].state {
                 SourceState::Resolving => true,
                 SourceState::Ready { endpoint, .. } => endpoint.tms == *tms,
                 SourceState::Failed => false,

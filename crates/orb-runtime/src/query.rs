@@ -2387,7 +2387,7 @@ impl crate::Map {
             .position(|s| s.key == source)?;
         let crate::resident::SourceState::Ready {
             pyramid, endpoint, ..
-        } = &style.sources[index]
+        } = &style.sources[index].state
         else {
             return None;
         };

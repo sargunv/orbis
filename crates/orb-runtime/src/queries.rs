@@ -175,11 +175,11 @@ impl crate::Map {
         let Some(index) = plan.sources.iter().position(|s| s.id == source) else {
             return done(Err(format!("no source {source}")));
         };
-        let SourceState::Ready { endpoint, .. } = &style.sources[index] else {
+        let SourceState::Ready { endpoint, .. } = &style.sources[index].state else {
             return done(Ok("[]".into()));
         };
         let mut data_tiles: Vec<TileIndex> = Vec::new();
-        for &tile in &style.placed[index] {
+        for &tile in &style.sources[index].placed {
             let data = endpoint.data_tile(tile);
             if !data_tiles.contains(&data) {
                 data_tiles.push(data);
@@ -239,12 +239,11 @@ impl crate::Map {
         let style = self.style.as_ref()?;
         let SourceState::Ready {
             pyramid, endpoint, ..
-        } = &style.sources[index]
+        } = &style.sources[index].state
         else {
             return None;
         };
-        style.placed[index]
-            .iter()
+        (style.sources[index].placed.iter())
             .filter(|&&t| endpoint.data_tile(t) == tile)
             .filter_map(|&t| pyramid.get(t))
             .flat_map(|r| r.meshes.iter().map(|m| m.layout_rev))
@@ -255,7 +254,7 @@ impl crate::Map {
         let style = self.style.as_ref()?;
         let SourceState::Ready {
             endpoint, pyramid, ..
-        } = &style.sources[index]
+        } = &style.sources[index].state
         else {
             return None;
         };

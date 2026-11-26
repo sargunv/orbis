@@ -7,8 +7,8 @@ use std::sync::Arc;
 use orb_crs::TileIndex;
 use orb_hal::{Gpu, HostBytesId};
 use orb_render::{GpuTile, ImageAtlas, MeshData, MeshId, OutOfSpace, Renderer, TileKey};
-use orb_source::TilePyramid;
 use orb_source::endpoint::TileEndpoint;
+use orb_source::{Draw, TilePyramid};
 
 use crate::MapEvent;
 use crate::image::ResidentImage;
@@ -116,6 +116,37 @@ pub(crate) enum SourceState {
         warped: bool,
     },
     Failed,
+}
+
+/// A plan source's state across frames, carried by key over edits: what
+/// it has loaded and what its frames drew of it.
+#[derive(Debug)]
+pub(crate) struct SourceSlot {
+    pub(crate) state: SourceState,
+    /// The tiles the last frame drew, in drawing order: the next frame
+    /// hides those it no longer draws, so only a frame sets it.
+    pub(crate) placed: Vec<TileIndex>,
+    /// Tiles that left the draw list but whose labels still draw until a
+    /// placement covers what replaced them (`Labels::hold`).
+    pub(crate) held: Vec<TileIndex>,
+    /// The last plan's tiles to draw, between their update and their
+    /// placement; `None` where it drew nothing.
+    pub(crate) draws: Option<Vec<Draw>>,
+    /// The zoom whose tiles the source keeps loaded to stand in, as its
+    /// last plan had it (`Map::coarse_level`).
+    pub(crate) coarse: Option<u8>,
+}
+
+impl SourceSlot {
+    pub(crate) fn new(state: SourceState) -> Self {
+        Self {
+            state,
+            placed: Vec::new(),
+            held: Vec::new(),
+            draws: None,
+            coarse: None,
+        }
+    }
 }
 
 /// The host data a tile result holds until it's uploaded or dropped.
@@ -499,11 +530,11 @@ pub(crate) fn upload(
 
 /// Evicts the least recently used cached tile the view doesn't use, of
 /// source `first` before others'.
-pub(crate) fn evict_unused(sources: &mut [SourceState], first: usize) -> Option<ResidentTile> {
+pub(crate) fn evict_unused(sources: &mut [SourceSlot], first: usize) -> Option<ResidentTile> {
     let others = (0..sources.len()).filter(|&s| s != first);
     std::iter::once(first)
         .chain(others)
-        .find_map(|s| match &mut sources[s] {
+        .find_map(|s| match &mut sources[s].state {
             SourceState::Ready { pyramid, .. } => pyramid.evict_lru(),
             _ => None,
         })
@@ -513,14 +544,14 @@ pub(crate) fn evict_unused(sources: &mut [SourceState], first: usize) -> Option<
 /// evict_stand_in`]), `first`'s first and the ancestors of its `tile`
 /// before others, to make room for `tile`.
 pub(crate) fn evict_stand_in(
-    sources: &mut [SourceState],
+    sources: &mut [SourceSlot],
     first: usize,
     tile: TileIndex,
 ) -> Option<ResidentTile> {
     let others = (0..sources.len()).filter(|&s| s != first);
     std::iter::once(first)
         .chain(others)
-        .find_map(|s| match &mut sources[s] {
+        .find_map(|s| match &mut sources[s].state {
             SourceState::Ready { pyramid, .. } => {
                 pyramid.evict_stand_in((s == first).then_some(tile))
             }
