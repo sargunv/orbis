@@ -178,9 +178,7 @@ pub(crate) fn plan(
         }
         !looped
     });
-    let camera = (processes.iter())
-        .flat_map(|p| &layers[p.layer].operations)
-        .any(Operation::reads_camera);
+    let camera = (processes.iter()).any(|p| layers[p.layer].operations.reads_camera());
     let high: Vec<bool> = (style.targets.iter())
         .map(|t| t.precision == Precision::High)
         .collect();

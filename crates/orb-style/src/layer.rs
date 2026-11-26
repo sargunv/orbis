@@ -42,7 +42,7 @@ pub struct Layer {
     /// through (`dev.sargunv.orbis:source-target`).
     pub source_target: Option<String>,
     /// An image-process layer's operations, in order.
-    pub operations: Vec<crate::Operation>,
+    pub operations: crate::Operations,
 }
 impl Layer {
     /// A layer of type `ty` with `props`, one slot per property of the
@@ -68,7 +68,7 @@ impl Layer {
             layout_group: None,
             destination_target: None,
             source_target: None,
-            operations: Vec::new(),
+            operations: crate::Operations::default(),
         }
     }
 

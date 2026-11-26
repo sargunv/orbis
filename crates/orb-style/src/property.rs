@@ -184,7 +184,7 @@ impl<T: PropertyValue> PropertyValue for Option<T> {
     const UNSET: Option<Self> = Some(None);
 }
 
-/// A string enumeration from the v8 spec.
+/// A string enumeration from the v8 spec or an Orbis extension.
 pub trait Enum: Copy + Sized + 'static {
     /// The v8 names, in declaration order.
     const VALUES: &'static [&'static str];
@@ -192,15 +192,21 @@ pub trait Enum: Copy + Sized + 'static {
     fn name(self) -> &'static str;
 }
 
+/// An [`Enum`] of variants and their names, public unless it says otherwise.
 macro_rules! v8_enum {
-    ($(#[$meta:meta])* $name:ident { $($variant:ident = $text:literal),+ $(,)? }) => {
+    ($(#[$meta:meta])* $name:ident { $($body:tt)+ }) => {
+        v8_enum!($(#[$meta])* pub $name { $($body)+ });
+    };
+    ($(#[$meta:meta])* $vis:vis $name:ident {
+        $($(#[$vmeta:meta])* $variant:ident = $text:literal),+ $(,)?
+    }) => {
         $(#[$meta])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, orb_wire::Wire)]
-        pub enum $name {
-            $($variant),+
+        $vis enum $name {
+            $($(#[$vmeta])* $variant),+
         }
 
-        impl Enum for $name {
+        impl $crate::Enum for $name {
             const VALUES: &'static [&'static str] = &[$($text),+];
 
             fn from_name(name: &str) -> Option<Self> {
@@ -217,13 +223,14 @@ macro_rules! v8_enum {
             }
         }
 
-        impl PropertyValue for $name {
-            fn from_value(value: &Value<'_>) -> Option<Self> {
-                Self::from_name(value.as_str()?)
+        impl $crate::PropertyValue for $name {
+            fn from_value(value: &$crate::Value<'_>) -> Option<Self> {
+                <Self as $crate::Enum>::from_name(value.as_str()?)
             }
         }
     };
 }
+pub(crate) use v8_enum;
 
 v8_enum!(
     /// `visibility`.

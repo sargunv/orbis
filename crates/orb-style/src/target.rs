@@ -2,9 +2,10 @@
 //! images the size of the view that layers draw into, image-process
 //! layers transform, and fills draw through.
 
-use orb_expr::{Color, PropertyExpression};
+use orb_expr::Color;
 
 use crate::Property;
+use crate::property::v8_enum;
 
 /// A target the root `dev.sargunv.orbis:targets` declares.
 #[derive(Clone, Debug, PartialEq)]
@@ -13,29 +14,18 @@ pub struct RenderTarget {
     pub precision: Precision,
 }
 
-/// What a target's channels hold.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Precision {
-    /// 8 bits each, as the map's own.
-    #[default]
-    Standard,
-    /// 16-bit floats, kept through the passes of the image processes that
-    /// read or write the target: contours of a wide blur at a few
-    /// thousandths of its coverage, ramps of smooth fields without bands.
-    High,
-}
-
-impl Precision {
-    pub const NAMES: [&'static str; 2] = ["standard", "high"];
-
-    pub fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "standard" => Self::Standard,
-            "high" => Self::High,
-            _ => return None,
-        })
+v8_enum!(
+    /// What a target's channels hold.
+    Precision {
+        /// 8 bits each, as the map's own.
+        Standard = "standard",
+        /// 16-bit floats, kept through the passes of the image processes
+        /// that read or write the target: contours of a wide blur at a few
+        /// thousandths of its coverage, ramps of smooth fields without
+        /// bands.
+        High = "high",
     }
-}
+);
 
 /// The coordinate system and scale of a noise lattice.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -175,112 +165,58 @@ pub enum Gradient {
     },
 }
 
-/// How [`Operation::Combine`] puts another target's image with the one
-/// processed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Combine {
-    /// Only where the other covers: a mask.
-    Multiply,
-    /// Only where the other doesn't: a cut-out.
-    Subtract,
-    /// The more covered of the two: a union.
-    Max,
-    /// The less covered: an intersection.
-    Min,
-    /// The other drawn over it.
-    Over,
-    /// The other drawn beneath it.
-    Under,
-}
-
-impl Combine {
-    pub const NAMES: [&'static str; 6] = ["multiply", "subtract", "max", "min", "over", "under"];
-
-    pub fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "multiply" => Self::Multiply,
-            "subtract" => Self::Subtract,
-            "max" => Self::Max,
-            "min" => Self::Min,
-            "over" => Self::Over,
-            "under" => Self::Under,
-            _ => return None,
-        })
+v8_enum!(
+    /// How [`Operation::Combine`] puts another target's image with the one
+    /// processed.
+    Combine {
+        /// Only where the other covers: a mask.
+        Multiply = "multiply",
+        /// Only where the other doesn't: a cut-out.
+        Subtract = "subtract",
+        /// The more covered of the two: a union.
+        Max = "max",
+        /// The less covered: an intersection.
+        Min = "min",
+        /// The other drawn over it.
+        Over = "over",
+        /// The other drawn beneath it.
+        Under = "under",
     }
+);
+
+/// An image-process layer's operations, in order, and whether any of their
+/// values reads the camera beyond its zoom: they are evaluated again as the
+/// camera turns and tilts. Only the parser makes them, so the two agree.
+#[derive(Clone, Debug, Default)]
+pub struct Operations {
+    ops: Vec<Operation>,
+    reads_camera: bool,
 }
 
-impl Operation {
-    /// Whether any of its values reads the camera beyond its zoom: it is
-    /// evaluated again as the camera turns and tilts.
+impl Operations {
+    pub(crate) fn new(ops: Vec<Operation>, reads_camera: bool) -> Self {
+        Self { ops, reads_camera }
+    }
+
+    /// Whether any of their values reads the camera beyond its zoom.
     pub fn reads_camera(&self) -> bool {
-        self.expressions().any(PropertyExpression::reads_camera)
+        self.reads_camera
     }
+}
 
-    /// The expressions among its values.
-    fn expressions(&self) -> impl Iterator<Item = &PropertyExpression> {
-        let n = Property::<f32>::as_expression;
-        let c = Property::<Color>::as_expression;
-        let pair = Property::<[f32; 2]>::as_expression;
-        let values: Vec<Option<&PropertyExpression>> = match self {
-            Self::Select { value, tolerance } => vec![c(value), n(tolerance)],
-            Self::Blur { size }
-            | Self::HighPass { size }
-            | Self::Dilate { size }
-            | Self::Erode { size } => vec![n(size)],
-            Self::Noise {
-                size,
-                amount,
-                speed,
-                ..
-            } => vec![n(size), n(amount), n(speed)],
-            Self::Threshold { cutoff } => vec![n(cutoff)],
-            Self::Sharpen { size, amount } => vec![n(size), n(amount)],
-            Self::Offset { translate } => vec![pair(translate)],
-            Self::Opacity { value } => vec![n(value)],
-            Self::Color { value } => vec![c(value)],
-            Self::Ramp { stops } => stops.iter().flat_map(|(at, v)| [n(at), c(v)]).collect(),
-            Self::Split {
-                red, green, blue, ..
-            } => vec![pair(red), pair(green), pair(blue)],
-            Self::Gradient {
-                kind:
-                    Gradient::Linear {
-                        angle,
-                        center,
-                        length,
-                    },
-            } => vec![n(angle), pair(center), length.as_ref().and_then(n)],
-            Self::Gradient {
-                kind: Gradient::Radial { center, radius },
-            } => vec![pair(center), radius.as_ref().and_then(n)],
-            Self::Bands { count, width } => vec![n(count), n(width)],
-            Self::Invert | Self::Luminance | Self::Convolve { .. } | Self::Combine { .. } => {
-                Vec::new()
-            }
-        };
-        values.into_iter().flatten()
+impl std::ops::Deref for Operations {
+    type Target = [Operation];
+
+    fn deref(&self) -> &[Operation] {
+        &self.ops
     }
+}
 
-    /// The operation names, as `type` gives them.
-    pub const NAMES: [&'static str; 19] = [
-        "select",
-        "blur",
-        "noise",
-        "threshold",
-        "invert",
-        "sharpen",
-        "high-pass",
-        "convolve",
-        "offset",
-        "dilate",
-        "erode",
-        "combine",
-        "opacity",
-        "color",
-        "luminance",
-        "ramp",
-        "split",
-        "gradient",
-        "bands",
-    ];
+impl<'a> IntoIterator for &'a Operations {
+    type Item = &'a Operation;
+    type IntoIter = std::slice::Iter<'a, Operation>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.ops.iter()
+    }
 }

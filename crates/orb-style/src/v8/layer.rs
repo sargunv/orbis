@@ -623,7 +623,7 @@ pub(crate) fn parse_layer(
 struct Targets {
     destination: Option<String>,
     source: Option<String>,
-    operations: Vec<Operation>,
+    operations: Operations,
 }
 
 /// The render target keys of a `ty` layer, while their preview is on: a
@@ -686,9 +686,9 @@ fn targets(cx: &mut Cx, json: &Json, path: &str, ty: LayerType) -> Targets {
                 target::OPERATIONS,
                 "only image-process layers have operations",
             );
-            Vec::new()
+            Operations::default()
         }
-        (_, None) => Vec::new(),
+        (_, None) => Operations::default(),
     };
     Targets {
         destination,

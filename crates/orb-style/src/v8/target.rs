@@ -1,10 +1,11 @@
 //! Render targets (the `dev.sargunv.orbis:targets` preview): the root list
 //! of targets, and an image-process layer's operations.
 
+use crate::property::v8_enum;
 use crate::v8::{Cx, layer::typed_property_at};
 use crate::*;
 use orb_expr::PropertyType;
-use orb_expr::json::{Json, JsonValue};
+use orb_expr::json::{Json, JsonValue, Member};
 
 /// The root key that declares the targets.
 pub(crate) const TARGETS: &str = "dev.sargunv.orbis:targets";
@@ -50,19 +51,9 @@ pub(crate) fn parse_targets(cx: &mut Cx, json: &Json) -> Vec<RenderTarget> {
         }
         let precision = match item.get("precision") {
             None => Precision::Standard,
-            Some(p) => match p.as_str().and_then(Precision::from_name) {
+            Some(p) => match cx.enumeration(p, &format!("{path}.precision")) {
                 Some(precision) => precision,
-                None => {
-                    cx.error(
-                        format!("{path}.precision"),
-                        p.span,
-                        format!(
-                            "expected one of [{}], {p} found",
-                            Precision::NAMES.join(", ")
-                        ),
-                    );
-                    continue;
-                }
+                None => continue,
             },
         };
         targets.push(RenderTarget {
@@ -74,52 +65,455 @@ pub(crate) fn parse_targets(cx: &mut Cx, json: &Json) -> Vec<RenderTarget> {
 }
 
 /// An image-process layer's operations at `path`.
-pub(crate) fn parse_operations(cx: &mut Cx, json: &Json, path: &str) -> Vec<Operation> {
+pub(crate) fn parse_operations(cx: &mut Cx, json: &Json, path: &str) -> Operations {
     let Some(items) = cx.array(json, path) else {
-        return Vec::new();
+        return Operations::default();
     };
-    (items.iter().enumerate())
-        .filter_map(|(i, item)| parse_operation(cx, item, &format!("{path}[{i}]")))
-        .collect()
+    let mut reads_camera = false;
+    let ops = (items.iter().enumerate())
+        .filter_map(|(i, item)| {
+            let (op, camera) = parse_operation(cx, item, &format!("{path}[{i}]"))?;
+            reads_camera |= camera;
+            Some(op)
+        })
+        .collect();
+    Operations::new(ops, reads_camera)
 }
 
-/// A parameter's spec: a number, colour or pair, which may follow the zoom
-/// and the camera, as a layer-phase paint property may.
-fn param(
+/// An operation `type`: the keys it takes and how it is made of them.
+struct Spec {
+    name: &'static str,
+    params: &'static [Param],
+    build: fn(&mut Params) -> Option<Operation>,
+}
+
+/// A key an operation takes, and whether it must be given.
+struct Param {
+    kind: ParamKind,
+    required: bool,
+}
+
+enum ParamKind {
+    /// A number, colour or pair, which may follow the zoom and the camera,
+    /// as a layer-phase paint property may: read by [`Params::value`].
+    Value(Prop),
+    /// A key its operation reads itself: a target, a kernel, a choice.
+    Key(&'static str),
+}
+
+impl Param {
+    const fn required(mut self) -> Self {
+        self.required = true;
+        self
+    }
+
+    const fn name(&self) -> &'static str {
+        match &self.kind {
+            ParamKind::Value(prop) => prop.name,
+            ParamKind::Key(name) => name,
+        }
+    }
+}
+
+/// An optional value parameter, its default drawn where it is absent or
+/// what is given doesn't fit.
+const fn value(
+    name: &'static str,
+    ty: PropertyType,
+    default: &'static str,
+    range: (f64, f64),
+) -> Param {
+    Param {
+        kind: ParamKind::Value(param(name, ty, default, range)),
+        required: false,
+    }
+}
+
+/// An optional key its operation reads itself.
+const fn key(name: &'static str) -> Param {
+    Param {
+        kind: ParamKind::Key(name),
+        required: false,
+    }
+}
+
+/// A value's spec: a number, colour or pair, which may follow the zoom and
+/// the camera, as a layer-phase paint property may.
+const fn param(
     name: &'static str,
     ty: PropertyType,
     default: &'static str,
     (minimum, maximum): (f64, f64),
 ) -> Prop {
-    Prop {
-        name,
-        ty,
-        default: Some(default),
-        interpolated: true,
-        minimum: Some(minimum),
-        maximum: Some(maximum),
-        extended: Inputs::CAMERA,
-        preview: Some(Preview::Targets),
-        ..Prop::ROOT
-    }
+    let mut prop = prop(name, ty, Some(default));
+    prop.interpolated = true;
+    prop.minimum = Some(minimum);
+    prop.maximum = Some(maximum);
+    prop.phase = Some(Phase::Layer);
+    prop.extended = Inputs::CAMERA;
+    prop.preview = Some(Preview::Targets);
+    prop
 }
 
 const NUMBER: PropertyType = PropertyType::Number;
 const COLOR: PropertyType = PropertyType::Color;
 const PAIR: PropertyType = PropertyType::Array(orb_expr::Type::Number, Some(2));
+/// A colour's range, which colours don't read.
+const ANY: (f64, f64) = (0.0, 0.0);
 /// A blur's or a dilation's size: past 64 pixels it reaches no further.
-const SIZE: (f64, f64) = (0.0, 64.0);
+const SIZE: Param = value("size", NUMBER, "1", (0.0, 64.0)).required();
+const CHANNEL: (f64, f64) = (-512.0, 512.0);
+const EXTENT: (f64, f64) = (0.0, 16384.0);
 const NOISE_ANCHOR: &str = "dev.sargunv.orbis:anchor";
 const REFERENCE_ZOOM: &str = "dev.sargunv.orbis:reference-zoom";
 
-fn noise_anchor(cx: &mut Cx, json: &Json, path: &str) -> Option<NoiseAnchor> {
-    let anchor = json.get(NOISE_ANCHOR);
-    let reference = json.get(REFERENCE_ZOOM);
-    if let Some(anchor) = anchor
-        && anchor.as_str() == Some("map")
-    {
+/// Every operation, in the order an unknown `type`'s error lists them.
+static SPECS: &[Spec] = &[
+    Spec {
+        name: "select",
+        params: &[
+            value("value", COLOR, "\"white\"", ANY).required(),
+            value("tolerance", NUMBER, "16", (0.0, 255.0)),
+        ],
+        build: |p| {
+            Some(Operation::Select {
+                value: p.value("value"),
+                tolerance: p.value("tolerance"),
+            })
+        },
+    },
+    Spec {
+        name: "blur",
+        params: &[SIZE],
+        build: |p| {
+            Some(Operation::Blur {
+                size: p.value("size"),
+            })
+        },
+    },
+    Spec {
+        name: "noise",
+        params: &[
+            value("size", NUMBER, "1", (0.0, 1024.0)).required(),
+            value("amount", NUMBER, "0.25", (0.0, 1.0)),
+            value("speed", NUMBER, "0", (0.0, 1024.0)),
+            key(NOISE_ANCHOR),
+            key(REFERENCE_ZOOM),
+        ],
+        build: |p| {
+            Some(Operation::Noise {
+                anchor: noise_anchor(p)?,
+                size: p.value("size"),
+                amount: p.value("amount"),
+                speed: p.value("speed"),
+            })
+        },
+    },
+    Spec {
+        name: "threshold",
+        params: &[value("cutoff", NUMBER, "128", (0.0, 255.0))],
+        build: |p| {
+            Some(Operation::Threshold {
+                cutoff: p.value("cutoff"),
+            })
+        },
+    },
+    Spec {
+        name: "invert",
+        params: &[],
+        build: |_| Some(Operation::Invert),
+    },
+    Spec {
+        name: "sharpen",
+        params: &[SIZE, value("amount", NUMBER, "1", (0.0, 16.0))],
+        build: |p| {
+            Some(Operation::Sharpen {
+                size: p.value("size"),
+                amount: p.value("amount"),
+            })
+        },
+    },
+    Spec {
+        name: "high-pass",
+        params: &[SIZE],
+        build: |p| {
+            Some(Operation::HighPass {
+                size: p.value("size"),
+            })
+        },
+    },
+    Spec {
+        name: "convolve",
+        params: &[key("kernel").required()],
+        build: |p| {
+            let kernel = p.key("kernel")?;
+            let weights: Option<Vec<f32>> = match &kernel.value {
+                JsonValue::Array(items) => {
+                    items.iter().map(|w| w.as_f64().map(|w| w as f32)).collect()
+                }
+                _ => None,
+            };
+            let weights = weights.filter(|w| [9, 25, 49].contains(&w.len()));
+            if weights.is_none() {
+                let path = format!("{}.kernel", p.path);
+                let message = "expected an array of 9, 25 or 49 numbers";
+                p.cx.error(path, kernel.span, message);
+            }
+            Some(Operation::Convolve { kernel: weights? })
+        },
+    },
+    Spec {
+        name: "offset",
+        params: &[value("translate", PAIR, "[0,0]", CHANNEL).required()],
+        build: |p| {
+            Some(Operation::Offset {
+                translate: p.value("translate"),
+            })
+        },
+    },
+    Spec {
+        name: "dilate",
+        params: &[SIZE],
+        build: |p| {
+            Some(Operation::Dilate {
+                size: p.value("size"),
+            })
+        },
+    },
+    Spec {
+        name: "erode",
+        params: &[SIZE],
+        build: |p| {
+            Some(Operation::Erode {
+                size: p.value("size"),
+            })
+        },
+    },
+    Spec {
+        name: "combine",
+        params: &[key("target").required(), key("mode")],
+        build: |p| {
+            let mode = p.choice("mode").unwrap_or(Combine::Multiply);
+            let target = p.key("target")?;
+            let target = p.cx.string(target, &format!("{}.target", p.path))?;
+            Some(Operation::Combine { target, mode })
+        },
+    },
+    Spec {
+        name: "opacity",
+        params: &[value("value", NUMBER, "1", (0.0, 1.0)).required()],
+        build: |p| {
+            Some(Operation::Opacity {
+                value: p.value("value"),
+            })
+        },
+    },
+    Spec {
+        name: "color",
+        params: &[value("value", COLOR, "\"white\"", ANY).required()],
+        build: |p| {
+            Some(Operation::Color {
+                value: p.value("value"),
+            })
+        },
+    },
+    Spec {
+        name: "luminance",
+        params: &[],
+        build: |_| Some(Operation::Luminance),
+    },
+    Spec {
+        name: "ramp",
+        params: &[key("stops").required()],
+        build: |p| {
+            Some(Operation::Ramp {
+                stops: ramp_stops(p)?,
+            })
+        },
+    },
+    Spec {
+        name: "split",
+        params: &[
+            value("red", PAIR, "[0,0]", CHANNEL),
+            value("green", PAIR, "[0,0]", CHANNEL),
+            value("blue", PAIR, "[0,0]", CHANNEL),
+            key("radial"),
+        ],
+        build: |p| {
+            Some(Operation::Split {
+                red: p.value("red"),
+                green: p.value("green"),
+                blue: p.value("blue"),
+                radial: p.boolean("radial").unwrap_or(false),
+            })
+        },
+    },
+    Spec {
+        name: "gradient",
+        params: &[
+            key("kind"),
+            value("angle", NUMBER, "0", (-360.0, 360.0)),
+            value("center", PAIR, "[0,0]", (-16384.0, 16384.0)),
+            value("length", NUMBER, "1", EXTENT),
+            value("radius", NUMBER, "1", EXTENT),
+        ],
+        build: |p| {
+            let center = p.value("center");
+            let kind = match p.key("kind") {
+                None => GradientKind::Linear,
+                Some(_) => p.choice("kind")?,
+            };
+            let kind = match kind {
+                GradientKind::Linear => {
+                    p.ignore("radius");
+                    Gradient::Linear {
+                        angle: p.value("angle"),
+                        center,
+                        length: p.extent("length"),
+                    }
+                }
+                GradientKind::Radial => {
+                    p.ignore("angle");
+                    p.ignore("length");
+                    Gradient::Radial {
+                        center,
+                        radius: p.extent("radius"),
+                    }
+                }
+            };
+            Some(Operation::Gradient { kind })
+        },
+    },
+    Spec {
+        name: "bands",
+        params: &[
+            value("count", NUMBER, "8", (1.0, 256.0)),
+            value("width", NUMBER, "0.5", (0.0, 1.0)),
+        ],
+        build: |p| {
+            Some(Operation::Bands {
+                count: p.value("count"),
+                width: p.value("width"),
+            })
+        },
+    },
+];
+
+v8_enum!(
+    /// A gradient's `kind`.
+    pub(crate) GradientKind { Linear = "linear", Radial = "radial" }
+);
+v8_enum!(
+    /// A noise's `dev.sargunv.orbis:anchor`; without one it adapts to the
+    /// zoom.
+    pub(crate) AnchorKind { Map = "map", Viewport = "viewport" }
+);
+
+/// An operation's keys as its [`Spec::build`] reads them.
+struct Params<'a> {
+    cx: &'a mut Cx,
+    json: &'a Json,
+    members: &'a [Member],
+    path: &'a str,
+    spec: &'static Spec,
+    /// Whether a value read so far reads the camera beyond its zoom.
+    reads_camera: bool,
+    /// The parameters read or ignored so far, by their place in the spec.
+    read: u64,
+}
+
+impl<'a> Params<'a> {
+    /// Value parameter `name`: its default where it is absent or what is
+    /// given doesn't fit.
+    fn value<T: PropertyValue>(&mut self, name: &str) -> Property<T> {
+        let ParamKind::Value(prop) = &self.declared(name).kind else {
+            panic!("{}'s \"{name}\" is no value", self.spec.name);
+        };
+        let path = format!("{}.{name}", self.path);
+        self.property_at(self.json.get(name), &path, prop)
+    }
+
+    /// Value parameter `name`, or `None` where it is left to the view, as
+    /// it is where the value doesn't fit.
+    fn extent(&mut self, name: &str) -> Option<Property<f32>> {
+        self.declared(name);
+        self.json.get(name)?;
+        Some(self.value(name)).filter(Property::is_set)
+    }
+
+    /// A value of `prop` at `path`, noting whether it reads the camera.
+    fn property_at<T: PropertyValue>(
+        &mut self,
+        json: Option<&Json>,
+        path: &str,
+        prop: &Prop,
+    ) -> Property<T> {
+        let value: Property<T> = typed_property_at(self.cx, json, path, prop);
+        self.reads_camera |= (value.as_expression()).is_some_and(PropertyExpression::reads_camera);
+        value
+    }
+
+    /// Key `name`, where it is given.
+    fn key(&mut self, name: &str) -> Option<&'a Json> {
+        self.declared(name);
+        self.json.get(name)
+    }
+
+    /// Parameter `name` of the spec, noted as read.
+    fn declared(&mut self, name: &str) -> &'static Param {
+        let spec: &'static Spec = self.spec;
+        let Some(i) = spec.params.iter().position(|p| p.name() == name) else {
+            panic!("{} has no key \"{name}\"", spec.name);
+        };
+        self.read |= 1 << i;
+        &spec.params[i]
+    }
+
+    /// Whether every value parameter has been read or ignored, so none the
+    /// spec declares goes unchecked.
+    fn read_all_values(&self) -> bool {
+        (self.spec.params.iter().enumerate())
+            .all(|(i, p)| matches!(p.kind, ParamKind::Key(_)) || self.read & 1 << i != 0)
+    }
+
+    /// Key `name`'s choice, where it is given and one of `E`'s.
+    fn choice<E: Enum>(&mut self, name: &str) -> Option<E> {
+        let json = self.key(name)?;
+        self.cx.enumeration(json, &format!("{}.{name}", self.path))
+    }
+
+    /// Key `name`'s boolean, where it is given and one.
+    fn boolean(&mut self, name: &str) -> Option<bool> {
+        let json = self.key(name)?;
+        let value = json.as_bool();
+        if value.is_none() {
+            let message = format!("expected a boolean, {json} found");
+            self.cx
+                .error(format!("{}.{name}", self.path), json.span, message);
+        }
+        value
+    }
+
+    /// Warns of key `name`, which this form of the operation doesn't take.
+    fn ignore(&mut self, name: &str) {
+        self.declared(name);
+        if let Some(m) = self.members.iter().find(|m| m.key == name) {
+            self.cx.warn_unknown(self.path, m);
+        }
+    }
+}
+
+/// A noise's lattice: adapting to the zoom, or anchored to the map at a
+/// reference zoom or to the viewport.
+fn noise_anchor(p: &mut Params) -> Option<NoiseAnchor> {
+    let anchor = p.choice(NOISE_ANCHOR);
+    let reference = p.key(REFERENCE_ZOOM);
+    if anchor == Some(AnchorKind::Map) {
         let zoom = match reference {
-            Some(zoom) => cx.number_in(zoom, &format!("{path}.{REFERENCE_ZOOM}"), 0.0, 24.0)?,
+            Some(zoom) => {
+                let path = format!("{}.{REFERENCE_ZOOM}", p.path);
+                p.cx.number_in(zoom, &path, 0.0, 24.0)?
+            }
             None => 14.0,
         };
         return Some(NoiseAnchor::Map {
@@ -127,364 +521,92 @@ fn noise_anchor(cx: &mut Cx, json: &Json, path: &str) -> Option<NoiseAnchor> {
         });
     }
     if let Some(reference) = reference {
-        cx.error(
-            format!("{path}.{REFERENCE_ZOOM}"),
+        p.cx.error(
+            format!("{}.{REFERENCE_ZOOM}", p.path),
             reference.span,
             format!("requires \"{NOISE_ANCHOR}\": \"map\""),
         );
     }
-    match anchor {
-        None => Some(NoiseAnchor::Adaptive),
-        Some(a) if a.as_str() == Some("viewport") => Some(NoiseAnchor::Viewport),
-        Some(a) => {
-            cx.error(
-                format!("{path}.{NOISE_ANCHOR}"),
-                a.span,
-                format!("expected one of [map, viewport], {a} found"),
-            );
-            None
-        }
-    }
+    Some(match anchor {
+        Some(_) => NoiseAnchor::Viewport,
+        None => NoiseAnchor::Adaptive,
+    })
 }
 
-fn parse_operation(cx: &mut Cx, json: &Json, path: &str) -> Option<Operation> {
+/// An operation and whether any of its values reads the camera beyond its
+/// zoom.
+fn parse_operation(cx: &mut Cx, json: &Json, path: &str) -> Option<(Operation, bool)> {
     let members = cx.object(json, path)?;
     let Some(ty) = json.get("type") else {
         cx.error(path, json.span, "missing required property \"type\"");
         return None;
     };
     let name = cx.string(ty, &format!("{path}.type"))?;
-    let params: &[&str] = match name.as_str() {
-        "select" => &["value", "tolerance"],
-        "blur" | "high-pass" | "dilate" | "erode" => &["size"],
-        "noise" => &["size", "amount", "speed", NOISE_ANCHOR, REFERENCE_ZOOM],
-        "sharpen" => &["size", "amount"],
-        "threshold" => &["cutoff"],
-        "invert" | "luminance" => &[],
-        "convolve" => &["kernel"],
-        "offset" => &["translate"],
-        "combine" => &["target", "mode"],
-        "opacity" | "color" => &["value"],
-        "ramp" => &["stops"],
-        "split" => &["red", "green", "blue", "radial"],
-        "gradient" => &["kind", "angle", "center", "length", "radius"],
-        "bands" => &["count", "width"],
-        _ => {
-            cx.error(
-                format!("{path}.type"),
-                ty.span,
-                format!(
-                    "expected one of [{}], {ty} found",
-                    Operation::NAMES.join(", ")
-                ),
-            );
-            return None;
-        }
+    let Some(spec) = SPECS.iter().find(|op| op.name == name) else {
+        let names: Vec<&str> = SPECS.iter().map(|op| op.name).collect();
+        cx.error(
+            format!("{path}.type"),
+            ty.span,
+            format!("expected one of [{}], {ty} found", names.join(", ")),
+        );
+        return None;
     };
     for m in members {
-        if m.key != "type" && !params.contains(&m.key.as_str()) {
+        if m.key != "type" && !spec.params.iter().any(|p| p.name() == m.key) {
             cx.warn_unknown(path, m);
         }
     }
     let errors = cx.diagnostics.errors.len();
-    // A parameter, required where `required`: a missing one is an error.
-    fn read<T: PropertyValue>(
-        cx: &mut Cx,
-        json: &Json,
-        path: &str,
-        spec: &Prop,
-        required: bool,
-    ) -> Property<T> {
-        let value = json.get(spec.name);
-        if required && value.is_none() {
-            let message = format!("missing required property \"{}\"", spec.name);
+    for param in spec.params.iter().filter(|p| p.required) {
+        if json.get(param.name()).is_none() {
+            let message = format!("missing required property \"{}\"", param.name());
             cx.error(path, json.span, message);
         }
-        typed_property_at(cx, value, &format!("{path}.{}", spec.name), spec)
     }
-    let size = |cx: &mut Cx| read(cx, json, path, &param("size", NUMBER, "1", SIZE), true);
-    let op = match name.as_str() {
-        "select" => Operation::Select {
-            value: read(
-                cx,
-                json,
-                path,
-                &param("value", COLOR, "\"white\"", (0.0, 0.0)),
-                true,
-            ),
-            tolerance: read(
-                cx,
-                json,
-                path,
-                &param("tolerance", NUMBER, "16", (0.0, 255.0)),
-                false,
-            ),
-        },
-        "blur" => Operation::Blur { size: size(cx) },
-        "high-pass" => Operation::HighPass { size: size(cx) },
-        "dilate" => Operation::Dilate { size: size(cx) },
-        "erode" => Operation::Erode { size: size(cx) },
-        "noise" => Operation::Noise {
-            anchor: noise_anchor(cx, json, path)?,
-            size: read(
-                cx,
-                json,
-                path,
-                &param("size", NUMBER, "1", (0.0, 1024.0)),
-                true,
-            ),
-            amount: read(
-                cx,
-                json,
-                path,
-                &param("amount", NUMBER, "0.25", (0.0, 1.0)),
-                false,
-            ),
-            speed: read(
-                cx,
-                json,
-                path,
-                &param("speed", NUMBER, "0", (0.0, 1024.0)),
-                false,
-            ),
-        },
-        "sharpen" => Operation::Sharpen {
-            size: size(cx),
-            amount: read(
-                cx,
-                json,
-                path,
-                &param("amount", NUMBER, "1", (0.0, 16.0)),
-                false,
-            ),
-        },
-        "threshold" => Operation::Threshold {
-            cutoff: read(
-                cx,
-                json,
-                path,
-                &param("cutoff", NUMBER, "128", (0.0, 255.0)),
-                false,
-            ),
-        },
-        "invert" => Operation::Invert,
-        "luminance" => Operation::Luminance,
-        "offset" => Operation::Offset {
-            translate: read(
-                cx,
-                json,
-                path,
-                &param("translate", PAIR, "[0,0]", (-512.0, 512.0)),
-                true,
-            ),
-        },
-        "opacity" => Operation::Opacity {
-            value: read(
-                cx,
-                json,
-                path,
-                &param("value", NUMBER, "1", (0.0, 1.0)),
-                true,
-            ),
-        },
-        "color" => Operation::Color {
-            value: read(
-                cx,
-                json,
-                path,
-                &param("value", COLOR, "\"white\"", (0.0, 0.0)),
-                true,
-            ),
-        },
-        "combine" => {
-            let target = match json.get("target") {
-                Some(t) => cx.string(t, &format!("{path}.target")),
-                None => {
-                    cx.error(path, json.span, "missing required property \"target\"");
-                    None
-                }
-            };
-            let mode = match json.get("mode") {
-                None => Some(Combine::Multiply),
-                Some(m) => {
-                    let mode = m.as_str().and_then(Combine::from_name);
-                    if mode.is_none() {
-                        cx.error(
-                            format!("{path}.mode"),
-                            m.span,
-                            format!("expected one of [{}], {m} found", Combine::NAMES.join(", ")),
-                        );
-                    }
-                    mode
-                }
-            };
-            Operation::Combine {
-                target: target?,
-                mode: mode?,
-            }
-        }
-        "ramp" => Operation::Ramp {
-            stops: ramp_stops(cx, json, path)?,
-        },
-        "split" => {
-            let mut channel = |name| {
-                let spec = param(name, PAIR, "[0,0]", (-512.0, 512.0));
-                read(cx, json, path, &spec, false)
-            };
-            let (red, green, blue) = (channel("red"), channel("green"), channel("blue"));
-            let radial = match json.get("radial") {
-                None => Some(false),
-                Some(r) => {
-                    let radial = r.as_bool();
-                    if radial.is_none() {
-                        cx.error(
-                            format!("{path}.radial"),
-                            r.span,
-                            format!("expected a boolean, {r} found"),
-                        );
-                    }
-                    radial
-                }
-            };
-            Operation::Split {
-                red,
-                green,
-                blue,
-                radial: radial?,
-            }
-        }
-        "gradient" => {
-            let kind = match json.get("kind") {
-                None => Some("linear"),
-                Some(k) => {
-                    let kind = k.as_str().filter(|k| ["linear", "radial"].contains(k));
-                    if kind.is_none() {
-                        cx.error(
-                            format!("{path}.kind"),
-                            k.span,
-                            format!("expected one of [linear, radial], {k} found"),
-                        );
-                    }
-                    kind
-                }
-            };
-            let center = read(
-                cx,
-                json,
-                path,
-                &param("center", PAIR, "[0,0]", (-16384.0, 16384.0)),
-                false,
-            );
-            // A length or radius: `None` where it is left to the view, as
-            // it is where the value doesn't fit.
-            let extent = |cx: &mut Cx, name| {
-                json.get(name).and_then(|_| {
-                    let spec = param(name, NUMBER, "1", (0.0, 16384.0));
-                    Some(read(cx, json, path, &spec, false)).filter(Property::is_set)
-                })
-            };
-            // What the other kind takes and this one doesn't.
-            let ignore = |cx: &mut Cx, names: &[&str]| {
-                for m in members.iter().filter(|m| names.contains(&m.key.as_str())) {
-                    cx.warn_unknown(path, m);
-                }
-            };
-            match kind? {
-                "linear" => {
-                    ignore(cx, &["radius"]);
-                    let spec = param("angle", NUMBER, "0", (-360.0, 360.0));
-                    Operation::Gradient {
-                        kind: Gradient::Linear {
-                            angle: read(cx, json, path, &spec, false),
-                            center,
-                            length: extent(cx, "length"),
-                        },
-                    }
-                }
-                _ => {
-                    ignore(cx, &["angle", "length"]);
-                    Operation::Gradient {
-                        kind: Gradient::Radial {
-                            center,
-                            radius: extent(cx, "radius"),
-                        },
-                    }
-                }
-            }
-        }
-        "bands" => Operation::Bands {
-            count: read(
-                cx,
-                json,
-                path,
-                &param("count", NUMBER, "8", (1.0, 256.0)),
-                false,
-            ),
-            width: read(
-                cx,
-                json,
-                path,
-                &param("width", NUMBER, "0.5", (0.0, 1.0)),
-                false,
-            ),
-        },
-        "convolve" => {
-            let Some(kernel) = json.get("kernel") else {
-                cx.error(path, json.span, "missing required property \"kernel\"");
-                return None;
-            };
-            let weights: Option<Vec<f32>> = match &kernel.value {
-                JsonValue::Array(items) => {
-                    items.iter().map(|w| w.as_f64().map(|w| w as f32)).collect()
-                }
-                _ => None,
-            };
-            match weights {
-                Some(w) if [9, 25, 49].contains(&w.len()) => Operation::Convolve { kernel: w },
-                _ => {
-                    cx.error(
-                        format!("{path}.kernel"),
-                        kernel.span,
-                        "expected an array of 9, 25 or 49 numbers",
-                    );
-                    return None;
-                }
-            }
-        }
-        _ => unreachable!("checked above"),
+    let mut params = Params {
+        cx,
+        json,
+        members,
+        path,
+        spec,
+        reads_camera: false,
+        read: 0,
     };
-    (cx.diagnostics.errors.len() == errors).then_some(op)
+    let op = (spec.build)(&mut params);
+    debug_assert!(
+        op.is_none() || params.read_all_values(),
+        "{} declares a value it doesn't read",
+        spec.name
+    );
+    let reads_camera = params.reads_camera;
+    (cx.diagnostics.errors.len() == errors)
+        .then_some(op)
+        .flatten()
+        .map(|op| (op, reads_camera))
 }
 
 /// A ramp's `stops`: `[[coverage, colour], …]`, up to eight, coverages
 /// 0–1 and, those that are constants, in order. Either may follow the zoom
 /// and the camera.
-fn ramp_stops(
-    cx: &mut Cx,
-    json: &Json,
-    path: &str,
-) -> Option<Vec<(Property<f32>, Property<Color>)>> {
-    let at = format!("{path}.stops");
-    let Some(stops) = json.get("stops") else {
-        cx.error(path, json.span, "missing required property \"stops\"");
-        return None;
-    };
-    let items = cx.array(stops, &at)?;
+fn ramp_stops(p: &mut Params) -> Option<Vec<(Property<f32>, Property<Color>)>> {
+    const COVERAGE: Prop = param("coverage", NUMBER, "0", (0.0, 1.0));
+    const STOP_COLOR: Prop = param("color", COLOR, "\"black\"", ANY);
+    let at = format!("{}.stops", p.path);
+    let stops = p.key("stops")?;
+    let items = p.cx.array(stops, &at)?;
     let pairs: Option<Vec<&[Json]>> = (items.iter())
         .map(|stop| stop.as_array().filter(|s| s.len() == 2))
         .collect();
     let Some(pairs) = pairs.filter(|p| (1..=8).contains(&p.len())) else {
-        cx.error(at, stops.span, "expected 1 to 8 [coverage, colour] stops");
+        p.cx.error(at, stops.span, "expected 1 to 8 [coverage, colour] stops");
         return None;
     };
-    let coverage = param("coverage", NUMBER, "0", (0.0, 1.0));
-    let color = param("color", COLOR, "\"black\"", (0.0, 0.0));
     let parsed: Vec<(Property<f32>, Property<Color>)> = (pairs.iter().enumerate())
         .map(|(i, pair)| {
             let path = format!("{at}[{i}]");
             (
-                typed_property_at(cx, Some(&pair[0]), &format!("{path}[0]"), &coverage),
-                typed_property_at(cx, Some(&pair[1]), &format!("{path}[1]"), &color),
+                p.property_at(Some(&pair[0]), &format!("{path}[0]"), &COVERAGE),
+                p.property_at(Some(&pair[1]), &format!("{path}[1]"), &STOP_COLOR),
             )
         })
         .collect();
@@ -496,7 +618,7 @@ fn ramp_stops(
         .zip(constants.iter().flatten().skip(1))
         .all(|(a, b)| a <= b);
     if !ordered {
-        cx.error(at, stops.span, "expected the stops' coverages in order");
+        p.cx.error(at, stops.span, "expected the stops' coverages in order");
         return None;
     }
     Some(parsed)
@@ -632,7 +754,7 @@ mod tests {
                 kind: Gradient::Radial { radius: None, .. }
             }
         ));
-        assert!(ops.iter().all(|op| !op.reads_camera()));
+        assert!(!ops.reads_camera());
         assert!(
             matches!(&ops[20], Operation::Bands { count, width } if n(count) == 6.0 && n(width) == 0.25)
         );
@@ -730,6 +852,84 @@ mod tests {
         ] {
             draws_defaults(ops);
         }
+    }
+
+    #[test]
+    fn noise_anchors_to_the_zoom_the_map_or_the_viewport() {
+        let style = operations(
+            r#"{"type":"noise","size":4},
+               {"type":"noise","size":4,"dev.sargunv.orbis:anchor":"map"},
+               {"type":"noise","size":4,"dev.sargunv.orbis:anchor":"map",
+                 "dev.sargunv.orbis:reference-zoom":20},
+               {"type":"noise","size":4,"dev.sargunv.orbis:anchor":"viewport"}"#,
+        )
+        .unwrap();
+        assert!(style.warnings.is_empty(), "{:?}", style.warnings);
+        let anchors: Vec<NoiseAnchor> = (style.layers[0].operations.iter())
+            .map(|op| match op {
+                Operation::Noise { anchor, .. } => *anchor,
+                op => panic!("{op:?}"),
+            })
+            .collect();
+        assert_eq!(
+            anchors,
+            [
+                NoiseAnchor::Adaptive,
+                NoiseAnchor::Map {
+                    reference_zoom: 14.0
+                },
+                NoiseAnchor::Map {
+                    reference_zoom: 20.0
+                },
+                NoiseAnchor::Viewport
+            ]
+        );
+        for invalid in [
+            r#"{"type":"noise","size":4,"dev.sargunv.orbis:anchor":"globe"}"#,
+            r#"{"type":"noise","size":4,"dev.sargunv.orbis:reference-zoom":12}"#,
+            r#"{"type":"noise","size":4,"dev.sargunv.orbis:anchor":"viewport",
+                "dev.sargunv.orbis:reference-zoom":12}"#,
+            r#"{"type":"noise","size":4,"dev.sargunv.orbis:anchor":"map",
+                "dev.sargunv.orbis:reference-zoom":30}"#,
+        ] {
+            assert!(operations(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    /// Each operation takes its own keys: another is a warning, a missing
+    /// required one an error that drops the layer.
+    #[test]
+    fn operations_take_their_own_keys() {
+        let style = operations(r#"{"type":"blur","size":2,"amount":1}"#).unwrap();
+        let paths: Vec<&str> = style.warnings.iter().map(|w| w.path.as_str()).collect();
+        assert_eq!(paths, ["layers[0].dev.sargunv.orbis:operations[0].amount"]);
+        for (missing, key) in [
+            (r#"{"type":"blur"}"#, "size"),
+            (r#"{"type":"convolve"}"#, "kernel"),
+            (r#"{"type":"combine","mode":"max"}"#, "target"),
+            (r#"{"type":"ramp"}"#, "stops"),
+            (r#"{"type":"offset"}"#, "translate"),
+        ] {
+            let err = operations(missing).unwrap_err();
+            let message = format!("missing required property \"{key}\"");
+            assert!(
+                err.errors.iter().any(|e| e.message == message),
+                "{missing}: {err}"
+            );
+        }
+        // Every key is checked, whichever fails first.
+        let err = operations(r#"{"type":"combine","mode":"bogus"}"#).unwrap_err();
+        assert_eq!(err.errors.len(), 2, "{err}");
+        // A kind that isn't one is its only fault: the keys aren't read as
+        // another kind's.
+        let err =
+            operations(r#"{"type":"gradient","kind":"conic","radius":2,"length":-1}"#).unwrap_err();
+        assert_eq!((err.errors.len(), err.warnings.len()), (1, 0), "{err:?}");
+        let err = operations(r#"{"type":"smudge"}"#).unwrap_err();
+        assert!(
+            (err.errors[0].message).starts_with("expected one of [select, blur, noise,"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -910,8 +1110,27 @@ mod tests {
             value.evaluate_camera(0.0, camera(60.0, 0.0)),
             Color::parse("blue").unwrap()
         );
-        let reads: Vec<bool> = ops.iter().map(Operation::reads_camera).collect();
-        assert_eq!(reads, [true, true, true, false]);
+        assert!(ops.reads_camera());
+        // Every value that may follow the camera is watched for it.
+        for (op, reads) in [
+            (r#"{"type":"gradient","angle":["*",-1,["bearing"]]}"#, true),
+            (
+                r#"{"type":"gradient","kind":"radial","radius":["*",2,["pitch"]]}"#,
+                true,
+            ),
+            (
+                r#"{"type":"noise","size":1,"speed":["*",2,["pitch"]]}"#,
+                true,
+            ),
+            (r#"{"type":"split","blue":["literal",[0,0]]}"#, false),
+            (
+                r#"{"type":"blur","size":["interpolate",["linear"],["zoom"],10,2,14,6]}"#,
+                false,
+            ),
+        ] {
+            let style = operations(op).unwrap();
+            assert_eq!(style.layers[0].operations.reads_camera(), reads, "{op}");
+        }
     }
 
     /// A ramp's stops are a coverage and a colour each, either a constant
@@ -941,7 +1160,7 @@ mod tests {
             stops[2].1.evaluate_camera(0.0, camera),
             Color::parse("#fff").unwrap()
         );
-        assert!(op.reads_camera());
+        assert!(style.layers[0].operations.reads_camera());
         for invalid in [
             r#"{"type":"ramp","stops":[[1.5,"red"]]}"#,
             r#"{"type":"ramp","stops":[[0,"nope"]]}"#,
