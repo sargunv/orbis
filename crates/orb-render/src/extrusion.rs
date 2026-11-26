@@ -28,15 +28,11 @@ pub(crate) struct Extrusions {
     /// ([`Renderer::set_pipelines`](crate::Renderer::set_pipelines)) that no node has
     /// drawn with: what draws waits for none of them.
     warm: Vec<(ExtrusionShape, bool)>,
-    /// The pipelines are made in their full variants, not their plane
-    /// ones ([`Draw::plane`]): the paint pipelines' plane variants aren't
-    /// made. On the moto g, the plane variant's vertex stage took 40% less
-    /// of a pitched 3D frame's buildings (#180).
-    full: bool,
-    /// The variant they draw in: `full`'s, or while the plane pipelines
-    /// compile, the full ones made before in their place, as the paint
-    /// pipelines' `Variants::drawn` does: turning terrain off doesn't
-    /// hide the buildings for the plane ones' compile.
+    /// The variant they draw in: the one the map's pipeline set makes
+    /// ([`settle`](Self::settle)), or while the plane pipelines compile,
+    /// the full ones made before in their place, as the paint pipelines'
+    /// `Variants::drawn` does: turning terrain off doesn't hide the
+    /// buildings for the plane ones' compile.
     drawn_full: bool,
     layouts: [BindGroupLayoutId; 2],
     pub(crate) samples: u32,
@@ -112,7 +108,6 @@ impl Extrusions {
             pipelines: Vec::new(),
             planes: false,
             warm: Vec::new(),
-            full: true,
             drawn_full: true,
             layouts: [scene, node],
             samples: 1,
@@ -125,16 +120,14 @@ impl Extrusions {
         }
     }
 
-    /// Sets whether the pipelines are made in their full variants.
-    pub(crate) fn set_full(&mut self, full: bool) {
-        self.full = full;
-    }
-
     /// Picks the variant the pipelines draw in (`drawn_full`): the one
-    /// they're made in, or the full one while the plane one's pipelines
-    /// compile, if every shape's full ones are made. True when that
-    /// changed, and bundles recorded with the other draw no more.
-    pub(crate) fn settle(&mut self, gpu: &mut dyn Gpu) -> bool {
+    /// the map's pipeline set makes, full or plane (`full`, as for the
+    /// paint pipelines: on the moto g, the plane variant's vertex stage
+    /// took 40% less of a pitched 3D frame's buildings, #180), or the full
+    /// one while the plane one's pipelines compile, if every shape's full
+    /// ones are made. True when that changed, and bundles recorded with
+    /// the other draw no more.
+    pub(crate) fn settle(&mut self, gpu: &mut dyn Gpu, full: bool) -> bool {
         let made = |full: bool| {
             (self.drawing()).filter(move |((_, f), p)| *f == full && p.iter().any(Option::is_some))
         };
@@ -142,7 +135,7 @@ impl Extrusions {
             made(false).all(|(_, p)| p.iter().flatten().all(|&p| gpu.pipeline_ready(p.into())));
         let full_cover =
             made(false).all(|((shape, _), _)| made(true).any(|((s, _), _)| s == shape));
-        let drawn = self.full || (!plane_compiled && full_cover);
+        let drawn = full || (!plane_compiled && full_cover);
         std::mem::replace(&mut self.drawn_full, drawn) != drawn
     }
 
@@ -165,16 +158,27 @@ impl Extrusions {
             .map_or([None; 2], |&(_, p)| p)
     }
 
-    /// Makes the pipelines for `shape` in the current targets and variant,
-    /// for the first extrusion node of that shape, or (`warm`) ahead of
-    /// any.
+    /// Makes the pipelines for `shape` in the full variant or the plane
+    /// one, over a depth with a stencil or without (`stencil`), for the
+    /// first extrusion node of that shape, or (`warm`) ahead of any.
+    /// Those over the other depth than now are made ahead, for
+    /// [`set_stencil`](Self::set_stencil) to find.
     pub(crate) fn make(
         &mut self,
         (gpu, cache): (&mut dyn Gpu, &mut Cache),
-        shape: ExtrusionShape,
+        stencil: bool,
+        key: (ExtrusionShape, bool),
         warm: bool,
     ) {
-        let key = (shape, self.full);
+        // With clip distances, the whole pipeline's vertex stage also clips
+        // the cut buildings of placements with one clip rectangle by its
+        // planes, and the cut pipeline keeps those of placements with
+        // several.
+        self.planes = gpu.caps().clip_distances;
+        if stencil != self.stencil {
+            self.draws(key, stencil, &mut Take::Make(gpu, cache));
+            return;
+        }
         let index = match self.pipelines.iter().position(|(s, _)| *s == key) {
             Some(i) => i,
             None => {
@@ -191,25 +195,27 @@ impl Extrusions {
         if self.pipelines[index].1.iter().all(Option::is_some) {
             return;
         }
-        // With clip distances, the whole pipeline's vertex stage also clips
-        // the cut buildings of placements with one clip rectangle by its
-        // planes, and the cut pipeline keeps those of placements with
-        // several.
-        self.planes = gpu.caps().clip_distances;
-        self.pipelines[index].1 = self.draws(key, &mut Take::Make(gpu, cache));
+        self.pipelines[index].1 = self.draws(key, stencil, &mut Take::Make(gpu, cache));
     }
 
     /// Takes the pipelines made for the current targets in place of those
     /// for the targets before, none where none were made.
     fn retarget(&mut self, cache: &Cache) {
         for i in 0..self.pipelines.len() {
-            self.pipelines[i].1 = self.draws(self.pipelines[i].0, &mut Take::Find(cache));
+            let key = self.pipelines[i].0;
+            self.pipelines[i].1 = self.draws(key, self.stencil, &mut Take::Find(cache));
         }
     }
 
     /// The whole and cut pipelines of `shape` in the full variant or the
-    /// plane one into the current targets, as `take` takes them.
-    fn draws(&self, (shape, full): (ExtrusionShape, bool), take: &mut Take<'_>) -> Pipelines {
+    /// plane one into the current targets, over a depth with a stencil or
+    /// without, as `take` takes them.
+    fn draws(
+        &self,
+        (shape, full): (ExtrusionShape, bool),
+        stencil: bool,
+        take: &mut Take<'_>,
+    ) -> Pipelines {
         let (whole, cut) = (EXTRUSION_SHADER, EXTRUSION_CUT_SHADER);
         let (whole_vertex, cut_vertex) = match self.planes {
             true => (
@@ -237,7 +243,7 @@ impl Extrusions {
                 vertex,
                 fragment,
                 constants: [&vertex_constants, &fragment_constants],
-                depth: depth_test(self.depth_format()),
+                depth: depth_test(self.depth_format_with(stencil)),
                 cull_back: true,
                 plane: !full,
                 state: !shape.stateless,
@@ -269,14 +275,20 @@ impl Extrusions {
         needs
     }
 
-    /// What a frame waits for to draw `shape`: the pipelines in the
-    /// variant they're made in.
-    pub(crate) fn pipelines(&self, shape: ExtrusionShape) -> Vec<PipelineId> {
-        self.slot_in(shape, self.full)
-            .iter()
-            .flatten()
-            .map(|&p| p.into())
-            .collect()
+    /// What a frame waits for to draw `shape` in the full variant or the
+    /// plane one (`key`), over a depth with a stencil or without, made
+    /// through `cache`.
+    pub(crate) fn pipelines(
+        &self,
+        cache: &Cache,
+        stencil: bool,
+        key: (ExtrusionShape, bool),
+    ) -> Vec<PipelineId> {
+        let pipelines = match stencil == self.stencil {
+            true => self.slot_in(key.0, key.1),
+            false => self.draws(key, stencil, &mut Take::Find(cache)),
+        };
+        pipelines.iter().flatten().map(|&p| p.into()).collect()
     }
 
     /// Draws at four samples when `antialias`, else at one; whether that
@@ -313,7 +325,12 @@ impl Extrusions {
     }
 
     fn depth_format(&self) -> TextureFormat {
-        match self.stencil {
+        self.depth_format_with(self.stencil)
+    }
+
+    /// The depth's format with a stencil or without.
+    fn depth_format_with(&self, stencil: bool) -> TextureFormat {
+        match stencil {
             true => self.stencil_format,
             false => TextureFormat::Depth32Float,
         }

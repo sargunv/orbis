@@ -68,6 +68,9 @@ pub struct AtmosphereView {
 #[derive(Debug)]
 pub(crate) struct Atmosphere {
     pub(crate) uniform: BufferId,
+    /// What the map's passes draw into, which `sky` and `scatter` are
+    /// made for.
+    target: Attachments,
     /// The layout and group the sky and the scattering share, made for the
     /// first of them.
     group: Option<(BindGroupLayoutId, BindGroupId)>,
@@ -83,7 +86,8 @@ pub(crate) struct Atmosphere {
 }
 
 impl Atmosphere {
-    pub(crate) fn new(gpu: &mut dyn Gpu) -> Self {
+    /// None yet, into the map's passes as `target`.
+    pub(crate) fn new(gpu: &mut dyn Gpu, target: Attachments) -> Self {
         let uniform = gpu.create_buffer(&BufferDesc {
             label: "atmosphere",
             size: orb_shaders::layout::atmosphere::WORDS as u64 * 4,
@@ -91,6 +95,7 @@ impl Atmosphere {
         });
         Self {
             uniform,
+            target,
             group: None,
             sky: None,
             scatter: None,
@@ -101,9 +106,14 @@ impl Atmosphere {
         }
     }
 
-    /// The pipelines the frame draws with, once made.
-    pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
-        [self.sky, self.scatter]
+    /// The pipelines a frame into the map's passes as `target` draws
+    /// with, once made through `cache`.
+    pub(crate) fn pipelines(&self, cache: &Cache, target: Attachments) -> Vec<PipelineId> {
+        let [sky, scatter] = match target == self.target {
+            true => [self.sky, self.scatter],
+            false => self.found(cache, target),
+        };
+        [sky, scatter]
             .into_iter()
             .filter(|_| self.enabled)
             .flatten()
@@ -114,18 +124,28 @@ impl Atmosphere {
     /// Draws into the map's passes as `target` from now on: with the
     /// pipelines made for them before, if any.
     pub(crate) fn retarget(&mut self, cache: &Cache, target: Attachments) {
+        self.target = target;
+        [self.sky, self.scatter] = self.found(cache, target);
+    }
+
+    /// The sky's and the scattering's pipelines into passes of `target`
+    /// that `cache` made.
+    fn found(&self, cache: &Cache, target: Attachments) -> [Option<RenderPipelineId>; 2] {
         let Some((layout, _)) = self.group else {
-            return;
+            return [None; 2];
         };
-        self.sky = cache.get(&draw(&SKY_SHADER, &[layout], target));
-        self.scatter = (self.sunward.as_ref())
+        let sky = cache.get(&draw(&SKY_SHADER, &[layout], target));
+        let scatter = (self.sunward.as_ref())
             .and_then(|s| cache.get(&draw(&SCATTER_SHADER, &[layout, s.layout], target)));
+        [sky, scatter]
     }
 
     /// Asks for the sky's pipeline unless it is made, and for the globe's
     /// scattering where the map's views may be on a low-zoom surface
     /// (`full_projection`), in the background unless the view is a globe
-    /// (`globe`): the pipeline set's for a style with a sky.
+    /// (`globe`): the pipeline set's for a style with a sky. Those into
+    /// other passes than the map's now (`target`) are made ahead, for
+    /// [`retarget`](Self::retarget) to find.
     pub(crate) fn request(
         &mut self,
         (gpu, cache): (&mut dyn Gpu, &mut Cache),
@@ -137,16 +157,23 @@ impl Atmosphere {
         let (layout, _) = *self
             .group
             .get_or_insert_with(|| sky_group(gpu, frame, uniform));
-        if self.sky.is_none() {
-            self.sky = Some(cache.get_or_make(gpu, &draw(&SKY_SHADER, &[layout], target)));
+        let current = target == self.target;
+        let [mut sky, mut scatter] = match current {
+            true => [self.sky, self.scatter],
+            false => self.found(cache, target),
+        };
+        if sky.is_none() {
+            sky = Some(cache.get_or_make(gpu, &draw(&SKY_SHADER, &[layout], target)));
         }
-        if self.scatter.is_none() && (globe || full_projection) {
+        if scatter.is_none() && (globe || full_projection) {
             let sunward = self.sunward.get_or_insert_with(|| Sunward::new(gpu));
             gpu.set_background_compiles(!globe);
             let layouts = [layout, sunward.layout];
-            let scatter = cache.get_or_make(gpu, &draw(&SCATTER_SHADER, &layouts, target));
+            scatter = Some(cache.get_or_make(gpu, &draw(&SCATTER_SHADER, &layouts, target)));
             gpu.set_background_compiles(false);
-            self.scatter = Some(scatter);
+        }
+        if current {
+            (self.sky, self.scatter) = (sky, scatter);
         }
     }
 

@@ -295,26 +295,36 @@ impl Composites {
     pub(crate) fn retarget(&mut self, cache: &Cache, target: Attachments) {
         self.target = target;
         let take = &mut Take::Find(cache);
-        self.over = self.composite_pipeline(take, false);
-        self.replace = self.composite_pipeline(take, true);
-        self.stacks = self.stack_pipelines(take);
+        self.over = self.composite_pipeline(take, target, false);
+        self.replace = self.composite_pipeline(take, target, true);
+        self.stacks = self.stack_pipelines(take, target);
     }
 
     /// The pipeline of composites that write over the map (`replace`) or
-    /// blend over it, as `take` takes it.
-    fn composite_pipeline(&self, take: &mut Take<'_>, replace: bool) -> Option<RenderPipelineId> {
+    /// blend over it in passes of `target`, as `take` takes it.
+    fn composite_pipeline(
+        &self,
+        take: &mut Take<'_>,
+        target: Attachments,
+        replace: bool,
+    ) -> Option<RenderPipelineId> {
         let (shader, blend) = match replace {
             true => (&COMPOSITE_REPLACE_SHADER, None),
             false => (&COMPOSITE_OVER_SHADER, Some(BlendState::PremultipliedAlpha)),
         };
-        take.pipeline(&Draw::new(shader, &[self.layout], self.target, blend))
+        take.pipeline(&Draw::new(shader, &[self.layout], target, blend))
     }
 
-    /// The pipelines of stacks by size, as `take` takes them.
-    fn stack_pipelines(&self, take: &mut Take<'_>) -> [Option<RenderPipelineId>; 3] {
+    /// The pipelines of stacks by size in passes of `target`, as `take`
+    /// takes them.
+    fn stack_pipelines(
+        &self,
+        take: &mut Take<'_>,
+        target: Attachments,
+    ) -> [Option<RenderPipelineId>; 3] {
         let layouts = [self.stack_layout];
         let blend = Some(BlendState::PremultipliedAlpha);
-        let draw = Draw::new(&COMPOSITE_STACK_SHADER, &layouts, self.target, blend);
+        let draw = Draw::new(&COMPOSITE_STACK_SHADER, &layouts, target, blend);
         STACK_SIZES.map(|size| {
             let constants: &[_] = &[(orb_shaders::STACK_LAYERS, size as f64)];
             take.pipeline(&Draw {
@@ -330,11 +340,22 @@ impl Composites {
         self.blank
     }
 
-    /// Makes the pipeline of composites in `mode`, unless it is made.
-    pub(crate) fn make(&mut self, (gpu, cache): (&mut dyn Gpu, &mut Cache), mode: Mode) {
+    /// Makes the pipeline of composites in `mode` into passes of
+    /// `target`, unless it is made: ahead, for
+    /// [`retarget`](Self::retarget) to find, where the map's aren't so
+    /// now.
+    pub(crate) fn make(
+        &mut self,
+        (gpu, cache): (&mut dyn Gpu, &mut Cache),
+        target: Attachments,
+        mode: Mode,
+    ) {
         let replace = mode.replaces();
-        if self.pipeline(mode).is_none() {
-            let made = self.composite_pipeline(&mut Take::Make(gpu, cache), replace);
+        let take = &mut Take::Make(gpu, cache);
+        if target != self.target {
+            self.composite_pipeline(take, target, replace);
+        } else if self.pipeline(mode).is_none() {
+            let made = self.composite_pipeline(take, target, replace);
             *(if replace {
                 &mut self.replace
             } else {
@@ -343,10 +364,18 @@ impl Composites {
         }
     }
 
-    /// Makes the pipelines of stacks, unless they are made.
-    pub(crate) fn make_stack(&mut self, (gpu, cache): (&mut dyn Gpu, &mut Cache)) {
-        if self.stacks.iter().any(Option::is_none) {
-            self.stacks = self.stack_pipelines(&mut Take::Make(gpu, cache));
+    /// Makes the pipelines of stacks into passes of `target`, unless they
+    /// are made, as [`make`](Self::make) does.
+    pub(crate) fn make_stack(
+        &mut self,
+        (gpu, cache): (&mut dyn Gpu, &mut Cache),
+        target: Attachments,
+    ) {
+        let take = &mut Take::Make(gpu, cache);
+        if target != self.target {
+            self.stack_pipelines(take, target);
+        } else if self.stacks.iter().any(Option::is_none) {
+            self.stacks = self.stack_pipelines(take, target);
         }
     }
 
@@ -547,10 +576,21 @@ impl Composites {
         self.pipeline(mode).map(Into::into)
     }
 
-    pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
-        [self.over, self.replace]
+    /// The pipelines of composites and stacks into passes of `target`,
+    /// made through `cache`.
+    pub(crate) fn pipelines(&self, cache: &Cache, target: Attachments) -> Vec<PipelineId> {
+        let take = &mut Take::Find(cache);
+        let (over, replace, stacks) = match target == self.target {
+            true => (self.over, self.replace, self.stacks),
+            false => (
+                self.composite_pipeline(take, target, false),
+                self.composite_pipeline(take, target, true),
+                self.stack_pipelines(take, target),
+            ),
+        };
+        [over, replace]
             .into_iter()
-            .chain(self.stacks)
+            .chain(stacks)
             .flatten()
             .map(PipelineId::from)
             .collect()

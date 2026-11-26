@@ -298,11 +298,12 @@ impl Symbols {
         }
     }
 
-    /// The draw of a symbol layer of `kind` (as in [`make`](Self::make)),
-    /// and its slot among the draws' pipelines: one draw for every kind
-    /// after a dispatch placed them, with property rows and without, but
-    /// one for each where every corner places its quad itself.
-    fn draw(&self, kind: usize) -> (Draw<'_>, usize) {
+    /// The draw of a symbol layer of `kind` (as in [`make`](Self::make))
+    /// into passes of `target`, and its slot among the draws' pipelines:
+    /// one draw for every kind after a dispatch placed them, with property
+    /// rows and without, but one for each where every corner places its
+    /// quad itself.
+    fn draw(&self, target: Attachments, kind: usize) -> (Draw<'_>, usize) {
         let (shader, slot): (&Shader, _) = match &self.placing {
             Placing::Dispatched(_) => (&SYMBOL_SHADER, kind % 2),
             #[cfg(cpu_driven)]
@@ -311,7 +312,7 @@ impl Symbols {
         let blend = Some(BlendState::PremultipliedAlpha);
         let draw = Draw {
             rows: kind % 2 == 1,
-            ..Draw::new(shader, &self.layouts, self.target, blend)
+            ..Draw::new(shader, &self.layouts, target, blend)
         };
         (draw, slot)
     }
@@ -323,25 +324,33 @@ impl Symbols {
         self.target = target;
         // Each slot's own index is a kind that draws with it.
         let found: Vec<Variants> = (0..self.draws().len())
-            .map(|slot| Variants::find(cache, self.draw(slot).0))
+            .map(|slot| Variants::find(cache, self.draw(target, slot).0))
             .collect();
         self.draws_mut().copy_from_slice(&found);
     }
 
     /// Makes the pipelines a symbol layer of `kind` draws with (along
-    /// lines `kind / 2`, with property rows `kind % 2`) where the symbol
-    /// layers place with `placings`, each variant of `variants` asked
-    /// for.
+    /// lines `kind / 2`, with property rows `kind % 2`) into passes of
+    /// `target` where the symbol layers place with `placings`, each
+    /// variant of `variants` asked for. Those into other passes than the
+    /// map's now are made ahead, for [`retarget`](Self::retarget) to find.
     pub(crate) fn make(
         &mut self,
         (gpu, cache): (&mut dyn Gpu, &mut Cache),
+        target: Attachments,
         (kind, placings): (usize, Placings),
         variants: [bool; 2],
     ) {
-        let (draw, slot) = self.draw(kind);
-        let mut made = self.draws()[slot];
+        let (draw, slot) = self.draw(target, kind);
+        let current = target == self.target;
+        let mut made = match current {
+            true => self.draws()[slot],
+            false => Variants::default(),
+        };
         made.make((gpu, cache), variants, draw);
-        self.draws_mut()[slot] = made;
+        if current {
+            self.draws_mut()[slot] = made;
+        }
         match &mut self.placing {
             Placing::Dispatched(dispatch) => {
                 let layouts = [dispatch.layout];
@@ -365,23 +374,30 @@ impl Symbols {
         }
     }
 
-    /// The pipelines a frame waits for (`full` as in
-    /// [`Variants::wanted`]), `kind` and `placings` as in
-    /// [`make`](Self::make).
+    /// The pipelines a frame into passes of `target` waits for (`full` as
+    /// in [`Variants::wanted`]), made through `cache`, `kind` and
+    /// `placings` as in [`make`](Self::make).
     pub(crate) fn wanted(
         &self,
+        (cache, target): (&Cache, Attachments),
         (kind, placings): (usize, Placings),
         full: bool,
     ) -> impl Iterator<Item = PipelineId> {
-        let [place, draw] = match &self.placing {
-            Placing::Dispatched(dispatch) => [
-                placings.and_then(|p| dispatch.pipelines[p].wanted(full).map(Into::into)),
-                dispatch.draws[kind % 2].wanted(full).map(Into::into),
-            ],
-            #[cfg(cpu_driven)]
-            Placing::Inline(draws) => [None, draws[kind].wanted(full).map(Into::into)],
+        let (draw, slot) = self.draw(target, kind);
+        let draws = match target == self.target {
+            true => self.draws()[slot],
+            false => Variants::find(cache, draw),
         };
-        [place, draw].into_iter().flatten()
+        let place = match &self.placing {
+            Placing::Dispatched(dispatch) => {
+                placings.and_then(|p| dispatch.pipelines[p].wanted(full).map(Into::into))
+            }
+            #[cfg(cpu_driven)]
+            Placing::Inline(_) => None,
+        };
+        [place, draws.wanted(full).map(Into::into)]
+            .into_iter()
+            .flatten()
     }
 
     /// Node `i`'s draws into `commands`, a symbol layer's icon node, `kind`

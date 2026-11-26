@@ -365,18 +365,45 @@ impl Images {
     /// map's with or without their depth: with the pipelines made for
     /// them before, if any.
     pub(crate) fn retarget(&mut self, cache: &Cache, target: Attachments) {
+        self.pipelines = self.found(cache, target);
+    }
+
+    /// The pipelines into the map's passes as `target`, made through
+    /// `cache` or not.
+    pub(crate) fn pipelines_into(&self, cache: &Cache, target: Attachments) -> ImagePipelines {
+        match target == self.pipelines.target {
+            true => self.pipelines,
+            false => self.found(cache, target),
+        }
+    }
+
+    /// The pipelines into passes of `target` that `cache` made.
+    fn found(&self, cache: &Cache, target: Attachments) -> ImagePipelines {
         let mut pipelines = ImagePipelines::new(target);
         for family in [Family::Raster, Family::Hillshade, Family::ColorRelief] {
             pipelines.made[image_index(family)] = self.take(&mut Take::Find(cache), target, family);
         }
-        self.pipelines = pipelines;
+        pipelines
     }
 
-    /// Makes `family`'s pipeline into the map's passes if it isn't made.
-    pub(crate) fn make(&mut self, gpu: (&mut dyn Gpu, &mut Cache), family: Family) {
-        let mut pipelines = self.pipelines;
+    /// Makes `family`'s pipeline into the map's passes as `target` if it
+    /// isn't made: ahead, for [`retarget`](Self::retarget) to find, where
+    /// they aren't so now.
+    pub(crate) fn make(
+        &mut self,
+        gpu: (&mut dyn Gpu, &mut Cache),
+        target: Attachments,
+        family: Family,
+    ) {
+        let current = target == self.pipelines.target;
+        let mut pipelines = match current {
+            true => self.pipelines,
+            false => ImagePipelines::new(target),
+        };
         self.make_into(gpu, &mut pipelines, family);
-        self.pipelines = pipelines;
+        if current {
+            self.pipelines = pipelines;
+        }
     }
 
     /// Makes `family`'s pipeline in `pipelines` (the map's, or the drape
