@@ -2246,8 +2246,9 @@ impl Map {
         let planning = clock.now();
         times.terrain = micros(at, planning);
         let elevation = self.terrain_elevation();
-        // Failed tiles due for a retry go, so the plan asks for them; so do
-        // failed glyph ranges, laying out the labels that drew them again.
+        // Failed tiles due for a retry are readied for the plan to ask for
+        // again; failed glyph ranges are asked for again too, laying out
+        // the labels that drew them.
         let now = self.services.clock.now();
         for source in self.style.iter_mut().flat_map(|s| &mut s.sources) {
             if let SourceState::Ready { pyramid, .. } = source {

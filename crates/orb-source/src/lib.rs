@@ -74,6 +74,10 @@ enum State<T> {
     Failed {
         retry_at: f64,
     },
+    /// Failed, and due for a retry ([`TilePyramid::retry_failed`]): as if
+    /// never requested, but for its entry's count of failures, which the
+    /// next failure's backoff doubles from.
+    Retry,
 }
 
 /// The first retry's delay after a failure; each further failure doubles
@@ -146,6 +150,9 @@ impl<T> State<T> {
 struct Entry<T> {
     state: State<T>,
     last_used: u64,
+    /// Failures in a row, for the backoff: kept while the tile fails and
+    /// is retried, cleared once it settles otherwise.
+    failures: u32,
 }
 
 /// What a load's answer for a tile finds in its pyramid
@@ -170,14 +177,15 @@ pub struct TilePyramid<T> {
     /// Ready tiles kept beyond those in use.
     cache_size: usize,
     frame: u64,
-    /// Failures in a row of tiles that last failed, for their backoff.
-    failures: FxHashMap<TileIndex, u32>,
     /// The last committed plan's cover, and the tiles it kept to stand
     /// in.
     cover: FxHashSet<TileIndex>,
     kept: Vec<TileIndex>,
     /// Entries in flight, wanted or given up.
     loading: usize,
+    /// Whether [`retry_failed`](Self::retry_failed) readied a tile since
+    /// the last commit, which forgets those its plan didn't request.
+    retrying: bool,
     /// Counts changes to the tiles held and their states.
     revision: u64,
 }
@@ -190,10 +198,10 @@ impl<T> TilePyramid<T> {
             max_zoom,
             cache_size,
             frame: 0,
-            failures: FxHashMap::default(),
             cover: FxHashSet::default(),
             kept: Vec::new(),
             loading: 0,
+            retrying: false,
             revision: 0,
         }
     }
@@ -204,12 +212,17 @@ impl<T> TilePyramid<T> {
         self.revision
     }
 
-    /// Settles loading `tile` in `state`; gives `state` back if `tile`
-    /// isn't loading.
+    /// Settles loading `tile` in `state`, its failures in a row counted
+    /// on if it failed again and cleared otherwise; gives `state` back if
+    /// `tile` isn't loading.
     fn settle(&mut self, tile: TileIndex, state: State<T>) -> Result<(), State<T>> {
         match self.tiles.get_mut(&tile) {
             Some(entry) if entry.state.is_loading() => {
                 self.loading -= usize::from(entry.state.in_flight());
+                entry.failures = match state {
+                    State::Failed { .. } => entry.failures.saturating_add(1),
+                    _ => 0,
+                };
                 entry.state = state;
                 self.revision += 1;
                 Ok(())
@@ -330,7 +343,7 @@ impl<T> TilePyramid<T> {
             update.used.push(ideal);
             update.cover.push(ideal);
             match self.tiles.get(&ideal).map(|e| &e.state) {
-                None => {
+                None | Some(State::Retry) => {
                     if requested.insert(ideal) {
                         update.request.push(ideal);
                     }
@@ -430,7 +443,7 @@ impl<T> TilePyramid<T> {
             }
             update.used.push(tile);
             update.kept.push(tile);
-            if !self.tiles.contains_key(&tile) && !update.request.contains(&tile) {
+            if self.absent(tile) && !update.request.contains(&tile) {
                 request.push(tile);
             }
         }
@@ -450,14 +463,22 @@ impl<T> TilePyramid<T> {
         self.cover.extend(&update.cover);
         self.kept.clone_from(&update.kept);
         for &tile in &update.request {
-            self.tiles.entry(tile).or_insert_with(|| {
+            let entry = self.tiles.entry(tile).or_insert(Entry {
+                state: State::Retry,
+                last_used: frame,
+                failures: 0,
+            });
+            if matches!(entry.state, State::Retry) {
+                entry.state = State::Loading;
                 self.loading += 1;
                 self.revision += 1;
-                Entry {
-                    state: State::Loading,
-                    last_used: frame,
-                }
-            });
+            }
+        }
+        // A plan requests every tile due for a retry it uses: the rest
+        // left the view, and go with their counts of failures, as tiles
+        // never requested.
+        if std::mem::take(&mut self.retrying) {
+            self.tiles.retain(|_, e| !matches!(e.state, State::Retry));
         }
         for tile in &update.used {
             if let Some(entry) = self.tiles.get_mut(tile) {
@@ -534,10 +555,7 @@ impl<T> TilePyramid<T> {
     /// results before they can reach newly requested entries.
     pub fn insert(&mut self, tile: TileIndex, value: T) -> Option<T> {
         match self.settle(tile, State::Ready(value)) {
-            Ok(()) => {
-                self.failures.remove(&tile);
-                None
-            }
+            Ok(()) => None,
             Err(State::Ready(value)) => Some(value),
             Err(_) => unreachable!("given back as given"),
         }
@@ -545,9 +563,7 @@ impl<T> TilePyramid<T> {
 
     /// Marks a loading tile as loaded with nothing to draw.
     pub fn insert_empty(&mut self, tile: TileIndex) {
-        if self.settle(tile, State::Empty).is_ok() {
-            self.failures.remove(&tile);
-        }
+        let _ = self.settle(tile, State::Empty);
     }
 
     /// Marks a loading tile as failed at `now` (ms) for a reason that may
@@ -555,31 +571,32 @@ impl<T> TilePyramid<T> {
     /// delay that doubles with each failure in a row, or the `wait` (ms)
     /// its server asked for (`Retry-After`) when that's longer.
     pub fn insert_failed(&mut self, tile: TileIndex, now: f64, wait: f64) {
-        if !self.is_loading(tile) {
+        let Some(entry) = self.tiles.get(&tile) else {
             return;
-        }
-        let failures = self.failures.entry(tile).or_default();
-        let delay = retry_delay(*failures).max(wait);
-        *failures = failures.saturating_add(1);
-        let retry_at = now + delay;
+        };
+        let retry_at = now + retry_delay(entry.failures).max(wait);
         let _ = self.settle(tile, State::Failed { retry_at });
     }
 
-    /// Forgets failed tiles due for a retry at `now` (ms), so the next
-    /// [`update`](Self::update) requests those it covers again; every
-    /// failed tile with `now` infinite, as when the network returns.
+    /// Readies failed tiles due for a retry at `now` (ms), so the next
+    /// [`update`](Self::update) requests those it covers again and
+    /// forgets the rest; every failed tile with `now` infinite, as when
+    /// the network returns.
     /// Whether any failed tile remains.
     pub fn retry_failed(&mut self, now: f64) -> bool {
-        let (mut waiting, before) = (false, self.tiles.len());
-        self.tiles.retain(|_, entry| match entry.state {
-            State::Failed { retry_at } if retry_at <= now => false,
-            State::Failed { .. } => {
-                waiting = true;
-                true
+        let (mut waiting, mut due) = (false, false);
+        for entry in self.tiles.values_mut() {
+            match entry.state {
+                State::Failed { retry_at } if retry_at <= now => {
+                    entry.state = State::Retry;
+                    due = true;
+                }
+                State::Failed { .. } => waiting = true,
+                _ => {}
             }
-            _ => true,
-        });
-        self.revision += u64::from(self.tiles.len() != before);
+        }
+        self.revision += u64::from(due);
+        self.retrying |= due;
         waiting
     }
 
@@ -591,7 +608,7 @@ impl<T> TilePyramid<T> {
         self.tiles.retain(|&tile, entry| {
             !matches!(
                 entry.state,
-                State::Empty | State::Missing | State::Failed { .. }
+                State::Empty | State::Missing | State::Failed { .. } | State::Retry
             ) || !which(tile)
         });
         self.revision += u64::from(self.tiles.len() != before);
@@ -620,9 +637,7 @@ impl<T> TilePyramid<T> {
     /// loads, ready ancestors and descendants stand in as for a loading
     /// tile.
     pub fn insert_missing(&mut self, tile: TileIndex) {
-        if self.settle(tile, State::Missing).is_ok() {
-            self.failures.remove(&tile);
-        }
+        let _ = self.settle(tile, State::Missing);
     }
 
     /// Evicts ready and empty tiles not used in the last update, least
@@ -647,12 +662,9 @@ impl<T> TilePyramid<T> {
         self.revision += 1;
         unused[..excess]
             .iter()
-            .filter_map(|(_, t)| {
-                self.failures.remove(t);
-                match self.tiles.remove(t)?.state {
-                    State::Ready(value) => Some(value),
-                    _ => None,
-                }
+            .filter_map(|(_, t)| match self.tiles.remove(t)?.state {
+                State::Ready(value) => Some(value),
+                _ => None,
             })
             .collect()
     }
@@ -742,11 +754,10 @@ impl<T> TilePyramid<T> {
             || self.cover.iter().any(|&t| {
                 t.z > tile.z
                     && t.is_within(tile)
-                    && (self.failures.contains_key(&t)
-                        || matches!(
-                            self.tiles.get(&t).map(|e| &e.state),
-                            Some(State::Failed { .. } | State::Missing)
-                        ))
+                    && self
+                        .tiles
+                        .get(&t)
+                        .is_some_and(|e| e.failures > 0 || matches!(e.state, State::Missing))
             })
     }
 
@@ -776,7 +787,6 @@ impl<T> TilePyramid<T> {
 
     /// Forgets every tile, returning the ready values.
     pub fn drain(&mut self) -> Vec<T> {
-        self.failures.clear();
         self.loading = 0;
         self.revision += 1;
         self.tiles
@@ -803,6 +813,14 @@ impl<T> TilePyramid<T> {
         self.loading - beside
     }
 
+    /// Whether a plan needing `tile` requests it: never requested, or
+    /// due for a retry.
+    fn absent(&self, tile: TileIndex) -> bool {
+        self.tiles
+            .get(&tile)
+            .is_none_or(|e| matches!(e.state, State::Retry))
+    }
+
     fn is_ready(&self, tile: TileIndex) -> bool {
         matches!(
             self.tiles.get(&tile),
@@ -818,7 +836,8 @@ impl<T> TilePyramid<T> {
     /// size × depth, not 4^depth.
     fn branches(&self) -> FxHashSet<TileIndex> {
         let mut branches = FxHashSet::default();
-        let known = (self.tiles.iter()).filter(|(_, e)| !e.state.is_loading());
+        let known = (self.tiles.iter())
+            .filter(|(_, e)| !e.state.is_loading() && !matches!(e.state, State::Retry));
         for (&tile, _) in known {
             let ancestors = std::iter::successors(tile.parent(), |t| t.parent());
             for parent in ancestors.take_while(|t| t.z >= self.min_zoom) {
@@ -863,7 +882,7 @@ impl<T> TilePyramid<T> {
             }
             update.used.push(parent);
             match self.tiles.get(&parent).map(|e| &e.state) {
-                None => {
+                None | Some(State::Retry) => {
                     if requested.insert(parent) {
                         update.request.push(parent);
                     }
@@ -1193,8 +1212,56 @@ mod tests {
         assert!(p.retry_failed(2999.0));
         assert!(!p.retry_failed(f64::INFINITY));
         assert_eq!(p.update(&cover(&[(1, 0, 0)])).request, [t(1, 0, 0)]);
+        // A success clears the count: nothing stands in for the tile.
+        assert!(p.wants(t(0, 0, 0)));
         p.insert(t(1, 0, 0), "tile");
-        assert!(p.failures.is_empty());
+        assert!(!p.wants(t(0, 0, 0)));
+    }
+
+    /// A failed tile that has left the view by its retry takes its count
+    /// of failures with it, in a pyramid that never evicts (as a source's
+    /// doesn't): met again, it backs off as on its first failure.
+    #[test]
+    fn failed_tiles_out_of_view_forget_their_failures() {
+        let mut p = TilePyramid::<&str>::new(0, 14, usize::MAX);
+        let (here, there) = (cover(&[(1, 0, 0)]), cover(&[(1, 1, 1)]));
+        p.update(&here);
+        p.insert_failed(t(1, 0, 0), 0.0, 0.0);
+        assert!(!p.retry_failed(1000.0));
+        p.update(&here);
+        p.insert_failed(t(1, 0, 0), 1000.0, 0.0);
+        p.update(&there);
+        assert!(!p.retry_failed(3000.0));
+        p.update(&there);
+        assert_eq!(p.tiles.len(), 1, "only the view's tile is held");
+        assert_eq!(p.update(&here).request, [t(1, 0, 0)]);
+        p.insert_failed(t(1, 0, 0), 3000.0, 0.0);
+        assert!(!p.retry_failed(4000.0), "backs off a second, not four");
+    }
+
+    /// A tile due for a retry plans as one never asked for: its ancestor
+    /// stays wanted while it's retried, and the regions drawn are a fresh
+    /// view's.
+    #[test]
+    fn retried_tiles_plan_as_fresh_ones() {
+        let mut p = TilePyramid::new(0, 14, 8);
+        let view = cover(&[(1, 0, 0)]);
+        p.update(&cover(&[(0, 0, 0)]));
+        p.insert(t(0, 0, 0), "world");
+        let deeper = cover(&[(2, 0, 0)]);
+        p.update(&deeper);
+        p.insert_failed(t(2, 0, 0), 0.0, 0.0);
+        assert!(!p.retry_failed(1000.0));
+        let mut fresh = TilePyramid::new(0, 14, 8);
+        fresh.update(&cover(&[(0, 0, 0)]));
+        fresh.insert(t(0, 0, 0), "world");
+        assert_eq!(p.plan(&view).draw, fresh.plan(&view).draw);
+        // Retried, the tile's ancestor is still the one it stands in for.
+        p.update(&deeper);
+        assert!(p.is_loading(t(2, 0, 0)));
+        assert!(p.wants(t(0, 0, 0)));
+        p.insert(t(2, 0, 0), "tile");
+        assert!(!p.wants(t(0, 0, 0)));
     }
 
     #[test]
