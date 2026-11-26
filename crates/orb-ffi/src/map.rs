@@ -402,7 +402,7 @@ impl MapEntry {
 
     /// Publishes the snapshot `mln_map_get_snapshot` copies.
     pub(crate) fn publish(&self) {
-        let lod = self.map.tile_lod();
+        let lod = self.map.options().tile_lod;
         let snapshot = mln_map_snapshot {
             size: std::mem::size_of::<mln_map_snapshot>() as u32,
             debug_flags: self.debug_flags,
@@ -1316,7 +1316,7 @@ command!(
             return Err(Failure::argument("lod_mode is invalid"));
         }
         Ok(job(move |entry| {
-            let before = (entry.map.tile_lod(), entry.prefetch_zoom_delta);
+            let before = (entry.map.options().tile_lod, entry.prefetch_zoom_delta);
             let mut lod = before.0;
             let has = |bit| o.fields & bit != 0;
             if has(MLN_MAP_TILE_OPTION_PREFETCH_ZOOM_DELTA) {

@@ -803,15 +803,9 @@ pub struct Map {
     /// The camera and terrain revisions the last frame saw.
     pub(crate) camera_seen: u64,
     pub(crate) terrain_seen: u64,
-    /// Terrain tiles hang skirts ([`crate::MapOptions::terrain_skirts`]).
-    pub(crate) terrain_skirts: bool,
-    /// How covers coarsen with distance ([`Map::set_tile_lod`]).
-    tile_lod: orb_camera::TileLod,
-    /// What a vector tile that 404s draws ([`crate::MapOptions::missing_tiles`]).
-    pub(crate) missing_tiles: MissingTiles,
-    /// The previews styles parse with ([`crate::MapOptions::previews`]).
-    previews: orb_style::Previews,
-    pub(crate) antialias_3d: bool,
+    /// The options in force ([`Map::set_options`]), their camera `None`:
+    /// [`Map::camera`] has it.
+    pub(crate) options: crate::MapOptions,
     /// The cull keeps every candidate ([`Map::set_keep_all_cull`]).
     keep_all_cull: bool,
     /// The plane the map draws on and its sources' tile matrix sets: the
@@ -878,7 +872,6 @@ pub struct Map {
     /// Outstanding relayout and column jobs, per edit generation.
     pub(crate) pending: BTreeMap<u64, u32>,
     pub(crate) counts: JobCounts,
-    pub(crate) clear_color: [f64; 4],
     pub(crate) sender: Sender<Message>,
     pub(crate) receiver: Receiver<Message>,
     pub(crate) warnings: Vec<String>,
@@ -1005,7 +998,6 @@ impl Map {
     /// A map with no style. With `camera: None`, the first style's camera
     /// is used, as GL JS does when a map is created without one.
     pub fn new(services: Services, camera: Option<CameraState>) -> Self {
-        let defaults = crate::MapOptions::default();
         let (sender, receiver) = channel();
         let surface = Surface::default();
         let start = CameraState::new(orb_crs::Geodetic::new(0.0, 0.0), 0.0, surface.projection());
@@ -1065,11 +1057,7 @@ impl Map {
             style: None,
             renderer: None,
             retired: Retired::default(),
-            terrain_skirts: defaults.terrain_skirts,
-            tile_lod: defaults.tile_lod,
-            missing_tiles: defaults.missing_tiles,
-            previews: defaults.previews,
-            antialias_3d: defaults.antialias,
+            options: crate::MapOptions::default(),
             keep_all_cull: false,
             nodes_stale: false,
             capacity: None,
@@ -1085,7 +1073,6 @@ impl Map {
             version: 0,
             pending: BTreeMap::new(),
             counts: JobCounts::default(),
-            clear_color: defaults.clear_color,
             sender,
             receiver,
             warnings: Vec::new(),
@@ -1094,7 +1081,7 @@ impl Map {
             degraded_for: None,
             events: Default::default(),
             terrains: 0,
-            labels: crate::labels::Labels::new(default_lane(), (&defaults).into()),
+            labels: crate::labels::Labels::new(default_lane()),
             label_epoch: 0,
         }
     }
@@ -1120,7 +1107,7 @@ impl Map {
     /// off, it depends on the camera alone. Still and tile output places
     /// afresh either way.
     pub fn set_stable_labels(&mut self, stable: bool) {
-        self.labels.options.stable_labels = stable;
+        self.options.stable_labels = stable;
     }
 
     /// Places labels on `lane` instead of the host's default (a thread
@@ -1138,7 +1125,7 @@ impl Map {
     /// set after this may use; none by default. With a preview off, its
     /// inputs warn and fall back to their defaults.
     pub fn set_previews(&mut self, previews: orb_style::Previews) {
-        self.previews = previews;
+        self.options.previews = previews;
     }
 
     /// Sets how the covers' tiles coarsen with distance in pitched views:
@@ -1147,18 +1134,13 @@ impl Map {
     ///
     /// [`TileLod::sanitized`]: orb_camera::TileLod::sanitized
     pub fn set_tile_lod(&mut self, lod: orb_camera::TileLod) {
-        self.tile_lod = lod.sanitized();
-    }
-
-    /// How the covers' tiles coarsen with distance.
-    pub fn tile_lod(&self) -> orb_camera::TileLod {
-        self.tile_lod
+        self.options.tile_lod = lod.sanitized();
     }
 
     /// Turns 4× MSAA for 3D surfaces on or off (off by default, as in GL
     /// JS and MapLibre Native; [`MapOptions::antialias`]).
     pub fn set_antialias_3d(&mut self, enabled: bool) {
-        self.antialias_3d = enabled;
+        self.options.antialias = enabled;
     }
 
     /// Has the renderer's cull keep every candidate, culling nothing
@@ -1213,7 +1195,7 @@ impl Map {
         let update = full_update(
             &style.doc,
             self.version,
-            self.labels.options.fonts(),
+            self.options.fonts(),
             self.surface.tiles(),
         );
         Some((style.id, update, style.icons.clone()))
@@ -1337,7 +1319,7 @@ impl Map {
             ),
             None => View::new(self.camera.state(), viewport, &self.surface.view_surface()),
         };
-        view.with_tile_lod(self.tile_lod)
+        view.with_tile_lod(self.options.tile_lod)
     }
 
     /// The frame's time as the shaders take it: milliseconds since the
@@ -1377,7 +1359,7 @@ impl Map {
     /// default, like GL JS's canvas. Opaque hosts can supply their window's
     /// background so transparent sky does not become black at presentation.
     pub fn set_clear_color(&mut self, color: [f64; 4]) {
-        self.clear_color = color;
+        self.options.clear_color = color;
     }
 
     /// What the map's jobs and uploads have done so far.
@@ -1544,7 +1526,7 @@ impl Map {
         if let Some(base) = base {
             orb_source::endpoint::resolve_style_urls(&mut root, base);
         }
-        let doc = StyleDoc::from_json(root, self.previews).map_err(|d| d.to_string())?;
+        let doc = StyleDoc::from_json(root, self.options.previews).map_err(|d| d.to_string())?;
         // A style URL still loading is superseded, and the old style's
         // paint transitions with it.
         self.style_load.replace(StyleLoad::Settled);
@@ -1577,8 +1559,7 @@ impl Map {
         self.uploading = None;
         self.globe_warps = crate::globe::GlobeWarps::new(*self.surface.projection());
         self.retired = Retired::default();
-        let old = &self.labels;
-        self.labels = crate::labels::Labels::new(Arc::clone(&old.lane), old.options.clone());
+        self.labels = crate::labels::Labels::new(Arc::clone(&self.labels.lane));
         self.label_epoch += 1;
         *self.picking.get_mut() = Default::default();
         self.cancel_tile_loads();
@@ -1631,7 +1612,7 @@ impl Map {
             &doc,
             &[],
             self.version,
-            self.labels.options.fonts(),
+            self.options.fonts(),
             self.surface.tiles(),
         ));
         let plan = worker.plan();
@@ -1671,7 +1652,7 @@ impl Map {
             &full_update(
                 &doc,
                 self.version,
-                self.labels.options.fonts(),
+                self.options.fonts(),
                 self.surface.tiles(),
             ),
             &worker,
@@ -2009,7 +1990,7 @@ impl Map {
         // What this frame draws, for picking.
         let mut drawn = Vec::new();
         let mut report = FrameReport::default();
-        let clear = self.clear_color;
+        let clear = self.options.clear_color;
         let at = crate::light::atmosphere_view(
             &root.light,
             root.terrain_presence,
@@ -2200,7 +2181,7 @@ impl Map {
         pixel_ratio: f32,
         deadline: f64,
     ) {
-        renderer.set_antialias_3d(gpu, self.antialias_3d);
+        renderer.set_antialias_3d(gpu, self.options.antialias);
         renderer.set_keep_all(gpu, self.keep_all_cull);
         self.apply_arrivals_until(gpu, renderer, pixel_ratio, deadline);
     }
@@ -3090,6 +3071,7 @@ impl Map {
             self.services.jobs.as_ref(),
             &raster_done,
             style.worker.fonts(),
+            self.options.local_ideograph_font_family.as_deref(),
         );
         // Glyph rasterization above is the jobs'; placement starts here.
         let started = self.services.clock.now();
@@ -3103,7 +3085,16 @@ impl Map {
             let zoom = camera.zoom(self.surface.projection());
             let labels = &self.labels;
             labels.frame(
-                plan, tiles, view, center, period, camera, zoom, extrusion, now,
+                plan,
+                tiles,
+                view,
+                center,
+                period,
+                camera,
+                zoom,
+                extrusion,
+                now,
+                &self.options,
             )
         };
         let mut frame = frame_at(view, view.camera_world(), self.camera.state());
@@ -3231,7 +3222,7 @@ impl Map {
         // GL JS's `getSkirtLength`: a fifth of a tile's width at the
         // camera's zoom, in metres at the equator.
         let zoom = self.camera.state().zoom(self.surface.projection());
-        let skirt = Metres(match self.terrain_skirts {
+        let skirt = Metres(match self.options.terrain_skirts {
             true => 2.0 * std::f64::consts::PI * 6_371_008.8 / zoom.max(0.0).exp2() / 5.0,
             false => 0.0,
         });
@@ -3371,7 +3362,7 @@ impl Map {
         Some(PlanKey {
             camera: self.camera.revision(),
             viewport: [viewport.width.to_bits(), viewport.height.to_bits()],
-            lod: self.tile_lod,
+            lod: self.options.tile_lod,
             mode: std::mem::discriminant(&self.mode),
             version: self.version,
             sources: (style.sources.iter())

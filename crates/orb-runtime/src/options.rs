@@ -89,17 +89,34 @@ impl Default for MapOptions {
     }
 }
 
+impl MapOptions {
+    /// What the map adds to its styles' fonts.
+    pub(crate) fn fonts(&self) -> crate::worker::MapFonts {
+        crate::worker::MapFonts {
+            local_ideographs: self.local_ideograph_font_family.clone(),
+            fallback: self.fallback_font_faces.clone(),
+        }
+    }
+}
+
 impl Map {
     /// Sets every option but the camera, which only a new map takes
     /// ([`Map::new`]; move it with the camera's calls after). Options that
     /// apply only to styles or tiles loaded afterwards say so.
     pub fn set_options(&mut self, options: &MapOptions) {
-        self.set_clear_color(options.clear_color);
-        self.labels.options = options.into();
-        self.set_antialias_3d(options.antialias);
-        self.terrain_skirts = options.terrain_skirts;
-        self.set_previews(options.previews);
-        self.set_tile_lod(options.tile_lod);
-        self.missing_tiles = options.missing_tiles;
+        self.options = MapOptions {
+            camera: None,
+            tile_lod: options.tile_lod.sanitized(),
+            ..options.clone()
+        };
+    }
+
+    /// The options last set, by [`Map::set_options`] or the setters of
+    /// single options, the tile LOD brought into range. Those that apply
+    /// only to later styles or tiles say so on [`MapOptions`], so these
+    /// can differ from what the current style uses. Their camera is
+    /// `None`; [`Map::camera`] has the map's.
+    pub fn options(&self) -> &MapOptions {
+        &self.options
     }
 }

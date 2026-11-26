@@ -609,47 +609,6 @@ pub(crate) struct Labels {
     held: HashMap<u64, Held>,
     /// The layers, buckets and tiles the last frame drew.
     drawn: Vec<(u32, u64, orb_symbol::TileId)>,
-    pub(crate) options: LabelOptions,
-}
-
-/// The map's label settings, which outlive its labels (a lost device
-/// makes new ones).
-#[derive(Clone, Debug)]
-pub(crate) struct LabelOptions {
-    /// Milliseconds labels fade over (GL JS `fadeDuration`).
-    pub(crate) fade_duration: f64,
-    /// Whether labels of different sources collide (GL JS
-    /// `crossSourceCollisions`).
-    pub(crate) cross_source_collisions: bool,
-    /// The map's `localIdeographFontFamily`, for local raster jobs.
-    pub(crate) ideographs: Option<String>,
-    /// The map's fallback font files.
-    pub(crate) fallback_fonts: Vec<orb_style::FontFace>,
-    /// Labels keep their place across placements, as in MapLibre Native
-    /// ([`orb_symbol::Frame::stable_labels`]).
-    pub(crate) stable_labels: bool,
-}
-
-impl From<&crate::MapOptions> for LabelOptions {
-    fn from(options: &crate::MapOptions) -> Self {
-        Self {
-            fade_duration: options.fade_duration,
-            cross_source_collisions: options.cross_source_collisions,
-            ideographs: options.local_ideograph_font_family.clone(),
-            fallback_fonts: options.fallback_font_faces.clone(),
-            stable_labels: options.stable_labels,
-        }
-    }
-}
-
-impl LabelOptions {
-    /// What the map adds to its styles' fonts.
-    pub(crate) fn fonts(&self) -> crate::worker::MapFonts {
-        crate::worker::MapFonts {
-            local_ideographs: self.ideographs.clone(),
-            fallback: self.fallback_fonts.clone(),
-        }
-    }
 }
 
 impl std::fmt::Debug for Labels {
@@ -735,8 +694,8 @@ fn quad_chunks(placed: &[PlacedSymbol], sort_keys: &[SortKeyRange]) -> Vec<orb_l
 }
 
 impl Labels {
-    /// Labels placed on `lane`, with `options`' label settings.
-    pub(crate) fn new(lane: Arc<dyn PlacementLane>, options: LabelOptions) -> Self {
+    /// Labels placed on `lane`.
+    pub(crate) fn new(lane: Arc<dyn PlacementLane>) -> Self {
         Self {
             lane,
             retired: Arc::default(),
@@ -752,7 +711,6 @@ impl Labels {
             committed_request: 0,
             held: HashMap::default(),
             drawn: Vec::new(),
-            options,
         }
     }
 
@@ -1135,7 +1093,9 @@ impl Labels {
     }
 
     /// Releases what dropped buckets held, and asks for the glyphs leased
-    /// since the last frame.
+    /// since the last frame, drawing ideographs of the default font stack
+    /// with the CSS font family `ideographs` where the map names one
+    /// ([`crate::MapOptions::local_ideograph_font_family`]).
     pub(crate) fn maintain(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -1143,6 +1103,7 @@ impl Labels {
         jobs: &dyn Jobs,
         raster_done: &dyn Fn(Vec<RasterRow>) -> crate::RasterDone,
         faces: crate::glyphs::Fonts<'_>,
+        ideographs: Option<&str>,
     ) {
         self.retire(gpu, atlas);
         // Each job's glyphs, deduplicated, with every row by its index.
@@ -1169,7 +1130,7 @@ impl Labels {
             let raster = GlyphRaster::Local {
                 stack,
                 texts: texts.into_iter().map(String::from).collect(),
-                ideographs: self.options.ideographs.clone(),
+                ideographs: ideographs.map(String::from),
             };
             self.glyphs.in_flight += 1;
             jobs.raster(raster, raster_done(rows));
@@ -1485,7 +1446,7 @@ impl Labels {
     }
 
     /// This frame's placement inputs: every symbol layer in style order
-    /// with its drawn buckets.
+    /// with its drawn buckets, placed as the map's `options` say.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn frame(
         &self,
@@ -1498,6 +1459,7 @@ impl Labels {
         zoom: f64,
         extrusion_scale: f64,
         now: f64,
+        options: &crate::MapOptions,
     ) -> orb_symbol::Frame {
         let view_proj = view.view_proj();
         let viewport = view.viewport();
@@ -1600,12 +1562,12 @@ impl Labels {
             },
             layers,
             now,
-            fade_duration: self.options.fade_duration,
-            cross_source_collisions: self.options.cross_source_collisions,
+            fade_duration: options.fade_duration,
+            cross_source_collisions: options.cross_source_collisions,
             lng: camera.target.lon,
             ground: None,
             scope: orb_symbol::Scope::Viewport,
-            stable_labels: self.options.stable_labels,
+            stable_labels: options.stable_labels,
         }
     }
 
@@ -2040,10 +2002,7 @@ mod tests {
                 states: FeatureStates::default(),
                 worker,
                 result,
-                labels: Labels::new(
-                    Arc::new(crate::InlinePlacement::default()),
-                    (&crate::MapOptions::default()).into(),
-                ),
+                labels: Labels::new(Arc::new(crate::InlinePlacement::default())),
             }
         }
 

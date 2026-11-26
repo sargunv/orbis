@@ -474,9 +474,11 @@ impl Map {
         self.dirty = true;
     }
 
-    /// How tiles coarsen with distance, values out of range brought in.
-    pub fn tile_lod(&self) -> orb_camera::TileLod {
-        self.map.tile_lod()
+    /// The options last set, the tile LOD brought into range; those that
+    /// apply only to later styles or tiles say so on [`MapOptions`]. Their
+    /// camera is `None` ([`Map::camera`] has the map's).
+    pub fn options(&self) -> &MapOptions {
+        self.map.options()
     }
 
     /// The picture the video or canvas source `id` shows now: straight

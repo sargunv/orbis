@@ -133,7 +133,7 @@ impl Map {
             &style.doc,
             &new_data,
             version,
-            self.labels.options.fonts(),
+            self.options.fonts(),
             self.surface.tiles(),
         ));
         let update = self.edit_update(&style.doc, &patch, version);
@@ -218,12 +218,7 @@ impl Map {
                 .iter()
                 .map(|(key, diffs)| (key.0, diffs.clone()))
                 .collect(),
-            ..StyleUpdate::base(
-                doc,
-                version,
-                self.labels.options.fonts(),
-                self.surface.tiles(),
-            )
+            ..StyleUpdate::base(doc, version, self.options.fonts(), self.surface.tiles())
         }
     }
 
@@ -312,13 +307,13 @@ impl Map {
             &style.doc,
             &[],
             version,
-            self.labels.options.fonts(),
+            self.options.fonts(),
             self.surface.tiles(),
         ));
         let update = StyleUpdate::base(
             &style.doc,
             version,
-            self.labels.options.fonts(),
+            self.options.fonts(),
             self.surface.tiles(),
         );
         self.services.jobs.set_style(style.id, &update, &worker);

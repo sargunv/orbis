@@ -797,7 +797,7 @@ impl Map {
                     &plan.source_def(source).kind,
                     orb_style::SourceKind::Vector(v) if v.sparse
                 );
-                if self.missing_tiles == crate::MissingTiles::Empty
+                if self.options.missing_tiles == crate::MissingTiles::Empty
                     && plan.image_kind(source).is_none()
                     && !sparse
                 {

@@ -301,7 +301,7 @@ impl OrbisMap {
     /// in pitched views. The next frame covers with it.
     #[wasm_bindgen(js_name = setTileLod)]
     pub fn set_tile_lod(&mut self, lod: &JsValue) {
-        let lod = tile_lod(self.map.tile_lod(), lod);
+        let lod = tile_lod(self.map.options().tile_lod, lod);
         self.map.set_tile_lod(lod);
     }
 
