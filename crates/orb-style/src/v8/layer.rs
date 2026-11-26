@@ -4,7 +4,7 @@
 use crate::*;
 
 use orb_expr::json::{Json, JsonValue, Member, Span};
-use orb_expr::{Filter, Kind, PropertyExpression, Value};
+use orb_expr::{Diagnostic, Filter, Kind, PropertyExpression, Value};
 
 use crate::v8::{Cx, target};
 
@@ -75,7 +75,8 @@ fn section<'a>(
 }
 
 /// A property's slot from its JSON (`None`: unset), with diagnostics at
-/// `path`; an invalid value is the default.
+/// `path`; a value that doesn't fit the property draws its default,
+/// reported by [`Cx::invalid`].
 pub(crate) fn property_at(cx: &mut Cx, json: Option<&Json>, path: &str, prop: &Prop) -> Slot {
     if prop.ramp
         && json.is_none()
@@ -87,14 +88,21 @@ pub(crate) fn property_at(cx: &mut Cx, json: Option<&Json>, path: &str, prop: &P
     let Some(json) = json else {
         return Slot::constant(Value::Null, false);
     };
+    match value_at(cx, json, path, prop) {
+        Ok(slot) => slot,
+        Err(diagnostics) => {
+            cx.invalid(path, diagnostics);
+            property_at(cx, None, path, prop)
+        }
+    }
+}
+
+/// The slot of a property set to `json`, or why the value doesn't fit it.
+fn value_at(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Result<Slot, Vec<Diagnostic>> {
     if prop.ramp {
-        return match PropertyExpression::parse_with_state(json, &prop.spec(), &cx.state) {
-            Ok(parsed) => Slot::expression_any(parsed, true),
-            Err(errors) => {
-                cx.errors_at(path, errors);
-                Slot::constant(Value::Null, false)
-            }
-        };
+        return PropertyExpression::parse_with_state(json, &prop.spec(), &cx.state)
+            .map(|parsed| Slot::expression_any(parsed, true))
+            .map_err(|errors| located(path, errors));
     }
     if prop.list
         && let Some(items) = json.as_array().filter(|items| {
@@ -106,14 +114,26 @@ pub(crate) fn property_at(cx: &mut Cx, json: Option<&Json>, path: &str, prop: &P
                 })
         })
     {
-        let items = items
+        return items
             .iter()
             .enumerate()
             .map(|(i, item)| property_at_one(cx, item, &format!("{path}[{i}]"), prop))
-            .collect();
-        return Slot::list(items);
+            .collect::<Result<_, _>>()
+            .map(Slot::list);
     }
     property_at_one(cx, json, path, prop)
+}
+
+/// `orb_expr` diagnostics, whose paths are relative to `prefix`, made
+/// absolute.
+fn located(prefix: &str, diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
+    diagnostics
+        .into_iter()
+        .map(|d| Diagnostic {
+            path: format!("{prefix}{}", d.path),
+            ..d
+        })
+        .collect()
 }
 
 /// [`property_at`] for a typed property outside a layer.
@@ -131,7 +151,12 @@ pub(crate) fn typed_property_at<T: PropertyValue>(
     crate::v8::Property::from_slot(property_at(cx, json, path, prop), default)
 }
 
-fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
+fn property_at_one(
+    cx: &mut Cx,
+    json: &Json,
+    path: &str,
+    prop: &Prop,
+) -> Result<Slot, Vec<Diagnostic>> {
     let parsed =
         PropertyExpression::parse_with_state(json, &prop.spec(), &cx.state).or_else(|errors| {
             // Inputs beyond the spec's that Orbis honours: drawn, with a
@@ -154,10 +179,7 @@ fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
             }
         });
     match parsed {
-        Err(errors) => {
-            cx.errors_at(path, errors);
-            Slot::constant(Value::Null, false)
-        }
+        Err(errors) => Err(located(path, errors)),
         // Constants are folded to literals, except images, which GL JS
         // leaves to resolve at evaluation with the style's images.
         Ok(parsed) if parsed.kind() == Kind::Constant && !parsed.expression().reads_images() => {
@@ -166,8 +188,12 @@ fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
                 .evaluate(0.0)
                 .map(Value::into_owned)
                 .unwrap_or(Value::Null);
-            check_constant(cx, prop, json, &value, path);
-            Slot::constant(value, true)
+            let errors = check_constant(prop, json, &value, path);
+            if errors.is_empty() {
+                Ok(Slot::constant(value, true))
+            } else {
+                Err(errors)
+            }
         }
         Ok(parsed) => {
             // The spec's validator lets data-driven paint read state, but
@@ -188,7 +214,7 @@ fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
                     ),
                 );
             }
-            Slot::expression(parsed)
+            Ok(Slot::expression(parsed))
         }
     }
 }
@@ -213,14 +239,22 @@ fn reads(parsed: &PropertyExpression) -> Inputs {
     inputs
 }
 
-/// Validates a constant against the property's enum values and range.
-fn check_constant(cx: &mut Cx, prop: &Prop, json: &Json, value: &Value<'_>, path: &str) {
+/// What makes a constant invalid: a value outside the property's enum
+/// values or range.
+fn check_constant(prop: &Prop, json: &Json, value: &Value<'_>, path: &str) -> Vec<Diagnostic> {
+    let mut errors = Vec::new();
+    let mut error = |span, message| {
+        errors.push(Diagnostic {
+            path: path.to_string(),
+            span,
+            message,
+        });
+    };
     if let orb_expr::PropertyType::Enum(values) = prop.ty
         && let Some(s) = value.as_str()
         && !values.contains(&s)
     {
-        cx.error(
-            path,
+        error(
             json.span,
             format!("expected one of [{}], \"{s}\" found", values.join(", ")),
         );
@@ -239,22 +273,18 @@ fn check_constant(cx: &mut Cx, prop: &Prop, json: &Json, value: &Value<'_>, path
         if let Some(min) = prop.minimum
             && v < min
         {
-            cx.error(
-                path,
-                n.span,
-                format!("{v} is less than the minimum value {min}"),
-            );
+            error(n.span, format!("{v} is less than the minimum value {min}"));
         }
         if let Some(max) = prop.maximum
             && v > max
         {
-            cx.error(
-                path,
+            error(
                 n.span,
                 format!("{v} is greater than the maximum value {max}"),
             );
         }
     }
+    errors
 }
 
 fn optional_string(cx: &mut Cx, layer: &Json, key: &str, path: &str) -> Option<String> {

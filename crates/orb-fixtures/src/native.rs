@@ -921,11 +921,14 @@ fn mirror_root(assets: &Path) -> &Path {
 /// suites decide them: parser diagnostics.
 fn classify(text: &str, reasons: &mut BTreeSet<String>, diagnostics: &mut Vec<String>) {
     match orb_style::v8::parse(text) {
-        Ok(style) => reasons.extend(
-            scope::reasons(&style)
-                .into_iter()
-                .filter(|r| r != "property:interactive"),
-        ),
+        Ok(style) => {
+            reasons.extend(
+                scope::reasons(&style)
+                    .into_iter()
+                    .filter(|r| r != "property:interactive"),
+            );
+            diagnostics.extend(style.warnings.iter().map(ToString::to_string));
+        }
         Err(errors) => {
             reasons.insert("style-parse".into());
             reasons.extend(

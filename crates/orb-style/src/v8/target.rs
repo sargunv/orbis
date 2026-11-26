@@ -375,11 +375,12 @@ fn parse_operation(cx: &mut Cx, json: &Json, path: &str) -> Option<Operation> {
                 &param("center", PAIR, "[0,0]", (-16384.0, 16384.0)),
                 false,
             );
-            // A length or radius: `None` where it is left to the view.
+            // A length or radius: `None` where it is left to the view, as
+            // it is where the value doesn't fit.
             let extent = |cx: &mut Cx, name| {
-                json.get(name).is_some().then(|| {
+                json.get(name).and_then(|_| {
                     let spec = param(name, NUMBER, "1", (0.0, 16384.0));
-                    read(cx, json, path, &spec, false)
+                    Some(read(cx, json, path, &spec, false)).filter(Property::is_set)
                 })
             };
             // What the other kind takes and this one doesn't.
@@ -487,8 +488,9 @@ fn ramp_stops(
             )
         })
         .collect();
+    // A coverage that doesn't fit draws the default, out of the order.
     let constants: Vec<Option<f32>> = (parsed.iter())
-        .map(|(at, _)| (at.kind() == Kind::Constant).then(|| at.evaluate(0.0)))
+        .map(|(at, _)| (at.is_set() && at.kind() == Kind::Constant).then(|| at.evaluate(0.0)))
         .collect();
     let ordered = (constants.iter().flatten())
         .zip(constants.iter().flatten().skip(1))
@@ -667,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_targets_and_operations_are_errors() {
+    fn invalid_targets_and_operations_are_errors_but_values_draw_defaults() {
         for (root, layers) in [
             (
                 r#""dev.sargunv.orbis:targets":[{"id":"a"},{"id":"a"}],"#,
@@ -683,11 +685,6 @@ mod tests {
                 "",
                 r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
                     "dev.sargunv.orbis:operations":[{"type":"smudge"}]}"#,
-            ),
-            (
-                "",
-                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
-                    "dev.sargunv.orbis:operations":[{"type":"blur","size":-1}]}"#,
             ),
             (
                 "",
@@ -712,16 +709,6 @@ mod tests {
             (
                 "",
                 r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
-                    "dev.sargunv.orbis:operations":[{"type":"noise","size":4,"speed":-1}]}"#,
-            ),
-            (
-                "",
-                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
-                    "dev.sargunv.orbis:operations":[{"type":"split","red":[1,2,3]}]}"#,
-            ),
-            (
-                "",
-                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
                     "dev.sargunv.orbis:operations":[{"type":"split","radial":"yes"}]}"#,
             ),
             (
@@ -729,18 +716,19 @@ mod tests {
                 r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
                     "dev.sargunv.orbis:operations":[{"type":"gradient","kind":"conic"}]}"#,
             ),
-            (
-                "",
-                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
-                    "dev.sargunv.orbis:operations":[{"type":"bands","count":0}]}"#,
-            ),
-            (
-                "",
-                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
-                    "dev.sargunv.orbis:operations":[{"type":"bands","width":2}]}"#,
-            ),
         ] {
             assert!(parse(ON, root, layers).is_err(), "{root} {layers}");
+        }
+        // A parameter's value that doesn't fit it draws the parameter's
+        // default, as a property's does.
+        for ops in [
+            r#"{"type":"blur","size":-1}"#,
+            r#"{"type":"noise","size":4,"speed":-1}"#,
+            r#"{"type":"split","red":[1,2,3]}"#,
+            r#"{"type":"bands","count":0}"#,
+            r#"{"type":"bands","width":2}"#,
+        ] {
+            draws_defaults(ops);
         }
     }
 
@@ -805,6 +793,17 @@ mod tests {
         )
     }
 
+    /// Asserts that image-process operations `ops` parse, with a value
+    /// that draws its default.
+    fn draws_defaults(ops: &str) {
+        let style = operations(ops).unwrap_or_else(|d| panic!("{ops}: {d}"));
+        assert!(
+            (style.warnings.iter()).any(|w| w.message.ends_with(crate::v8::INVALID_VALUE)),
+            "{ops}: {:?}",
+            style.warnings
+        );
+    }
+
     #[test]
     fn gradients_take_a_centre_and_an_extent_in_pixels() {
         let style = operations(
@@ -850,8 +849,28 @@ mod tests {
             r#"{"type":"gradient","kind":"radial","radius":-1}"#,
             r#"{"type":"gradient","center":[1]}"#,
         ] {
-            assert!(operations(invalid).is_err(), "{invalid}");
+            draws_defaults(invalid);
         }
+        // An extent that doesn't fit is left to the view, as an absent one.
+        let style = operations(
+            r#"{"type":"gradient","length":-1},{"type":"gradient","kind":"radial","radius":-1}"#,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                &style.layers[0].operations[..],
+                [
+                    Operation::Gradient {
+                        kind: Gradient::Linear { length: None, .. }
+                    },
+                    Operation::Gradient {
+                        kind: Gradient::Radial { radius: None, .. }
+                    },
+                ]
+            ),
+            "{:?}",
+            style.layers[0].operations
+        );
     }
 
     /// Numbers, pairs and colours may follow the camera as well as the
@@ -924,10 +943,14 @@ mod tests {
         );
         assert!(op.reads_camera());
         for invalid in [
-            r#"{"type":"ramp","stops":[]}"#,
-            r#"{"type":"ramp","stops":[[0,"red","blue"]]}"#,
             r#"{"type":"ramp","stops":[[1.5,"red"]]}"#,
             r#"{"type":"ramp","stops":[[0,"nope"]]}"#,
+        ] {
+            draws_defaults(invalid);
+        }
+        for invalid in [
+            r#"{"type":"ramp","stops":[]}"#,
+            r#"{"type":"ramp","stops":[[0,"red","blue"]]}"#,
             r#"{"type":"ramp","stops":[[0.6,"red"],
                [["interpolate",["linear"],["zoom"],0,0.5,20,0.5],"red"],[0.4,"blue"]]}"#,
             r#"{"type":"ramp","stops":[[0,"red"],[1,"red"],[0,"red"],[1,"red"],[0,"red"],

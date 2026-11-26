@@ -239,11 +239,10 @@ fn a_style_that_fails_to_load_fails_a_snapshot_at_once() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let dir = common::Scratch::new("bad-style");
     let path = dir.join("style.json");
-    // An array output without `literal` doesn't parse.
+    // A layer of a type v8 doesn't have fails the style.
     std::fs::write(
         &path,
-        r#"{"version":8,"sources":{},"layers":[{"id":"bg","type":"background",
-            "paint":{"background-color":["match",1,1,[1,2],"red"]}}]}"#,
+        r#"{"version":8,"sources":{},"layers":[{"id":"bg","type":"backdrop"}]}"#,
     )
     .unwrap();
     let mut map = Map::new(&runtime, MapOptions::default());

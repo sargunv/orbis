@@ -83,11 +83,15 @@ mod tests {
             style.atmosphere.unwrap().sky_horizon_blend.evaluate(5.0),
             0.5
         );
-        assert!(
-            crate::v8::parse(
-                r#"{"version":8,"sky":{"sky-horizon-blend":2},"sources":{},"layers":[]}"#
-            )
-            .is_err()
+        // Out of range: the default, with a warning.
+        let style = crate::v8::parse(
+            r#"{"version":8,"sky":{"sky-horizon-blend":2},"sources":{},"layers":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(style.warnings[0].path, "sky.sky-horizon-blend");
+        assert_eq!(
+            style.atmosphere.unwrap().sky_horizon_blend.evaluate(0.0),
+            0.8
         );
     }
 

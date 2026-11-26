@@ -53,8 +53,50 @@ pub(crate) struct Draft {
     pub(crate) diffs: Vec<(SourceKey, Vec<Arc<Json>>)>,
     /// The root (other than sources and layers) was replaced.
     pub(crate) new_root: bool,
+    /// The values edits wrote, which must be valid where a document's may
+    /// not be.
+    pub(crate) written: Vec<Written>,
     pub(crate) feature_state: Vec<FeatureStateOp>,
     next_key: u32,
+}
+
+/// A value an edit wrote: what a document holds may be invalid, drawing
+/// its property's default, but an edit may not write an invalid value.
+#[derive(Clone, Debug)]
+pub(crate) enum Written {
+    /// A whole layer, added.
+    Layer(LayerKey),
+    /// A layer's `paint` or `layout` property.
+    Property {
+        layer: LayerKey,
+        section: &'static str,
+        name: String,
+    },
+    /// A root member.
+    Root(String),
+}
+
+impl Written {
+    /// The JSON path of what it wrote in layer `key` at `index`.
+    pub(crate) fn layer_path(&self, key: LayerKey, index: usize) -> Option<String> {
+        match self {
+            Written::Layer(layer) if *layer == key => Some(format!("layers[{index}]")),
+            Written::Property {
+                layer,
+                section,
+                name,
+            } if *layer == key => Some(format!("layers[{index}].{section}.{name}")),
+            _ => None,
+        }
+    }
+
+    /// The JSON path of the root member it wrote.
+    pub(crate) fn root_path(&self) -> Option<String> {
+        match self {
+            Written::Root(key) => Some(key.clone()),
+            _ => None,
+        }
+    }
 }
 
 /// A feature-state op resolved against `sources`.
@@ -148,7 +190,7 @@ impl StyleDoc {
     /// ([`read`](crate::v8::read)).
     pub fn from_json(mut root: Json, previews: Previews) -> Result<Self, Diagnostics> {
         crate::v8::deref_layers(&mut root);
-        let style = crate::v8::parse_json(&root, previews, &[])?;
+        let style = crate::v8::parse_json(&root, previews, &[], Vec::new())?;
         let JsonValue::Object(members) = root.value else {
             unreachable!("parsed styles are objects");
         };
@@ -342,6 +384,7 @@ impl StyleDoc {
             new_data: Vec::new(),
             diffs: Vec::new(),
             new_root: false,
+            written: Vec::new(),
             feature_state: Vec::new(),
             next_key: self.next_key,
         };
@@ -420,10 +463,16 @@ impl Draft {
     fn set_property(
         &mut self,
         layer: &str,
-        section: &str,
+        section: &'static str,
         name: &str,
         value: Option<Json>,
     ) -> Result<(), String> {
+        let key = self.layers[self.layer(layer)?].key;
+        self.written.push(Written::Property {
+            layer: key,
+            section,
+            name: name.to_string(),
+        });
         self.edit_layer(layer, |members| {
             let mut properties = member(members, section)
                 .and_then(Json::as_object)
@@ -461,6 +510,7 @@ impl Draft {
                     None => self.layers.len(),
                 };
                 let key = LayerKey(self.key());
+                self.written.push(Written::Layer(key));
                 self.layers.insert(
                     index,
                     LayerEntry {
@@ -582,6 +632,7 @@ impl Draft {
             }
             Op::SetStyle { style } => self.replace(style),
             Op::SetRoot { key, value } => {
+                self.written.push(Written::Root(key.clone()));
                 let mut root: Vec<Member> = self.root.as_ref().clone();
                 root.retain(|m| m.key != *key);
                 if let Some(value) = value {
@@ -678,6 +729,9 @@ impl Draft {
         self.sources = sources;
         self.layers = layers;
         self.overrides.clear();
+        // A new document: what edits wrote before is gone, and its own
+        // invalid values draw their defaults.
+        self.written.clear();
         Ok(())
     }
 }

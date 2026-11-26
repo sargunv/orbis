@@ -42,6 +42,9 @@ pub(crate) fn mirrors_gl_js(message: &str) -> bool {
 /// The skip reason of a parser warning that an edit raised at runtime:
 /// `layers[3].type: layer type "symbol" is not supported yet; …`.
 pub(crate) fn edit_reason(message: &str) -> Option<String> {
+    if message.ends_with(orb_style::v8::INVALID_VALUE) {
+        return Some("style-invalid".into());
+    }
     let (path, message) = message.split_once(": ")?;
     let parsed = path.starts_with("layers[") || path.starts_with("sources.");
     (parsed && message.contains("not supported yet")).then(|| parse_reason(message))
@@ -58,7 +61,15 @@ pub(crate) fn reasons(style: &Style) -> BTreeSet<String> {
                 .starts_with("GeoJSON nested object and array property values")
                 && !w.message.ends_with(orb_style::v8::EMPTY_SOURCE)
         })
-        .map(|w| parse_reason(&w.message))
+        .map(|w| {
+            // A value Orbis finds invalid, which draws its default: the
+            // test may provoke it, or Orbis may lack what it reads.
+            if w.message.ends_with(orb_style::v8::INVALID_VALUE) {
+                "style-invalid".into()
+            } else {
+                parse_reason(&w.message)
+            }
+        })
         .collect()
 }
 

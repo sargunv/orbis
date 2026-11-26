@@ -92,7 +92,8 @@ a `step`, `interpolate`, `match` or `case` the camera chooses by
 takes outputs that are constant multiples of one feature part (or
 0), one the feature chooses by outputs sharing one camera part;
 `min` and `max` of camera values may bound the whole. Other mixes
-(`["+", ["get", "w"], ["pitch"]]`, a colour) are errors.
+(`["+", ["get", "w"], ["pitch"]]`, a colour) draw the
+property's default with a warning, and an edit that writes one fails.
 Where a feature's part gives no number, the default stands in for
 it, scaled.
 A symbol layer's `filter` may read the camera too

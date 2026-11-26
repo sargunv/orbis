@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::v8::{Diagnostic, Diagnostics};
 use orb_expr::json::{Json, JsonValue, Member};
 
-use crate::v8::doc::{Draft, StyleDoc, member, synthetic};
+use crate::v8::doc::{Draft, StyleDoc, Written, member, synthetic};
 use crate::v8::doc::{same, same_opt};
 
 /// Whether `json` reads any of `keys` through `global-state`.
@@ -146,7 +146,17 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
                 value: synthetic(value),
             });
         }
-        let root = crate::v8::parse_json(&synthetic(JsonValue::Object(members)), previews, &[])?;
+        let written = draft
+            .written
+            .iter()
+            .filter_map(Written::root_path)
+            .collect();
+        let root = crate::v8::parse_json(
+            &synthetic(JsonValue::Object(members)),
+            previews,
+            &[],
+            written,
+        )?;
         if RESTYLE_ROOT
             .iter()
             .any(|k| !same_opt(member(&doc.root, k), member(&draft.root, k)))
@@ -306,8 +316,17 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
             style.layers.push(Arc::clone(old));
             continue;
         }
-        let (layer, w) =
-            crate::v8::parse_layer(&entry.json, index, &style.sources, &new_state, previews)?;
+        let written = (draft.written.iter())
+            .filter_map(|w| w.layer_path(entry.key, index))
+            .collect();
+        let (layer, w) = crate::v8::parse_edited_layer(
+            &entry.json,
+            index,
+            &style.sources,
+            &new_state,
+            previews,
+            written,
+        )?;
         warnings.extend(w);
         match old_entry {
             None => changes.push(Change::LayerAdded(entry.key)),

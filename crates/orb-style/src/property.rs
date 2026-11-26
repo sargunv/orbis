@@ -699,6 +699,11 @@ impl<T: PropertyValue> Property<T> {
         self.slot.kind()
     }
 
+    /// Whether the document gives the value, rather than the default.
+    pub fn is_set(&self) -> bool {
+        self.slot.is_set()
+    }
+
     pub fn evaluate(&self, zoom: f64) -> T {
         self.get().evaluate(zoom)
     }

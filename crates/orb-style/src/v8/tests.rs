@@ -24,6 +24,16 @@ fn errors(layers: &str) -> Vec<String> {
         .collect()
 }
 
+/// The warnings of a style whose layers are `layers`, as text.
+fn warnings(layers: &str) -> Vec<String> {
+    style(layers)
+        .unwrap_or_else(|d| panic!("{d}"))
+        .warnings
+        .iter()
+        .map(|w| w.to_string())
+        .collect()
+}
+
 fn line(paint: &str, layout: &str) -> Layer {
     let style = style(&format!(
         r#"[{{"id": "l", "type": "line", "source": "v", "source-layer": "roads", "paint": {paint}, "layout": {layout}}}]"#
@@ -179,40 +189,72 @@ fn legacy_functions_and_filters() {
     assert_eq!(line.filter.as_ref().unwrap().select(&tile, 0.0, None), [1]);
 }
 
+/// One value that doesn't fit its property leaves the rest of the style
+/// drawing: the property draws its default, the layer its other
+/// properties, as MapLibre Native leaves its other layers.
 #[test]
-fn errors_carry_json_paths() {
+fn an_invalid_value_draws_its_default() {
+    let style = style(
+        r#"[{"id": "bg", "type": "background", "paint": {"background-color": "red"}},
+            {"id": "l", "type": "line", "source": "v", "source-layer": "x",
+             "paint": {"line-color": "nope", "line-width": 3},
+             "layout": {"visibility": "maybe", "line-cap": "round"}}]"#,
+    )
+    .unwrap_or_else(|d| panic!("{d}"));
+    assert_eq!(style.layers.len(), 2);
+    let line = &style.layers[1];
+    assert!(!line.get(LINE_COLOR).is_set());
+    assert_eq!(line.get(LINE_COLOR).constant(), Some(Color::BLACK));
+    assert_eq!(line.get(LINE_WIDTH).constant(), Some(3.0));
+    assert_eq!(line.get(LINE_CAP).constant(), Some(LineCap::Round));
+    assert_eq!(line.visibility, Visibility::Visible);
+    let paths: Vec<&str> = style.warnings.iter().map(|w| w.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        ["layers[1].layout.visibility", "layers[1].paint.line-color"]
+    );
+}
+
+#[test]
+fn diagnostics_carry_json_paths() {
     let e =
-        errors(r#"[{"id": "bg", "type": "background", "paint": {"background-color": "nope"}}]"#);
+        warnings(r#"[{"id": "bg", "type": "background", "paint": {"background-color": "nope"}}]"#);
     assert_eq!(
         e,
-        ["layers[0].paint.background-color: Could not parse color from value 'nope'"]
+        [
+            "layers[0].paint.background-color: Could not parse color from value 'nope'; drawing the default"
+        ]
     );
 
-    let e = errors(
+    let e = warnings(
         r#"[{"id": "l", "type": "line", "source": "v", "source-layer": "x", "paint": {"line-width": ["+", 1, "two"]}}]"#,
     );
     assert_eq!(
         e,
-        ["layers[0].paint.line-width[2]: Expected number but found string instead."]
+        [
+            "layers[0].paint.line-width[2]: Expected number but found string instead; drawing the default"
+        ]
     );
 
-    let e = errors(
+    let e = warnings(
         r#"[{"id": "l", "type": "line", "source": "v", "source-layer": "x", "paint": {"line-translate-anchor": ["get", "t"]}}]"#,
     );
     assert_eq!(
         e,
-        ["layers[0].paint.line-translate-anchor: data expressions not supported"]
+        [
+            "layers[0].paint.line-translate-anchor: data expressions not supported; drawing the default"
+        ]
     );
 
-    let e = errors(
+    let e = warnings(
         r#"[{"id": "l", "type": "line", "source": "v", "source-layer": "x", "paint": {"line-opacity": 2, "line-width": -1}, "layout": {"line-cap": "flat"}}]"#,
     );
     assert_eq!(
         e,
         [
-            "layers[0].layout.line-cap: expected one of [butt, round, square], \"flat\" found",
-            "layers[0].paint.line-opacity: 2 is greater than the maximum value 1",
-            "layers[0].paint.line-width: -1 is less than the minimum value 0",
+            "layers[0].layout.line-cap: expected one of [butt, round, square], \"flat\" found; drawing the default",
+            "layers[0].paint.line-opacity: 2 is greater than the maximum value 1; drawing the default",
+            "layers[0].paint.line-width: -1 is less than the minimum value 0; drawing the default",
         ]
     );
 
@@ -669,14 +711,15 @@ fn layer_blends_parse() {
             .all(|&b| b == LayerBlend::Normal)
     );
     // `erase` was dropped from the spec: not a mode.
-    let error = parse(
+    let erase = parse(
         r#"{"version": 8, "sources": {"s": {"type": "geojson",
             "data": {"type": "FeatureCollection", "features": []}}},
             "layers": [{"id": "f", "type": "fill", "source": "s",
             "paint": {"fill-layer-blend": "erase"}}]}"#,
     )
-    .unwrap_err();
-    assert_eq!(error.errors[0].path, "layers[0].paint.fill-layer-blend");
+    .unwrap();
+    assert_eq!(erase.warnings[0].path, "layers[0].paint.fill-layer-blend");
+    assert_eq!(blends(&erase), [LayerBlend::Normal]);
 }
 
 #[test]
@@ -874,7 +917,7 @@ fn previews_gate_projections_and_tile_matrix_sets() {
 
 /// Paint Orbis evaluates per frame reads the camera, previews or not,
 /// with one warning per property that the style isn't portable. Inputs no
-/// phase honours stay errors, as do the spec's own limits.
+/// phase honours are invalid, as are values past the spec's own limits.
 #[test]
 fn extended_inputs_are_drawn_and_warn_once() {
     let layer = |paint: &str, layout: &str| {
@@ -935,9 +978,11 @@ fn extended_inputs_are_drawn_and_warn_once() {
         ("", r#""fill-sort-key": ["feature-state", "x"]"#),
     ] {
         for previews in [Previews::NONE, Previews::ALL] {
+            let style = parse_with(&layer(paint, layout), previews, &[]).unwrap();
             assert!(
-                parse_with(&layer(paint, layout), previews, &[]).is_err(),
-                "{paint} {layout}"
+                (style.warnings.iter()).any(|w| w.message.ends_with(crate::v8::INVALID_VALUE)),
+                "{paint} {layout}: {:?}",
+                style.warnings
             );
         }
     }

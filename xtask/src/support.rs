@@ -353,7 +353,8 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
          takes outputs that are constant multiples of one feature part (or\n\
          0), one the feature chooses by outputs sharing one camera part;\n\
          `min` and `max` of camera values may bound the whole. Other mixes\n\
-         (`[\"+\", [\"get\", \"w\"], [\"pitch\"]]`, a colour) are errors.\n\
+         (`[\"+\", [\"get\", \"w\"], [\"pitch\"]]`, a colour) draw the\n\
+         property's default with a warning, and an edit that writes one fails.\n\
          Where a feature's part gives no number, the default stands in for\n\
          it, scaled.\n\
          A symbol layer's `filter` may read the camera too\n\

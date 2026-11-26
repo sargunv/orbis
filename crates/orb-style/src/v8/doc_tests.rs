@@ -150,6 +150,69 @@ fn failed_transactions_change_nothing() {
     assert!(Transaction::from_commands(r#"[["flyTo", {}]]"#).is_err());
 }
 
+/// A document's invalid value draws its default with a warning, but an
+/// edit that writes one fails; an edit elsewhere in the layer, or one that
+/// only reads it again, doesn't.
+#[test]
+fn edits_may_not_write_what_a_document_may_hold() {
+    let invalid = STYLE
+        .replace(
+            r#""paint": {"fill-color": "blue"}"#,
+            r#""paint": {"fill-color": "blue", "fill-opacity": "nope"}"#,
+        )
+        .replace(
+            r#""paint": {"line-color": ["global-state", "accent"]}"#,
+            r#""paint": {"line-color": ["global-state", "accent"]}, "layout": {"line-cap": "flat"}"#,
+        );
+    let mut doc = StyleDoc::parse(&invalid).unwrap();
+    let paths: Vec<&str> = (doc.style().warnings.iter())
+        .map(|w| w.path.as_str())
+        .collect();
+    assert_eq!(
+        paths,
+        ["layers[1].paint.fill-opacity", "layers[2].layout.line-cap"]
+    );
+    let fails = |doc: &mut StyleDoc, text: &str| {
+        let tx = Transaction::from_commands(text).unwrap();
+        doc.apply(&tx).unwrap_err().errors[0].path.clone()
+    };
+    assert_eq!(
+        fails(
+            &mut doc,
+            r#"[["setPaintProperty", "water", "fill-color", "nope"]]"#
+        ),
+        "layers[1].paint.fill-color"
+    );
+    assert_eq!(
+        fails(
+            &mut doc,
+            r#"[["addLayer", {"id": "more", "type": "fill", "source": "v", "source-layer": "x",
+                "paint": {"fill-opacity": 2}}, "water"]]"#
+        ),
+        "layers[1].paint.fill-opacity"
+    );
+    assert_eq!(
+        fails(&mut doc, r#"[["setLight", {"intensity": 2}]]"#),
+        "light.intensity"
+    );
+    assert_eq!(doc.version(), 1);
+    commands(
+        &mut doc,
+        r#"[["setPaintProperty", "water", "fill-color", "green"],
+            ["setGlobalStateProperty", "accent", "green"],
+            ["setLight", {"intensity": 1}]]"#,
+    );
+    let water = &doc.style().layers[1];
+    assert_eq!(
+        water.get(FILL_COLOR).constant(),
+        Some(Color::parse("green").unwrap())
+    );
+    assert!(!water.get(FILL_OPACITY).is_set());
+    // A new document is a document, whoever sets it.
+    let patch = commands(&mut doc, &format!(r#"[["setStyle", {invalid}]]"#));
+    assert_eq!(patch.warnings.len(), 2, "{:?}", patch.warnings);
+}
+
 #[test]
 fn global_state_changes_reach_the_layers_that_read_it() {
     let mut doc = doc();

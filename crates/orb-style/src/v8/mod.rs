@@ -31,13 +31,18 @@ pub use orb_expr::{Diagnostic, Filter};
 pub use source::{EMPTY_SOURCE, tms_definition};
 pub use tx::{FeatureTarget, Op, Transaction};
 
+/// How the warning of a value that doesn't fit its property ends: the
+/// property draws its default.
+pub const INVALID_VALUE: &str = "drawing the default";
+
 // The native model this front end builds.
 use crate::*;
 
 use orb_expr::json::{self, Json, JsonValue, Member};
 
-/// Everything a failed parse found: any error rejects the style, as GL JS's
-/// validation does.
+/// Everything a failed parse found. An error rejects the style, as GL JS's
+/// validation does; a value that doesn't fit its property is only a
+/// warning, and draws the property's default, unless an edit wrote it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Diagnostics {
     pub errors: Vec<Diagnostic>,
@@ -75,7 +80,7 @@ pub fn parse_with(
 ) -> Result<Style, Diagnostics> {
     let mut doc = read(text)?;
     deref_layers(&mut doc);
-    parse_json(&doc, previews, overrides)
+    parse_json(&doc, previews, overrides, Vec::new())
 }
 
 /// Reads a style document's JSON; a syntax error is its one diagnostic.
@@ -92,13 +97,15 @@ pub fn read(text: &str) -> Result<Json, Diagnostics> {
 }
 
 /// [`parse_with`] of a document already read, whose layer references
-/// [`deref_layers`] resolved.
+/// [`deref_layers`] resolved, failing on an invalid value an edit wrote at
+/// one of the JSON paths `written`.
 pub(crate) fn parse_json(
     doc: &Json,
     previews: Previews,
     overrides: &[(String, Value<'static>)],
+    written: Vec<String>,
 ) -> Result<Style, Diagnostics> {
-    let mut cx = Cx::new(&[], previews);
+    let mut cx = Cx::new(&[], previews).written(written);
     let style = parse_root(&mut cx, doc, overrides);
     let (style, warnings) = cx.finish(style)?;
     Ok(Style { warnings, ..style })
@@ -335,7 +342,20 @@ pub fn parse_layer(
     state: &[(String, Value<'static>)],
     previews: Previews,
 ) -> Result<(Layer, Vec<Diagnostic>), Diagnostics> {
-    let mut cx = Cx::new(state, previews);
+    parse_edited_layer(json, index, sources, state, previews, Vec::new())
+}
+
+/// [`parse_layer`], failing on an invalid value an edit wrote at one of
+/// the JSON paths `written`.
+pub(crate) fn parse_edited_layer(
+    json: &Json,
+    index: usize,
+    sources: &[std::sync::Arc<Source>],
+    state: &[(String, Value<'static>)],
+    previews: Previews,
+    written: Vec<String>,
+) -> Result<(Layer, Vec<Diagnostic>), Diagnostics> {
+    let mut cx = Cx::new(state, previews).written(written);
     let layer = layer::parse_layer(&mut cx, json, index, sources, &mut Default::default());
     cx.finish(layer)
 }
@@ -635,6 +655,9 @@ pub(crate) struct Cx {
     /// The properties whose values read an input beyond the spec, each
     /// reported once.
     not_portable: rustc_hash::FxHashSet<&'static str>,
+    /// The JSON paths of the values an edit wrote, each with everything
+    /// under it: an invalid value there fails the edit ([`Cx::invalid`]).
+    written: Vec<String>,
 }
 
 impl Cx {
@@ -646,7 +669,14 @@ impl Cx {
             state: state.to_vec(),
             previews,
             not_portable: Default::default(),
+            written: Vec::new(),
         }
+    }
+
+    /// This context, failing on an invalid value at `written` or under
+    /// one of them.
+    fn written(self, written: Vec<String>) -> Self {
+        Self { written, ..self }
     }
 
     /// What was parsed and its warnings; every diagnostic instead if
@@ -745,6 +775,26 @@ impl Cx {
             span,
             message: message.into(),
         });
+    }
+
+    /// Reports why the value of the property at `property` doesn't fit it,
+    /// so it draws its default: an error where an edit wrote it, but a
+    /// warning in a document, whose one bad value leaves the rest of the
+    /// style drawing, as MapLibre Native leaves the rest of its layers.
+    pub(crate) fn invalid(&mut self, property: &str, diagnostics: Vec<Diagnostic>) {
+        let written = self.written.iter().any(|w| {
+            property
+                .strip_prefix(w.as_str())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
+        });
+        for d in diagnostics {
+            if written {
+                self.error(d.path, d.span, d.message);
+            } else {
+                let message = d.message.trim_end_matches('.');
+                self.warn(d.path, d.span, format!("{message}; {INVALID_VALUE}"));
+            }
+        }
     }
 
     /// Adds `orb_expr` diagnostics, whose paths are relative to `prefix`.
