@@ -34,7 +34,6 @@ mod map;
 mod network;
 mod offline;
 mod pacer;
-mod plugin;
 mod projection;
 mod queries;
 mod resources;

@@ -40,11 +40,11 @@ use crate::root;
 
 /// The repository that owns the C API, and the commit Orbis implements.
 const REPO: &str = "https://github.com/maplibre/mln-rs";
-const COMMIT: &str = "76c52acee7dff3a25306f00e00b4c92d4fd6adee";
+const COMMIT: &str = "43422499b882909880bf06383bbdb0266c81f2dd";
 
 /// The mirror's content hash at [`COMMIT`], with [`UNITY`] and
 /// [`VULKAN_HEADERS`].
-const MIRROR_SHA256: &str = "1baab941b711a88b9ea59d2d01616109b934aa58fb67be5da2b70d534ad39fee";
+const MIRROR_SHA256: &str = "677fa382d694a5daeb2b9ecd23066779b2904fe5eb968f9e721cfd8c30a6a12a";
 
 /// Unity, at the release and hash mln-rs's suite pins.
 const UNITY: (&str, &str) = (
@@ -62,18 +62,16 @@ const HEADERS: &str = "crates/mln_c/include/";
 /// The ABI suite's tree in mln-rs, mirrored at the mirror's root.
 const SUITE: &str = "tools/c-abi-test/testdata/";
 /// What the mirror keeps of [`SUITE`], by path below it.
-const KEPT: [&str; 5] = [
+const KEPT: [&str; 4] = [
     "tests/native/abi/",
     "tests/native/support/",
-    "tests/native/plugin/",
     "tests/native/fixtures/",
     "tests/graphics/",
 ];
 
 /// The ABI suite's domains in the order its registry runs them
-/// (`MLN_NATIVE_ABI_DOMAINS`): plugin last, as a registration lasts for
-/// the rest of the process.
-const DOMAINS: [&str; 13] = [
+/// (`ABI_DOMAINS`).
+const DOMAINS: [&str; 12] = [
     "base",
     "completion",
     "runtime",
@@ -86,7 +84,6 @@ const DOMAINS: [&str; 13] = [
     "delivery",
     "binding",
     "platform",
-    "plugin",
 ];
 
 /// File-name tags that build a file only on matching targets
@@ -575,14 +572,6 @@ fn stubs(generated: &str) -> Result<String, String> {
                 Some(syn::Type::Path(path)) if path.path.is_ident("mln_status") => {
                     "MLN_STATUS_UNSUPPORTED".into()
                 }
-                // Zero is the plugin status's success.
-                Some(syn::Type::Path(path)) if path.path.is_ident("mln_plugin_status") => {
-                    return Err(format!(
-                        "{} returns mln_plugin_status, whose failure the stubs don't know: \
-                         export it from orb-ffi by hand",
-                        f.name
-                    ));
-                }
                 Some(syn::Type::Ptr(ptr)) if ptr.mutability.is_some() => {
                     "std::ptr::null_mut()".into()
                 }
@@ -864,6 +853,9 @@ fn build_suite(mirror: &Path, prefix: &Path, work: &Path) -> Result<PathBuf, Str
         })
         .collect();
     fs::write(build.join("mln_native_test_registry.inc"), registry).map_err(|e| e.to_string())?;
+    // The cases the harness expects to fail, which it counts as ignored. The
+    // score is of every case, so none is.
+    fs::write(build.join("mln_native_expected_failures.inc"), "").map_err(|e| e.to_string())?;
 
     let backend = if cfg!(target_vendor = "apple") {
         "MLN_FFI_TEST_BACKEND_METAL=1"
@@ -880,7 +872,6 @@ fn build_suite(mirror: &Path, prefix: &Path, work: &Path) -> Result<PathBuf, Str
         format!("-I{}", build.display()),
         format!("-I{}", mirror.join("unity/src").display()),
         format!("-I{}", mirror.join("tests/graphics/include").display()),
-        format!("-I{}", native.join("plugin").display()),
         format!("-isystem{}", prefix.join("include").display()),
         format!("-isystem{}", mirror.join("vulkan/include").display()),
         "-Wno-everything".into(),
@@ -944,31 +935,14 @@ fn build_suite(mirror: &Path, prefix: &Path, work: &Path) -> Result<PathBuf, Str
         return Err(errors.join("\n"));
     }
 
-    // The plugin the plugin group registers, a library of its own.
     let lib = prefix.join("lib");
-    let plugin = lib.join(if cfg!(target_vendor = "apple") {
-        "libmln-native-test-plugin.dylib"
-    } else {
-        "libmln-native-test-plugin.so"
-    });
-    run_tool(
-        compiler("cc")
-            .args(["-std=c2x", "-shared", "-fPIC", "-fvisibility=hidden"])
-            .arg("-DMLN_NATIVE_TEST_PLUGIN_BUILDING")
-            .arg(format!("-I{}", prefix.join("include").display()))
-            .arg(format!("-I{}", native.join("plugin").display()))
-            .arg(native.join("plugin/square_plugin.c"))
-            .arg("-o")
-            .arg(&plugin),
-    )?;
-
     let exe = build.join("mln_native_abi_tests");
     let mut link = compiler("c++");
     link.args(objects.into_inner().expect("objects"))
         .arg("-o")
         .arg(&exe)
         .arg(format!("-L{}", lib.display()))
-        .args(["-lmaplibre-native-c", "-lmln-native-test-plugin"])
+        .arg("-lmaplibre-native-c")
         .arg(format!("-Wl,-rpath,{}", lib.display()))
         .arg("-lpthread");
     if cfg!(target_vendor = "apple") {

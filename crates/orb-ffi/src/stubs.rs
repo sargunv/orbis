@@ -668,14 +668,6 @@ const _: () = {
         crate::base::mln_open_gl_supported_context_provider_mask,
     ];
     let _ = [
-        crate::sys::mln_plugin_get_register_function_v1,
-        crate::plugin::mln_plugin_get_register_function_v1,
-    ];
-    let _ = [
-        crate::sys::mln_plugin_register_v1,
-        crate::plugin::mln_plugin_register_v1,
-    ];
-    let _ = [
         crate::sys::mln_projected_meters_for_lat_lng,
         crate::projection::mln_projected_meters_for_lat_lng,
     ];
