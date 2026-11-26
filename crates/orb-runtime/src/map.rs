@@ -646,13 +646,32 @@ struct PlanKey {
 /// A gap the style uses on the frames' renderer, and the layers it touches.
 type Degraded = (crate::Gap, Vec<String>);
 
-/// Why a style request failed.
-#[derive(Debug)]
-struct StyleError {
-    message: String,
-    /// Its text didn't parse as a style, rather than its fetch bringing
-    /// none.
-    unparsed: bool,
+/// Where the latest style request stands.
+enum StyleLoad {
+    /// No style URL is loading or has failed: the map has no style yet, or
+    /// draws the last one set directly or installed from a URL's answer.
+    Settled,
+    /// A style URL still loading: the style drawn is not the one asked
+    /// for, so the map is not loaded. Answers to any other request are
+    /// ignored; `abort` gives this one up once another style replaces it.
+    Fetching { request: u64, abort: Abort },
+    /// The style URL's fetch or parse failed: nothing will load until
+    /// another style replaces it.
+    Failed {
+        message: String,
+        /// Its text didn't parse as a style, rather than its fetch
+        /// bringing none.
+        unparsed: bool,
+    },
+}
+
+impl StyleLoad {
+    /// Moves to `next`, giving up a fetch still loading.
+    fn replace(&mut self, next: StyleLoad) {
+        if let StyleLoad::Fetching { abort, .. } = std::mem::replace(self, next) {
+            abort.abort();
+        }
+    }
 }
 
 /// A style waiting for the feature modules it needs ([`crate::modules`]):
@@ -753,11 +772,10 @@ pub struct Map {
     pub(crate) transitions: crate::transitions::Transitions,
     /// The light, sky and terrain easing in.
     pub(crate) root: crate::root::Root,
-    /// The latest `load_style_url` request; earlier ones are ignored.
-    pub(crate) style_request: u64,
-    /// The latest request is a style URL still loading: the style drawn
-    /// is not the one asked for, so the map is not loaded.
-    pub(crate) style_fetching: bool,
+    /// The latest style request.
+    style_load: StyleLoad,
+    /// `load_style_url` requests made, which number each one.
+    style_requests: u64,
     /// The feature modules the host has loaded ([`crate::modules`]).
     pub(crate) modules: Modules,
     /// Those the map waits for, which the host is asked for.
@@ -766,11 +784,6 @@ pub struct Map {
     pub(crate) waiting_style: Option<WaitingStyle>,
     /// Work waiting for modules, and the modules each waits for.
     pub(crate) for_modules: Vec<(Modules, ModuleWait)>,
-    /// Why the latest style request failed: nothing will load until
-    /// another style replaces it.
-    style_error: Option<StyleError>,
-    /// Gives up the style URL loading, once another style replaces it.
-    pub(crate) style_fetch: Abort,
     /// Gives up what the style generation fetches (TileJSON, archive
     /// heads, sprites) once the next one starts.
     pub(crate) style_loads: Abort,
@@ -838,7 +851,7 @@ impl std::fmt::Debug for Map {
 
 impl Drop for Map {
     fn drop(&mut self) {
-        self.style_fetch.abort();
+        self.style_load.replace(StyleLoad::Settled);
         self.style_loads.abort();
         // Its tiles' loads end with it, as a Native map's requests do.
         self.cancel_tile_loads();
@@ -984,14 +997,12 @@ impl Map {
             surface,
             transitions: Default::default(),
             root: Default::default(),
-            style_request: 0,
-            style_fetching: false,
+            style_load: StyleLoad::Settled,
+            style_requests: 0,
             modules: Modules::ALL,
             modules_wanted: Modules::NONE,
             waiting_style: None,
             for_modules: Vec::new(),
-            style_error: None,
-            style_fetch: Abort::NEVER,
             style_loads: Abort::new(),
             generation: 0,
             tile_generation: 0,
@@ -1343,13 +1354,14 @@ impl Map {
     /// eases by the v8 `transition`. Root values `transition`, `sky`,
     /// `projection` and the rest follow the new document; the camera stays.
     pub fn load_style_url(&mut self, url: &str) {
-        self.style_error = None;
-        self.style_request += 1;
-        self.style_fetching = true;
-        let request = self.style_request;
+        self.style_requests += 1;
+        let request = self.style_requests;
         let owned = url.to_string();
         let abort = Abort::new();
-        std::mem::replace(&mut self.style_fetch, abort.clone()).abort();
+        self.style_load.replace(StyleLoad::Fetching {
+            request,
+            abort: abort.clone(),
+        });
         self.fetch_text(ResourceKind::Style, url, &abort, move |result| {
             Message::Style {
                 request,
@@ -1362,14 +1374,17 @@ impl Map {
     /// Why the latest style request failed, if it did: a fetch or parse
     /// error. Frames draw nothing until another style replaces it.
     pub fn style_error(&self) -> Option<&str> {
-        self.style_error.as_ref().map(|e| e.message.as_str())
+        match &self.style_load {
+            StyleLoad::Failed { message, .. } => Some(message),
+            _ => None,
+        }
     }
 
     /// Whether the latest style request's failure ([`style_error`](Self::style_error))
     /// was its text's, which didn't parse as a style, rather than its
     /// fetch's, which brought none (an error, or an empty answer).
     pub fn style_unparsed(&self) -> bool {
-        self.style_error.as_ref().is_some_and(|e| e.unparsed)
+        matches!(self.style_load, StyleLoad::Failed { unparsed: true, .. })
     }
 
     /// Whether every source's tiles under the view's centre, of the last
@@ -1399,7 +1414,7 @@ impl Map {
     /// sources' TileJSON: not while a style URL is loading to replace the
     /// one drawn, which would otherwise settle a still of the old style.
     fn style_loaded(&self) -> bool {
-        !self.style_fetching
+        !matches!(self.style_load, StyleLoad::Fetching { .. })
             && self.waiting_style.is_none()
             && self.for_modules.is_empty()
             && self.style.as_ref().is_some_and(|s| {
@@ -1476,10 +1491,7 @@ impl Map {
         let doc = StyleDoc::from_json(root, self.previews).map_err(|d| d.to_string())?;
         // A style URL still loading is superseded, and the old style's
         // paint transitions with it.
-        self.style_request += 1;
-        std::mem::replace(&mut self.style_fetch, Abort::NEVER).abort();
-        self.style_fetching = false;
-        self.style_error = None;
+        self.style_load.replace(StyleLoad::Settled);
         self.transitions = Default::default();
         self.root = Default::default();
         self.install(doc);
@@ -1935,7 +1947,7 @@ impl Map {
                 && gpu.caps().compiles_hold_presents
                 && match &self.style {
                     Some(style) => style.pipelines.is_none(),
-                    None => self.style_fetching,
+                    None => matches!(self.style_load, StyleLoad::Fetching { .. }),
                 };
         let target = target.filter(|_| !held_back);
         let view = self.view(viewport);
@@ -3323,10 +3335,12 @@ impl Map {
         url: &str,
         result: Result<String, FetchError>,
     ) {
-        if request != self.style_request {
+        let latest =
+            matches!(self.style_load, StyleLoad::Fetching { request: r, .. } if r == request);
+        if !latest {
             return;
         }
-        self.style_fetching = false;
+        self.style_load = StyleLoad::Settled;
         // A first answer without a style (no content, or not modified
         // with nothing earlier to confirm) fails as Native's does.
         let fetched = match result {
@@ -3345,10 +3359,10 @@ impl Map {
         });
         if let Err(e) = installed {
             let message = format!("style {}: {e}", orb_host::redacted_url(url));
-            self.style_error = Some(StyleError {
+            self.style_load = StyleLoad::Failed {
                 message: message.clone(),
                 unparsed,
-            });
+            };
             self.fail(message);
         }
     }
@@ -3809,7 +3823,6 @@ mod tests {
             done(reply);
             apply(&mut map);
             // A failed one settles nothing: stills give its error.
-            assert!(!map.style_fetching);
             assert_eq!(map.style_error().is_some(), failed);
             assert!(failed || map.style_loaded());
         }
