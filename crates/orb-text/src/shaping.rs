@@ -195,6 +195,11 @@ struct Block {
 }
 
 impl Unjustified {
+    /// How many lines the label broke into, which justifying keeps.
+    pub fn line_count(&self) -> usize {
+        self.shaping.lines.len()
+    }
+
     /// The label justified to `justify`.
     pub fn justify(&self, justify: Justify) -> Shaping {
         self.clone().into_justified(justify)

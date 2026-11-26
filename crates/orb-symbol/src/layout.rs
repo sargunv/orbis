@@ -640,23 +640,51 @@ pub fn layout(
 /// A label's shapings (GL JS `ShapedTextOrientations`).
 #[derive(Default)]
 struct Shapings {
-    /// Justifications in the order GL JS's object keys have them, each with
-    /// its shaping, or with none when it shares the first, single-line one.
-    horizontal: Vec<(Justify, Option<usize>)>,
-    shapings: Vec<Shaping>,
+    horizontal: Option<Horizontal>,
     vertical: Option<Shaping>,
 }
 
 impl Shapings {
     /// The shaping collision uses (GL JS `getDefaultHorizontalShaping`).
     fn default_horizontal(&self) -> Option<&Shaping> {
-        self.horizontal
-            .first()
-            .and_then(|&(_, i)| i.map(|i| &self.shapings[i]))
+        self.horizontal.as_ref().map(Horizontal::default)
+    }
+}
+
+/// A label's horizontal shapings, one for each justification it may draw
+/// in, in the order GL JS's object keys have them. Line breaks don't
+/// depend on justification, so the label is shaped once for all of them.
+enum Horizontal {
+    /// A single line, which justifying moves nowhere: one shaping serves
+    /// every justification.
+    Shared(Shaping, Vec<Justify>),
+    /// More lines: a shaping for each justification.
+    Each(Vec<(Justify, Shaping)>),
+}
+
+impl Horizontal {
+    /// `shaped` justified for each of `justifications`; `None` without any.
+    fn new(shaped: Unjustified, mut justifications: Vec<Justify>) -> Option<Self> {
+        let &first = justifications.first()?;
+        Some(if shaped.line_count() == 1 {
+            Self::Shared(shaped.into_justified(first), justifications)
+        } else {
+            // The last justification takes the shaping itself, so a label
+            // with one justification is never copied.
+            let last = justifications.pop()?;
+            let each = justifications.into_iter();
+            let mut each: Vec<_> = each.map(|j| (j, shaped.justify(j))).collect();
+            each.push((last, shaped.into_justified(last)));
+            Self::Each(each)
+        })
     }
 
-    fn contains(&self, justify: Justify) -> bool {
-        self.horizontal.iter().any(|&(j, _)| j == justify)
+    /// The first justification's shaping.
+    fn default(&self) -> &Shaping {
+        match self {
+            Self::Shared(shaping, _) => shaping,
+            Self::Each(each) => &each[0].1,
+        }
     }
 }
 
@@ -817,118 +845,80 @@ impl<'a> Builder<'a> {
         let line_height = f.text_line_height * ONE_EM;
         let text_along_line = style.text_along_line();
         let allow_vertical_placement = style.allow_vertical_placement();
-        let mut shapings = Shapings::default();
-        let mut text_offset = [0.0, 0.0];
-        {
-            let unformatted = label.text();
-            let spacing = f.text_letter_spacing * ONE_EM;
-            let spacing = if unicode::allows_letter_spacing(&unformatted) {
-                spacing
-            } else {
-                0.0
-            };
-            let variable = anchor_offsets.is_some();
-            if !variable {
-                let radial = f.text_radial_offset;
-                text_offset = if radial != 0.0 && !radial.is_nan() {
-                    variable::variable_offset(f.text_anchor, TextOffset::Radial(radial * ONE_EM))
-                } else {
-                    [f.text_offset[0] * ONE_EM, f.text_offset[1] * ONE_EM]
-                };
-            }
-            let max_width = if style.placement == Placement::Point {
-                f.text_max_width * ONE_EM
-            } else {
-                f64::INFINITY
-            };
-            let options = |anchor, justify, writing_mode, allow_vertical| ShapeOptions {
-                max_width,
-                line_height,
-                anchor,
-                justify,
-                spacing,
-                translate: text_offset,
-                writing_mode,
-                allow_vertical_placement: allow_vertical,
-                layout_text_size: f.text_size.layout,
-                layout_text_size_this_zoom: f.text_size.tile,
-            };
-            let vertical_point_shaping = |this: &Self| {
-                (allow_vertical_placement && unicode::allows_vertical_writing_mode(&unformatted))
-                    .then(|| {
-                        this.shape(
-                            label,
-                            f,
-                            options(f.text_anchor, Justify::Left, WritingMode::Vertical, true),
-                        )
-                    })
-                    .flatten()
-            };
+        let unformatted = label.text();
+        let spacing = if unicode::allows_letter_spacing(&unformatted) {
+            f.text_letter_spacing * ONE_EM
+        } else {
+            0.0
+        };
+        let variable = anchor_offsets.is_some();
+        let text_offset = if variable {
+            [0.0, 0.0]
+        } else if f.text_radial_offset != 0.0 && !f.text_radial_offset.is_nan() {
+            let radial = TextOffset::Radial(f.text_radial_offset * ONE_EM);
+            variable::variable_offset(f.text_anchor, radial)
+        } else {
+            [f.text_offset[0] * ONE_EM, f.text_offset[1] * ONE_EM]
+        };
+        let max_width = if style.placement == Placement::Point {
+            f.text_max_width * ONE_EM
+        } else {
+            f64::INFINITY
+        };
+        let options = |anchor, justify, writing_mode, allow_vertical| ShapeOptions {
+            max_width,
+            line_height,
+            anchor,
+            justify,
+            spacing,
+            translate: text_offset,
+            writing_mode,
+            allow_vertical_placement: allow_vertical,
+            layout_text_size: f.text_size.layout,
+            layout_text_size_this_zoom: f.text_size.tile,
+        };
 
-            if !text_along_line && variable {
-                let mut justifications: Vec<Justify> = Vec::new();
-                if f.text_justify == TextJustify::Auto {
-                    for &(anchor, _) in anchor_offsets.into_iter().flatten() {
-                        let j = anchor_justification(anchor);
-                        if !justifications.contains(&j) {
-                            justifications.push(j);
-                        }
-                    }
-                } else {
-                    justifications.push(resolve_justify(f.text_justify, f.text_anchor));
-                }
-                // Shaped once, justified for each justification.
-                let mut shaped = None;
-                let mut single_line = false;
-                for justification in justifications {
-                    if shapings.contains(justification) {
-                        continue;
-                    }
-                    let shaped = shaped.get_or_insert_with(|| {
-                        let horizontal = WritingMode::Horizontal;
-                        let options = options(Anchor::Center, justification, horizontal, false);
-                        self.shape_unjustified(label, f, options)
-                    });
-                    if single_line {
-                        shapings.horizontal.push((justification, None));
-                    } else if let Some(shaping) = shaped.as_ref().map(|s| s.justify(justification))
-                    {
-                        single_line = shaping.lines.len() == 1;
-                        shapings
-                            .horizontal
-                            .push((justification, Some(shapings.shapings.len())));
-                        shapings.shapings.push(shaping);
+        let (anchor, justifications) = if text_along_line {
+            (f.text_anchor, vec![Justify::Center])
+        } else if variable {
+            let mut justifications = Vec::new();
+            if f.text_justify == TextJustify::Auto {
+                for &(anchor, _) in anchor_offsets.into_iter().flatten() {
+                    let j = anchor_justification(anchor);
+                    if !justifications.contains(&j) {
+                        justifications.push(j);
                     }
                 }
-                shapings.vertical = vertical_point_shaping(self);
             } else {
-                let justify = if text_along_line {
-                    Justify::Center
-                } else {
-                    resolve_justify(f.text_justify, f.text_anchor)
-                };
-                if let Some(shaping) = self.shape(
-                    label,
-                    f,
-                    options(f.text_anchor, justify, WritingMode::Horizontal, false),
-                ) {
-                    shapings.horizontal.push((justify, Some(0)));
-                    shapings.shapings.push(shaping);
-                }
-                shapings.vertical = vertical_point_shaping(self);
-                if unicode::allows_vertical_writing_mode(&unformatted)
-                    && text_along_line
-                    && style.text_keep_upright
-                {
-                    shapings.vertical = self.shape(
-                        label,
-                        f,
-                        options(f.text_anchor, justify, WritingMode::Vertical, false),
-                    );
-                }
+                justifications.push(resolve_justify(f.text_justify, f.text_anchor));
             }
-        }
-        (shapings, text_offset)
+            (Anchor::Center, justifications)
+        } else {
+            let justify = resolve_justify(f.text_justify, f.text_anchor);
+            (f.text_anchor, vec![justify])
+        };
+        let horizontal = justifications.first().copied().and_then(|justify| {
+            let options = options(anchor, justify, WritingMode::Horizontal, false);
+            Horizontal::new(self.shape_unjustified(label, f, options)?, justifications)
+        });
+
+        let vertical_writing = unicode::allows_vertical_writing_mode(&unformatted);
+        let vertical = if text_along_line && style.text_keep_upright && vertical_writing {
+            let options = options(f.text_anchor, Justify::Center, WritingMode::Vertical, false);
+            self.shape(label, f, options)
+        } else if allow_vertical_placement && vertical_writing {
+            let options = options(f.text_anchor, Justify::Left, WritingMode::Vertical, true);
+            self.shape(label, f, options)
+        } else {
+            None
+        };
+        (
+            Shapings {
+                horizontal,
+                vertical,
+            },
+            text_offset,
+        )
     }
 
     /// A feature's icon: its image's index and its shape, and whether it
@@ -1294,17 +1284,20 @@ impl<'a> Builder<'a> {
         } else {
             SymbolWritingMode::HorizontalOnly
         };
-        for &(justify, shaping) in &s.shapings.horizontal {
-            let shaping = &s.shapings.shapings
-                [shaping.expect("an aliased justification follows a single-line shaping")];
-            let placed = self.add_text(s, shaping, at, horizontal_mode, icons[0]);
-            if shaping.lines.len() == 1 {
-                for &(j, _) in &s.shapings.horizontal {
+        match &s.shapings.horizontal {
+            Some(Horizontal::Shared(shaping, justifications)) => {
+                let placed = self.add_text(s, shaping, at, horizontal_mode, icons[0]);
+                for &j in justifications {
                     placed_text[justification_slot(j)] = placed;
                 }
-                break;
             }
-            placed_text[justification_slot(justify)] = placed;
+            Some(Horizontal::Each(each)) => {
+                for (j, shaping) in each {
+                    let placed = self.add_text(s, shaping, at, horizontal_mode, icons[0]);
+                    placed_text[justification_slot(*j)] = placed;
+                }
+            }
+            None => {}
         }
         if let Some(vertical) = &s.shapings.vertical {
             let mode = SymbolWritingMode::Vertical;
