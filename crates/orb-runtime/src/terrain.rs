@@ -548,7 +548,7 @@ impl Terrain {
         result: Result<crate::TileOutcome, String>,
         now: f64,
     ) -> Result<(), String> {
-        use crate::TileOutcome::{Built, Cancelled, Missing};
+        use crate::TileOutcome::{Built, Cancelled, Missing, RetryAfter};
         if !self.pyramid.is_loading(tile) {
             return Ok(());
         }
@@ -568,8 +568,12 @@ impl Terrain {
                 dem: Some(dem),
                 ..
             })) => (image, dem),
+            Ok(RetryAfter { error, wait_ms }) => {
+                self.pyramid.insert_failed(tile, now, wait_ms);
+                return Err(error);
+            }
             Ok(Built(_)) | Err(_) => {
-                self.pyramid.insert_failed(tile, now);
+                self.pyramid.insert_failed(tile, now, 0.0);
                 return Err(result.err().unwrap_or("no elevations".into()));
             }
         };

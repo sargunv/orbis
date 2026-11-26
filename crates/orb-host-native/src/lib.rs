@@ -244,10 +244,9 @@ impl NativeFetch {
             (Ok(Response::NotModified { .. }), None) => Err(FetchError::Status(304)),
             // Given up: the entry stays as it was.
             (Err(FetchError::Aborted), _) => Err(FetchError::Aborted),
-            // Offline, or the server failing: the stale copy.
-            (Err(FetchError::Network(_) | FetchError::Status(500..)), Some(cached)) => {
-                Ok(cached.bytes)
-            }
+            // Offline, or the server failing or rate-limiting: the stale
+            // copy.
+            (Err(error), Some(cached)) if error.transient() => Ok(cached.bytes),
             (Err(error), _) => {
                 cache.remove(&key);
                 Err(error)
@@ -375,10 +374,12 @@ fn http(
         if let Some(refusal) = android::cleartext_refusal(&url) {
             return Err(refusal);
         }
-        let mut request = agent.get(&url);
+        // A failed response's headers say when to ask again.
+        let mut request = agent.get(&url).config().http_status_as_error(false);
         if manual {
-            request = request.config().max_redirects(0).build();
+            request = request.max_redirects(0);
         }
+        let mut request = request.build();
         for (name, value) in headers {
             request = request.header(name, value);
         }
@@ -396,11 +397,9 @@ fn http(
                 request = request.header("If-Modified-Since", last_modified);
             }
         }
-        let response = request.call().map_err(|e| match e {
-            ureq::Error::StatusCode(404) => FetchError::NotFound,
-            ureq::Error::StatusCode(code) => FetchError::Status(code),
-            e => FetchError::Network(e.to_string()),
-        })?;
+        let response = request
+            .call()
+            .map_err(|e| FetchError::Network(e.to_string()))?;
         let status = response.status().as_u16();
         if !manual || !matches!(status, 301 | 302 | 303 | 307 | 308) {
             break response;
@@ -440,6 +439,7 @@ fn http(
         cache::now(),
     );
     match response.status().as_u16() {
+        200..=203 | 205..=299 => {}
         // No content: a valid, empty tile.
         204 => {
             return Ok(Response::Body {
@@ -450,7 +450,16 @@ fn http(
             });
         }
         304 => return Ok(Response::NotModified { fresh_until }),
-        _ => {}
+        status => {
+            let now = cache::now();
+            let wait = header("retry-after").and_then(|h| {
+                orb_host::parse_retry_after(&h, |date| {
+                    let at = http::http_date(date, now)?;
+                    Some(std::time::Duration::from_secs(at.saturating_sub(now)))
+                })
+            });
+            return Err(FetchError::of_status(status, wait));
+        }
     }
     if let Some((offset, length)) = range {
         orb_host::check_range(
@@ -1066,6 +1075,70 @@ mod tests {
         cache.refresh(&orb_host::cache::key(&url, None), 0);
         assert_eq!(get().unwrap(), b"tile");
     }
+
+    #[test]
+    fn rate_limited_requests_answer_with_the_stale_copy() {
+        let dir = Scratch::new("fetch-limited");
+        let cache = HttpCache::open(Arc::new(FileStorage::new(&dir)), 1 << 20).unwrap();
+        let agent = ureq::Agent::new_with_defaults();
+        let close = "Connection: close\r\n";
+        let (url, server) = serve(vec![
+            format!(
+                "HTTP/1.1 200 OK\r\n{close}Cache-Control: no-cache\r\nContent-Length: 4\r\n\r\ntile"
+            ),
+            format!("HTTP/1.1 429 Too Many Requests\r\n{close}Retry-After: 60\r\n\r\n"),
+            format!("HTTP/1.1 408 Request Timeout\r\n{close}\r\n"),
+        ]);
+        let get = || {
+            NativeFetch::get_blocking(
+                &agent,
+                Some(&cache),
+                &plain(&url),
+                None,
+                true,
+                &Abort::NEVER,
+            )
+        };
+        for _ in 0..3 {
+            assert_eq!(get().unwrap(), b"tile");
+        }
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn failed_responses_say_when_to_ask_again() {
+        use std::time::Duration;
+        let close = "Connection: close\r\n";
+        let in_an_hour = http::format_http_date(cache::now() + 3600);
+        let (url, server) = serve(vec![
+            format!("HTTP/1.1 429 Too Many Requests\r\n{close}Retry-After: 120\r\n\r\n"),
+            format!("HTTP/1.1 429 Too Many Requests\r\n{close}Retry-After: {in_an_hour}\r\n\r\n"),
+            format!("HTTP/1.1 429 Too Many Requests\r\n{close}Retry-After: soon\r\n\r\n"),
+            format!("HTTP/1.1 503 Service Unavailable\r\n{close}Retry-After: 30\r\n\r\n"),
+            format!("HTTP/1.1 503 Service Unavailable\r\n{close}Content-Length: 4\r\n\r\ntile"),
+            format!("HTTP/1.1 408 Request Timeout\r\n{close}Content-Length: 4\r\n\r\ntile"),
+            format!("HTTP/1.1 404 Not Found\r\n{close}Content-Length: 4\r\n\r\ntile"),
+            format!("HTTP/1.1 403 Forbidden\r\n{close}Content-Length: 4\r\n\r\ntile"),
+        ]);
+        let agent = ureq::Agent::new_with_defaults();
+        let get = || {
+            NativeFetch::get_blocking(&agent, None, &plain(&url), None, true, &Abort::NEVER)
+                .unwrap_err()
+        };
+        assert_eq!(get().retry_after(), Some(Duration::from_secs(120)));
+        let hour = get().retry_after().unwrap().as_secs();
+        assert!((3598..=3600).contains(&hour), "{hour} s");
+        // Unreadable: rate-limited for the default wait.
+        assert_eq!(get().retry_after(), Some(orb_host::RATE_LIMIT_WAIT));
+        assert_eq!(get().retry_after(), Some(Duration::from_secs(30)));
+        // Failures' bodies are never read as the resource.
+        assert_eq!(get(), FetchError::Status(503));
+        assert_eq!(get(), FetchError::Status(408));
+        assert_eq!(get(), FetchError::NotFound);
+        assert_eq!(get(), FetchError::Status(403));
+        server.join().unwrap();
+    }
+
     #[test]
     fn host_headers_follow_redirects_within_their_origin_alone() {
         let (other, elsewhere) = serve(vec![

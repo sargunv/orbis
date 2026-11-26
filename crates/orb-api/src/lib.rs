@@ -38,8 +38,8 @@ pub use orb_hal_wgpu::{MetalTexture, metal_texture};
 pub use orb_hal_wgpu::{RawSurface, SubmitTimes, Surface};
 pub use orb_host::abort::Listening;
 pub use orb_host::{
-    Abort, FetchError, NetworkAnswer, NetworkDone, NetworkHook, NetworkRequest, Prior, Request,
-    RequestTransform, ResourceKind, redacted_url,
+    Abort, FetchError, NetworkAnswer, NetworkDone, NetworkHook, NetworkRequest, Prior,
+    RATE_LIMIT_WAIT, Request, RequestTransform, ResourceKind, redacted_url,
 };
 pub use orb_runtime::{
     CameraState, ClusterQuery, FeatureTarget, FetchCounts, FrameReport, FrameTimes, HOST_TILES,

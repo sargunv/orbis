@@ -44,6 +44,12 @@ pub enum Loaded {
     Missing,
     /// Its map gave the load up before it arrived ([`JobHost::cancel`]).
     Cancelled,
+    /// Its fetch failed with `error`, and the server asked not to be
+    /// asked again for `wait_ms` ([`FetchError::RetryAfter`]).
+    RetryAfter {
+        error: String,
+        wait_ms: f64,
+    },
 }
 
 /// Called once a load's fetch has ended, or at once for a load that
@@ -421,12 +427,17 @@ impl GlyphLoads {
 }
 
 /// A fetch's outcome as a load's: a tile the source doesn't have (HTTP
-/// 404) is [`Loaded::Missing`], one given up [`Loaded::Cancelled`]; other
-/// fetch errors are errors.
+/// 404) is [`Loaded::Missing`], one given up [`Loaded::Cancelled`], one
+/// whose server asked to wait [`Loaded::RetryAfter`]; other fetch errors
+/// are errors.
 fn missing(error: FetchError) -> Result<Loaded, String> {
     match error {
         FetchError::NotFound => Ok(Loaded::Missing),
         FetchError::Aborted => Ok(Loaded::Cancelled),
+        FetchError::RetryAfter { error, after } => Ok(Loaded::RetryAfter {
+            error: error.to_string(),
+            wait_ms: after.as_secs_f64() * 1000.0,
+        }),
         e => Err(e.to_string()),
     }
 }

@@ -413,6 +413,24 @@ async fn request(
         .map_err(network)
 }
 
+/// The wait a failed response's `Retry-After` asks for, which a
+/// cross-origin response shows only where the server exposes it
+/// (`Access-Control-Expose-Headers`). Dates are read only in the forms
+/// that end in GMT (IMF-fixdate and RFC 850's), since `Date.parse` takes
+/// far more than HTTP dates.
+fn retry_after(response: &web_sys::Response) -> Option<std::time::Duration> {
+    let header = response.headers().get("retry-after").ok().flatten()?;
+    orb_host::parse_retry_after(&header, |date| {
+        if !(date.contains(',') && date.ends_with(" GMT")) {
+            return None;
+        }
+        let at = js_sys::Date::parse(date);
+        // NaN: unreadable.
+        let wait = (!at.is_nan()).then(|| (at - js_sys::Date::now()).max(0.0) / 1000.0)?;
+        std::time::Duration::try_from_secs_f64(wait).ok()
+    })
+}
+
 /// A response's body, checked against its status and `range`.
 async fn read(
     response: web_sys::Response,
@@ -421,7 +439,6 @@ async fn read(
     let network = |e: JsValue| FetchError::Network(format!("{e:?}"));
     let stream = response.body();
     let valid = match response.status() {
-        404 => Err(FetchError::NotFound),
         // No content: a valid, empty tile.
         204 => {
             if let Some(stream) = stream {
@@ -437,7 +454,7 @@ async fn read(
                 Ok(())
             }
         }
-        status => Err(FetchError::Status(status)),
+        status => Err(FetchError::of_status(status, retry_after(&response))),
     };
     if let Err(error) = valid {
         if let Some(stream) = stream {

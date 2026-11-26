@@ -33,6 +33,9 @@ pub enum TileOutcome {
     /// The map gave the load up before its bytes came
     /// ([`Jobs::cancel`]): nothing was loaded.
     Cancelled,
+    /// Its fetch failed with `error`, and the server asked not to be
+    /// asked again for `wait_ms`: tried again no sooner.
+    RetryAfter { error: String, wait_ms: f64 },
 }
 
 #[cfg(test)]
@@ -132,6 +135,12 @@ pub enum JobReply {
     Cancelled {
         id: u32,
     },
+    /// [`TileOutcome::RetryAfter`].
+    RetryAfter {
+        id: u32,
+        error: String,
+        wait_ms: f64,
+    },
     /// A load's fetch ended (its reply comes later): the page's turn
     /// ([`Turns`](crate::Turns)) passes to the next.
     Fetched {
@@ -164,6 +173,7 @@ impl JobReply {
             | Self::Dem { id, .. }
             | Self::Missing { id }
             | Self::Cancelled { id }
+            | Self::RetryAfter { id, .. }
             | Self::Fetched { id }
             | Self::Features { id, .. }
             | Self::Answer { id, .. }
@@ -324,6 +334,9 @@ impl Jobs for PoolJobs {
                     warnings: Vec::new(),
                 })),
                 Ok(crate::Loaded::Cancelled) => done(Ok(TileOutcome::Cancelled)),
+                Ok(crate::Loaded::RetryAfter { error, wait_ms }) => {
+                    done(Ok(TileOutcome::RetryAfter { error, wait_ms }))
+                }
                 Ok(crate::Loaded::Image {
                     bytes,
                     kind,

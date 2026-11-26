@@ -540,13 +540,14 @@ impl<T> TilePyramid<T> {
 
     /// Marks a loading tile as failed at `now` (ms) for a reason that may
     /// pass: ancestors or children stand in until it's retried, after a
-    /// delay that doubles with each failure in a row.
-    pub fn insert_failed(&mut self, tile: TileIndex, now: f64) {
+    /// delay that doubles with each failure in a row, or the `wait` (ms)
+    /// its server asked for (`Retry-After`) when that's longer.
+    pub fn insert_failed(&mut self, tile: TileIndex, now: f64, wait: f64) {
         if !self.is_loading(tile) {
             return;
         }
         let failures = self.failures.entry(tile).or_default();
-        let delay = retry_delay(*failures);
+        let delay = retry_delay(*failures).max(wait);
         *failures = failures.saturating_add(1);
         let retry_at = now + delay;
         let _ = self.settle(tile, State::Failed { retry_at });
@@ -1165,7 +1166,7 @@ mod tests {
         p.update(&cover(&[(0, 0, 0)]));
         p.insert(t(0, 0, 0), "world");
         p.update(&cover(&[(1, 0, 0)]));
-        p.insert_failed(t(1, 0, 0), 0.0);
+        p.insert_failed(t(1, 0, 0), 0.0, 0.0);
         assert_eq!(p.loading(), 0, "a failed tile doesn't keep the map loading");
         let update = p.update(&cover(&[(1, 0, 0)]));
         assert_eq!(update.draw[0].tile, t(0, 0, 0), "the ancestor stands in");
@@ -1176,12 +1177,26 @@ mod tests {
         assert_eq!(p.update(&cover(&[(1, 0, 0)])).request, [t(1, 0, 0)]);
         // The second failure waits twice as long; the network's return
         // retries at once.
-        p.insert_failed(t(1, 0, 0), 1000.0);
+        p.insert_failed(t(1, 0, 0), 1000.0, 0.0);
         assert!(p.retry_failed(2999.0));
         assert!(!p.retry_failed(f64::INFINITY));
         assert_eq!(p.update(&cover(&[(1, 0, 0)])).request, [t(1, 0, 0)]);
         p.insert(t(1, 0, 0), "tile");
         assert!(p.failures.is_empty());
+    }
+
+    #[test]
+    fn failed_tiles_wait_as_long_as_their_server_asks() {
+        let mut p = TilePyramid::<&str>::new(0, 14, 8);
+        p.update(&cover(&[(1, 0, 0)]));
+        p.insert_failed(t(1, 0, 0), 0.0, 30_000.0);
+        assert!(p.retry_failed(29_999.0), "not due before the server's wait");
+        assert!(!p.retry_failed(30_000.0));
+        assert_eq!(p.update(&cover(&[(1, 0, 0)])).request, [t(1, 0, 0)]);
+        // A wait shorter than the backoff's doesn't shorten it.
+        p.insert_failed(t(1, 0, 0), 30_000.0, 500.0);
+        assert!(p.retry_failed(31_999.0));
+        assert!(!p.retry_failed(32_000.0));
     }
 
     #[test]
@@ -1378,12 +1393,12 @@ mod tests {
         let mut p = TilePyramid::new(0, 14, 8);
         let view = cover(&[(3, 1, 2)]);
         p.update(&view);
-        p.insert_failed(t(3, 1, 2), 0.0);
+        p.insert_failed(t(3, 1, 2), 0.0, 0.0);
         // Nothing loaded stands in: the parent is requested, then drawn.
         let update = p.update(&view);
         assert_eq!(update.request, [t(2, 0, 1)]);
         assert!(update.draw.is_empty());
-        p.insert_failed(t(2, 0, 1), 0.0);
+        p.insert_failed(t(2, 0, 1), 0.0, 0.0);
         assert_eq!(p.update(&view).request, [t(1, 0, 0)]);
         p.insert(t(1, 0, 0), "grandparent");
         assert_eq!(

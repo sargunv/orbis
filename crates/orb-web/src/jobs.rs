@@ -322,6 +322,10 @@ impl JobWorker {
                 JobAnswer::Load(Ok(Loaded::Cancelled)) => {
                     reply(&JobReply::Cancelled { id }, None, None)
                 }
+                JobAnswer::Load(Ok(Loaded::RetryAfter { error, wait_ms })) => {
+                    let message = JobReply::RetryAfter { id, error, wait_ms };
+                    reply(&message, None, None)
+                }
                 // A terrain DEM tile's texels, for the GPU and its
                 // elevations for the CPU.
                 JobAnswer::Load(Ok(Loaded::Image {

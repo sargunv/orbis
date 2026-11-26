@@ -1792,6 +1792,30 @@ pub(crate) mod tests {
         );
     }
 
+    /// A load whose server asked to wait says for how long, so the map
+    /// asks again no sooner.
+    #[test]
+    fn loads_rate_limited_say_how_long_to_wait() {
+        let fetch = Arc::new(HeldTiles::default());
+        let host = crate::JobHost::new(fetch.clone(), Arc::new(orb_host::jobs::Inline));
+        host.set_style(1, Arc::new(TileWorker::new(SYMBOLS).unwrap()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let request = request(TileIndex::new(14, 0, 0));
+        host.load(request, None, Box::new(move |r| tx.send(r).unwrap()));
+        let (done, _) = fetch.0.lock().unwrap().pop().unwrap();
+        let wait = std::time::Duration::from_secs(30);
+        done(Err(orb_host::FetchError::of_status(429, Some(wait))));
+        let answered: Vec<_> = rx.try_iter().collect();
+        assert!(
+            matches!(
+                &answered[..],
+                [Ok(crate::Loaded::RetryAfter { error, wait_ms })]
+                    if error == "HTTP 429" && *wait_ms == 30_000.0
+            ),
+            "{answered:?}"
+        );
+    }
+
     /// A glyph range another context fetches for the job hosts: a tile
     /// that needs it waits for it rather than fetch it again.
     #[test]

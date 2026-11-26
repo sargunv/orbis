@@ -755,7 +755,9 @@ impl Map {
         if arrived {
             self.events.sources.insert(key);
             let progress = match &result {
-                Err(e) => Progress::Failed(e.clone()),
+                Err(e) | Ok(TileOutcome::RetryAfter { error: e, .. }) => {
+                    Progress::Failed(e.clone())
+                }
                 Ok(TileOutcome::Cancelled) => Progress::Cancelled,
                 Ok(_) => Progress::Loaded,
             };
@@ -776,7 +778,14 @@ impl Map {
             Err(e) => {
                 let message = format!("tile {tile}: {e}");
                 self.events.push(MapEvent::Error { message });
-                pyramid.insert_failed(tile, self.services.clock.now());
+                pyramid.insert_failed(tile, self.services.clock.now(), 0.0);
+                return Applied::Done;
+            }
+            Ok(TileOutcome::RetryAfter { error, wait_ms }) => {
+                let seconds = (wait_ms / 1000.0).ceil();
+                let message = format!("tile {tile}: {error}, retried in {seconds} s");
+                self.events.push(MapEvent::Error { message });
+                pyramid.insert_failed(tile, self.services.clock.now(), wait_ms);
                 return Applied::Done;
             }
             Ok(TileOutcome::Missing { mut warnings }) => {
@@ -1051,7 +1060,7 @@ impl Map {
                      what's loaded stands in until it's tried again"
                 );
                 self.events.push(MapEvent::Error { message });
-                pyramid.insert_failed(tile, self.services.clock.now());
+                pyramid.insert_failed(tile, self.services.clock.now(), 0.0);
                 return Applied::Done;
             }
         };

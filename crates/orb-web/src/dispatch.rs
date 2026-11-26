@@ -312,6 +312,9 @@ impl WorkerJobs {
                 warnings: Vec::new(),
             }),
             JobReply::Cancelled { .. } => Ok(TileOutcome::Cancelled),
+            JobReply::RetryAfter { error, wait_ms, .. } => {
+                Ok(TileOutcome::RetryAfter { error, wait_ms })
+            }
             JobReply::Error { message, .. } => Err(message),
             JobReply::Tile { .. } | JobReply::Image { .. } | JobReply::Dem { .. } => {
                 payload(message).map(TileOutcome::Built)

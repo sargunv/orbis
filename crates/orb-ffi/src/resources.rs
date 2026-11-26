@@ -466,6 +466,34 @@ fn seconds(ms: i64) -> u64 {
     (ms.max(0) / 1000) as u64
 }
 
+/// The failure a provider or transform reports for `reason`, waiting until
+/// `retry_after` (Unix ms) when it gave one: a rate limit waits as asked,
+/// else [`orb_api::RATE_LIMIT_WAIT`], as MapLibre Native's file source
+/// does, and a server error waits as asked (RFC 9110), where Native keeps
+/// to its own backoff.
+fn failure(
+    reason: mln_resource_error_reason,
+    message: String,
+    retry_after: Option<i64>,
+) -> FetchError {
+    let wait = retry_after.map(|at| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        std::time::Duration::from_millis(u64::try_from(i128::from(at) - now as i128).unwrap_or(0))
+    });
+    let error = Box::new(FetchError::Network(message));
+    match (reason, wait) {
+        (MLN_RESOURCE_ERROR_REASON_NOT_FOUND, _) => FetchError::NotFound,
+        (MLN_RESOURCE_ERROR_REASON_RATE_LIMIT, after) => FetchError::RetryAfter {
+            error,
+            after: after.unwrap_or(orb_api::RATE_LIMIT_WAIT),
+        },
+        (MLN_RESOURCE_ERROR_REASON_SERVER, Some(after)) => FetchError::RetryAfter { error, after },
+        _ => *error,
+    }
+}
+
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -531,16 +559,12 @@ unsafe fn answer(response: *const mln_resource_response) -> Result<NetworkAnswer
             } else {
                 message
             };
-            NetworkAnswer::Failed(match r.error_reason {
-                MLN_RESOURCE_ERROR_REASON_NOT_FOUND => FetchError::NotFound,
-                MLN_RESOURCE_ERROR_REASON_OTHER
-                | MLN_RESOURCE_ERROR_REASON_SERVER
-                | MLN_RESOURCE_ERROR_REASON_CONNECTION
-                | MLN_RESOURCE_ERROR_REASON_RATE_LIMIT => FetchError::Network(message),
-                _ => {
-                    return Err(Failure::argument("response.error_reason names no reason"));
-                }
-            })
+            if r.error_reason > MLN_RESOURCE_ERROR_REASON_RATE_LIMIT {
+                return Err(Failure::argument("response.error_reason names no reason"));
+            }
+            let retry_after =
+                has(MLN_RESOURCE_RESPONSE_RETRY_AFTER).then_some(r.retry_after_unix_ms);
+            NetworkAnswer::Failed(failure(r.error_reason, message, retry_after))
         }
         _ => return Err(Failure::argument("response.status names no status")),
     })
@@ -852,10 +876,9 @@ pub unsafe extern "C" fn mln_resource_transform_request_fail(
             } else {
                 message
             };
-            pending.finish(Err(match e.reason {
-                MLN_RESOURCE_ERROR_REASON_NOT_FOUND => FetchError::NotFound,
-                _ => FetchError::Network(message),
-            }));
+            let retry_after = (e.fields & MLN_RESOURCE_TRANSFORM_ERROR_RETRY_AFTER != 0)
+                .then_some(e.retry_after_unix_ms);
+            pending.finish(Err(failure(e.reason, message, retry_after)));
             Ok(())
         })
     }

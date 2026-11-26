@@ -384,7 +384,7 @@ impl Map {
                 return;
             }
             Ok(TileOutcome::Cancelled) => return,
-            Err(e) => {
+            Err(e) | Ok(TileOutcome::RetryAfter { error: e, .. }) => {
                 self.warnings.push(format!("tile {tile}: {e}"));
                 return;
             }

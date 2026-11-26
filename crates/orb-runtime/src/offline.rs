@@ -700,7 +700,9 @@ impl Job {
             // Not in the tileset, or no such glyph range: nothing to keep.
             // Aborted, the download is stopping.
             Err(FetchError::NotFound | FetchError::Aborted) => {}
-            Err(FetchError::Network(_) | FetchError::Status(500..)) if tries < RETRIES => {
+            // Retried at once: the download has no timer to wait as a
+            // rate-limiting server asks.
+            Err(e) if e.transient() && tries < RETRIES => {
                 return self.start(task, tries + 1);
             }
             Err(e) => {

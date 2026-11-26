@@ -9,6 +9,7 @@ pub mod cache;
 pub mod jobs;
 
 use std::fmt;
+use std::time::Duration;
 
 pub use abort::Abort;
 
@@ -158,6 +159,12 @@ pub enum FetchError {
     Range(String),
     /// Any other HTTP status.
     Status(u16),
+    /// `error`, and the server asked not to be asked again for `after`:
+    /// HTTP 429, or a 5xx with a `Retry-After` ([`FetchError::of_status`]).
+    RetryAfter {
+        error: Box<FetchError>,
+        after: Duration,
+    },
     /// The request failed before a response.
     Network(String),
     /// The URL scheme isn't supported by this host.
@@ -175,11 +182,70 @@ impl fmt::Display for FetchError {
             Self::Network(message) => write!(f, "network error: {message}"),
             Self::UnsupportedUrl(url) => write!(f, "unsupported URL: {url}"),
             Self::Aborted => f.write_str("aborted"),
+            Self::RetryAfter { error, after } => {
+                write!(f, "{error}, retry in {} s", after.as_secs_f64().ceil())
+            }
         }
     }
 }
 
 impl std::error::Error for FetchError {}
+
+/// How long a server that rate-limits without saying for how long is
+/// left alone: MapLibre Native's wait.
+pub const RATE_LIMIT_WAIT: Duration = Duration::from_secs(5);
+
+impl FetchError {
+    /// What an HTTP response of `status` that brought no resource comes
+    /// to, given the wait its `Retry-After` header asked for when a host
+    /// could read one ([`parse_retry_after`]): 404 is [`NotFound`](Self::NotFound);
+    /// 429 waits as asked, else [`RATE_LIMIT_WAIT`]; a 5xx waits as asked
+    /// (a 503 says for how long the server is out of service).
+    pub fn of_status(status: u16, retry_after: Option<Duration>) -> Self {
+        let after = match (status, retry_after) {
+            (404, _) => return Self::NotFound,
+            (429, after) => after.unwrap_or(RATE_LIMIT_WAIT),
+            (500..=599, Some(after)) => after,
+            _ => return Self::Status(status),
+        };
+        Self::RetryAfter {
+            error: Box::new(Self::Status(status)),
+            after,
+        }
+    }
+
+    /// How long the server asked not to be asked again, if it did.
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::RetryAfter { after, .. } => Some(*after),
+            _ => None,
+        }
+    }
+
+    /// Whether the failure may pass by itself (the network, a server
+    /// failing, timing out or rate-limiting), so that a stale copy is
+    /// better than none.
+    pub fn transient(&self) -> bool {
+        matches!(
+            self,
+            Self::Network(_) | Self::Status(408 | 429 | 500..) | Self::RetryAfter { .. }
+        )
+    }
+}
+
+/// The wait an HTTP `Retry-After` header asks for (RFC 9110 §10.2.3):
+/// whole seconds, or until an HTTP date, which `until` reads as the time
+/// from now to then, zero once past. `None` when it reads as neither.
+pub fn parse_retry_after(
+    header: &str,
+    until: impl FnOnce(&str) -> Option<Duration>,
+) -> Option<Duration> {
+    let header = header.trim();
+    match header.parse::<u64>() {
+        Ok(seconds) => Some(Duration::from_secs(seconds)),
+        Err(_) => until(header),
+    }
+}
 
 /// `url` without its credentials, query and fragment, for messages: a
 /// host's logs mustn't carry its users' tokens.
@@ -358,5 +424,41 @@ impl FontFiles for FontFileFaces {
 
     fn coverage(&self, url: &str, text: &str, ink: &InkBox) -> Vec<u8> {
         self.files().coverage(url, text, ink)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn statuses_ask_to_wait_as_rfc_9110_and_native_do() {
+        let wait = |status, header| FetchError::of_status(status, header).retry_after();
+        let minute = Some(Duration::from_secs(60));
+        assert_eq!(FetchError::of_status(404, minute), FetchError::NotFound);
+        assert_eq!(wait(429, minute), minute);
+        assert_eq!(wait(429, None), Some(RATE_LIMIT_WAIT));
+        assert_eq!(wait(503, minute), minute);
+        assert_eq!(FetchError::of_status(503, None), FetchError::Status(503));
+        assert_eq!(FetchError::of_status(408, minute), FetchError::Status(408));
+        assert!(FetchError::of_status(429, None).transient());
+        assert!(FetchError::Status(408).transient());
+        assert!(!FetchError::Status(403).transient());
+    }
+
+    #[test]
+    fn retry_after_reads_seconds_or_a_date() {
+        let never = |_: &str| None;
+        assert_eq!(
+            parse_retry_after(" 120 ", never),
+            Some(Duration::from_secs(120))
+        );
+        assert_eq!(parse_retry_after("-1", never), None);
+        assert_eq!(parse_retry_after("soon", never), None);
+        let date = |text: &str| (text == "Sun, 06 Nov 1994 08:49:37 GMT").then_some(Duration::ZERO);
+        assert_eq!(
+            parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT", date),
+            Some(Duration::ZERO)
+        );
     }
 }
