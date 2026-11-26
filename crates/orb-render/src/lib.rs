@@ -423,6 +423,10 @@ pub struct Renderer {
     /// The style has terrain, on or not yet
     /// ([`set_terrain_reachable`](Self::set_terrain_reachable)).
     terrain_reachable: bool,
+    /// The driver failed to make a pipeline the terrain draws with
+    /// ([`terrain_failed`](Self::terrain_failed)): kept for the renderer's
+    /// life, as its pipelines go with the terrain.
+    terrain_failed: bool,
     /// Whether the last frame needed the paint and symbol pipelines' full
     /// variants, not their plane ones (`Variants`): its bundles drew with
     /// them.
@@ -782,6 +786,7 @@ impl Renderer {
             symbols,
             full_projection: false,
             terrain_reachable: false,
+            terrain_failed: false,
             full: false,
             background_fills: false,
             beneath: None,
@@ -1538,6 +1543,27 @@ impl Renderer {
         }
         self.extrusions.set_full(self.variants()[1]);
         wanted.into_iter().all(|id| gpu.pipeline_ready(id))
+    }
+
+    /// Whether the driver failed to make a pipeline the terrain draws
+    /// with, where the device lives on (the web's): the terrain can't
+    /// draw on this renderer's device, nor what drapes on it, so the map
+    /// draws flat. Once it has, it stays so for the renderer's life.
+    pub fn terrain_failed(&mut self, gpu: &dyn Gpu) -> bool {
+        if !self.terrain_failed {
+            let failed = self.terrain_pipelines().any(|p| gpu.pipeline_failed(p));
+            self.terrain_failed = failed;
+        }
+        self.terrain_failed
+    }
+
+    /// The pipelines the terrain draws with, made so far: its own, its
+    /// drape's mips' and its DEM tiles' preparation.
+    fn terrain_pipelines(&self) -> impl Iterator<Item = PipelineId> {
+        (self.terrain.iter())
+            .flat_map(terrain::Terrain::pipelines)
+            .chain(self.downsampler.pipelines())
+            .chain(self.images.prepare_pipelines())
     }
 
     /// Whether the style's terrain is still to turn on: its DEM source
@@ -2611,14 +2637,10 @@ impl Renderer {
     /// The pipelines node `i` draws with, made or not.
     fn node_pipelines(&self, i: usize, out: &mut Vec<PipelineId>) {
         let node = &self.nodes[i];
-        if node.terrain_layer.is_some()
-            && let Some(terrain) = &self.terrain
-        {
-            out.extend(terrain.pipelines());
+        if node.terrain_layer.is_some() && self.terrain.is_some() {
             // The terrain draws nothing until its drape's mips and its DEM
             // tiles' preparation can run.
-            out.extend(self.downsampler.pipelines());
-            out.extend(self.images.prepare_pipelines());
+            out.extend(self.terrain_pipelines());
         }
         if node.shades_on_terrain() {
             out.extend(self.images.slopes_pipeline().map(PipelineId::from));

@@ -1209,7 +1209,8 @@ impl OrbisMap {
     }
 
     /// The pipeline the driver failed to make, if one failed: what draws
-    /// with it stays missing on this device, and on another of its kind.
+    /// with it stays missing on this device, and on another of its kind
+    /// (the terrain's: the map draws flat).
     #[wasm_bindgen(js_name = failedPipeline)]
     pub fn failed_pipeline(&self) -> Option<String> {
         self.canvas.gpu_ref().hung().map(str::to_owned)

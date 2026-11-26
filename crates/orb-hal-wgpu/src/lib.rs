@@ -2101,6 +2101,10 @@ impl Gpu for WgpuGpu {
         ComputePipelineId(slot)
     }
 
+    fn pipeline_failed(&self, id: PipelineId) -> bool {
+        self.failed.contains(&id)
+    }
+
     fn pipeline_ready(&mut self, id: PipelineId) -> bool {
         // A destroyed one (ids aren't reused) has nothing waiting for it.
         let ready = |gpu: &Self| match id {

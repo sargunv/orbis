@@ -37,7 +37,8 @@ pub(crate) enum TerrainPhase {
     Falling(Terrain),
     /// Fallen flat, or still standing where the style names a terrain
     /// it can no longer draw (its DEM source failed, or isn't the
-    /// surface's), the terrain waits for the pipelines the map draws with
+    /// surface's, or the device failed to make its pipelines), the
+    /// terrain waits for the pipelines the map draws with
     /// without it ([`Renderer::terrain_ready_as`]) before it goes.
     Disarming(Terrain),
 }
@@ -95,7 +96,7 @@ impl Map {
         renderer: &mut Renderer,
         surface_full: bool,
     ) -> Declared {
-        let wanted = self.wanted_terrain();
+        let wanted = self.wanted_terrain(renderer.terrain_failed(gpu));
         // Views need the full projection on terrain, which the style says
         // it has before its DEM source resolves.
         renderer.set_full_projection(surface_full || wanted.is_some());
@@ -131,7 +132,8 @@ impl Map {
             // Turned off, it falls flat as `root` eases it, and goes once
             // the map's pipelines without it are made. A terrain the style
             // still has but can't draw (its DEM source failed, or isn't the
-            // surface's) would never ease flat: it goes without falling.
+            // surface's, or its pipelines failed) would never ease flat: it
+            // goes without falling.
             (Some(terrain), None) => {
                 if root.terrain_presence > 0.0 && plan.terrain().is_none() {
                     TerrainPhase::Falling(terrain)
@@ -178,12 +180,20 @@ impl Map {
         root
     }
 
-    /// The terrain the style asks for, unless its DEM source failed or
-    /// its tiles can't be the surface's (saying so): terrain tiles are
-    /// the surface's, and their DEM must be too.
-    fn wanted_terrain(&mut self) -> Option<(usize, Option<Arc<TileEndpoint>>)> {
+    /// The terrain the style asks for, unless the renderer's device
+    /// `failed` to make what it draws with, or its DEM source failed, or
+    /// its tiles can't be the surface's (saying so): terrain tiles are the
+    /// surface's, and their DEM must be too.
+    fn wanted_terrain(&mut self, failed: bool) -> Option<(usize, Option<Arc<TileEndpoint>>)> {
         let style = self.style.as_ref()?;
         let (index, _) = style.worker.plan().terrain()?;
+        if failed {
+            // The driver's failure is named with the device's stats; a
+            // terrain drawn without its pipelines would lose its drape.
+            let warning = "terrain: the GPU failed to make its pipelines; the map is flat";
+            self.warnings.push(warning.to_owned());
+            return None;
+        }
         match &style.sources[index] {
             SourceState::Resolving => Some((index, None)),
             SourceState::Ready { endpoint, .. } if endpoint.tms == *self.surface.tms() => {

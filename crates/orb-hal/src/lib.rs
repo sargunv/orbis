@@ -130,6 +130,9 @@ pub trait Gpu {
     /// and what draws or dispatches with it does nothing, or it was
     /// destroyed. Either way nothing waits for it any longer.
     fn pipeline_ready(&mut self, id: PipelineId) -> bool;
+    /// Whether the driver failed to make a pipeline, of those taken so far,
+    /// where the device lives on: what draws with it draws nothing.
+    fn pipeline_failed(&self, id: PipelineId) -> bool;
     /// Takes compiles that finished, and counts pipelines made and still
     /// compiling (background ones aside).
     fn poll_pipelines(&mut self) -> PipelineCounts;

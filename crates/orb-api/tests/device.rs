@@ -275,6 +275,76 @@ fn losses_in_a_row_back_off_then_stop() {
     );
 }
 
+/// A style of a blue box draped on terrain over one flat terrarium tile,
+/// on a red background, and the directory holding the tile.
+fn flat_terrain(name: &str) -> (common::Scratch, String) {
+    let dir = common::Scratch::new(name);
+    std::fs::create_dir_all(dir.join("0/0")).unwrap();
+    let file = std::fs::File::create(dir.join("0/0/0.png")).unwrap();
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), 256, 256);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let flat = [128, 0, 0, 255].repeat(256 * 256);
+    (encoder.write_header().unwrap())
+        .write_image_data(&flat)
+        .unwrap();
+    let style = format!(
+        r##"{{"version":8,"zoom":1,"terrain":{{"source":"dem"}},
+          "sources":{{"dem":{{"type":"raster-dem","encoding":"terrarium","tileSize":256,
+            "maxzoom":0,"tiles":["file://{}/{{z}}/{{x}}/{{y}}.png"]}},
+          "box":{{"type":"geojson","data":{{"type":"Polygon",
+            "coordinates":[[[-10,-10],[10,-10],[10,10],[-10,10],[-10,-10]]]}}}}}},
+          "layers":[{{"id":"bg","type":"background","paint":{{"background-color":"#ff0000"}}}},
+          {{"id":"box","type":"fill","source":"box","paint":{{"fill-color":"#0000ff"}}}}]}}"##,
+        dir.display()
+    );
+    (dir, style)
+}
+
+/// The child's role in [`a_failed_terrain_pipeline_draws_flat`].
+const TERRAIN_FAIL_CHILD: &str = "ORB_TEST_TERRAIN_FAIL_CHILD";
+
+/// The terrain's pipeline failing where the device lives on: the map
+/// draws flat, its draped layers and all, rather than lose everything the
+/// terrain would have drawn, and says so. In a child process: the
+/// terrain's compiles fail from the environment.
+#[test]
+fn a_failed_terrain_pipeline_draws_flat() {
+    if std::env::var_os(TERRAIN_FAIL_CHILD).is_none() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "a_failed_terrain_pipeline_draws_flat",
+                "--nocapture",
+            ])
+            .env(TERRAIN_FAIL_CHILD, "1")
+            .env("ORB_FAULT_INJECTION", "fail:terrain")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&child.stderr);
+        assert!(child.status.success(), "{stderr}");
+        return;
+    }
+    let (_dir, style) = flat_terrain("api-failed-terrain");
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).unwrap();
+    settle(&mut map, &mut target).unwrap();
+    assert!(!runtime.lost(), "the device was lost");
+    let failed = runtime.stats().hung_compile.expect("the failure is named");
+    assert!(failed.contains("terrain"), "{failed}");
+    assert!(map.terrain_probe().is_none(), "the map holds its terrain");
+    let pixels = target.read_pixels().unwrap();
+    let i = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;
+    assert_eq!(pixels[i..i + 3], [0, 0, 255], "the fill, flat");
+    let warned = std::iter::from_fn(|| map.poll_event()).any(|event| {
+        matches!(event, orb_api::Event::Map(orb_api::MapEvent::Warning { message })
+            if message.contains("terrain"))
+    });
+    assert!(warned, "the map didn't say it draws flat");
+}
+
 /// The child's role in [`a_drape_pipeline_arriving_last_still_idles`].
 const DRAPE_CHILD: &str = "ORB_TEST_DRAPE_CHILD";
 
@@ -288,27 +358,7 @@ const DRAPE_CHILD: &str = "ORB_TEST_DRAPE_CHILD";
 #[test]
 fn a_drape_pipeline_arriving_last_still_idles() {
     if std::env::var_os(DRAPE_CHILD).is_some() {
-        // One flat terrarium tile.
-        let dir = common::Scratch::new("api-flat-dem");
-        std::fs::create_dir_all(dir.join("0/0")).unwrap();
-        let file = std::fs::File::create(dir.join("0/0/0.png")).unwrap();
-        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), 256, 256);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let flat = [128, 0, 0, 255].repeat(256 * 256);
-        (encoder.write_header().unwrap())
-            .write_image_data(&flat)
-            .unwrap();
-        let style = format!(
-            r##"{{"version":8,"zoom":1,"terrain":{{"source":"dem"}},
-              "sources":{{"dem":{{"type":"raster-dem","encoding":"terrarium","tileSize":256,
-                "maxzoom":0,"tiles":["file://{}/{{z}}/{{x}}/{{y}}.png"]}},
-              "box":{{"type":"geojson","data":{{"type":"Polygon",
-                "coordinates":[[[-10,-10],[10,-10],[10,10],[-10,10],[-10,-10]]]}}}}}},
-              "layers":[{{"id":"bg","type":"background","paint":{{"background-color":"#ff0000"}}}},
-              {{"id":"box","type":"fill","source":"box","paint":{{"fill-color":"#0000ff"}}}}]}}"##,
-            dir.display()
-        );
+        let (_dir, style) = flat_terrain("api-flat-dem");
         let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
         let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
         let mut map = Map::new(&runtime, MapOptions::default());
