@@ -246,7 +246,7 @@ pub(crate) fn end_frames(session: &SessionHandle) {
             slot.state = SlotState::Quarantined;
         }
     }
-    session.state_mut(|s| s.acquired_frame_count = 0);
+    session.forget_acquired();
 }
 
 fn frame(frame: mln_acquired_frame) -> Result<Arc<FrameHandle>> {

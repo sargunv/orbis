@@ -139,9 +139,35 @@ pub(crate) struct SessionHandle {
     pub(crate) ring: Mutex<crate::frames::Ring>,
     /// Views of its acquired frames that are open.
     pub(crate) open_views: AtomicUsize,
-    /// Fixed once it fails.
-    failure: Mutex<Option<Failure>>,
-    state: Mutex<mln_render_session_snapshot>,
+    published: Mutex<Published>,
+}
+
+/// What a session tells the caller's threads of itself, under one lock.
+struct Published {
+    /// Its snapshot, but for the failure status, which `failure` gives.
+    snapshot: mln_render_session_snapshot,
+    /// Why it failed, fixed once it fails.
+    failure: Option<Failure>,
+}
+
+/// Whether lifecycle state `state` is a session's ending: detaching,
+/// detached or abandoned.
+fn ending(state: mln_render_session_state) -> bool {
+    matches!(
+        state,
+        MLN_RENDER_SESSION_STATE_DETACHING
+            | MLN_RENDER_SESSION_STATE_DETACHED
+            | MLN_RENDER_SESSION_STATE_ABANDONED
+    )
+}
+
+impl Published {
+    fn snapshot(&self) -> mln_render_session_snapshot {
+        mln_render_session_snapshot {
+            failure_status: self.failure.as_ref().map_or(MLN_STATUS_OK, |f| f.status),
+            ..self.snapshot
+        }
+    }
 }
 
 impl SessionHandle {
@@ -168,50 +194,66 @@ impl SessionHandle {
     }
 
     fn failed(&self) -> Result {
-        match &*lock(&self.failure) {
+        match &lock(&self.published).failure {
             Some(f) => Err(f.clone()),
             None => Ok(()),
         }
     }
 
-    /// Fails the session for good: a lost target, or a native error.
+    /// Fails the session for good: a lost target, or a native error. A
+    /// failure after the first leaves the first as the session's, and a
+    /// session already ending keeps its ending state.
     fn fail(&self, failure: Failure) {
         let status = match failure.status {
             MLN_STATUS_TARGET_LOST => MLN_STATUS_TARGET_LOST,
             _ => MLN_STATUS_NATIVE_ERROR,
         };
-        {
-            let mut s = lock(&self.state);
-            s.state = MLN_RENDER_SESSION_STATE_FAILED;
-            s.failure_status = status;
+        let mut published = lock(&self.published);
+        if !ending(published.snapshot.state) {
+            published.snapshot.state = MLN_RENDER_SESSION_STATE_FAILED;
         }
-        *lock(&self.failure) = Some(Failure::new(status, failure.message));
+        published
+            .failure
+            .get_or_insert_with(|| Failure::new(status, failure.message));
     }
 
     /// The session's lifecycle state.
     pub(crate) fn lifecycle(&self) -> mln_render_session_state {
-        lock(&self.state).state
+        lock(&self.published).snapshot.state
+    }
+
+    /// Moves the session to lifecycle state `state`.
+    fn set_lifecycle(&self, state: mln_render_session_state) {
+        lock(&self.published).snapshot.state = state;
+    }
+
+    /// Moves the session to lifecycle state `state`, unless it was
+    /// abandoned, which nothing undoes.
+    fn set_lifecycle_unless_abandoned(&self, state: mln_render_session_state) {
+        let lifecycle = &mut lock(&self.published).snapshot.state;
+        if *lifecycle != MLN_RENDER_SESSION_STATE_ABANDONED {
+            *lifecycle = state;
+        }
     }
 
     /// Whether the session still renders: not detached, abandoned or
     /// failed.
     pub(crate) fn usable(&self) -> Result {
-        if matches!(
-            self.lifecycle(),
-            MLN_RENDER_SESSION_STATE_DETACHING
-                | MLN_RENDER_SESSION_STATE_DETACHED
-                | MLN_RENDER_SESSION_STATE_ABANDONED
-        ) {
+        let published = lock(&self.published);
+        if ending(published.snapshot.state) {
             return Err(Failure::state(
                 "the session was detached, abandoned, released or disposed",
             ));
         }
-        self.failed()
+        match &published.failure {
+            Some(f) => Err(f.clone()),
+            None => Ok(()),
+        }
     }
 
     /// Refuses a call that needs the host's frames back first.
     fn no_frames_held(&self) -> Result {
-        if lock(&self.state).acquired_frame_count > 0 {
+        if lock(&self.published).snapshot.acquired_frame_count > 0 {
             return Err(Failure::state(
                 "the host holds acquired frames of the session: release them first",
             ));
@@ -219,15 +261,15 @@ impl SessionHandle {
         Ok(())
     }
 
-    /// Changes the session's published state.
-    pub(crate) fn state_mut(&self, f: impl FnOnce(&mut mln_render_session_snapshot)) {
-        f(&mut lock(&self.state));
-    }
-
     /// Changes the count of frames the host holds.
     pub(crate) fn count_acquired(&self, delta: i32) {
-        let mut s = lock(&self.state);
+        let s = &mut lock(&self.published).snapshot;
         s.acquired_frame_count = s.acquired_frame_count.saturating_add_signed(delta);
+    }
+
+    /// Counts no frames held by the host, once its frames went stale.
+    pub(crate) fn forget_acquired(&self) {
+        lock(&self.published).snapshot.acquired_frame_count = 0;
     }
 
     /// Wakes the session's thread, to look at its map and demands again.
@@ -269,11 +311,7 @@ impl SessionHandle {
                 completion,
                 done,
             }) => {
-                let mut state = lock(&self.state);
-                if state.state != MLN_RENDER_SESSION_STATE_ABANDONED {
-                    state.state = state_after;
-                }
-                drop(state);
+                self.set_lifecycle_unless_abandoned(state_after);
                 crate::runtime::complete_update(completion, Ok(Value::None), 0, 0);
                 if retire {
                     self.runtime.child_released();
@@ -283,7 +321,7 @@ impl SessionHandle {
                 }
             }
             Msg::End(Ending::Abandon { done, .. }) => {
-                lock(&self.state).state = MLN_RENDER_SESSION_STATE_ABANDONED;
+                self.set_lifecycle(MLN_RENDER_SESSION_STATE_ABANDONED);
                 let _ = done.send(0);
             }
             Msg::End(Ending::Closed(done)) => {
@@ -394,7 +432,7 @@ impl Drop for SessionEntry {
 
 impl SessionEntry {
     fn sync_state(&self) {
-        let mut s = lock(&self.handle.state);
+        let s = &mut lock(&self.handle.published).snapshot;
         s.generation = self.generation;
         s.extent = mln_logical_extent {
             width: self.logical.width,
@@ -573,11 +611,13 @@ pub(crate) unsafe fn attach(
         readback,
         ring: Mutex::new(ring),
         open_views: AtomicUsize::new(0),
-        failure: Mutex::new(None),
-        state: Mutex::new(mln_render_session_snapshot {
-            size: std::mem::size_of::<mln_render_session_snapshot>() as u32,
-            state: MLN_RENDER_SESSION_STATE_ATTACHING,
-            ..Default::default()
+        published: Mutex::new(Published {
+            snapshot: mln_render_session_snapshot {
+                size: std::mem::size_of::<mln_render_session_snapshot>() as u32,
+                state: MLN_RENDER_SESSION_STATE_ATTACHING,
+                ..Default::default()
+            },
+            failure: None,
         }),
     });
     let id = handles::insert(Object::Session(handle.clone()));
@@ -768,11 +808,7 @@ impl Session {
         };
         // An abandon sent while the session attached has already marked it
         // abandoned, which attaching doesn't undo.
-        let mut state = lock(&handle.state);
-        if state.state != MLN_RENDER_SESSION_STATE_ABANDONED {
-            state.state = MLN_RENDER_SESSION_STATE_ATTACHED;
-        }
-        drop(state);
+        handle.set_lifecycle_unless_abandoned(MLN_RENDER_SESSION_STATE_ATTACHED);
         entry.sync_state();
         start.completion.complete(Ok(Value::None), 0);
         Some(Self {
@@ -925,7 +961,7 @@ impl Session {
                 completion,
                 done,
             } => {
-                lock(&handle.state).state = state_after;
+                handle.set_lifecycle(state_after);
                 self.close_through_panics();
                 crate::runtime::complete_update(completion, Ok(Value::None), 0, 0);
                 if retire {
@@ -936,7 +972,7 @@ impl Session {
                 }
             }
             Ending::Abandon { keep, done } => {
-                lock(&handle.state).state = MLN_RENDER_SESSION_STATE_ABANDONED;
+                handle.set_lifecycle(MLN_RENDER_SESSION_STATE_ABANDONED);
                 // At exit, nothing of the session's is destroyed: its
                 // graphics objects stay until the process ends.
                 let kept = match self.entry.target.take() {
@@ -1433,7 +1469,7 @@ fn step<'a>(
     // only with its next still image, and a barrier ends the wait.
     let mut waiting = VecDeque::new();
     while let Some(demand) = entry.demands.pop_front() {
-        if lock(&entry.handle.failure).is_some() {
+        if entry.handle.failed().is_err() {
             entry.handle.push(result(
                 demand.token,
                 MLN_RENDER_RESULT_FAILED,
@@ -1642,7 +1678,11 @@ pub unsafe extern "C" fn mln_render_session_get_snapshot(
     unsafe {
         boundary(out_diagnostic, || {
             let handle = handles::session(session.0)?;
-            put(out_snapshot, *lock(&handle.state), "out_snapshot")
+            put(
+                out_snapshot,
+                lock(&handle.published).snapshot(),
+                "out_snapshot",
+            )
         })
     }
 }
@@ -1694,7 +1734,8 @@ pub unsafe extern "C" fn mln_render_session_get_failure(
     unsafe {
         boundary(out_diagnostic, || {
             let handle = handles::session(session.0)?;
-            let message = lock(&handle.failure)
+            let message = lock(&handle.published)
+                .failure
                 .as_ref()
                 .map(|f| f.message.clone())
                 .unwrap_or_default();
@@ -1971,14 +2012,7 @@ fn end(
 ) -> Result {
     let handle = handles::session(session.0)?;
     let lifecycle = handle.lifecycle();
-    if !retire
-        && matches!(
-            lifecycle,
-            MLN_RENDER_SESSION_STATE_DETACHING
-                | MLN_RENDER_SESSION_STATE_DETACHED
-                | MLN_RENDER_SESSION_STATE_ABANDONED
-        )
-    {
+    if !retire && ending(lifecycle) {
         return Err(Failure::state(
             "the session was already detached or abandoned",
         ));
@@ -1996,7 +2030,7 @@ fn end(
         handles::remove(session.0);
     }
     if lifecycle != MLN_RENDER_SESSION_STATE_ABANDONED {
-        lock(&handle.state).state = MLN_RENDER_SESSION_STATE_DETACHING;
+        handle.set_lifecycle(MLN_RENDER_SESSION_STATE_DETACHING);
     }
     // The session's thread ends it at once, whatever waits; a dispose
     // waits for that, but for on the thread itself (from a callback).
@@ -2089,12 +2123,7 @@ pub unsafe extern "C" fn mln_render_session_abandon(
             }
             sized(out_result.cast_const(), "out_result")?;
             let handle = handles::session(session.0)?;
-            if matches!(
-                handle.lifecycle(),
-                MLN_RENDER_SESSION_STATE_DETACHING
-                    | MLN_RENDER_SESSION_STATE_DETACHED
-                    | MLN_RENDER_SESSION_STATE_ABANDONED
-            ) {
+            if ending(handle.lifecycle()) {
                 return Err(Failure::state(
                     "the session was already detached or abandoned",
                 ));
@@ -2185,7 +2214,7 @@ pub(crate) fn abandon(handle: &Arc<SessionHandle>, keep: bool) -> Result<u32> {
     // The session is abandoned from here on: what its thread is doing (a
     // frame wake that opens a view, say) finds its frames gone while the
     // thread finishes and lets go of its graphics objects.
-    lock(&handle.state).state = MLN_RENDER_SESSION_STATE_ABANDONED;
+    handle.set_lifecycle(MLN_RENDER_SESSION_STATE_ABANDONED);
     let (done, kept) = mpsc::sync_channel(1);
     handle.send(Msg::End(Ending::Abandon { keep, done }));
     Ok(kept.recv().unwrap_or(0))
