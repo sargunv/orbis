@@ -442,6 +442,17 @@ pub struct TileResult {
     /// lays them out again once the tile is in. Labels never hold up a
     /// tile's other layers.
     pub labels_later: Vec<u32>,
+    /// Until when the data the whole tile was laid out from stays fresh
+    /// (Unix seconds), if it came fresh: a map drawing it then loads it
+    /// again. `None` for a relayout of some of its nodes.
+    pub fresh_until: Option<u64>,
+    /// It answers a reload of a drawn tile whose data expired
+    /// ([`TileRequest::reload`](crate::TileRequest)): `fresh_until` is the
+    /// tile's new lifetime.
+    pub reload: bool,
+    /// The reload brought the bytes drawn again: nothing is laid out, and
+    /// the tile stays as drawn, fresh until `fresh_until` if it says.
+    pub renewed: bool,
     /// The style revision the tile was laid out with.
     pub revision: u64,
     /// Keys of the nodes laid out; those without a mesh have no features.
@@ -710,6 +721,9 @@ impl From<TileBuild> for TileResult {
             missing_images: build.missing_images,
             glyphs_failed: build.glyphs_failed,
             labels_later: build.labels_later,
+            fresh_until: build.fresh_until,
+            reload: build.reload,
+            renewed: build.renewed,
             image: None,
             warp_grid: None,
             dem: None,

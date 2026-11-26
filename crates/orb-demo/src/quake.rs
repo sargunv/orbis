@@ -265,7 +265,7 @@ fn run(
                         // Where Mapterhorn has no tile, the sea.
                         let base = fetched
                             .map_err(|e| e.to_string())
-                            .and_then(|bytes| decode(&bytes))
+                            .and_then(|fetched| decode(&fetched.bytes))
                             .unwrap_or_else(|_| vec![0.0; (SIDE * SIDE) as usize]);
                         let _ = loads.send(Command::Loaded(tile, base));
                     }),

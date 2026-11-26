@@ -14,7 +14,65 @@ use std::time::Duration;
 pub use abort::Abort;
 
 /// Called once with the outcome of a fetch, on any thread.
-pub type FetchDone = Box<dyn FnOnce(Result<Vec<u8>, FetchError>) + Send + 'static>;
+pub type FetchDone = Box<dyn FnOnce(Result<Fetched, FetchError>) + Send + 'static>;
+
+/// What a fetch brought.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Fetched {
+    pub bytes: Vec<u8>,
+    /// Until when (Unix seconds) the resource stays fresh, as its
+    /// response's caching headers said, when it came fresh: a map loads
+    /// the tiles it draws from it again then (GL JS's reload timer,
+    /// MapLibre Native's revalidation). `None` when it came stale (a
+    /// cached copy standing in for a failure, `no-cache`, `max-age=0`)
+    /// or nothing gave it a lifetime (`no-store`, a file, no headers):
+    /// what it shows stays until it loads again for another reason.
+    pub fresh_until: Option<u64>,
+}
+
+impl From<Vec<u8>> for Fetched {
+    /// Bytes with no lifetime.
+    fn from(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            fresh_until: None,
+        }
+    }
+}
+
+/// What a response's `Cache-Control` says of how long it stays fresh
+/// (RFC 9111 §5.2.2), to a private cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaxAge {
+    /// `no-store`: it has no lifetime.
+    NoStore,
+    /// Fresh this many seconds from its arrival: its `max-age`, 0 for
+    /// `no-cache`.
+    Seconds(u64),
+    /// Neither: `Expires`, or a heuristic, decides.
+    Unsaid,
+}
+
+impl MaxAge {
+    /// What the `Cache-Control` header `directives` says.
+    pub fn of(directives: &str) -> Self {
+        let mut max_age = Self::Unsaid;
+        for directive in directives.split(',').map(str::trim) {
+            let (name, value) = directive.split_once('=').unwrap_or((directive, ""));
+            match name.to_ascii_lowercase().as_str() {
+                "no-store" => return Self::NoStore,
+                "no-cache" => max_age = Self::Seconds(0),
+                "max-age" if max_age != Self::Seconds(0) => {
+                    if let Ok(seconds) = value.trim_matches('"').parse() {
+                        max_age = Self::Seconds(seconds);
+                    }
+                }
+                _ => {}
+            }
+        }
+        max_age
+    }
+}
 
 /// What a fetched resource is for. Hosts that serve requests themselves
 /// (maplibre-native-ffi's resource providers, and the rules and transforms
@@ -335,9 +393,13 @@ pub trait ImageDecode: Send + Sync {
     fn decode(&self, bytes: Vec<u8>, done: ImageDone);
 }
 
-/// Monotonic time in milliseconds, for zoom cross-fades.
+/// The host's time.
 pub trait Clock: Send + Sync {
+    /// Monotonic time in milliseconds, for animations and fades.
     fn now(&self) -> f64;
+    /// Milliseconds since the Unix epoch, for what HTTP dates: when the
+    /// data a map draws expires ([`Fetched::fresh_until`]).
+    fn unix_ms(&self) -> f64;
 }
 
 /// A font as the parts of a CSS font shorthand, drawn at 48 px (GL JS's
@@ -444,6 +506,16 @@ mod tests {
         assert!(FetchError::of_status(429, None).transient());
         assert!(FetchError::Status(408).transient());
         assert!(!FetchError::Status(403).transient());
+    }
+
+    #[test]
+    fn cache_control_says_how_long_a_response_stays_fresh() {
+        assert_eq!(MaxAge::of("public, max-age=300"), MaxAge::Seconds(300));
+        assert_eq!(MaxAge::of("Max-Age=\"60\""), MaxAge::Seconds(60));
+        assert_eq!(MaxAge::of("no-cache, max-age=300"), MaxAge::Seconds(0));
+        assert_eq!(MaxAge::of("max-age=300, no-store"), MaxAge::NoStore);
+        assert_eq!(MaxAge::of("max-age=soon"), MaxAge::Unsaid);
+        assert_eq!(MaxAge::of("private"), MaxAge::Unsaid);
     }
 
     #[test]

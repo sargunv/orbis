@@ -42,6 +42,13 @@ pub(crate) struct ResidentTile {
     /// Its labels drew glyphs of a range that failed: a glyph retry lays
     /// them out again ([`TileResult::glyphs_failed`]).
     pub(crate) glyphs_failed: bool,
+    /// When it loads again if drawn (Unix seconds): when the data it
+    /// shows expires, if it came fresh ([`TileResult::fresh_until`]), or
+    /// while a reload is under way, when it's tried again should it fail.
+    pub(crate) reload_at: Option<u64>,
+    /// Reloads tried in a row since one last brought a lifetime: the
+    /// next waits [`orb_source::retry_delay`] of them.
+    pub(crate) reloads_tried: u32,
 }
 
 impl ResidentTile {
@@ -56,6 +63,8 @@ impl ResidentTile {
             cost: 0,
             neighbour: false,
             glyphs_failed: false,
+            reload_at: None,
+            reloads_tried: 0,
         }
     }
 }

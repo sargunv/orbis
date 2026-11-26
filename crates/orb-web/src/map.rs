@@ -100,6 +100,11 @@ pub struct FrameStats {
     /// waiting for pipelines that wake it when they compile.
     #[wasm_bindgen(readonly, js_name = needsFrame)]
     pub needs_frame: bool,
+    /// Milliseconds until the map wants a frame though nothing else
+    /// happens: the data a tile it draws shows expires then, and that
+    /// frame loads it again. Undefined while nothing drawn expires.
+    #[wasm_bindgen(readonly, js_name = wakeInMs)]
+    pub wake_in_ms: Option<f64>,
     /// The frame drew and presented: not one held back while compiles
     /// run, where presents wait behind them ([`orb_hal::Gpu::presents_wait`]).
     #[wasm_bindgen(readonly)]
@@ -1303,6 +1308,7 @@ impl OrbisMap {
             loaded: report.loaded,
             transitioning: self.map.transitioning(),
             needs_frame: report.needs_frame(),
+            wake_in_ms: report.wake_in.map(|wait| wait.as_secs_f64() * 1000.0),
             drew: presented,
             lost: false,
             meshes_uploaded: counts.meshes_uploaded,

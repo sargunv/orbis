@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_code)]
 
+mod alarm;
 mod device;
 mod map;
 mod regions;

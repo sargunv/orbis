@@ -10,18 +10,20 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use orb_crs::TileIndex;
-use orb_host::{Abort, Fetch, FetchDone, FetchError, ResourceKind};
+use orb_host::{Abort, Fetch, FetchDone, FetchError, Fetched, ResourceKind};
 use orb_source::endpoint::HostTile;
 use orb_source::pmtiles::{self, Lookup, Range, Reader, TileType};
 use orb_style::Encoding;
 
 pub use orb_source::endpoint::TileLocation;
 
+/// A tile's bytes, with their lifetime where they have one (a tile in an
+/// archive has none), and their encoding.
 pub(crate) type LoadDone =
-    Box<dyn FnOnce(Result<(Vec<u8>, Encoding), FetchError>) + Send + 'static>;
+    Box<dyn FnOnce(Result<(Fetched, Encoding), FetchError>) + Send + 'static>;
 type Archives = VecDeque<(String, Arc<Mutex<Reader>>)>;
-/// A shared fetch's bytes, for each load that waits on it.
-type Shared = Result<Arc<Vec<u8>>, FetchError>;
+/// A shared fetch's answer, for each load that waits on it.
+type Shared = Result<Arc<Fetched>, FetchError>;
 type Waiter = Box<dyn FnOnce(Shared) + Send>;
 /// A fetch's URL and byte range.
 type FetchKey = (String, Option<Range>);
@@ -185,7 +187,7 @@ impl TileLoader {
             let waiting = waiting.map(|s| s.waiters).unwrap_or_default();
             let waiting = waiting.into_iter().map(|(_, waiter)| waiter);
             let result = result.map(Arc::new);
-            // The last waiter takes the bytes: one load alone copies none.
+            // The last waiter takes the answer: one load alone copies none.
             let mut waiting = waiting.into_iter();
             let last = waiting.next_back();
             for waiter in waiting {
@@ -242,9 +244,9 @@ impl TileLoader {
             TileLocation::Host(HostTile::Encoded {
                 bytes,
                 encoding: own,
-            }) => done(Ok((bytes, own.unwrap_or(encoding)))),
+            }) => done(Ok((bytes.into(), own.unwrap_or(encoding)))),
             TileLocation::Host(HostTile::GeoJson(_) | HostTile::Empty) => {
-                done(Ok((Vec::new(), encoding)))
+                done(Ok((Fetched::default(), encoding)))
             }
             // A query's refetch of an app's tile the map no longer holds.
             TileLocation::Url(url) if url.starts_with(orb_source::endpoint::HOST_TILES) => {
@@ -255,7 +257,7 @@ impl TileLoader {
                 &url,
                 None,
                 abort,
-                Box::new(move |r| done(r.map(|bytes| (owned(bytes), encoding)))),
+                Box::new(move |r| done(r.map(|fetched| (owned(fetched), encoding)))),
             ),
             TileLocation::Pmtiles(url) => {
                 let reader = self.reader(&url);
@@ -278,9 +280,9 @@ impl TileLoader {
                         use orb_source::mbtiles::Format;
                         done(result.map(|found| match found {
                             // Left out of the archive: empty, as PMTiles.
-                            None => (Vec::new(), encoding),
-                            Some((bytes, Format::Vector(own))) => (bytes, own),
-                            Some((bytes, Format::Raster)) => (bytes, encoding),
+                            None => (Fetched::default(), encoding),
+                            Some((bytes, Format::Vector(own))) => (bytes.into(), own),
+                            Some((bytes, Format::Raster)) => (bytes.into(), encoding),
                         }))
                     }),
                 );
@@ -314,7 +316,7 @@ impl TileLoader {
             Err(error) => done(Err(FetchError::Range(error))),
             // Archives leave out empty tiles: draw nothing, as the
             // PMTiles protocol for GL JS answers empty data.
-            Ok(Lookup::Missing) => done(Ok((Vec::new(), encoding))),
+            Ok(Lookup::Missing) => done(Ok((Fetched::default(), encoding))),
             Ok(Lookup::Tile {
                 range,
                 compression,
@@ -334,10 +336,10 @@ impl TileLoader {
                     &abort,
                     Box::new(move |r| {
                         done(
-                            r.and_then(|bytes| {
-                                compression.decode(&bytes).map_err(FetchError::Range)
+                            r.and_then(|read| {
+                                compression.decode(&read.bytes).map_err(FetchError::Range)
                             })
-                            .map(|bytes| (bytes, encoding)),
+                            .map(|bytes| (bytes.into(), encoding)),
                         );
                     }),
                 );
@@ -355,8 +357,8 @@ impl TileLoader {
                             let mut reader = reader.lock().expect("reader poisoned");
                             match r {
                                 // The first waiter keeps the bytes for all.
-                                Ok(bytes) if reader.wants(range) => {
-                                    reader.insert(range, &bytes).map_err(FetchError::Range)
+                                Ok(read) if reader.wants(range) => {
+                                    reader.insert(range, &read.bytes).map_err(FetchError::Range)
                                 }
                                 Ok(_) => Ok(()),
                                 Err(e) if falls_back(&e) && reader.read_failed(range) => Ok(()),
@@ -456,8 +458,8 @@ fn read_until<T: 'static>(
             let inserted = {
                 let mut reader = reader.lock().expect("reader poisoned");
                 match result {
-                    Ok(bytes) => reader
-                        .insert(offset, &bytes)
+                    Ok(read) => reader
+                        .insert(offset, &read.bytes)
                         .map_err(|e| FetchError::Range(format!("{url}: {e}"))),
                     // A file shorter than the first read is read again.
                     Err(e) if falls_back(&e) && reader.read_failed(offset) => Ok(()),
@@ -472,9 +474,9 @@ fn read_until<T: 'static>(
     );
 }
 
-/// A shared fetch's bytes, copied unless this was the last load waiting.
-fn owned(bytes: Arc<Vec<u8>>) -> Vec<u8> {
-    Arc::try_unwrap(bytes).unwrap_or_else(|shared| (*shared).clone())
+/// A shared fetch's answer, copied unless this was the last load waiting.
+fn owned(fetched: Arc<Fetched>) -> Fetched {
+    Arc::try_unwrap(fetched).unwrap_or_else(|shared| (*shared).clone())
 }
 
 #[cfg(test)]
@@ -500,7 +502,7 @@ mod tests {
             for (offset, length, done) in held {
                 let (at, end) = (offset as usize, (offset + length) as usize);
                 done(match self.archive.get(at..end) {
-                    Some(bytes) => Ok(bytes.to_vec()),
+                    Some(bytes) => Ok(bytes.to_vec().into()),
                     None => Err(FetchError::Status(416)),
                 });
             }
@@ -573,7 +575,7 @@ mod tests {
                 tile,
                 Encoding::Mvt,
                 &Abort::NEVER,
-                Box::new(move |r| got.lock().unwrap()[i] = r.unwrap().0),
+                Box::new(move |r| got.lock().unwrap()[i] = r.unwrap().0.bytes),
             );
         }
         let mut rounds = Vec::new();
@@ -723,7 +725,8 @@ mod tests {
                 &Abort::new(),
                 Box::new(move |r| tx.send(r).unwrap()),
             );
-            let (bytes, encoding) = rx.recv().unwrap().unwrap();
+            let (fetched, encoding) = rx.recv().unwrap().unwrap();
+            let bytes = fetched.bytes;
             let want = if found {
                 vec![z * 16 + x as u8; 5000]
             } else {

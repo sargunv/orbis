@@ -34,6 +34,11 @@ use orb_source::endpoint::{TileEndpoint, TileLocation};
 /// Logical pixel size of vector/background tiles and pattern origins.
 pub(crate) const TILE_PX: f64 = 512.0;
 
+/// The edit generation reloads of expired tiles go under: before any
+/// edit's, so the map waits for them but [`Map::generation`] passes over
+/// them, no edit having been made.
+const RELOAD: u64 = 0;
+
 /// GPU images shared by the maps in one Runtime / host-service set. The
 /// first render initializes them on that Runtime's device.
 #[derive(Clone, Debug, Default)]
@@ -128,6 +133,11 @@ pub struct FrameReport {
     /// drawn, asked the device for besides the style's pipeline set's: what
     /// the set left out, none for a complete one.
     pub pipelines_late: u32,
+    /// How long until the map wants a frame though nothing else happens:
+    /// the data a tile it draws shows expires then, and the frame loads
+    /// it again. A host that draws only when the map is woken, as an idle
+    /// map is, wakes it then. `None` while nothing drawn expires.
+    pub wake_in: Option<std::time::Duration>,
     /// The tiles under the view's centre have arrived, for every source
     /// the frame draws: what time-to-centre waits for.
     pub centre_loaded: bool,
@@ -1387,7 +1397,7 @@ impl Map {
     /// The style generation in full view: every edit up to it has its jobs
     /// applied.
     pub fn generation(&self) -> u64 {
-        match self.pending.keys().next() {
+        match self.pending.range(RELOAD + 1..).next().map(|(k, _)| k) {
             Some(&first) => first - 1,
             None => self.version,
         }
@@ -1723,9 +1733,9 @@ impl Map {
                         // Its first bytes, the header and root directory,
                         // go to the jobs too.
                         let url = archive.to_string();
-                        let done = self.reply(move |result: Result<Vec<u8>, FetchError>| {
+                        let done = self.reply(move |result: Result<orb_host::Fetched, _>| {
                             let header = orb_source::pmtiles::HEADER_LEN as usize;
-                            let read = result.and_then(|bytes| {
+                            let read = result.and_then(|orb_host::Fetched { bytes, .. }| {
                                 orb_source::endpoint::archive_tilejson(
                                     bytes.get(..header).unwrap_or(&bytes),
                                 )
@@ -2263,6 +2273,7 @@ impl Map {
             }
         }
         self.retry_glyphs(now);
+        report.wake_in = self.reload_expired();
         // The sources' plan reads the view, the style, the tiles held and
         // the terrain: unchanged, the last one stands, its loads asked for.
         let key = self.plan_key(renderer, view);
@@ -2745,6 +2756,8 @@ impl Map {
             rows_only,
             neighbour,
             rank,
+            asked_at: (self.services.clock.unix_ms() / 1000.0) as u64,
+            reload: edit == Some(RELOAD),
             ..TileRequest::whole(style.id, key, tile, location, endpoint.encoding)
         };
         // Symbol layout needs the sprites' metadata: while the sprites load,
@@ -2942,6 +2955,42 @@ impl Map {
         }
         self.events.wake();
         Ok(())
+    }
+
+    /// Loads the tiles the last plan used whose data has expired again
+    /// (GL JS's reload timer, MapLibre Native's revalidation), each drawn
+    /// until its new layout replaces it, as an edit's relayout does: a
+    /// frame shows what a fresh map loading the same data would. A reload
+    /// that fails is tried again later, waiting longer each time, as a
+    /// failed load is. Returns how long until the next is due.
+    fn reload_expired(&mut self) -> Option<std::time::Duration> {
+        let now = self.services.clock.unix_ms();
+        let second = (now / 1000.0) as u64;
+        let style = self.style.as_mut()?;
+        let (mut expired, mut next) = (Vec::new(), None::<u64>);
+        for (index, source) in style.sources.iter_mut().enumerate() {
+            let SourceState::Ready { pyramid, .. } = source else {
+                continue;
+            };
+            for (tile, resident) in pyramid.used_mut() {
+                let Some(mut due) = resident.reload_at else {
+                    continue;
+                };
+                // Until its reload answers with a lifetime of its own.
+                if due <= second {
+                    let wait = orb_source::retry_delay(resident.reloads_tried) / 1000.0;
+                    resident.reloads_tried = resident.reloads_tried.saturating_add(1);
+                    due = second + wait.ceil() as u64;
+                    resident.reload_at = Some(due);
+                    expired.push((index, tile));
+                }
+                next = Some(next.map_or(due, |next| next.min(due)));
+            }
+        }
+        for (index, tile) in expired {
+            self.send_edit_job(index, tile, None, false, RELOAD);
+        }
+        next.map(|until| std::time::Duration::from_secs_f64((until as f64 - now / 1000.0).max(0.0)))
     }
 
     /// Ranks the loads still waiting for their fetches again, by the
@@ -3549,8 +3598,8 @@ impl Map {
         abort: &Abort,
         message: impl FnOnce(Result<String, FetchError>) -> Message + Send + 'static,
     ) {
-        let done = self.reply(move |result: Result<Vec<u8>, FetchError>| {
-            message(result.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+        let done = self.reply(move |result: Result<orb_host::Fetched, FetchError>| {
+            message(result.map(|fetched| String::from_utf8_lossy(&fetched.bytes).into_owned()))
         });
         self.services.fetch.get(kind, url, abort, done);
     }
@@ -3755,7 +3804,7 @@ mod tests {
         // Its fetch is given up; an answer that comes anyway is dropped.
         assert!(fetch.aborts.lock().unwrap()[0].is_aborted());
         let (_, done) = fetch.pending.lock().unwrap().pop().unwrap();
-        done(Ok(style("a").into_bytes()));
+        done(Ok(style("a").into_bytes().into()));
         while let Ok(Message::Style {
             request,
             url,
@@ -3868,7 +3917,10 @@ mod tests {
         };
         map.set_style_json(&style("empty")).unwrap();
         assert!(map.style_loaded());
-        for reply in [Ok(style("a").into_bytes()), Err(FetchError::NotFound)] {
+        for reply in [
+            Ok(style("a").into_bytes().into()),
+            Err(FetchError::NotFound),
+        ] {
             let failed = reply.is_err();
             map.load_style_url("https://example.com/a.json");
             assert!(!map.style_loaded());
@@ -3961,7 +4013,8 @@ mod tests {
             "sources": {"s": {"type": "raster", "tiles": ["t/{z}/{x}/{y}.png"],
                               "dev.sargunv.orbis:tileMatrixSet": "UPSArcticWGS84Quad"}},
             "layers": []}"#
-            .to_vec()));
+            .to_vec()
+            .into()));
         while let Ok(Message::Style {
             request,
             url,

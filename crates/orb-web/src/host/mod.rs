@@ -10,7 +10,9 @@ pub(crate) use locale::BrowserLocale;
 pub(crate) use storage::OpfsStorage;
 
 use js_sys::{Reflect, Uint8Array};
-use orb_host::{Abort, DecodedImage, Fetch, FetchDone, FetchError, ImageDecode, ImageDone};
+use orb_host::{
+    Abort, DecodedImage, Fetch, FetchDone, FetchError, Fetched, ImageDecode, ImageDone,
+};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
@@ -341,7 +343,7 @@ async fn fetch_body(
     url: &str,
     range: Option<(u64, u64)>,
     signal: Option<&web_sys::AbortSignal>,
-) -> Result<Vec<u8>, FetchError> {
+) -> Result<Fetched, FetchError> {
     let early = match range {
         None => preloaded(url).await,
         Some(_) => None,
@@ -413,6 +415,29 @@ async fn request(
         .map_err(network)
 }
 
+/// Until when (Unix seconds) `response` stays fresh, if it came fresh, as
+/// its `Cache-Control` or `Expires` says (both CORS-safelisted, so a
+/// cross-origin response shows them): `max-age` counts from now, as GL
+/// JS counts it, since `Date` and `Age` aren't safelisted. The browser's
+/// cache answers the reload that follows as its own rules say.
+fn fresh_until(response: &web_sys::Response) -> Option<u64> {
+    let header = |name| response.headers().get(name).ok().flatten();
+    let now = js_sys::Date::now() / 1000.0;
+    let until = match orb_host::MaxAge::of(&header("cache-control").unwrap_or_default()) {
+        orb_host::MaxAge::NoStore => return None,
+        orb_host::MaxAge::Seconds(age) => now + age as f64,
+        orb_host::MaxAge::Unsaid => js_sys::Date::parse(http_date(&header("expires")?)?) / 1000.0,
+    };
+    // NaN, an unreadable date, isn't greater: already expired.
+    (until > now.ceil()).then_some(until as u64)
+}
+
+/// `text` if it's an HTTP date in a form ending in GMT (IMF-fixdate and
+/// RFC 850's), which `Date.parse` reads as one: it takes far more.
+fn http_date(text: &str) -> Option<&str> {
+    (text.contains(',') && text.ends_with(" GMT")).then_some(text)
+}
+
 /// The wait a failed response's `Retry-After` asks for, which a
 /// cross-origin response shows only where the server exposes it
 /// (`Access-Control-Expose-Headers`). Dates are read only in the forms
@@ -421,10 +446,7 @@ async fn request(
 fn retry_after(response: &web_sys::Response) -> Option<std::time::Duration> {
     let header = response.headers().get("retry-after").ok().flatten()?;
     orb_host::parse_retry_after(&header, |date| {
-        if !(date.contains(',') && date.ends_with(" GMT")) {
-            return None;
-        }
-        let at = js_sys::Date::parse(date);
+        let at = js_sys::Date::parse(http_date(date)?);
         // NaN: unreadable.
         let wait = (!at.is_nan()).then(|| (at - js_sys::Date::now()).max(0.0) / 1000.0)?;
         std::time::Duration::try_from_secs_f64(wait).ok()
@@ -435,16 +457,20 @@ fn retry_after(response: &web_sys::Response) -> Option<std::time::Duration> {
 async fn read(
     response: web_sys::Response,
     range: Option<(u64, u64)>,
-) -> Result<Vec<u8>, FetchError> {
+) -> Result<Fetched, FetchError> {
     let network = |e: JsValue| FetchError::Network(format!("{e:?}"));
     let stream = response.body();
+    let fresh_until = fresh_until(&response);
     let valid = match response.status() {
         // No content: a valid, empty tile.
         204 => {
             if let Some(stream) = stream {
                 let _ = stream.cancel();
             }
-            return Ok(Vec::new());
+            return Ok(Fetched {
+                bytes: Vec::new(),
+                fresh_until,
+            });
         }
         200..=299 => {
             if let Some((offset, length)) = range {
@@ -499,7 +525,7 @@ async fn read(
     if range.is_some() && bytes.len() != limit {
         return Err(FetchError::Range("short range body".into()));
     }
-    Ok(bytes)
+    Ok(Fetched { bytes, fresh_until })
 }
 
 /// The browser's monotonic clock, available on the page and workers.
@@ -513,6 +539,10 @@ impl orb_host::Clock for WebClock {
                 .expect("performance clock")
                 .unchecked_into();
         performance.now()
+    }
+
+    fn unix_ms(&self) -> f64 {
+        js_sys::Date::now()
     }
 }
 

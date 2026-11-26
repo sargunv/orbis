@@ -36,41 +36,88 @@ type FrameKey = (u32, u64, TileIndex);
 #[derive(Debug, Default)]
 struct Frames {
     /// Each frame, its bytes and when it was last used.
-    tiles: HashMap<FrameKey, (Arc<TileFrame>, usize, u64)>,
+    tiles: HashMap<FrameKey, CachedFrame>,
     bytes: usize,
     clock: u64,
 }
 
+/// A decoded tile, kept.
+#[derive(Debug)]
+struct CachedFrame {
+    frame: Frame,
+    bytes: usize,
+    used: u64,
+}
+
+/// A decoded tile, and until when (Unix seconds) the data it was decoded
+/// from stays fresh, if it came fresh.
+#[derive(Clone, Debug)]
+pub(crate) struct Frame {
+    pub(crate) tile: Arc<TileFrame>,
+    pub(crate) fresh_until: Option<u64>,
+    /// A hash of the bytes it was decoded from, where they came fresh: a
+    /// reload that brings them again renews it ([`TileWorker::renew`]).
+    digest: Option<u64>,
+}
+
+/// A hash of a tile's bytes, telling a reload's from those drawn.
+fn digest(bytes: &[u8]) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = rustc_hash::FxHasher::default();
+    hasher.write(bytes);
+    hasher.write_usize(bytes.len());
+    hasher.finish()
+}
+
+impl Frame {
+    /// Whether a request made at `asked_at` takes it: its data hadn't
+    /// expired by then, or the request takes any ([`TileRequest::asked_at`]).
+    fn fresh_for(&self, request: &TileRequest) -> bool {
+        !request.loads_whole()
+            || self
+                .fresh_until
+                .is_none_or(|until| until > request.asked_at)
+    }
+}
+
 impl Frames {
-    fn get(&mut self, key: FrameKey) -> Option<Arc<TileFrame>> {
+    /// The frame `key` names, if `request` takes it.
+    fn get(&mut self, key: FrameKey, request: &TileRequest) -> Option<Frame> {
         self.clock += 1;
         let clock = self.clock;
-        self.tiles.get_mut(&key).map(|(frame, _, used)| {
-            *used = clock;
-            Arc::clone(frame)
-        })
+        let cached = self.tiles.get_mut(&key)?;
+        if !cached.frame.fresh_for(request) {
+            return None;
+        }
+        cached.used = clock;
+        Some(cached.frame.clone())
     }
 
-    fn insert(&mut self, key: FrameKey, frame: Arc<TileFrame>) {
+    fn insert(&mut self, key: FrameKey, frame: Frame) {
         self.clock += 1;
-        let bytes = frame.bytes();
+        let bytes = frame.tile.bytes();
         self.bytes += bytes;
-        if let Some((_, old, _)) = self.tiles.insert(key, (frame, bytes, self.clock)) {
-            self.bytes -= old;
+        let cached = CachedFrame {
+            frame,
+            bytes,
+            used: self.clock,
+        };
+        if let Some(old) = self.tiles.insert(key, cached) {
+            self.bytes -= old.bytes;
         }
         while self.bytes > FRAME_BUDGET && self.tiles.len() > 1 {
             let (&oldest, _) = self
                 .tiles
                 .iter()
-                .min_by_key(|(_, (.., used))| *used)
+                .min_by_key(|(_, cached)| cached.used)
                 .expect("a frame");
             self.remove(oldest);
         }
     }
 
     fn remove(&mut self, key: FrameKey) {
-        if let Some((_, bytes, _)) = self.tiles.remove(&key) {
-            self.bytes -= bytes;
+        if let Some(cached) = self.tiles.remove(&key) {
+            self.bytes -= cached.bytes;
         }
     }
 }
@@ -637,8 +684,9 @@ impl TileWorker {
     }
 
     /// Whether `request` can build without fetching bytes: its tile is
-    /// cached, or its source is inline or already indexed GeoJSON. Job
-    /// hosts use this to avoid fetching again; `build` ignores bytes then.
+    /// cached, still fresh if it loads whole, or its source is inline or
+    /// already indexed GeoJSON. Job hosts use this to avoid fetching
+    /// again; `build` ignores bytes then.
     pub(crate) fn has_data(&self, request: &TileRequest) -> bool {
         // An app's tile comes with the request.
         if self.plan.source(request.source).is_none()
@@ -654,7 +702,8 @@ impl TileWorker {
         // sibling.
         let whole = (request.source, began, request.data_tile());
         let frames = self.data.frames.lock().expect("frames poisoned");
-        if frames.tiles.contains_key(&key) || frames.tiles.contains_key(&whole) {
+        let fresh = |key| (frames.tiles.get(&key)).is_some_and(|c| c.frame.fresh_for(request));
+        if fresh(key) || fresh(whole) {
             return true;
         }
         drop(frames);
@@ -666,6 +715,32 @@ impl TileWorker {
                     .expect("GeoJSON index poisoned")
                     .is_some()
         })
+    }
+
+    /// Whether `bytes`, fetched for `request` (a reload, [`TileRequest::reload`]),
+    /// are those its tile's kept frame was decoded from: the frame's data
+    /// then stays fresh as long as the fetch said, if it said, and what
+    /// its map draws stays as it is (MapLibre Native's 304).
+    pub(crate) fn renew(&self, request: &TileRequest, bytes: &[u8]) -> bool {
+        let Ok((began, _)) = self.data(request.source) else {
+            return false;
+        };
+        let digest = Some(digest(bytes));
+        let mut frames = self.data.frames.lock().expect("frames poisoned");
+        let mut same = false;
+        // An overzoomed tile's frame slices its ancestor's.
+        for tile in [request.tile, request.data_tile()] {
+            let Some(cached) = frames.tiles.get_mut(&(request.source, began, tile)) else {
+                continue;
+            };
+            if cached.frame.digest == digest {
+                same = true;
+                if let Some(until) = request.fresh_until {
+                    cached.frame.fresh_until = Some(until);
+                }
+            }
+        }
+        same
     }
 
     /// Builds `request`'s tile and lays out its nodes, from the cached tile
@@ -684,7 +759,11 @@ impl TileWorker {
             .source(request.source)
             .ok_or_else(|| format!("source {} was removed", request.source))?;
         let mut warnings = Vec::new();
-        let frame = self.frame(bytes, encoding, request)?;
+        let Frame {
+            tile: frame,
+            fresh_until,
+            ..
+        } = self.frame(bytes, encoding, request)?;
         // A warped tile's geometry follows the warp's curve; the cached
         // frame keeps the tile's own, for queries.
         let frame = match request.bend {
@@ -726,6 +805,10 @@ impl TileWorker {
             Ok(mut build) => {
                 warnings.extend(self.data.glyphs.take_warnings());
                 build.warnings.splice(0..0, warnings);
+                // What loads whole stays fresh as long as its data; what
+                // lays out some nodes again says nothing of the rest.
+                build.fresh_until = fresh_until.filter(|_| request.loads_whole());
+                build.reload = request.reload;
                 Ok(Built::Tile(build))
             }
             Err(tile::Missing { urls, bidi: false }) => Ok(Built::Fetch(urls)),
@@ -773,7 +856,7 @@ impl TileWorker {
         bytes: &[u8],
         encoding: Encoding,
         request: &TileRequest,
-    ) -> Result<Arc<TileFrame>, String> {
+    ) -> Result<Frame, String> {
         self.frame_at(bytes, encoding, request, Some(self.plan.revision))
     }
 
@@ -785,11 +868,12 @@ impl TileWorker {
         encoding: Encoding,
         request: &TileRequest,
         revision: Option<u64>,
-    ) -> Result<Arc<TileFrame>, String> {
+    ) -> Result<Frame, String> {
         let TileRequest {
             source,
             tile,
             data_zoom,
+            fresh_until,
             ..
         } = *request;
         if data_zoom > tile.z {
@@ -810,35 +894,54 @@ impl TileWorker {
                 }
                 _ => self.decode(bytes, encoding, index, &data, data_tile, data_tile.z)?,
             };
-            return Ok(overzoom(frame, tile, data_zoom));
+            return Ok(Frame {
+                tile: overzoom(frame, tile, data_zoom),
+                fresh_until: None,
+                digest: None,
+            });
         }
         let key = (source, began, tile);
         let frames = &self.data.frames;
-        let cached = frames.lock().expect("frames poisoned").get(key);
+        let cached = frames.lock().expect("frames poisoned").get(key, request);
         if let Some(frame) = cached {
             return Ok(frame);
         }
         let geojson = matches!(self.plan.source_def(index).kind, SourceKind::GeoJson(_));
+        let digest = fresh_until.map(|_| digest(bytes));
         let frame = if data_zoom < tile.z {
             // An ancestor's overzoomed tiles slice its one decode.
             let whole = request.data_tile();
             let whole_key = (source, began, whole);
-            let cached = frames.lock().expect("frames poisoned").get(whole_key);
+            let cached = frames
+                .lock()
+                .expect("frames poisoned")
+                .get(whole_key, request);
             let whole_frame = match cached {
                 Some(frame) => frame,
                 None => {
-                    let frame = self.decode(bytes, encoding, index, &data, whole, data_zoom)?;
+                    let frame = Frame {
+                        tile: self.decode(bytes, encoding, index, &data, whole, data_zoom)?,
+                        fresh_until,
+                        digest,
+                    };
                     let mut frames = frames.lock().expect("frames poisoned");
-                    frames.insert(whole_key, Arc::clone(&frame));
+                    frames.insert(whole_key, frame.clone());
                     frame
                 }
             };
-            Arc::new(slice(&whole_frame, tile, data_zoom, geojson))
+            Frame {
+                tile: Arc::new(slice(&whole_frame.tile, tile, data_zoom, geojson)),
+                ..whole_frame
+            }
         } else {
-            self.decode(bytes, encoding, index, &data, tile, data_zoom)?
+            Frame {
+                tile: self.decode(bytes, encoding, index, &data, tile, data_zoom)?,
+                fresh_until,
+                digest,
+            }
         };
         let mut frames = frames.lock().expect("frames poisoned");
-        frames.insert(key, Arc::clone(&frame));
+        frames.insert(key, frame.clone());
         Ok(frame)
     }
 
@@ -1018,6 +1121,20 @@ pub struct TileRequest {
     /// the view's focus take fetch turns and workers before the rest
     /// ([`Executor::spawn_ranked`](orb_host::jobs::Executor::spawn_ranked)).
     pub rank: u64,
+    /// When its map asked (Unix seconds): a whole load takes no cached
+    /// frame whose data had expired by then, and fetches its tile again
+    /// ([`TileWorker::has_data`]). 0, as queries ask, takes any.
+    pub(crate) asked_at: u64,
+    /// Loads a drawn tile again whole because its data expired: the
+    /// answer says so ([`TileResult::reload`](crate::TileResult::reload)),
+    /// and bytes the same as those drawn renew it alone
+    /// ([`TileWorker::renew`]).
+    pub(crate) reload: bool,
+    /// Until when the bytes fetched for it stay fresh (Unix seconds), as
+    /// the fetch said ([`orb_host::Fetched::fresh_until`]): set by the job
+    /// host that fetched them, kept with the frame decoded from them and
+    /// reported with every tile laid out from it.
+    pub(crate) fresh_until: Option<u64>,
 }
 
 /// GL JS's unpack vector of a DEM encoding: metres are
@@ -1068,6 +1185,9 @@ impl TileRequest {
             dem_unpack: None,
             icons: 0,
             rank: 0,
+            asked_at: 0,
+            reload: false,
+            fresh_until: None,
         }
     }
 
@@ -1238,7 +1358,7 @@ pub(crate) mod tests {
         }
         let callback = fetch.callbacks.lock().unwrap().pop().unwrap();
         assert!(fetch.callbacks.lock().unwrap().is_empty());
-        callback(Ok(data.into_bytes()));
+        callback(Ok(data.into_bytes().into()));
         assert!(worker.has_data(&request(TileIndex::new(0, 0, 0))));
         assert_eq!(
             rx.try_iter()
@@ -1454,7 +1574,10 @@ pub(crate) mod tests {
         fn release(&self) {
             let held = std::mem::take(&mut *self.held.lock().unwrap());
             for (path, done) in held {
-                done(std::fs::read(path).map_err(|_| orb_host::FetchError::NotFound));
+                done(
+                    (std::fs::read(path).map(Into::into))
+                        .map_err(|_| orb_host::FetchError::NotFound),
+                );
             }
         }
     }
@@ -1484,7 +1607,10 @@ pub(crate) mod tests {
             if url.contains("/glyphs/") {
                 self.held.lock().unwrap().push((path, done));
             } else {
-                done(std::fs::read(path).map_err(|_| orb_host::FetchError::NotFound));
+                done(
+                    (std::fs::read(path).map(Into::into))
+                        .map_err(|_| orb_host::FetchError::NotFound),
+                );
             }
         }
     }
@@ -1816,6 +1942,86 @@ pub(crate) mod tests {
         );
     }
 
+    /// Every tile laid out whole from fetched data says how long the data
+    /// stays fresh, from the cache too, as an overzoomed sibling, and with
+    /// its labels left out while their glyphs load; a relayout lays out
+    /// what's drawn, saying nothing. A reload that brings the bytes drawn
+    /// again renews them alone, and a whole load asked for after they
+    /// expired fetches its tile again.
+    #[test]
+    fn whole_tiles_report_their_datas_lifetime_and_load_again_once_it_ends() {
+        let fetch = Arc::new(HeldTiles::default());
+        let host = crate::JobHost::new(fetch.clone(), Arc::new(orb_host::jobs::Inline));
+        let style = SYMBOLS.replace(
+            r#""layers":["#,
+            r#""layers":[{"id":"c","type":"circle","source":"s","source-layer":"place"},"#,
+        );
+        let worker = TileWorker::new(&style).unwrap();
+        let plan = worker.plan();
+        let circles = (plan.nodes.iter())
+            .find(|n| !n.family.is_symbol())
+            .unwrap()
+            .key;
+        host.set_style(1, Arc::new(worker));
+        let (z, x, y) = SYMBOL_TILE;
+        let bytes = std::fs::read(format!("{ASSETS}/tiles/{z}-{x}-{y}.mvt")).unwrap();
+        let ask = |request: TileRequest| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            host.load(request, None, Box::new(move |r| tx.send(r).unwrap()));
+            move || match rx.try_recv() {
+                Ok(Ok(crate::Loaded::Tile(build))) => build,
+                other => panic!("not built: {other:?}"),
+            }
+        };
+        let fetches = || fetch.0.lock().unwrap().len();
+        let fetched = |fresh_until| {
+            let (done, _) = fetch.0.lock().unwrap().pop().expect("a fetch");
+            done(Ok(orb_host::Fetched {
+                bytes: bytes.clone(),
+                fresh_until,
+            }));
+        };
+        let tile = TileIndex::new(z, x, y);
+        let whole = |asked_at| TileRequest {
+            location: TileLocation::Url("local://tile".into()),
+            asked_at,
+            ..request(tile)
+        };
+        let built = ask(whole(100));
+        fetched(Some(200));
+        let first = built();
+        assert!(!first.labels_later.is_empty(), "its labels wait for glyphs");
+        assert_eq!(first.fresh_until, Some(200));
+        // The glyph range's fetch, held.
+        assert_eq!(fetches(), 1);
+        let child = TileRequest {
+            tile: TileIndex::new(z + 1, x * 2, y * 2),
+            data_zoom: z,
+            ..whole(150)
+        };
+        let sibling = ask(child)();
+        assert_eq!(sibling.fresh_until, Some(200), "from the cache, as fetched");
+        let relayout = TileRequest {
+            nodes: Some(vec![circles]),
+            ..whole(250)
+        };
+        assert_eq!(ask(relayout)().fresh_until, None);
+        assert_eq!(fetches(), 1, "what's drawn");
+        let reload = ask(TileRequest {
+            reload: true,
+            ..whole(250)
+        });
+        fetched(Some(300));
+        let renewed = reload();
+        assert!(renewed.reload && renewed.renewed && renewed.meshes.is_empty());
+        assert_eq!(renewed.fresh_until, Some(300));
+        assert_eq!(ask(whole(260))().fresh_until, Some(300), "renewed");
+        assert_eq!(fetches(), 1);
+        let built = ask(whole(300));
+        fetched(None);
+        assert_eq!(built().fresh_until, None, "fetched again, stale");
+    }
+
     /// A glyph range another context fetches for the job hosts: a tile
     /// that needs it waits for it rather than fetch it again.
     #[test]
@@ -1951,7 +2157,7 @@ pub(crate) mod tests {
         let (z, x, y) = SYMBOL_TILE;
         let bytes = std::fs::read(format!("{ASSETS}/tiles/{z}-{x}-{y}.mvt")).unwrap();
         for done in std::mem::take(&mut *fetch.0.lock().unwrap()) {
-            done(Ok(bytes.clone()));
+            done(Ok(bytes.clone().into()));
         }
         let Some(Err(e)) = rx.try_iter().next() else {
             panic!("answered without a build")
@@ -2025,7 +2231,7 @@ pub(crate) mod tests {
             r#"{"type":"FeatureCollection","features":[]}"#.into(),
         ];
         for ((_, done), document) in held.into_iter().zip(documents) {
-            done(Ok(document.into_bytes()));
+            done(Ok(document.into_bytes().into()));
         }
         let answers: Vec<bool> = rx.try_iter().map(drawn).collect();
         assert_eq!(

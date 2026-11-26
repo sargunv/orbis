@@ -74,7 +74,7 @@ pub(crate) fn load(
             &url,
             abort,
             Box::new(move |result| {
-                let result = result.map_err(|e| e.to_string());
+                let result = result.map(|f| f.bytes).map_err(|e| e.to_string());
                 let ready = {
                     let mut p = pending.lock().expect("sprite load poisoned");
                     match heard {
@@ -342,10 +342,12 @@ mod tests {
         let mut answers = std::mem::take(&mut *fetch.0.lock().unwrap());
         let (json_url, json) = answers.remove(0);
         assert_eq!(json_url, "test://s.json");
-        json(Ok(br#"{"a":{"x":0,"y":0,"width":1,"height":1}}"#.to_vec()));
+        json(Ok(
+            br#"{"a":{"x":0,"y":0,"width":1,"height":1}}"#.to_vec().into(),
+        ));
         assert_eq!(*heard.lock().unwrap(), ["icons a"]);
         let (_, png) = answers.remove(0);
-        png(Ok(Vec::new()));
+        png(Ok(Vec::new().into()));
         assert_eq!(*heard.lock().unwrap(), ["icons a", "pixels [1, 2, 3, 4]"]);
     }
 }

@@ -377,6 +377,21 @@ impl Map {
             return;
         };
         let mut build = match result {
+            // A reload that brought the data drawn again: the tile stays,
+            // fresh as long as the fetch said. One that said nothing tries
+            // again when its reload was due to.
+            Ok(TileOutcome::Built(build)) if build.renewed => {
+                let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
+                    return;
+                };
+                if let Some(resident) = pyramid.get_mut(tile)
+                    && build.fresh_until.is_some()
+                {
+                    resident.reload_at = build.fresh_until;
+                    resident.reloads_tried = 0;
+                }
+                return;
+            }
             Ok(TileOutcome::Built(build)) => build,
             // The tile's data went: it stays as it was until it reloads.
             Ok(TileOutcome::Missing { mut warnings }) => {
@@ -475,6 +490,12 @@ impl Map {
                 self.counts.rows_uploaded += 1;
             }
         } else {
+            // A whole tile's data loaded again (it expired) brings its
+            // lifetime, if it has one.
+            if build.reload {
+                resident.reload_at = build.fresh_until;
+                resident.reloads_tried = 0;
+            }
             // Whether its labels drew a failed glyph range: as the build
             // has it where it laid out every symbol layer, else either.
             let symbols = (plan.nodes.iter()).filter(|n| n.source == index && n.family.is_symbol());
@@ -573,8 +594,16 @@ impl Map {
         record_maxima(&mut style.nodes, &build.meshes, &mut style.paint);
         resident.cost = crate::resident::tile_cost(renderer, resident);
         drop(images);
+        // Labels a whole relayout left out while their glyphs loaded
+        // follow, as a load's do.
+        let later: Vec<u32> = (build.labels_later.iter().copied())
+            .filter(|&key| plan.node(key).is_some())
+            .collect();
+        let version = self.version;
+        if !later.is_empty() {
+            self.send_edit_job(index, tile, Some(later), false, version);
+        }
         if !stale_rows.is_empty() {
-            let version = self.version;
             self.send_edit_job(index, tile, Some(stale_rows), true, version);
         }
     }

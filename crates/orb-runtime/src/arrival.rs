@@ -1075,6 +1075,7 @@ impl Map {
         resident.series = series;
         resident.neighbour = build.neighbour;
         resident.glyphs_failed = build.glyphs_failed;
+        resident.reload_at = build.fresh_until;
         (style.glyph_retry).arrived(build.glyphs_failed, false, self.services.clock.now());
         self.counts.meshes_uploaded += build.meshes.len() as u32;
         record_maxima(&mut style.nodes, &build.meshes, &mut style.paint);

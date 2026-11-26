@@ -1459,6 +1459,146 @@ fn app_sources_draw_the_tiles_the_app_hands_in() {
     );
 }
 
+/// A vector tile of one layer, `shapes`, whose one polygon covers the
+/// tile, with a property `c` if `marked`.
+fn covering_tile(marked: bool) -> Vec<u8> {
+    fn varint(out: &mut Vec<u8>, mut v: u64) {
+        while v >= 0x80 {
+            out.push(v as u8 | 0x80);
+            v >>= 7;
+        }
+        out.push(v as u8);
+    }
+    fn field(out: &mut Vec<u8>, number: u64, bytes: &[u8]) {
+        varint(out, number << 3 | 2);
+        varint(out, bytes.len() as u64);
+        out.extend(bytes);
+    }
+    let packed = |values: &[u64]| {
+        let mut out = Vec::new();
+        values.iter().for_each(|&v| varint(&mut out, v));
+        out
+    };
+    // MoveTo (0, 0), LineTo by (4096, 0), (0, 4096), (-4096, 0), close.
+    let geometry = packed(&[9, 0, 0, 26, 8192, 0, 0, 8192, 8191, 0, 15]);
+    let mut feature = Vec::new();
+    if marked {
+        field(&mut feature, 2, &packed(&[0, 0]));
+    }
+    feature.extend([3 << 3, 3]);
+    field(&mut feature, 4, &geometry);
+    let mut layer = vec![15 << 3, 2];
+    field(&mut layer, 1, b"shapes");
+    field(&mut layer, 2, &feature);
+    if marked {
+        field(&mut layer, 3, b"c");
+        let mut value = Vec::new();
+        field(&mut value, 1, b"x");
+        field(&mut layer, 4, &value);
+    }
+    layer.extend([5 << 3]);
+    varint(&mut layer, 4096);
+    let mut tile = Vec::new();
+    field(&mut tile, 3, &layer);
+    tile
+}
+
+#[test]
+fn tiles_whose_data_expires_load_again_while_drawn() {
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    // The tile, fresh for a second (which the map takes as its shortest
+    // lifetime, a few), then a failure, then marked and fresh for none.
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = server.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&requests);
+    std::thread::spawn(move || {
+        for stream in server.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut request = [0; 2048];
+            let _ = stream.read(&mut request);
+            let (status, lifetime, body) = match counted.fetch_add(1, Ordering::SeqCst) {
+                0 => (
+                    "200 OK",
+                    "Cache-Control: max-age=1\r\n",
+                    covering_tile(false),
+                ),
+                1 => ("500 Internal Server Error", "", Vec::new()),
+                _ => ("200 OK", "", covering_tile(true)),
+            };
+            let head = format!(
+                "HTTP/1.1 {status}\r\nConnection: close\r\n{lifetime}Content-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+        }
+    });
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    let woken = Arc::new(AtomicBool::new(false));
+    let heard = Arc::clone(&woken);
+    map.set_wake(move || heard.store(true, Ordering::SeqCst));
+    let asked = std::time::Instant::now();
+    map.set_style_json(&format!(
+        r##"{{"version": 8, "center": [0, 0], "zoom": 0,
+            "sources": {{"v": {{"type": "vector", "tiles": ["http://{address}/{{z}}/{{x}}/{{y}}.mvt"],
+                "maxzoom": 0}}}},
+            "layers": [
+                {{"id": "background", "type": "background", "paint": {{"background-color": "#ff0000"}}}},
+                {{"id": "shapes", "type": "fill", "source": "v", "source-layer": "shapes",
+                 "paint": {{"fill-color": ["case", ["has", "c"], "#00ff00", "#0000ff"]}}}}]}}"##
+    ))
+    .expect("style");
+    settle(&mut map, &mut target);
+    let centre = |target: &Target| pixel(&target.read_pixels().unwrap(), SIZE / 2, SIZE / 2);
+    let (old, new) = ([0, 0, 255, 255], [0, 255, 0, 255]);
+    assert_eq!(centre(&target), old, "the tile as it came first");
+    // Idle while the tile is fresh, until its expiry wakes the map.
+    woken.store(false, Ordering::SeqCst);
+    assert!(!map.needs_frame(), "a map waiting for an expiry is idle");
+    let started = std::time::Instant::now();
+    while !woken.load(Ordering::SeqCst) {
+        assert!(
+            started.elapsed().as_secs() < 10,
+            "no wake when the tile expired"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        asked.elapsed() >= Duration::from_secs(3),
+        "woken before the shortest lifetime"
+    );
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        1,
+        "woken before the reload"
+    );
+    // Each frame draws the old tile until the new one replaces it, the
+    // failed reload tried again a little later.
+    loop {
+        let report = map.render(&mut target, now()).unwrap();
+        let shown = centre(&target);
+        assert!(shown == old || shown == new, "a frame drew {shown:?}");
+        if shown == new && report.is_some_and(|r| r.idle()) {
+            break;
+        }
+        assert!(
+            started.elapsed().as_secs() < 20,
+            "the tile didn't load again"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    // The reload came with no lifetime: the map loads nothing more.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!map.needs_frame());
+    assert_eq!(requests.load(Ordering::SeqCst), 3);
+}
+
 /// The answer of `query` once it arrives.
 fn query_answer(map: &mut Map, target: &mut Target, query: u64) -> String {
     let started = std::time::Instant::now();

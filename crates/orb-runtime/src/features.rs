@@ -90,7 +90,7 @@ impl TileWorker {
         encoding: Encoding,
         request: &FeatureRequest,
     ) -> Result<Vec<TileFeature>, String> {
-        let frame = self.frame_at(bytes, encoding, &request.tile, request.revision)?;
+        let frame = (self.frame_at(bytes, encoding, &request.tile, request.revision)?).tile;
         let tile = request.tile.tile;
         let index = self
             .plan()

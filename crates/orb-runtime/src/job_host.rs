@@ -256,7 +256,8 @@ impl GlyphLoads {
             &key.1.clone(),
             &Abort::NEVER,
             Box::new(move |fetched| {
-                this.arrived(worker, key, fetched.map_err(|e| e.to_string()));
+                let fetched = fetched.map(|f| f.bytes).map_err(|e| e.to_string());
+                this.arrived(worker, key, fetched);
             }),
         );
     }
@@ -366,6 +367,10 @@ impl GlyphLoads {
                 ..request.clone()
             };
             if let Ok(Built::Tile(mut build)) = worker.build(&bytes, request.encoding, &geometry) {
+                // They stand for the whole load: its data's lifetime goes
+                // with them, from the frame they were laid out from.
+                let frame = worker.frame(&bytes, request.encoding, &request);
+                build.fresh_until = frame.ok().and_then(|frame| frame.fresh_until);
                 for url in urls {
                     self.wait(&worker, style, url, Box::new(|| {}));
                 }
@@ -425,6 +430,11 @@ impl GlyphLoads {
         }
     }
 }
+
+/// The shortest time (seconds) a fetch's data stays fresh: a server sending
+/// `max-age=1` doesn't have every tile drawn from it fetched and laid out
+/// again each second.
+const MIN_LIFETIME: u64 = 5;
 
 /// A fetch's outcome as a load's: a tile the source doesn't have (HTTP
 /// 404) is [`Loaded::Missing`], one given up [`Loaded::Cancelled`], one
@@ -650,24 +660,24 @@ impl JobHost {
                             // Given up while it was fetched: not decoded.
                             Ok(_) if !glyphs.wants.wanted(&request) => done(Ok(Loaded::Cancelled)),
                             // An archive's left-out tile draws nothing.
-                            Ok((bytes, _)) if bytes.is_empty() => {
+                            Ok((fetched, _)) if fetched.bytes.is_empty() => {
                                 done(Ok(Loaded::Tile(TileBuild::default())))
                             }
                             // Its mesh on the surface's plane is the costly
                             // part of drawing it there: the grid is made here.
-                            Ok((bytes, _)) if warp => executor.spawn_ranked(
+                            Ok((fetched, _)) if warp => executor.spawn_ranked(
                                 rank,
                                 Box::new(move || {
                                     let warp_grid = worker.warp_grid(source, tile).map(Arc::new);
                                     done(Ok(Loaded::Image {
-                                        bytes,
+                                        bytes: fetched.bytes,
                                         kind,
                                         warp_grid,
                                     }))
                                 }),
                             ),
-                            Ok((bytes, _)) => done(Ok(Loaded::Image {
-                                bytes,
+                            Ok((fetched, _)) => done(Ok(Loaded::Image {
+                                bytes: fetched.bytes,
                                 kind,
                                 warp_grid: None,
                             })),
@@ -704,15 +714,43 @@ impl JobHost {
                             }
                             // A sparse tileset has no tile there: an
                             // ancestor stands in.
-                            Ok((bytes, _)) if bytes.is_empty() && worker.sparse(request.source) => {
+                            Ok((fetched, _))
+                                if fetched.bytes.is_empty() && worker.sparse(request.source) =>
+                            {
                                 done(Ok(Loaded::Missing))
                             }
-                            Ok((bytes, encoding)) => {
+                            Ok((fetched, encoding)) => {
+                                let fresh_until = (fetched.fresh_until)
+                                    .map(|until| until.max(request.asked_at + MIN_LIFETIME));
                                 let request = TileRequest {
                                     encoding,
+                                    fresh_until,
                                     ..request
                                 };
-                                glyphs.complete(worker, Arc::new(bytes), request, done)
+                                if request.reload && worker.renew(&request, &fetched.bytes) {
+                                    let build = TileBuild {
+                                        fresh_until,
+                                        reload: true,
+                                        renewed: true,
+                                        ..TileBuild::default()
+                                    };
+                                    return done(Ok(Loaded::Tile(build)));
+                                }
+                                glyphs.complete(worker, Arc::new(fetched.bytes), request, done)
+                            }
+                            // Offline or the server failing, a frame kept of
+                            // the tile stands in, expired as it is, as the
+                            // native cache's stale copy does: drawn, it loads
+                            // again.
+                            Err(e) if e.transient() && !request.reload => {
+                                let kept = TileRequest {
+                                    asked_at: 0,
+                                    ..request
+                                };
+                                match worker.has_data(&kept) {
+                                    true => glyphs.complete(worker, Arc::default(), kept, done),
+                                    false => done(missing(e)),
+                                }
                             }
                             Err(e) => done(missing(e)),
                         }),
@@ -798,7 +836,9 @@ impl JobHost {
                         .expect("registered fetch")
                         .pop()
                         .expect("first request");
-                    let fetched = fetched.map(Arc::new).map_err(|e| e.to_string());
+                    let fetched = fetched
+                        .map(|f| Arc::new(f.bytes))
+                        .map_err(|e| e.to_string());
                     // Every waiter gets the bytes: a revision that set the
                     // same URL again has data of its own to index, and one
                     // already indexed ignores them.
@@ -840,7 +880,9 @@ impl JobHost {
             &Abort::NEVER,
             Box::new(move |fetched| {
                 executor.spawn(Box::new(move || match fetched {
-                    Ok((bytes, encoding)) => done(worker.features(&bytes, encoding, &request)),
+                    Ok((fetched, encoding)) => {
+                        done(worker.features(&fetched.bytes, encoding, &request))
+                    }
                     Err(FetchError::NotFound) => done(Ok(Vec::new())),
                     Err(e) => done(Err(e.to_string())),
                 }));
@@ -868,7 +910,7 @@ impl JobHost {
             &Abort::NEVER,
             Box::new(move |fetched| {
                 executor.spawn(Box::new(move || match fetched {
-                    Ok((bytes, _)) => done(worker.cluster(&bytes, &request)),
+                    Ok((fetched, _)) => done(worker.cluster(&fetched.bytes, &request)),
                     Err(e) => done(Err(e.to_string())),
                 }));
             }),
@@ -891,8 +933,8 @@ impl JobHost {
                     &url.clone(),
                     &Abort::NEVER,
                     Box::new(move |fetched| match fetched {
-                        Ok(bytes) => {
-                            let bytes = Arc::new(bytes);
+                        Ok(fetched) => {
+                            let bytes = Arc::new(fetched.bytes);
                             let mut recent = glyphs.recent.lock().expect("ranges poisoned");
                             recent.insert(&url, Arc::clone(&bytes));
                             drop(recent);
@@ -930,7 +972,9 @@ impl JobHost {
                         &url.clone(),
                         &Abort::NEVER,
                         Box::new(move |fetched| match fetched {
-                            Ok(bytes) => done(request.draw_file(files.as_ref(), Some(&bytes))),
+                            Ok(fetched) => {
+                                done(request.draw_file(files.as_ref(), Some(&fetched.bytes)))
+                            }
                             Err(e) => done(Err(format!("font face {url}: {e}"))),
                         }),
                     );

@@ -121,4 +121,10 @@ impl orb_host::Clock for Clock {
     fn now(&self) -> f64 {
         self.0.elapsed().as_secs_f64() * 1000.0
     }
+
+    fn unix_ms(&self) -> f64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64() * 1000.0)
+    }
 }

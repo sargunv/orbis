@@ -19,8 +19,8 @@ pub use storage::{FileStorage, wait};
 
 use orb_host::jobs::{Executor, ThreadPool};
 use orb_host::{
-    Abort, DecodedImage, Fetch, FetchDone, FetchError, ImageDecode, ImageDone, NetworkAnswer,
-    NetworkHook, NetworkRequest, Prior, Request, RequestTransform, ResourceKind,
+    Abort, DecodedImage, Fetch, FetchDone, FetchError, Fetched, ImageDecode, ImageDone,
+    NetworkAnswer, NetworkHook, NetworkRequest, Prior, Request, RequestTransform, ResourceKind,
 };
 use ureq::tls::RootCerts;
 
@@ -81,11 +81,14 @@ enum Response {
         bytes: Vec<u8>,
         /// `None` when the response may not be stored.
         fresh_until: Option<u64>,
+        /// The headers gave `fresh_until` ([`http::explicit`]).
+        explicit: bool,
         etag: Option<String>,
         last_modified: Option<String>,
     },
     NotModified {
         fresh_until: Option<u64>,
+        explicit: bool,
     },
 }
 
@@ -158,7 +161,7 @@ impl NativeFetch {
         range: Option<(u64, u64)>,
         online: bool,
         abort: &Abort,
-    ) -> Result<Vec<u8>, FetchError> {
+    ) -> Result<Fetched, FetchError> {
         let (key, cached) = match Self::prepare(cache, &request.url, range, online, false) {
             Ok(answer) => return answer,
             Err(network) => network,
@@ -179,9 +182,9 @@ impl NativeFetch {
         range: Option<(u64, u64)>,
         online: bool,
         hooked: bool,
-    ) -> Result<Result<Vec<u8>, FetchError>, Stale> {
+    ) -> Result<Result<Fetched, FetchError>, Stale> {
         if let Some(path) = url.strip_prefix("file://") {
-            return Ok(read_file(path, range));
+            return Ok(read_file(path, range).map(Fetched::from));
         }
         let cacheable = http::cacheable(url);
         if !cacheable && !hooked {
@@ -189,15 +192,11 @@ impl NativeFetch {
         }
         let key = cacheable.then(|| orb_host::cache::key(url, range));
         let cached = cache.zip(key.as_deref()).and_then(|(c, k)| c.lookup(k));
-        if !online {
-            return Ok(cached
-                .map(|c| c.bytes)
-                .ok_or_else(|| FetchError::Network("offline".into())));
+        match cached {
+            Some(cached) if !online || cached.fresh_until.is_some() => Ok(Ok(cached.fetched())),
+            None if !online => Ok(Err(FetchError::Network("offline".into()))),
+            cached => Err((key, cached)),
         }
-        if let Some(cached) = cached.as_ref().filter(|c| c.fresh) {
-            return Ok(Ok(cached.bytes.clone()));
-        }
-        Err((key, cached))
     }
 
     /// The network's answer, kept in the cache as it says, or the stale
@@ -207,11 +206,36 @@ impl NativeFetch {
         key: Option<String>,
         cached: Option<cache::Cached>,
         response: Result<Response, FetchError>,
-    ) -> Result<Vec<u8>, FetchError> {
+    ) -> Result<Fetched, FetchError> {
+        // A lifetime already over is none: the response came stale. One
+        // the cache guessed keeps it fresh there, but isn't the map's.
+        let now = cache::now();
+        let fresh =
+            |until: Option<u64>, explicit: bool| until.filter(|&until| explicit && until > now);
         let Some((cache, key)) = cache.zip(key) else {
             return match (response?, cached) {
-                (Response::Body { bytes, .. }, _) => Ok(bytes),
-                (Response::NotModified { .. }, Some(cached)) => Ok(cached.bytes),
+                (
+                    Response::Body {
+                        bytes,
+                        fresh_until,
+                        explicit,
+                        ..
+                    },
+                    _,
+                ) => Ok(Fetched {
+                    bytes,
+                    fresh_until: fresh(fresh_until, explicit),
+                }),
+                (
+                    Response::NotModified {
+                        fresh_until,
+                        explicit,
+                    },
+                    Some(cached),
+                ) => Ok(Fetched {
+                    bytes: cached.bytes,
+                    fresh_until: fresh(fresh_until, explicit),
+                }),
                 (Response::NotModified { .. }, None) => Err(FetchError::Status(304)),
             };
         };
@@ -220,6 +244,7 @@ impl NativeFetch {
                 Ok(Response::Body {
                     bytes,
                     fresh_until,
+                    explicit,
                     etag,
                     last_modified,
                 }),
@@ -229,24 +254,36 @@ impl NativeFetch {
                     Some(until) => cache.store(
                         &key,
                         &bytes,
-                        until,
+                        (until, explicit),
                         etag.as_deref(),
                         last_modified.as_deref(),
                     ),
                     None => cache.remove(&key),
                 }
-                Ok(bytes)
+                Ok(Fetched {
+                    bytes,
+                    fresh_until: fresh(fresh_until, explicit),
+                })
             }
-            (Ok(Response::NotModified { fresh_until }), Some(cached)) => {
-                cache.refresh(&key, fresh_until.unwrap_or(0));
-                Ok(cached.bytes)
+            (
+                Ok(Response::NotModified {
+                    fresh_until,
+                    explicit,
+                }),
+                Some(cached),
+            ) => {
+                cache.refresh(&key, (fresh_until.unwrap_or(0), explicit));
+                Ok(Fetched {
+                    bytes: cached.bytes,
+                    fresh_until: fresh(fresh_until, explicit),
+                })
             }
             (Ok(Response::NotModified { .. }), None) => Err(FetchError::Status(304)),
             // Given up: the entry stays as it was.
             (Err(FetchError::Aborted), _) => Err(FetchError::Aborted),
             // Offline, or the server failing or rate-limiting: the stale
             // copy.
-            (Err(error), Some(cached)) if error.transient() => Ok(cached.bytes),
+            (Err(error), Some(cached)) if error.transient() => Ok(cached.bytes.into()),
             (Err(error), _) => {
                 cache.remove(&key);
                 Err(error)
@@ -429,14 +466,15 @@ fn http(
     let (cache_control, expires, date) =
         (header("cache-control"), header("expires"), header("date"));
     let (etag, last_modified) = (header("etag"), header("last-modified"));
-    let fresh_until = http::fresh_until(
-        http::Headers {
-            cache_control: cache_control.as_deref(),
-            expires: expires.as_deref(),
-            date: date.as_deref(),
-            last_modified: last_modified.as_deref(),
-        },
-        cache::now(),
+    let headers = http::Headers {
+        cache_control: cache_control.as_deref(),
+        expires: expires.as_deref(),
+        date: date.as_deref(),
+        last_modified: last_modified.as_deref(),
+    };
+    let (fresh_until, explicit) = (
+        http::fresh_until(headers, cache::now()),
+        http::explicit(headers),
     );
     match response.status().as_u16() {
         200..=203 | 205..=299 => {}
@@ -445,11 +483,17 @@ fn http(
             return Ok(Response::Body {
                 bytes: Vec::new(),
                 fresh_until,
+                explicit,
                 etag,
                 last_modified,
             });
         }
-        304 => return Ok(Response::NotModified { fresh_until }),
+        304 => {
+            return Ok(Response::NotModified {
+                fresh_until,
+                explicit,
+            });
+        }
         status => {
             let now = cache::now();
             let wait = header("retry-after").and_then(|h| {
@@ -476,6 +520,7 @@ fn http(
     Ok(Response::Body {
         bytes,
         fresh_until,
+        explicit,
         etag,
         last_modified,
     })
@@ -638,12 +683,15 @@ impl NativeFetch {
                         } => Ok(Response::Body {
                             bytes,
                             fresh_until,
+                            // The host gave it.
+                            explicit: true,
                             etag,
                             last_modified: modified.map(http::format_http_date),
                         }),
-                        NetworkAnswer::NotModified { fresh_until } => {
-                            Ok(Response::NotModified { fresh_until })
-                        }
+                        NetworkAnswer::NotModified { fresh_until } => Ok(Response::NotModified {
+                            fresh_until,
+                            explicit: true,
+                        }),
                         NetworkAnswer::Failed(error) => Err(error),
                         // The host's network, on its own threads.
                         NetworkAnswer::Network(request) => {
@@ -656,6 +704,7 @@ impl NativeFetch {
                                         read_file(path, range).map(|bytes| Response::Body {
                                             bytes,
                                             fresh_until: None,
+                                            explicit: false,
                                             etag: None,
                                             last_modified: None,
                                         })
@@ -756,6 +805,12 @@ impl Default for NativeClock {
 impl orb_host::Clock for NativeClock {
     fn now(&self) -> f64 {
         self.0.elapsed().as_secs_f64() * 1000.0
+    }
+
+    fn unix_ms(&self) -> f64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64() * 1000.0)
     }
 }
 
@@ -881,7 +936,7 @@ mod tests {
         let mut results: Vec<_> = (0..3).map(|_| rx.recv().unwrap()).collect();
         results.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(results[0].1, Err(FetchError::NotFound));
-        assert_eq!(results[1].1, Ok(b"hello".to_vec()));
+        assert_eq!(results[1].1, Ok(b"hello".to_vec().into()));
         assert!(matches!(results[2].1, Err(FetchError::UnsupportedUrl(_))));
     }
 
@@ -895,9 +950,9 @@ mod tests {
             let url = format!("file://{}/{name}", dir.display());
             NativeFetch::get_blocking(&agent, None, &plain(&url), None, true, &Abort::NEVER)
         };
-        assert_eq!(get("a%20b%25.json").unwrap(), b"{}");
-        assert_eq!(get("a%20b%.json").unwrap(), b"{}");
-        assert_eq!(get("a b%.json").unwrap(), b"{}");
+        assert_eq!(get("a%20b%25.json").unwrap().bytes, b"{}");
+        assert_eq!(get("a%20b%.json").unwrap().bytes, b"{}");
+        assert_eq!(get("a b%.json").unwrap().bytes, b"{}");
     }
 
     fn response(status: &str, headers: &str, body: &[u8]) -> Result<Vec<u8>, FetchError> {
@@ -926,7 +981,7 @@ mod tests {
             &Abort::NEVER,
         );
         thread.join().unwrap();
-        result
+        result.map(|fetched| fetched.bytes)
     }
 
     #[test]
@@ -975,7 +1030,8 @@ mod tests {
                 true,
                 &Abort::NEVER
             )
-            .unwrap(),
+            .unwrap()
+            .bytes,
             b"cde"
         );
         for range in [(4, 3), (0, 0), (0, MAX_BODY + 1), (u64::MAX, 2)] {
@@ -1061,19 +1117,23 @@ mod tests {
                 &Abort::NEVER,
             )
         };
-        assert_eq!(get().unwrap(), b"tile");
-        assert_eq!(get().unwrap(), b"tile");
-        // Fresh after the 304: no request.
-        assert_eq!(get().unwrap(), b"tile");
+        // `no-cache`: it came stale, with no lifetime.
+        assert_eq!(get().unwrap(), b"tile".to_vec().into());
+        let renewed = get().unwrap();
+        assert_eq!(renewed.bytes, b"tile");
+        let until = renewed.fresh_until.expect("the 304's lifetime");
+        assert!((59..=61).contains(&(until - cache::now())), "{until}");
+        // Fresh after the 304: no request, and the same lifetime.
+        assert_eq!(get().unwrap().fresh_until, Some(until));
         let requests = server.join().unwrap();
         assert!(
             requests[1].contains("if-none-match: \"v1\""),
             "{}",
             requests[1]
         );
-        // Stale and the server gone: the stale copy.
-        cache.refresh(&orb_host::cache::key(&url, None), 0);
-        assert_eq!(get().unwrap(), b"tile");
+        // Stale and the server gone: the stale copy, with no lifetime.
+        cache.refresh(&orb_host::cache::key(&url, None), (0, true));
+        assert_eq!(get().unwrap(), b"tile".to_vec().into());
     }
 
     #[test]
@@ -1100,7 +1160,7 @@ mod tests {
             )
         };
         for _ in 0..3 {
-            assert_eq!(get().unwrap(), b"tile");
+            assert_eq!(get().unwrap().bytes, b"tile");
         }
         server.join().unwrap();
     }
@@ -1157,7 +1217,9 @@ mod tests {
         };
         let agent = ureq::Agent::new_with_defaults();
         assert_eq!(
-            NativeFetch::get_blocking(&agent, None, &request, None, true, &Abort::NEVER).unwrap(),
+            NativeFetch::get_blocking(&agent, None, &request, None, true, &Abort::NEVER)
+                .unwrap()
+                .bytes,
             b"tile"
         );
         let (origin, elsewhere) = (origin.join().unwrap(), elsewhere.join().unwrap());
@@ -1210,7 +1272,7 @@ mod tests {
             );
             receive.recv().unwrap()
         };
-        assert_eq!(get("tiles://tile").unwrap(), b"tile");
+        assert_eq!(get("tiles://tile").unwrap().bytes, b"tile");
         let requests = server.join().unwrap();
         assert!(requests[0].starts_with("get /tile "), "{}", requests[0]);
         assert!(
@@ -1224,7 +1286,7 @@ mod tests {
         ));
         // Offline: the cached copy, stale as it is, and nothing else.
         fetch.set_online(false);
-        assert_eq!(get("tiles://tile").unwrap(), b"tile");
+        assert_eq!(get("tiles://tile").unwrap().bytes, b"tile");
         assert_eq!(
             get("tiles://other"),
             Err(FetchError::Network("offline".into()))

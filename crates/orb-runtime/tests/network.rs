@@ -123,7 +123,7 @@ impl Network {
         for f in due {
             let body = self.body(&f.url);
             self.state.lock().unwrap().answered.push(f.url);
-            (f.done)(body);
+            (f.done)(body.map(Into::into));
         }
         let mut state = self.state.lock().unwrap();
         let frame = state.frame;

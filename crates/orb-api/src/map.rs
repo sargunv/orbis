@@ -110,6 +110,8 @@ pub struct Map {
     hook: WakeHook,
     /// Marks the map woken and calls the hook, from any thread.
     wake: Arc<dyn Fn() + Send + Sync>,
+    /// Wakes the map when the data a tile it draws expires.
+    alarm: crate::alarm::Alarm,
     events: VecDeque<Event>,
     /// Queries finished on worker threads, not yet events.
     finished: Finished,
@@ -247,6 +249,7 @@ impl Map {
             signal,
             offscreen: None,
             hook,
+            alarm: crate::alarm::Alarm::new(wake.clone()),
             wake,
             events: VecDeque::new(),
             finished: Arc::default(),
@@ -1336,6 +1339,7 @@ impl Map {
         self.settled = report.activity == Activity::Idle;
         self.scale = target.scale();
         self.busy = report.needs_frame();
+        self.alarm.set(report.wake_in);
         if report.idle() {
             // A failed write costs the next run its warm start, nothing else.
             let _ = self.runtime.save_pipeline_cache();

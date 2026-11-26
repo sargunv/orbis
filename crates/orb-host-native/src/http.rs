@@ -29,21 +29,10 @@ pub(crate) struct Headers<'a> {
 /// Until when (Unix seconds) a response received at `now` is fresh, or
 /// `None` when it may not be stored (`no-store`).
 pub(crate) fn fresh_until(headers: Headers<'_>, now: u64) -> Option<u64> {
-    let directives = headers.cache_control.unwrap_or("");
-    let mut max_age = None;
-    for directive in directives.split(',').map(str::trim) {
-        let (name, value) = directive.split_once('=').unwrap_or((directive, ""));
-        match name.to_ascii_lowercase().as_str() {
-            "no-store" => return None,
-            "no-cache" => max_age = Some(0),
-            "max-age" if max_age != Some(0) => {
-                max_age = value.trim_matches('"').parse::<u64>().ok().or(max_age);
-            }
-            _ => {}
-        }
-    }
-    if let Some(age) = max_age {
-        return Some(now.saturating_add(age));
+    match orb_host::MaxAge::of(headers.cache_control.unwrap_or("")) {
+        orb_host::MaxAge::NoStore => return None,
+        orb_host::MaxAge::Seconds(age) => return Some(now.saturating_add(age)),
+        orb_host::MaxAge::Unsaid => {}
     }
     let date = headers.date.and_then(|d| http_date(d, now)).unwrap_or(now);
     if let Some(expires) = headers.expires {
@@ -58,6 +47,19 @@ pub(crate) fn fresh_until(headers: Headers<'_>, now: u64) -> Option<u64> {
             (date.saturating_sub(modified) / 10).min(HEURISTIC_MAX)
         });
     Some(now.saturating_add(heuristic))
+}
+
+/// Whether the response's headers give its lifetime (`max-age`,
+/// `no-cache` or `Expires`), rather than the cache guessing it from its
+/// `Last-Modified`: only a given lifetime has a map load what it draws
+/// from the response again ([`orb_host::Fetched::fresh_until`]), as the
+/// web host, GL JS and MapLibre Native read only those.
+pub(crate) fn explicit(headers: Headers<'_>) -> bool {
+    match orb_host::MaxAge::of(headers.cache_control.unwrap_or("")) {
+        orb_host::MaxAge::Seconds(_) => true,
+        orb_host::MaxAge::NoStore => false,
+        orb_host::MaxAge::Unsaid => headers.expires.is_some(),
+    }
 }
 
 /// Parses an HTTP date to Unix seconds, in any of the forms RFC 9110
@@ -221,6 +223,18 @@ mod tests {
         );
         assert_eq!(fresh(Some("max-age=600, no-cache"), None, None), Some(now));
         assert_eq!(fresh(Some("no-store"), None, None), None);
+        // Only a lifetime the headers give is explicit.
+        let explicit = |cache_control, expires, last_modified| {
+            super::explicit(Headers {
+                cache_control,
+                expires,
+                date: None,
+                last_modified,
+            })
+        };
+        assert!(explicit(Some("max-age=60"), None, None));
+        assert!(explicit(None, Some("Mon, 12 Jan 1970 14:46:40 GMT"), None));
+        assert!(!explicit(None, None, Some("Mon, 12 Jan 1970 13:46:40 GMT")));
         // A private cache stores private responses and ignores s-maxage.
         assert_eq!(
             fresh(Some("private, max-age=60"), None, None),

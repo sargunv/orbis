@@ -190,6 +190,10 @@ export class Engine {
   /** Ports apps' workers feed heights through. */
   #ports: MessagePort[] = [];
   #stats: FrameStats | undefined;
+  /** Wakes the map when the data a tile it draws expires, at `#alarmAt`
+   * on the page's clock. */
+  #alarm: ReturnType<typeof setTimeout> | undefined;
+  #alarmAt = Infinity;
   #snapshotting = false;
   #snapshots: Promise<unknown> = Promise.resolve();
   /** A device loss's start, while the host recovers. */
@@ -761,11 +765,34 @@ export class Engine {
     this.#removed = true;
     for (const port of this.#ports.splice(0)) port.close();
     this.#loop.stop();
+    this.#setAlarm(undefined);
     this.#host.destroy();
   }
 
   #request(): void {
     this.#loop.request();
+  }
+
+  /** Wakes the map `ms` from now instead of when set last, or not at all.
+   * A later time than a timer holds (2^31 ms) wakes it sooner, to set
+   * the alarm again. */
+  #setAlarm(ms: number | undefined): void {
+    const at = ms === undefined ? Infinity : performance.now() + ms;
+    // Each frame sets the same expiry again, measured anew.
+    if (at === this.#alarmAt || Math.abs(at - this.#alarmAt) < 10) return;
+    clearTimeout(this.#alarm);
+    this.#alarmAt = at;
+    this.#alarm =
+      ms === undefined
+        ? undefined
+        : setTimeout(
+            () => {
+              this.#alarm = undefined;
+              this.#alarmAt = Infinity;
+              this.wake();
+            },
+            Math.min(ms, 2 ** 31 - 1),
+          );
   }
 
   /** The map has news (data arrived, a compile ended): the next frame
@@ -812,6 +839,8 @@ export class Engine {
     }
     stats.inputTime = this.#inputTime;
     this.#stats = stats;
+    // The data a drawn tile shows expires then: a frame loads it again.
+    this.#setAlarm(stats.wakeInMs);
     this.#drain();
     // A frame held back while compiles run drew nothing: no `render`.
     this.#send(stats.drew === false ? {} : { stats });
@@ -904,6 +933,7 @@ export class Engine {
     this.#removed = true;
     this.#stopped = message;
     this.#loop.stop();
+    this.#setAlarm(undefined);
     const events = this.#events;
     this.#events = [];
     events.push({ type: "error", data: { message } });

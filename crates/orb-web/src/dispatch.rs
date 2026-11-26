@@ -542,11 +542,11 @@ impl Jobs for WorkerJobs {
         });
         for url in urls {
             let (me, fetching) = (self.me.clone(), url.clone());
-            let done = Box::new(move |fetched: Result<Vec<u8>, orb_host::FetchError>| {
+            let done = Box::new(move |fetched: Result<orb_host::Fetched, _>| {
                 let Some(jobs) = me.upgrade() else {
                     return;
                 };
-                let bytes = fetched.map_err(|e| format!("glyphs {url}: {e}"));
+                let bytes = (fetched.map(|f| f.bytes)).map_err(|e| format!("glyphs {url}: {e}"));
                 jobs.broadcast(&JobRequest::GlyphRange { style, url, bytes });
             });
             let never = &orb_host::Abort::NEVER;

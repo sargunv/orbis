@@ -217,7 +217,7 @@ mod tests {
         let done = abort.answer(Box::new(move |r| seen.lock().unwrap().push(r)));
         abort.abort();
         abort.abort();
-        done(Ok(vec![1]));
+        done(Ok(vec![1].into()));
         assert_eq!(*answers.lock().unwrap(), vec![Err(FetchError::Aborted)]);
     }
 
@@ -227,9 +227,9 @@ mod tests {
         let answers = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&answers);
         let done = abort.answer(Box::new(move |r| seen.lock().unwrap().push(r)));
-        done(Ok(vec![1]));
+        done(Ok(vec![1].into()));
         abort.abort();
-        assert_eq!(*answers.lock().unwrap(), vec![Ok(vec![1])]);
+        assert_eq!(*answers.lock().unwrap(), vec![Ok(vec![1].into())]);
     }
 
     /// Loads that end take their listeners off: one abort serving many
@@ -238,7 +238,7 @@ mod tests {
     fn ended_loads_leave_no_listener() {
         let abort = Abort::new();
         for _ in 0..3 {
-            abort.answer(Box::new(|_| {}))(Ok(Vec::new()));
+            abort.answer(Box::new(|_| {}))(Ok(Vec::new().into()));
         }
         let mut future = abort.aborted();
         let mut cx = Context::from_waker(Waker::noop());

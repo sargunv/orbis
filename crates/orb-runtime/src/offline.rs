@@ -28,7 +28,7 @@ use crate::modules::{Load, Modules};
 
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_expr::json::{self, Json, JsonValue};
-use orb_host::{Abort, Fetch, FetchDone, FetchError, ResourceKind, Storage, StorageDone};
+use orb_host::{Abort, Fetch, FetchDone, FetchError, Fetched, ResourceKind, Storage, StorageDone};
 use orb_source::endpoint::TileEndpoint;
 use orb_source::pmtiles::{self, Contents, Entry, Lookup, Reader};
 use orb_style::{GeoJsonData, Scheme, SourceKind};
@@ -642,7 +642,7 @@ impl Job {
                             range.length,
                             &self.abort,
                             Box::new(move |result| match result {
-                                Ok(bytes) => {
+                                Ok(Fetched { bytes, .. }) => {
                                     let inserted = reader
                                         .lock()
                                         .expect("reader poisoned")
@@ -687,9 +687,9 @@ impl Job {
         }
     }
 
-    fn arrived(self: &Arc<Self>, task: Task, tries: u8, result: Result<Vec<u8>, FetchError>) {
+    fn arrived(self: &Arc<Self>, task: Task, tries: u8, result: Result<Fetched, FetchError>) {
         match result {
-            Ok(bytes) => match task {
+            Ok(Fetched { bytes, .. }) => match task {
                 Task::Resource { url, range, then } => {
                     self.keep(orb_host::cache::key(&url, range), &bytes);
                     self.then(then, &url, &bytes);
@@ -1415,7 +1415,7 @@ impl RegionFetch {
                     &format!("{}/resources", region.dir),
                     Some((at, length)),
                     Box::new(move |read| match read {
-                        Ok(Some(bytes)) => done(Ok(bytes)),
+                        Ok(Some(bytes)) => done(Ok(bytes.into())),
                         _ => pass(&*inner, kind, &url, range, &abort, done),
                     }),
                 );
@@ -1518,7 +1518,7 @@ impl Tile {
                     &self.key.clone(),
                     Some((range.offset, range.length)),
                     Box::new(move |read| match read {
-                        Ok(Some(bytes)) => done(Ok(bytes)),
+                        Ok(Some(bytes)) => done(Ok(bytes.into())),
                         _ => pass(&*self.inner, self.kind, &self.url, None, &self.abort, done),
                     }),
                 );
@@ -1670,7 +1670,7 @@ mod tests {
             if self.offline {
                 return done(Err(FetchError::Network("offline".into())));
             }
-            done(match url {
+            let body = match url {
                 "https://s/style.json" => Ok(STYLE.into()),
                 "https://s/tiles.json" => {
                     Ok(br#"{"tiles": ["https://t/{z}/{x}/{y}.pbf"], "maxzoom": 3}"#.to_vec())
@@ -1681,7 +1681,8 @@ mod tests {
                     Ok(format!("tile {u}").into_bytes())
                 }
                 _ => Err(FetchError::NotFound),
-            })
+            };
+            done(body.map(Vec::into))
         }
         fn get_range(
             &self,
@@ -1704,7 +1705,7 @@ mod tests {
             &Abort::NEVER,
             Box::new(move |r| tx.send(r).unwrap()),
         );
-        rx.recv().unwrap()
+        rx.recv().unwrap().map(|fetched| fetched.bytes)
     }
 
     #[test]

@@ -19,7 +19,7 @@ use crate::storage::wait;
 
 /// How often index changes are written.
 const FLUSH_EVERY: Duration = Duration::from_secs(2);
-const INDEX_VERSION: &str = "orbis-cache 1";
+const INDEX_VERSION: &str = "orbis-cache 2";
 
 /// Seconds since the Unix epoch.
 pub(crate) fn now() -> u64 {
@@ -57,6 +57,8 @@ struct Entry {
     id: u64,
     size: u64,
     fresh_until: u64,
+    /// The response's headers gave `fresh_until` ([`crate::http::explicit`]).
+    explicit: bool,
     last_used: u64,
     etag: Option<String>,
     last_modified: Option<String>,
@@ -66,9 +68,22 @@ struct Entry {
 #[derive(Debug)]
 pub(crate) struct Cached {
     pub(crate) bytes: Vec<u8>,
-    pub(crate) fresh: bool,
+    /// Until when (Unix seconds) it stays fresh, if it is now.
+    pub(crate) fresh_until: Option<u64>,
+    /// The response's headers gave that lifetime ([`crate::http::explicit`]).
+    pub(crate) explicit: bool,
     pub(crate) etag: Option<String>,
     pub(crate) last_modified: Option<String>,
+}
+
+impl Cached {
+    /// The copy as a fetch's answer, with the lifetime its headers gave.
+    pub(crate) fn fetched(self) -> orb_host::Fetched {
+        orb_host::Fetched {
+            bytes: self.bytes,
+            fresh_until: self.fresh_until.filter(|_| self.explicit),
+        }
+    }
 }
 
 /// What a cache holds.
@@ -171,7 +186,8 @@ impl HttpCache {
         match wait(|done| self.inner.storage.read(&key_of_blob, None, done)) {
             Ok(Some(bytes)) if bytes.len() as u64 == entry.size => Some(Cached {
                 bytes,
-                fresh: entry.fresh_until > now,
+                fresh_until: Some(entry.fresh_until).filter(|&until| until > now),
+                explicit: entry.explicit,
                 etag: entry.etag,
                 last_modified: entry.last_modified,
             }),
@@ -186,7 +202,7 @@ impl HttpCache {
         &self,
         key: &str,
         bytes: &[u8],
-        fresh_until: u64,
+        (fresh_until, explicit): (u64, bool),
         etag: Option<&str>,
         last_modified: Option<&str>,
     ) {
@@ -215,6 +231,7 @@ impl HttpCache {
             id,
             size: bytes.len() as u64,
             fresh_until,
+            explicit,
             last_used: now(),
             etag: header(etag),
             last_modified: header(last_modified),
@@ -237,10 +254,11 @@ impl HttpCache {
     }
 
     /// Marks an entry fresh again after the server answered 304.
-    pub(crate) fn refresh(&self, key: &str, fresh_until: u64) {
+    pub(crate) fn refresh(&self, key: &str, (fresh_until, explicit): (u64, bool)) {
         let mut state = self.inner.lock();
         if let Some(entry) = state.entries.get_mut(key) {
             entry.fresh_until = fresh_until;
+            entry.explicit = explicit;
             state.dirty = true;
             self.inner.changed.notify_one();
         }
@@ -379,17 +397,19 @@ fn blob(id: u64) -> String {
 }
 
 /// The index: a version line, the next blob id, then one line per entry of
-/// tab-separated id, size, freshness, last use, ETag, Last-Modified and
-/// key (keys and headers with tabs or newlines aren't cached).
+/// tab-separated id, size, freshness, whether the headers gave it (1 or
+/// 0), last use, ETag, Last-Modified and key (keys and headers with tabs
+/// or newlines aren't cached).
 fn index_text(state: &State) -> String {
     let mut text = format!("{INDEX_VERSION}\n{}\n", state.next_id);
     for (key, e) in &state.entries {
         let _ = writeln!(
             text,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{key}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{key}",
             e.id,
             e.size,
             e.fresh_until,
+            u8::from(e.explicit),
             e.last_used,
             e.etag.as_deref().unwrap_or(""),
             e.last_modified.as_deref().unwrap_or(""),
@@ -409,9 +429,10 @@ fn parse_index(text: &str) -> Option<State> {
     };
     let text = |s: &str| (!s.is_empty()).then(|| s.to_owned());
     for line in lines {
-        let mut f = line.splitn(7, '\t');
+        let mut f = line.splitn(8, '\t');
         let mut number = || f.next()?.parse::<u64>().ok();
-        let (id, size, fresh_until, last_used) = (number()?, number()?, number()?, number()?);
+        let (id, size, fresh_until) = (number()?, number()?, number()?);
+        let (explicit, last_used) = (number()? == 1, number()?);
         let (etag, last_modified, key) = (f.next()?, f.next()?, f.next()?);
         state.entries.insert(
             key.to_owned(),
@@ -419,6 +440,7 @@ fn parse_index(text: &str) -> Option<State> {
                 id,
                 size,
                 fresh_until,
+                explicit,
                 last_used,
                 etag: text(etag),
                 last_modified: text(last_modified),
@@ -446,31 +468,43 @@ mod tests {
         let now = now();
         {
             let cache = open(&dir, 1 << 20);
-            cache.store("https://a/fresh", b"one", now + 60, Some("\"e1\""), None);
+            let one = (now + 60, true);
+            cache.store("https://a/fresh", b"one", one, Some("\"e1\""), None);
+            let modified = Some("Mon, 12 Jan 1970 13:46:40 GMT");
+            cache.store("https://a/stale", b"two", (now - 1, true), None, modified);
             cache.store(
-                "https://a/stale",
-                b"two",
-                now - 1,
+                "https://a/guessed",
+                b"six",
+                (now + 60, false),
                 None,
-                Some("Mon, 12 Jan 1970 13:46:40 GMT"),
+                modified,
             );
             assert_eq!(
                 cache.stats(),
                 CacheStats {
-                    entries: 2,
-                    bytes: 6
+                    entries: 3,
+                    bytes: 9
                 }
             );
         }
         let cache = open(&dir, 1 << 20);
         let fresh = cache.lookup("https://a/fresh").unwrap();
         assert_eq!(
-            (fresh.bytes.as_slice(), fresh.fresh, fresh.etag.as_deref()),
+            (
+                fresh.bytes.as_slice(),
+                fresh.fresh_until.is_some(),
+                fresh.etag.as_deref()
+            ),
             (&b"one"[..], true, Some("\"e1\""))
         );
         let stale = cache.lookup("https://a/stale").unwrap();
-        assert!(!stale.fresh);
+        assert_eq!(stale.fresh_until, None);
         assert!(stale.last_modified.is_some());
+        // Fresh by a lifetime the cache guessed, which no reload follows.
+        let guessed = cache.lookup("https://a/guessed").unwrap();
+        assert!(guessed.fresh_until.is_some());
+        assert_eq!(guessed.fetched().fresh_until, None);
+        assert_eq!(fresh.fetched().fresh_until, Some(now + 60));
         assert!(cache.lookup("https://a/missing").is_none());
         drop(cache);
     }
@@ -481,7 +515,13 @@ mod tests {
         let now = now();
         let cache = open(&dir, 400);
         for i in 0..4 {
-            cache.store(&format!("https://a/{i}"), &[i; 100], now + 60, None, None);
+            cache.store(
+                &format!("https://a/{i}"),
+                &[i; 100],
+                (now + 60, true),
+                None,
+                None,
+            );
             // Use the first entry every time: it stays.
             cache
                 .inner
@@ -491,7 +531,7 @@ mod tests {
                 .unwrap()
                 .last_used = now + 10;
         }
-        cache.store("https://a/4", &[4; 100], now + 60, None, None);
+        cache.store("https://a/4", &[4; 100], (now + 60, true), None, None);
         let stats = cache.stats();
         assert!(stats.bytes <= 360, "{stats:?}");
         assert!(cache.lookup("https://a/0").is_some());

@@ -48,6 +48,20 @@ pub struct TileBuild {
     ///
     /// [`TileResult::labels_later`]: crate::TileResult::labels_later
     pub(crate) labels_later: Vec<u32>,
+    /// Until when the data it was laid out from stays fresh (Unix
+    /// seconds), if it came fresh ([`TileResult::fresh_until`]).
+    ///
+    /// [`TileResult::fresh_until`]: crate::TileResult::fresh_until
+    pub(crate) fresh_until: Option<u64>,
+    /// It answers a reload ([`TileResult::reload`]).
+    ///
+    /// [`TileResult::reload`]: crate::TileResult::reload
+    pub(crate) reload: bool,
+    /// The reload brought the data drawn again, and nothing is laid out
+    /// ([`TileResult::renewed`]).
+    ///
+    /// [`TileResult::renewed`]: crate::TileResult::renewed
+    pub(crate) renewed: bool,
 }
 
 /// What symbol layout reads beyond the tile: the worker's glyph metrics

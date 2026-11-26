@@ -262,6 +262,18 @@ impl<T> TilePyramid<T> {
             })
     }
 
+    /// The ready tiles the last update used, drawn or standing by, to
+    /// change in place.
+    pub fn used_mut(&mut self) -> impl Iterator<Item = (TileIndex, &mut T)> {
+        let frame = self.frame;
+        self.tiles
+            .iter_mut()
+            .filter_map(move |(&tile, entry)| match &mut entry.state {
+                State::Ready(value) if entry.last_used == frame => Some((tile, value)),
+                _ => None,
+            })
+    }
+
     /// The ready tiles, in no particular order.
     pub fn ready(&self) -> impl Iterator<Item = (TileIndex, &T)> {
         self.tiles
@@ -1283,6 +1295,20 @@ mod tests {
         assert!(p.evict().is_empty());
         p.update(&cover(&[(2, 2, 0)]));
         assert_eq!(p.evict(), [1]);
+    }
+
+    #[test]
+    fn the_tiles_the_last_update_used_change_in_place() {
+        let mut p = TilePyramid::new(0, 14, 8);
+        for col in 0..2 {
+            p.update(&cover(&[(2, col, 0)]));
+            p.insert(t(2, col, 0), col);
+        }
+        for (_, value) in p.used_mut() {
+            *value += 10;
+        }
+        assert_eq!(p.get(t(2, 0, 0)), Some(&0), "cached, unused");
+        assert_eq!(p.get(t(2, 1, 0)), Some(&11));
     }
 
     #[test]

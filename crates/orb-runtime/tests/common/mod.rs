@@ -113,6 +113,10 @@ impl orb_host::Clock for StillClock {
     fn now(&self) -> f64 {
         0.0
     }
+
+    fn unix_ms(&self) -> f64 {
+        0.0
+    }
 }
 
 /// Reads `file://` URLs on the caller's thread, as [`NativeFetch`] reads
@@ -137,7 +141,7 @@ impl orb_host::Fetch for FileFetch {
         _: &orb_host::Abort,
         done: orb_host::FetchDone,
     ) {
-        done(Self::read(url, None));
+        done(Self::read(url, None).map(Into::into));
     }
 
     fn get_range(
@@ -149,7 +153,7 @@ impl orb_host::Fetch for FileFetch {
         _: &orb_host::Abort,
         done: orb_host::FetchDone,
     ) {
-        done(Self::read(url, Some((offset, length))));
+        done(Self::read(url, Some((offset, length))).map(Into::into));
     }
 }
 

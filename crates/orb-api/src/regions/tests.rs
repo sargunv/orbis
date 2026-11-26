@@ -80,7 +80,7 @@ fn fetched(regions: &Regions, url: &str) -> Vec<u8> {
         &Abort::new(),
         Box::new(move |r| tx.send(r).unwrap()),
     );
-    rx.recv().unwrap().unwrap()
+    rx.recv().unwrap().unwrap().bytes
 }
 
 #[test]
