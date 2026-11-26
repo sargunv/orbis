@@ -33,10 +33,6 @@ pub(crate) struct PacingOptions {
     )]
     interval: Option<Duration>,
     /// The host's `NSView*`, whose window's display the frames follow.
-    #[cfg_attr(
-        not(target_os = "macos"),
-        expect(dead_code, reason = "only macOS paces frames")
-    )]
     view: Option<*mut std::ffi::c_void>,
 }
 
@@ -76,10 +72,6 @@ impl PacingOptions {
 }
 
 /// Paces one session's frames until it goes: dropping it stops the clock.
-#[cfg_attr(
-    not(target_os = "macos"),
-    expect(dead_code, reason = "only macOS paces frames")
-)]
 pub(crate) struct Pacing {
     /// The display link, which fields drop in order to stop, waiting out a
     /// refresh in flight, before the clock it reads goes.
