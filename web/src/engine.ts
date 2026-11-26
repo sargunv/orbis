@@ -189,10 +189,6 @@ function plain<T extends object>(object: T): T {
   return out as T;
 }
 
-/** A device that lasted this long before its loss ends a run of losses. */
-const STABLE_MS = 30_000;
-/** How long after each loss of a run a new device is made. */
-const BACKOFF_MS = [0, 250, 1000];
 /** How long a map that hasn't been idle waits to fetch its API module. */
 const API_AT_MOST = 5000;
 /** How long a feature module that failed to load waits to be asked for
@@ -263,9 +259,6 @@ export class Engine {
   #warnedGaps = new Set<Gap>();
   /** What the map draws otherwise than on WebGPU now. */
   #gaps: Degradation[] = [];
-  /** When the device was made, and the losses in the current run. */
-  #deviceAt = performance.now();
-  #losses = 0;
   /** A pipeline failed, and the map was handed to WebGL 2. */
   #pipelineFailed = false;
   /** The annotations' points, [lon, lat, …]. */
@@ -1013,23 +1006,22 @@ export class Engine {
       : new Float64Array(0);
   }
 
-  /** Gets a new GPU after a loss and draws on: at once after the first
-   * loss of a run, later after each one after (a device that lasted
-   * `STABLE_MS` ends a run), and past `BACKOFF_MS`'s last not at all, with
-   * an `error` event, so a driver that loses every device doesn't reset
-   * the map forever. Native runtimes answer losses the same way. */
+  /** Gets a new GPU after a loss and draws on, when the map says to
+   * (`deviceLost`, the policy native runtimes answer losses by too), or
+   * with an `error` event once it says no other is made. */
   #recover(): void {
     if (this.#phase.is !== "running") return;
     const now = performance.now();
     this.#phase = { is: "lost", lostAt: now };
-    this.#losses = now - this.#deviceAt < STABLE_MS ? this.#losses + 1 : 1;
     this.#events.push({ type: "lost", data: {} });
-    const wait = BACKOFF_MS[this.#losses - 1];
-    if (wait === undefined) {
-      this.#gone(
-        `the GPU was lost ${this.#losses} times in a row, each device within ` +
-          `${STABLE_MS / 1000} s of the last, so no other is made`,
-      );
+    let wait: number;
+    try {
+      wait = this.#core.deviceLost();
+    } catch (e) {
+      // A trap has already stopped the map (`#trapped`), so `#gone`
+      // ignores it.
+      if (!(e instanceof Error)) throw e;
+      this.#gone(e.message);
       return;
     }
     this.#send({});
@@ -1044,7 +1036,6 @@ export class Engine {
           core.resize(...this.#size);
           this.#restoring = now;
           this.#phase = { is: "running" };
-          this.#deviceAt = performance.now();
           this.#request();
         },
         (e: unknown) =>

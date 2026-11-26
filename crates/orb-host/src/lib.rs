@@ -1,12 +1,14 @@
-//! Host service traits: what the core asks of its platform, and the job
-//! executors that run its work. Implementations live in `orb-host-native`
-//! and, for the browser, `orb-web`.
+//! Host service traits: what the core asks of its platform, the job
+//! executors that run its work, and how every platform answers a lost GPU
+//! ([`loss`]). Implementations live in `orb-host-native` and, for the
+//! browser, `orb-web`.
 
 #![forbid(unsafe_code)]
 
 pub mod abort;
 pub mod cache;
 pub mod jobs;
+pub mod loss;
 
 use std::fmt;
 use std::time::Duration;

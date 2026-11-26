@@ -210,28 +210,13 @@ pub struct RuntimeStats {
     pub live_resources: usize,
 }
 
-/// A device that ran this long before it was lost ends a run of losses:
-/// the next loss is the first of a new run.
-const STABLE: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// How long after each loss of a run a new device is made: the first at
-/// once (an app switch, a driver reset), later ones after a pause. A loss
-/// past the last isn't answered: a driver that loses every device it gives
-/// (Adreno X1's Vulkan lost one a second, #141) would otherwise reset
-/// the map forever.
-const BACKOFF: [std::time::Duration; 3] = [
-    std::time::Duration::ZERO,
-    std::time::Duration::from_millis(250),
-    std::time::Duration::from_secs(1),
-];
-
 /// How the runtime answers device losses.
 #[derive(Debug)]
 struct Recovery {
-    /// When the device was made.
-    made: std::time::Instant,
-    /// Losses in the current run.
-    losses: u32,
+    /// The clock losses are timed on.
+    clock: orb_host_native::NativeClock,
+    /// Losses in a row, and how long the next waits.
+    runs: orb_host::loss::LossRuns,
     /// When the loss being answered gets its new device.
     due: Option<std::time::Instant>,
     /// Why the runtime stopped making devices.
@@ -240,12 +225,25 @@ struct Recovery {
 
 impl Recovery {
     fn new() -> Self {
+        let clock = orb_host_native::NativeClock::default();
         Self {
-            made: std::time::Instant::now(),
-            losses: 0,
+            runs: orb_host::loss::LossRuns::new(orb_host::Clock::now(&clock)),
+            clock,
             due: None,
             failed: None,
         }
+    }
+
+    /// The device was lost: how long until another is made, or why none is.
+    fn lost(&mut self) -> Result<std::time::Duration, orb_host::loss::GaveUp> {
+        let now = orb_host::Clock::now(&self.clock);
+        self.runs.lost(now)
+    }
+
+    /// Another device was made.
+    fn made(&mut self) {
+        let now = orb_host::Clock::now(&self.clock);
+        self.runs.made(now);
     }
 
     /// Stops making devices, for `why`.
@@ -454,11 +452,12 @@ impl Runtime {
         }
     }
 
-    /// Whether a lost device's replacement is due ([`BACKOFF`]): `false`
-    /// while it waits, with every map woken when it's due. An error once the
-    /// runtime has stopped making devices: after a run of losses past the
-    /// backoff's, or for a driver that hung or failed compiling, which
-    /// another device would do the same in.
+    /// Whether a lost device's replacement is due
+    /// ([`LossRuns`](orb_host::loss::LossRuns)): `false` while it waits,
+    /// with every map woken when it's due. An error once the runtime has
+    /// stopped making devices: after a run of losses past the backoff's, or
+    /// for a driver that hung or failed compiling, which another device
+    /// would do the same in.
     pub(crate) fn recovery_due(&self) -> Result<bool, Error> {
         let mut recovery = lock(&self.shared.recovery);
         if let Some(failed) = &recovery.failed {
@@ -483,24 +482,15 @@ impl Runtime {
         let due = match recovery.due {
             Some(due) => due,
             None => {
-                let lived = now - recovery.made;
-                recovery.losses = if lived < STABLE {
-                    recovery.losses + 1
-                } else {
-                    1
-                };
-                let Some(&wait) = BACKOFF.get(recovery.losses as usize - 1) else {
-                    let reason = (self.shared.opened())
-                        .and_then(|gpu| gpu.lost_reason())
-                        .map(|r| format!("; the last: {r}"))
-                        .unwrap_or_default();
-                    let why = format!(
-                        "the GPU was lost {} times in a row, each device within {} s of \
-                         the last, so no other is made{reason}",
-                        recovery.losses,
-                        STABLE.as_secs()
-                    );
-                    return Err(recovery.fail(why));
+                let wait = match recovery.lost() {
+                    Ok(wait) => wait,
+                    Err(gave_up) => {
+                        let reason = (self.shared.opened())
+                            .and_then(|gpu| gpu.lost_reason())
+                            .map(|r| format!("; the last: {r}"))
+                            .unwrap_or_default();
+                        return Err(recovery.fail(format!("{gave_up}{reason}")));
+                    }
                 };
                 let due = now + wait;
                 recovery.due = Some(due);
@@ -767,7 +757,7 @@ impl Shared {
         }
         *lock(&self.cache) = self.start_pipeline_cache(&mut gpu)?;
         *lock(&self.adapter) = adapter;
-        lock(&self.recovery).made = std::time::Instant::now();
+        lock(&self.recovery).made();
         self.generation.fetch_add(1, Ordering::AcqRel);
         Ok(gpu)
     }

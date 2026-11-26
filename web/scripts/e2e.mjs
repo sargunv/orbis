@@ -45,8 +45,9 @@
 //   dismissable; where maps draw with WebGPU, WebGPU that never answers
 //   for an adapter starting the map on WebGL 2, and WebGPU lost with no
 //   adapter after starting it again on WebGL 2 in a new canvas at its
-//   camera, with the app's images and constraints, taking input; and a WebGL 2 context never restored stopping
-//   the map, saying why.
+//   camera, with the app's images and constraints, taking input; a WebGL 2
+//   context never restored stopping the map, saying why; and a GPU lost
+//   four times in a row restored three times, then stopping the map.
 // - `options`: the Globe's map options, offline (the Tokyo extract's style
 //   standing in for Protomaps Light): by default it loads with every
 //   Orbis-only preview off and none of their keys in its style, the URL's
@@ -2197,6 +2198,41 @@ async function recovery(browser, server) {
     await page.close();
     console.log(
       `recovery: a WebGL 2 context never restored stops the map in ${((Date.now() - started) / 1000).toFixed(1)} s`,
+    );
+  }
+
+  // A GPU lost again soon after each new device: the map backs off, and
+  // after the run's last stops, saying why, rather than resetting forever.
+  {
+    const { page } = await open(browser, { width: 600, height: 400 });
+    await page.goto(`${server.url}?style=tokyo&backend=webgl2`);
+    await idle(page);
+    await page.evaluate(async () => {
+      for (let i = 1; i <= 3; i++) {
+        const restored = app.map.once("restored");
+        app.map.loseDevice();
+        await Promise.race([
+          restored,
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error(`loss ${i} wasn't restored in 10 s`)),
+              10_000,
+            ),
+          ),
+        ]);
+      }
+      app.map.loseDevice();
+    });
+    await page.waitForSelector("#failure:not([hidden])", { timeout: 30_000 });
+    const shown = await failurePanel(page);
+    assert.equal(shown.mode, "stopped", JSON.stringify(shown));
+    assert.match(
+      shown.message,
+      /^The GPU was lost 4 times in a row, each device within 30 s/,
+    );
+    await page.close();
+    console.log(
+      "recovery: a GPU lost 4 times in a row is restored 3 times, then stops",
     );
   }
 }

@@ -42,6 +42,8 @@ pub struct OrbisMap {
     id: u32,
     map: Map,
     canvas: Canvas,
+    /// The canvas's GPU losses in a row, and how the next is answered.
+    losses: orb_host::loss::LossRuns,
     /// What draws the map into the canvas; a new GPU gets a new one.
     renderer: Option<orb_runtime::Renderer>,
     /// The map's images, on the canvas's GPU.
@@ -110,7 +112,8 @@ pub struct FrameStats {
     #[wasm_bindgen(readonly)]
     pub drew: bool,
     /// The GPU was lost and nothing was drawn; the map draws again once
-    /// [`OrbisMap::recover`] gives it another.
+    /// [`OrbisMap::recovered`] gives it another, which
+    /// [`OrbisMap::device_lost`] says when to make.
     #[wasm_bindgen(readonly)]
     pub lost: bool,
     #[wasm_bindgen(readonly, js_name = meshesUploaded)]
@@ -541,6 +544,7 @@ pub async fn create_map(
         id,
         map,
         canvas,
+        losses: orb_host::loss::LossRuns::new(orb_host::Clock::now(&crate::host::WebClock)),
         renderer: None,
         images,
         pixel_ratio: 1.0,
@@ -1232,6 +1236,18 @@ impl OrbisMap {
         panic!("a trap asked for");
     }
 
+    /// The GPU was lost ([`FrameStats::lost`]): milliseconds to wait before
+    /// making another with [`new_device`](Self::new_device), at once after
+    /// the first loss of a run and later after each one after; past the
+    /// run's backoff, an error saying why none is made, so a driver that
+    /// loses every device doesn't reset the map forever. Native runtimes
+    /// answer losses by the same [`LossRuns`](orb_host::loss::LossRuns).
+    #[wasm_bindgen(js_name = deviceLost)]
+    pub fn device_lost(&mut self) -> Result<f64, JsError> {
+        let now = orb_host::Clock::now(&crate::host::WebClock);
+        Ok(self.losses.lost(now)?.as_secs_f64() * 1000.0)
+    }
+
     /// Makes a new GPU in the map's canvas after a loss, for
     /// [`recovered`](Self::recovered) to put in. The map isn't held while
     /// it is made: job workers' replies and the page's calls (another
@@ -1257,6 +1273,8 @@ impl OrbisMap {
             .gpu()
             .adopt_host_data(self.canvas.gpu().take_host_data());
         self.canvas = canvas;
+        self.losses
+            .made(orb_host::Clock::now(&crate::host::WebClock));
         self.renderer = None;
         self.images.reset();
         wake(self.id);
