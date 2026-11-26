@@ -172,19 +172,19 @@ fn submit(
     // SAFETY: the caller's pointer.
     let completion = unsafe { Completion::required(completion) }?;
     let id = handle.session_id();
-    handle.map_handle().command(None, false, move |entry| {
+    handle.map_handle().operation(None, move |entry| {
         if entry.session.as_ref().is_none_or(|s| s.id() != id) {
             completion.complete(
                 Err(Failure::state("the session is not attached to a map")),
                 0,
             );
-            return Ok(Value::None);
+            return Ok(());
         }
         match start(&mut entry.map) {
             Ok((ids, pending)) => {
                 let Some((&first, rest)) = ids.split_first() else {
                     completion.complete(Ok(Value::array::<u8>(&[], None)), 0);
-                    return Ok(Value::None);
+                    return Ok(());
                 };
                 // A source query of several layers is answered under its
                 // first id; the others forward to it.
@@ -201,7 +201,7 @@ fn submit(
             }
             Err(e) => completion.complete(Err(e), 0),
         }
-        Ok(Value::None)
+        Ok(())
     })
 }
 

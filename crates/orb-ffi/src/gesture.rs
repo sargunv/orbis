@@ -27,9 +27,8 @@ use orb_api::{
 };
 
 use crate::base::{Failure, Result, boundary, fresh_out, lock, put, sized};
-use crate::delivery::Value;
 use crate::handles::{self, Object};
-use crate::map::MapHandle;
+use crate::map::{Drawn, MapHandle};
 use crate::sys::*;
 
 /// A recognizer and the map whose camera it moves.
@@ -543,9 +542,9 @@ impl Recognizer {
         let moves = state.gestures.take_moves();
         if !moves.is_empty() {
             // A map released or not made takes no moves, as the header says.
-            let _ = self.map.command(None, true, move |entry| {
+            let _ = self.map.change(None, move |entry| {
                 entry.apply_gesture(moves);
-                Ok(Value::None)
+                Ok(Drawn::New)
             });
         }
     }

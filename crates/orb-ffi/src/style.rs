@@ -17,7 +17,7 @@ use orb_style::{LayerType, PropertyId};
 use crate::base::boundary;
 use crate::base::{Failure, Result, sized, text};
 use crate::delivery::Value;
-use crate::map::{MapEntry, command, job, post};
+use crate::map::{Drawn, MapEntry, command, job, post};
 use crate::sys::*;
 
 /// What the C API keeps about a map's style beyond Orbis's document.
@@ -277,9 +277,8 @@ unsafe fn json_text(view: mln_buffer_view, what: &str) -> Result<String> {
 
 command!(
     mln_map_set_global_state_property(name: mln_buffer_view, value: mln_buffer_view),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let name = id(name, "property_name")?;
         let value = json_text(value, "value")?;
         Ok(job(move |entry| {
@@ -291,7 +290,7 @@ command!(
     }
 );
 
-command!(mln_map_get_global_state(), true, false, |state, id| {
+command!(mln_map_get_global_state(), query, |map| {
     Ok(|entry: &mut MapEntry| {
         let mut out = String::from("{");
         if let Some(doc) = entry.map.style() {
@@ -313,9 +312,8 @@ command!(mln_map_get_global_state(), true, false, |state, id| {
 
 command!(
     mln_map_add_style_source_json(source_id: mln_buffer_view, json: mln_buffer_view),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         let json = json_text(json, "source_json")?;
         Ok(job(move |entry| add_source(entry, &source_id, &json)))
@@ -348,9 +346,8 @@ fn add_source(entry: &mut MapEntry, id: &str, json: &str) -> Result {
 
 command!(
     mln_map_remove_style_source(source_id: mln_buffer_view),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         Ok(job(move |entry| {
             source(entry, &source_id)?;
@@ -387,9 +384,8 @@ command!(
 
 command!(
     mln_map_set_style_source_volatile(source_id: mln_buffer_view, is_volatile: bool),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         Ok(job(move |entry| {
             source(entry, &source_id)?;
@@ -561,9 +557,8 @@ fn geo_json_options(json: &Json, lent: &mut Lent) -> mln_geo_json_source_options
 
 command!(
     mln_map_get_style_source(source_id: mln_buffer_view),
-    true,
-    false,
-    |state, id| {
+    query,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         Ok(move |entry: &mut MapEntry| {
             let Some(json) = entry.map.style().and_then(|d| d.source(&source_id)) else {
@@ -576,7 +571,7 @@ command!(
     }
 );
 
-command!(mln_map_list_style_sources(), true, false, |state, id| {
+command!(mln_map_list_style_sources(), query, |map| {
     Ok(|entry: &mut MapEntry| {
         let mut lent = Lent::default();
         let mut infos = Vec::new();
@@ -608,9 +603,8 @@ fn feeds(source_type: &str, layer_type: &str) -> bool {
 
 command!(
     mln_map_add_style_layer_json(json: mln_buffer_view, before: mln_buffer_view),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let json = json_text(json, "layer_json")?;
         let before = optional(before, "before_layer_id")?;
         Ok(job(move |entry| {
@@ -658,9 +652,8 @@ command!(
 
 command!(
     mln_map_remove_style_layer(layer_id: mln_buffer_view),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let layer_id = id(layer_id, "layer_id")?;
         Ok(job(move |entry| {
             layer(entry, &layer_id)?;
@@ -671,9 +664,8 @@ command!(
 
 command!(
     mln_map_move_style_layer(layer_id: mln_buffer_view, before: mln_buffer_view),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let layer_id = id(layer_id, "layer_id")?;
         let before = optional(before, "before_layer_id")?;
         Ok(job(move |entry| {
@@ -731,9 +723,8 @@ fn layer_info(id: &str, json: &Json, lent: &mut Lent) -> mln_style_layer_info {
 
 command!(
     mln_map_get_style_layer(layer_id: mln_buffer_view),
-    true,
-    false,
-    |state, id| {
+    query,
+    |map| {
         let layer_id = id(layer_id, "layer_id")?;
         Ok(move |entry: &mut MapEntry| {
             let Some(json) = entry.map.style().and_then(|d| d.layer(&layer_id)) else {
@@ -746,7 +737,7 @@ command!(
     }
 );
 
-command!(mln_map_list_style_layers(), true, false, |state, id| {
+command!(mln_map_list_style_layers(), query, |map| {
     Ok(|entry: &mut MapEntry| {
         let mut lent = Lent::default();
         let mut infos = Vec::new();
@@ -763,9 +754,8 @@ command!(mln_map_list_style_layers(), true, false, |state, id| {
 
 command!(
     mln_map_get_style_layer_json(layer_id: mln_buffer_view),
-    true,
-    false,
-    |state, id| {
+    query,
+    |map| {
         let layer_id = id(layer_id, "layer_id")?;
         Ok(move |entry: &mut MapEntry| {
             Ok(entry
@@ -823,9 +813,8 @@ command!(
         name: mln_buffer_view,
         value: mln_buffer_view,
     ),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let layer_id = id(layer_id, "layer_id")?;
         let name = id(name, "property_name")?;
         let value = json_text(value, "value")?;
@@ -961,9 +950,8 @@ fn root_ops(
 
 command!(
     mln_map_get_style_layer_property(layer_id: mln_buffer_view, name: mln_buffer_view),
-    true,
-    false,
-    |state, id| {
+    query,
+    |map| {
         let layer_id = id(layer_id, "layer_id")?;
         let name = id(name, "property_name")?;
         Ok(move |entry: &mut MapEntry| {
@@ -1105,9 +1093,8 @@ fn write_json(out: &mut String, json: &Json) {
 
 command!(
     mln_map_set_style_root_property(name: mln_buffer_view, value: mln_buffer_view),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let name = id(name, "property_name")?;
         let value = json_text(value, "value")?;
         Ok(job(move |entry| {
@@ -1125,9 +1112,8 @@ command!(
 
 command!(
     mln_map_get_style_root_property(name: mln_buffer_view),
-    true,
-    false,
-    |state, id| {
+    query,
+    |map| {
         let name = id(name, "property_name")?;
         Ok(move |entry: &mut MapEntry| {
             root_property(&name)?;
@@ -1148,9 +1134,8 @@ command!(
 
 command!(
     mln_map_set_style_light_property(name: mln_buffer_view, value: mln_buffer_view),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let name = id(name, "property_name")?;
         let value = json_text(value, "value")?;
         Ok(job(move |entry| {
@@ -1178,9 +1163,8 @@ command!(
 
 command!(
     mln_map_get_style_light_property(name: mln_buffer_view),
-    true,
-    false,
-    |state, id| {
+    query,
+    |map| {
         let name = id(name, "property_name")?;
         Ok(move |entry: &mut MapEntry| {
             let color = name == "color";
@@ -1193,9 +1177,8 @@ command!(
 
 command!(
     mln_map_set_style_transition_options(options: *const mln_style_transition_options),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         if options.is_null() {
             return Err(Failure::argument("options must not be null"));
         }
@@ -1263,34 +1246,29 @@ command!(
     }
 );
 
-command!(
-    mln_map_get_style_transition_options(),
-    true,
-    false,
-    |state, id| {
-        Ok(|entry: &mut MapEntry| {
-            // SAFETY: plain C data.
-            let mut o: mln_style_transition_options = std::mem::zeroed();
-            o.size = std::mem::size_of::<mln_style_transition_options>() as u32;
-            o.fields = MLN_STYLE_TRANSITION_OPTION_ENABLE_PLACEMENT_TRANSITIONS;
-            o.enable_placement_transitions = entry.style.placement_transitions.unwrap_or(true);
-            o.duration_ms = 300.0;
-            if entry.map.style().is_some()
-                && let Some(t) = root(entry, "transition")?
-            {
-                if let Some(d) = t.get("duration").and_then(Json::as_f64) {
-                    o.fields |= MLN_STYLE_TRANSITION_OPTION_DURATION;
-                    o.duration_ms = d;
-                }
-                if let Some(d) = t.get("delay").and_then(Json::as_f64) {
-                    o.fields |= MLN_STYLE_TRANSITION_OPTION_DELAY;
-                    o.delay_ms = d;
-                }
+command!(mln_map_get_style_transition_options(), query, |map| {
+    Ok(|entry: &mut MapEntry| {
+        // SAFETY: plain C data.
+        let mut o: mln_style_transition_options = std::mem::zeroed();
+        o.size = std::mem::size_of::<mln_style_transition_options>() as u32;
+        o.fields = MLN_STYLE_TRANSITION_OPTION_ENABLE_PLACEMENT_TRANSITIONS;
+        o.enable_placement_transitions = entry.style.placement_transitions.unwrap_or(true);
+        o.duration_ms = 300.0;
+        if entry.map.style().is_some()
+            && let Some(t) = root(entry, "transition")?
+        {
+            if let Some(d) = t.get("duration").and_then(Json::as_f64) {
+                o.fields |= MLN_STYLE_TRANSITION_OPTION_DURATION;
+                o.duration_ms = d;
             }
-            Ok(Value::of(o))
-        })
-    }
-);
+            if let Some(d) = t.get("delay").and_then(Json::as_f64) {
+                o.fields |= MLN_STYLE_TRANSITION_OPTION_DELAY;
+                o.delay_ms = d;
+            }
+        }
+        Ok(Value::of(o))
+    })
+});
 
 // MARK: - Images
 
@@ -1429,9 +1407,8 @@ command!(
         image: *const mln_premultiplied_rgba8_image,
         options: *const mln_style_image_options,
     ),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let image_id = id(image_id, "image_id")?;
         let (width, height, pixels) = image_pixels(image)?;
         let mut copy = ImageCopy {
@@ -1531,9 +1508,8 @@ command!(
 
 command!(
     mln_map_remove_style_image(image_id: mln_buffer_view),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let image_id = id(image_id, "image_id")?;
         Ok(job(move |entry| {
             doc(entry)?;
@@ -1557,9 +1533,8 @@ struct ImageKeep {
 
 command!(
     mln_map_get_style_image(image_id: mln_buffer_view),
-    true,
-    false,
-    |state, id| {
+    query,
+    |map| {
         let image_id = id(image_id, "image_id")?;
         Ok(move |entry: &mut MapEntry| {
             let Some(copy) = entry.style.images.get(&image_id).cloned() else {
@@ -1741,9 +1716,8 @@ command!(
         options: *const mln_geo_json_source_options,
         attribution: mln_buffer_view,
     ),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         let attribution = optional(attribution, "attribution")?.unwrap_or_default();
         let json = geo_json_source(options, &attribution)?;
@@ -1819,9 +1793,8 @@ const GEOJSON_TYPES: [&str; 9] = [
 
 command!(
     mln_map_set_geo_json_source_data(source_id: mln_buffer_view, data: mln_buffer_view),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         let data = json_text(data, "data")?;
         Ok(job(move |entry| {
@@ -1857,9 +1830,8 @@ command!(
 
 command!(
     mln_map_set_geo_json_source_url(source_id: mln_buffer_view, url: mln_buffer_view),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         let url = id(url, "url")?;
         Ok(job(move |entry| {
@@ -1877,9 +1849,8 @@ command!(
 
 command!(
     mln_map_set_geo_json_source_synchronous_tiling(source_id: mln_buffer_view, enabled: bool),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         // Orbis tiles on its job threads and shows new data once its
         // tiles are built, so the hint changes nothing.
@@ -2067,7 +2038,7 @@ pub unsafe extern "C" fn mln_map_set_feature_state(
                 return Err(Failure::argument("state must be a JSON object"));
             };
             let members = members.into_owned();
-            post(map, completion, false, true, move |entry| {
+            post::change(map, completion, move |entry| {
                 let key = (
                     s.source.clone(),
                     s.layer.clone(),
@@ -2080,8 +2051,6 @@ pub unsafe extern "C" fn mln_map_set_feature_state(
                     kept.retain(|(old, _)| old != k);
                     kept.push((k.clone(), v.clone()));
                 }
-                // State the features already hold draws nothing new.
-                entry.unchanged = !changed;
                 push_state(
                     entry,
                     Op::SetFeatureState {
@@ -2089,7 +2058,8 @@ pub unsafe extern "C" fn mln_map_set_feature_state(
                         state: members,
                     },
                 );
-                Ok(Value::None)
+                // State the features already hold draws nothing new.
+                Ok(Drawn::new_if(changed))
             })
         })
     }
@@ -2106,7 +2076,7 @@ pub unsafe extern "C" fn mln_map_get_feature_state(
     unsafe {
         boundary(out_diagnostic, || {
             let s = self::selector(selector, true)?;
-            post(map, completion, true, false, move |entry| {
+            post::query(map, completion, move |entry| {
                 let key = (s.source, s.layer, s.id.unwrap_or_default());
                 let members = entry
                     .style
@@ -2133,7 +2103,7 @@ pub unsafe extern "C" fn mln_map_remove_feature_state(
     unsafe {
         boundary(out_diagnostic, || {
             let s = self::selector(selector, false)?;
-            post(map, completion, false, true, move |entry| {
+            post::change(map, completion, move |entry| {
                 let states = &mut entry.style.feature_states;
                 let count = |states: &std::collections::BTreeMap<FeatureKey, FeatureState>| {
                     states.values().map(Vec::len).sum::<usize>()
@@ -2159,7 +2129,7 @@ pub unsafe extern "C" fn mln_map_remove_feature_state(
                     }
                 }
                 // Removing state no feature holds draws nothing new.
-                entry.unchanged = count(&entry.style.feature_states) == before;
+                let drawn = Drawn::new_if(count(&entry.style.feature_states) != before);
                 push_state(
                     entry,
                     Op::RemoveFeatureState {
@@ -2167,7 +2137,7 @@ pub unsafe extern "C" fn mln_map_remove_feature_state(
                         key: s.key.clone(),
                     },
                 );
-                Ok(Value::None)
+                Ok(drawn)
             })
         })
     }
@@ -2340,8 +2310,8 @@ pub unsafe extern "C" fn mln_map_add_custom_geometry_source(
                     o.queue.0,
                 ),
             };
-            post(map, completion, false, true, move |entry: &mut MapEntry| {
-                add_custom(entry, id, json, source).map(|()| Value::None)
+            post::change(map, completion, move |entry| {
+                add_custom(entry, id, json, source).map(|()| Drawn::New)
             })
         })
     }
@@ -2383,8 +2353,8 @@ pub unsafe extern "C" fn mln_map_add_custom_vector_source(
                     o.queue.0,
                 ),
             };
-            post(map, completion, false, true, move |entry: &mut MapEntry| {
-                add_custom(entry, id, json, source).map(|()| Value::None)
+            post::change(map, completion, move |entry| {
+                add_custom(entry, id, json, source).map(|()| Drawn::New)
             })
         })
     }
@@ -2440,9 +2410,8 @@ command!(
         tile_id: mln_canonical_tile_id,
         data: mln_buffer_view,
     ),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         let tile = tile_index(tile_id);
         let data = json_text(data, "data")?;
@@ -2475,9 +2444,8 @@ command!(
         encoding: mln_style_vector_tile_encoding,
         data: mln_buffer_view,
     ),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         let tile = tile_index(tile_id);
         if encoding > MLN_STYLE_VECTOR_TILE_ENCODING_MLT {
@@ -2532,9 +2500,8 @@ command!(
         tile_id: mln_canonical_tile_id,
         message: mln_buffer_view,
     ),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         let tile = tile_index(tile_id);
         let message = optional(message, "message")?.unwrap_or_default();
@@ -2551,9 +2518,8 @@ command!(
         tile_id: mln_canonical_tile_id,
         message: mln_buffer_view,
     ),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         let tile = tile_index(tile_id);
         let message = optional(message, "message")?.unwrap_or_default();
@@ -2608,14 +2574,13 @@ command!(
         source_id: mln_buffer_view,
         tile_id: mln_canonical_tile_id,
     ),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         let tile = tile_index(tile_id);
         Ok(move |entry: &mut MapEntry| {
             let tile = tile?;
-            invalidate(entry, &source_id, true, &|t| t == tile).map(|()| Value::None)
+            invalidate(entry, &source_id, true, &|t| t == tile).map(|()| Drawn::New)
         })
     }
 );
@@ -2625,14 +2590,13 @@ command!(
         source_id: mln_buffer_view,
         tile_id: mln_canonical_tile_id,
     ),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         let tile = tile_index(tile_id);
         Ok(move |entry: &mut MapEntry| {
             let tile = tile?;
-            invalidate(entry, &source_id, false, &|t| t == tile).map(|()| Value::None)
+            invalidate(entry, &source_id, false, &|t| t == tile).map(|()| Drawn::New)
         })
     }
 );
@@ -2665,13 +2629,12 @@ command!(
         source_id: mln_buffer_view,
         bounds: mln_lat_lng_bounds,
     ),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         Ok(move |entry: &mut MapEntry| {
             check_region(&bounds)?;
-            invalidate(entry, &source_id, true, &|t| tile_meets(t, &bounds)).map(|()| Value::None)
+            invalidate(entry, &source_id, true, &|t| tile_meets(t, &bounds)).map(|()| Drawn::New)
         })
     }
 );
@@ -2681,13 +2644,12 @@ command!(
         source_id: mln_buffer_view,
         bounds: mln_lat_lng_bounds,
     ),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         Ok(move |entry: &mut MapEntry| {
             check_region(&bounds)?;
-            invalidate(entry, &source_id, false, &|t| tile_meets(t, &bounds)).map(|()| Value::None)
+            invalidate(entry, &source_id, false, &|t| tile_meets(t, &bounds)).map(|()| Drawn::New)
         })
     }
 );
@@ -2781,9 +2743,8 @@ fn with_member(json: &Json, key: &str, value: Json) -> Json {
 
 command!(
     mln_map_set_image_source_url(source_id: mln_buffer_view, url: mln_buffer_view),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         let url = id(url, "url")?;
         Ok(job(move |entry| {
@@ -2800,9 +2761,8 @@ command!(
         coordinates: *const mln_lat_lng,
         coordinate_count: usize,
     ),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         let corners = corners(coordinates, coordinate_count)?;
         Ok(job(move |entry| {
@@ -2818,9 +2778,8 @@ command!(
 
 command!(
     mln_map_get_image_source_coordinates(source_id: mln_buffer_view),
-    true,
-    false,
-    |state, id| {
+    query,
+    |map| {
         let source_id = id(source_id, "source_id")?;
         Ok(move |entry: &mut MapEntry| {
             let json = image_source(entry, &source_id)?;

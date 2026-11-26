@@ -1896,7 +1896,7 @@ pub unsafe extern "C" fn mln_map_request_still_image(
             if !matches!(handle.mode, MLN_MAP_MODE_STATIC | MLN_MAP_MODE_TILE) {
                 return Err(Failure::state("the map is not in static or tile mode"));
             }
-            handle.command(None, false, move |map| {
+            handle.operation(None, move |map| {
                 let refused = if map.still.is_some() {
                     Failure::state("the map already has a still image pending")
                 } else if map.groups > 0 {
@@ -1906,10 +1906,10 @@ pub unsafe extern "C" fn mln_map_request_still_image(
                     // with the tiles that failed before requested again.
                     map.map.retry_failed_tiles();
                     map.still = Some(completion);
-                    return Ok(Value::None);
+                    return Ok(());
                 };
                 completion.complete(Err(refused), 0);
-                Ok(Value::None)
+                Ok(())
             })
         })
     }

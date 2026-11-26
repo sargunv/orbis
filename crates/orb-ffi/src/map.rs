@@ -43,14 +43,50 @@ impl MapHandle {
         self.posted.load(Ordering::Acquire)
     }
 
-    /// Runs `job` on the map on the runtime thread, after the commands
-    /// sent before it, then publishes what it changed and completes. A
-    /// `changes` job grows the map's generation.
-    pub(crate) fn command(
+    /// Runs a query on the map: `job` reads it, and the caller waits for
+    /// what it read.
+    pub(crate) fn query(
+        &self,
+        completion: Completion,
+        job: impl FnOnce(&mut MapEntry) -> Result<Value> + Send + 'static,
+    ) -> Result {
+        self.run(Some(completion), move |entry| {
+            job(entry).map(|value| (value, None))
+        })
+    }
+
+    /// Runs an operation on the map: its generation stays as `job` leaves
+    /// it.
+    pub(crate) fn operation(
         &self,
         completion: Option<Completion>,
-        changes: bool,
-        job: impl FnOnce(&mut MapEntry) -> Result<Value> + Send + 'static,
+        job: impl FnOnce(&mut MapEntry) -> Result + Send + 'static,
+    ) -> Result {
+        self.run(completion, move |entry| {
+            job(entry).map(|()| (Value::None, None))
+        })
+    }
+
+    /// Runs a change to the map: once `job` succeeds the map's generation
+    /// grows, and if it says it drew something new, so do its render
+    /// updates.
+    pub(crate) fn change(
+        &self,
+        completion: Option<Completion>,
+        job: impl FnOnce(&mut MapEntry) -> Result<Drawn> + Send + 'static,
+    ) -> Result {
+        self.run(completion, move |entry| {
+            job(entry).map(|drawn| (Value::None, Some(drawn)))
+        })
+    }
+
+    /// Runs `job` on the map on the runtime thread, after the commands
+    /// sent before it, then publishes what it changed and completes. The
+    /// job returns its value and, for a change, what it drew.
+    fn run(
+        &self,
+        completion: Option<Completion>,
+        job: impl FnOnce(&mut MapEntry) -> Result<(Value, Option<Drawn>)> + Send + 'static,
     ) -> Result {
         let id = self.id();
         let number = self.posted.fetch_add(1, Ordering::AcqRel) + 1;
@@ -73,13 +109,15 @@ impl MapHandle {
                     let now = entry.core.now();
                     entry.map.advance(now);
                 }
-                let unchanged = std::mem::take(&mut entry.unchanged);
-                if changes && result.is_ok() {
-                    entry.generation += 1;
-                    if !unchanged {
-                        entry.update();
+                let result = result.map(|(value, change)| {
+                    if let Some(drawn) = change {
+                        entry.generation += 1;
+                        if drawn == Drawn::New {
+                            entry.update();
+                        }
                     }
-                }
+                    value
+                });
                 settle(&cell, &mut entry);
                 result
             });
@@ -89,6 +127,23 @@ impl MapHandle {
             // Its frames wait for the commands sent before them.
             entry.wake_session();
         })
+    }
+}
+
+/// What a change to a map drew.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Drawn {
+    /// Something new: the map publishes a render update.
+    New,
+    /// Nothing new, such as a setting set to what it was: the map
+    /// publishes no render update.
+    Nothing,
+}
+
+impl Drawn {
+    /// `New` if what the map draws `changed`, else `Nothing`.
+    pub(crate) fn new_if(changed: bool) -> Self {
+        if changed { Self::New } else { Self::Nothing }
     }
 }
 
@@ -261,9 +316,6 @@ pub(crate) struct MapEntry {
     pub(crate) render_update_generation: u64,
     /// A change inside a command group, which its outermost end publishes.
     pub(crate) held_update: bool,
-    /// Set by a command's job that changed nothing the map draws, so it
-    /// publishes no render update.
-    pub(crate) unchanged: bool,
     /// A style or source change awaits its loads, for LOADING_FINISHED.
     loading: bool,
     /// The STYLE_LOADED of the current style has been raised.
@@ -777,30 +829,47 @@ fn take_events(entry: &mut MapEntry) -> Vec<Box<dyn FnOnce()>> {
     after
 }
 
-/// Posts `job` with the map to its runtime thread, then completes. A
-/// command (`required` false) may have no completion; queries,
-/// operations and lifecycle calls must. `changes` commands grow the map's
-/// generation.
-///
-/// # Safety
-/// `completion` is null or a readable `mln_completion`.
-pub(crate) unsafe fn post(
-    map: mln_map,
-    completion: *const mln_completion,
-    required: bool,
-    changes: bool,
-    job: impl FnOnce(&mut MapEntry) -> Result<Value> + Send + 'static,
-) -> Result {
-    let handle = handles::map(map.0)?;
-    // SAFETY: the caller's contract.
-    let completion = unsafe {
-        if required {
-            Some(Completion::required(completion)?)
-        } else {
-            Completion::from_c(completion)?
-        }
-    };
-    handle.command(completion, changes, job)
+/// Posts a C entry point's job to its map, by what the call promises: a
+/// query must have a completion, which waits for what it read; an
+/// operation or a change may have none.
+pub(crate) mod post {
+    use super::{Completion, Drawn, MapEntry, Result, Value, handles, mln_completion, mln_map};
+
+    /// # Safety
+    /// `completion` is null or a readable `mln_completion`.
+    pub(crate) unsafe fn query(
+        map: mln_map,
+        completion: *const mln_completion,
+        job: impl FnOnce(&mut MapEntry) -> Result<Value> + Send + 'static,
+    ) -> Result {
+        let handle = handles::map(map.0)?;
+        // SAFETY: the caller's contract.
+        handle.query(unsafe { Completion::required(completion) }?, job)
+    }
+
+    /// # Safety
+    /// `completion` is null or a readable `mln_completion`.
+    pub(crate) unsafe fn operation(
+        map: mln_map,
+        completion: *const mln_completion,
+        job: impl FnOnce(&mut MapEntry) -> Result + Send + 'static,
+    ) -> Result {
+        let handle = handles::map(map.0)?;
+        // SAFETY: the caller's contract.
+        handle.operation(unsafe { Completion::from_c(completion) }?, job)
+    }
+
+    /// # Safety
+    /// `completion` is null or a readable `mln_completion`.
+    pub(crate) unsafe fn change(
+        map: mln_map,
+        completion: *const mln_completion,
+        job: impl FnOnce(&mut MapEntry) -> Result<Drawn> + Send + 'static,
+    ) -> Result {
+        let handle = handles::map(map.0)?;
+        // SAFETY: the caller's contract.
+        handle.change(unsafe { Completion::from_c(completion) }?, job)
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -938,7 +1007,6 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                     generation: 1,
                     render_update_generation: 0,
                     held_update: false,
-                    unchanged: false,
                     loading: false,
                     style_loaded: false,
                     style_waiters: Vec::new(),
@@ -1105,9 +1173,12 @@ pub unsafe extern "C" fn mln_map_get_snapshot(
     }
 }
 
+/// A map's C entry point: `$call` is `query`, `operation` or `change`
+/// (see `post`), and `$body` checks the arguments, reading the map's handle
+/// by the name `$map`, and returns the job to post.
 macro_rules! command {
-    ($(#[$doc:meta])* $name:ident($($arg:ident: $ty:ty),* $(,)?), $required:expr, $changes:expr,
-     |$state:ident, $id:ident| $body:expr) => {
+    ($(#[$doc:meta])* $name:ident($($arg:ident: $ty:ty),* $(,)?), $call:ident,
+     |$map:ident| $body:expr) => {
         $(#[$doc])*
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $name(
@@ -1119,12 +1190,9 @@ macro_rules! command {
             // SAFETY: the caller's pointers.
             unsafe {
                 boundary(out_diagnostic, || {
-                    // The body reads the map's handle by the name `$state`.
                     #[allow(unused_variables)]
-                    let $state = map;
-                    $body
-                    // The body returns a job for `post`.
-                    .and_then(|job| post(map, completion, $required, $changes, job))
+                    let $map = map;
+                    $body.and_then(|job| $crate::map::post::$call(map, completion, job))
                 })
             }
         }
@@ -1133,18 +1201,17 @@ macro_rules! command {
 
 pub(crate) use command;
 
-/// A job that reports nothing but how it went.
+/// A change that draws something new.
 pub(crate) fn job(
     f: impl FnOnce(&mut MapEntry) -> Result + Send + 'static,
-) -> impl FnOnce(&mut MapEntry) -> Result<Value> + Send + 'static {
-    move |entry| f(entry).map(|()| Value::None)
+) -> impl FnOnce(&mut MapEntry) -> Result<Drawn> + Send + 'static {
+    move |entry| f(entry).map(|()| Drawn::New)
 }
 
 command!(
     mln_map_set_debug_flags(flags: mln_map_debug_flags),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let known = MLN_MAP_DEBUG_TILE_BORDERS
             | MLN_MAP_DEBUG_PARSE_STATUS
             | MLN_MAP_DEBUG_TIMESTAMPS
@@ -1155,42 +1222,39 @@ command!(
         if flags & !known != 0 {
             return Err(Failure::argument("debug flags contain unknown bits"));
         }
-        Ok(job(move |entry| {
-            entry.unchanged = entry.debug_flags == flags;
+        Ok(move |entry: &mut MapEntry| {
+            let drawn = Drawn::new_if(entry.debug_flags != flags);
             entry.debug_flags = flags;
-            Ok(())
-        }))
+            Ok(drawn)
+        })
     }
 );
 
 command!(
     mln_map_set_rendering_stats_view_enabled(enabled: bool),
-    false,
-    true,
-    |state, id| {
-        Ok(job(move |entry| {
-            entry.unchanged = entry.stats_view == enabled;
+    change,
+    |map| {
+        Ok(move |entry: &mut MapEntry| {
+            let drawn = Drawn::new_if(entry.stats_view != enabled);
             entry.stats_view = enabled;
-            Ok(())
-        }))
+            Ok(drawn)
+        })
     }
 );
 
 command!(
     mln_map_set_globe_free_bearing_enabled(enabled: bool),
-    false,
-    true,
-    |state, id| {
-        Ok(job(move |entry| {
-            entry.unchanged = true;
+    change,
+    |map| {
+        Ok(move |entry: &mut MapEntry| {
             entry.map.set_globe_free_bearing(enabled);
-            Ok(())
-        }))
+            Ok(Drawn::Nothing)
+        })
     }
 );
 
-command!(mln_map_dump_debug_logs(), false, false, |state, id| {
-    Ok(job(move |entry| {
+command!(mln_map_dump_debug_logs(), operation, |map| {
+    Ok(move |entry: &mut MapEntry| {
         // Native's dump: the style's URL and its sources between rules.
         let rule = "-".repeat(80);
         let info = |message: &str| crate::logging::log(MLN_LOG_SEVERITY_INFO, message);
@@ -1203,88 +1267,82 @@ command!(mln_map_dump_debug_logs(), false, false, |state, id| {
         }
         info(&rule);
         Ok(())
-    }))
+    })
 });
 
 command!(
     mln_map_set_event_mask(mask: mln_runtime_event_flags),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         check_mask(mask)?;
-        Ok(job(move |entry| {
+        Ok(move |entry: &mut MapEntry| {
             entry.event_mask = mask;
-            entry.unchanged = true;
-            Ok(())
-        }))
+            Ok(Drawn::Nothing)
+        })
     }
 );
 
-command!(
-    mln_map_resize(extent: mln_logical_extent),
-    false,
-    true,
-    |map, id| {
-        crate::base::physical(extent)?;
-        if handles::map(map.0)?.has_session.load(Ordering::Acquire) {
-            return Err(Failure::state(
-                "the map has an attached render session: resize the session instead",
-            ));
+command!(mln_map_resize(extent: mln_logical_extent), change, |map| {
+    crate::base::physical(extent)?;
+    if handles::map(map.0)?.has_session.load(Ordering::Acquire) {
+        return Err(Failure::state(
+            "the map has an attached render session: resize the session instead",
+        ));
+    }
+    Ok(move |entry: &mut MapEntry| {
+        let was = entry.extent;
+        let drawn = Drawn::new_if(
+            (was.width, was.height, was.scale_factor)
+                != (extent.width, extent.height, extent.scale_factor),
+        );
+        // The scale factor is what the map's next session renders at.
+        entry.extent = extent;
+        let before = entry.map.camera();
+        entry
+            .map
+            .set_viewport(f64::from(extent.width), f64::from(extent.height));
+        // A resize that moves the camera back within its limits
+        // cancels its transitions, as in Native.
+        if entry.map.camera() != before {
+            cancel(entry, None);
         }
-        Ok(job(move |entry| {
-            let was = entry.extent;
-            entry.unchanged = (was.width, was.height, was.scale_factor)
-                == (extent.width, extent.height, extent.scale_factor);
-            // The scale factor is what the map's next session renders at.
-            entry.extent = extent;
-            let before = entry.map.camera();
-            entry
-                .map
-                .set_viewport(f64::from(extent.width), f64::from(extent.height));
-            // A resize that moves the camera back within its limits
-            // cancels its transitions, as in Native.
-            if entry.map.camera() != before {
-                cancel(entry, None);
-            }
-            Ok(())
-        }))
-    }
-);
+        Ok(drawn)
+    })
+});
 
-command!(mln_map_request_repaint(), false, false, |state, id| {
+command!(mln_map_request_repaint(), operation, |map| {
     Ok(move |entry: &mut MapEntry| {
         if entry.session.is_some() {
             crate::session::force_redraw(entry);
         }
-        Ok(Value::None)
+        Ok(())
     })
 });
 
-command!(mln_map_begin_command_group(), false, false, |state, id| {
-    Ok(job(|entry| {
+command!(mln_map_begin_command_group(), operation, |map| {
+    Ok(|entry: &mut MapEntry| {
         entry.groups += 1;
         Ok(())
-    }))
+    })
 });
 
-command!(mln_map_end_command_group(), false, true, |state, id| {
-    Ok(job(|entry| {
+command!(mln_map_end_command_group(), change, |map| {
+    Ok(|entry: &mut MapEntry| {
         entry.groups = (entry.groups.checked_sub(1))
             .ok_or_else(|| Failure::state("the map has no open command group"))?;
         // The outermost end publishes what the groups held, as one update.
-        entry.unchanged = true;
         if entry.groups == 0 && std::mem::take(&mut entry.held_update) {
             entry.render_update_generation += 1;
         }
-        Ok(())
-    }))
+        Ok(Drawn::Nothing)
+    })
 });
 
-command!(mln_map_get_style_url(), true, false, |state, id| {
+command!(mln_map_get_style_url(), query, |map| {
     Ok(|entry: &mut MapEntry| Ok(Value::Text(entry.style_url.clone())))
 });
 
-command!(mln_map_get_loaded_style_json(), true, false, |state, id| {
+command!(mln_map_get_loaded_style_json(), query, |map| {
     Ok(|entry: &mut MapEntry| {
         // Before any style loads, the document is empty.
         Ok(Value::Text(entry.loaded_style.clone().unwrap_or_default()))
@@ -1293,9 +1351,8 @@ command!(mln_map_get_loaded_style_json(), true, false, |state, id| {
 
 command!(
     mln_map_set_tile_options(options: *const mln_map_tile_options),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let o = *sized(options, "options")?;
         let known = MLN_MAP_TILE_OPTION_PREFETCH_ZOOM_DELTA
             | MLN_MAP_TILE_OPTION_LOD_MIN_RADIUS
@@ -1335,7 +1392,7 @@ command!(
         if has(MLN_MAP_TILE_OPTION_LOD_MODE) && o.lod_mode > MLN_TILE_LOD_MODE_DISTANCE {
             return Err(Failure::argument("lod_mode is invalid"));
         }
-        Ok(job(move |entry| {
+        Ok(move |entry: &mut MapEntry| {
             let before = (entry.map.options().tile_lod, entry.prefetch_zoom_delta);
             let mut lod = before.0;
             let has = |bit| o.fields & bit != 0;
@@ -1361,20 +1418,19 @@ command!(
                     orb_api::TileLodMode::Default
                 };
             }
-            entry.unchanged = (lod, entry.prefetch_zoom_delta) == before;
+            let drawn = Drawn::new_if((lod, entry.prefetch_zoom_delta) != before);
             if lod != before.0 {
                 entry.map.set_tile_lod(lod);
             }
-            Ok(())
-        }))
+            Ok(drawn)
+        })
     }
 );
 
 command!(
     mln_map_set_viewport_options(options: *const mln_map_viewport_options),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let o = *sized(options, "options")?;
         let known = MLN_MAP_VIEWPORT_OPTION_NORTH_ORIENTATION
             | MLN_MAP_VIEWPORT_OPTION_CONSTRAIN_MODE
@@ -1434,9 +1490,8 @@ command!(
 
 command!(
     mln_map_set_projection_mode(options: *const mln_projection_mode_options),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let o = *sized(options, "options")?;
         let known = MLN_PROJECTION_MODE_OPTION_AXONOMETRIC
             | MLN_PROJECTION_MODE_OPTION_X_SKEW
@@ -1455,7 +1510,7 @@ command!(
                 return Err(Failure::argument(format!("{what} must be finite")));
             }
         }
-        Ok(job(move |entry| {
+        Ok(move |entry: &mut MapEntry| {
             let has = |bit| o.fields & bit != 0;
             let mut mode = entry.projection_mode;
             if has(MLN_PROJECTION_MODE_OPTION_AXONOMETRIC) {
@@ -1468,8 +1523,10 @@ command!(
                 mode.y_skew = o.y_skew;
             }
             let before = entry.projection_mode;
-            entry.unchanged = (mode.axonometric, mode.x_skew, mode.y_skew)
-                == (before.axonometric, before.x_skew, before.y_skew);
+            let drawn = Drawn::new_if(
+                (mode.axonometric, mode.x_skew, mode.y_skew)
+                    != (before.axonometric, before.x_skew, before.y_skew),
+            );
             entry.projection_mode = mode;
             entry
                 .map
@@ -1477,16 +1534,15 @@ command!(
                     x: mode.x_skew,
                     y: mode.y_skew,
                 }));
-            Ok(())
-        }))
+            Ok(drawn)
+        })
     }
 );
 
 command!(
     mln_map_set_bounds(options: *const mln_bound_options),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let o = *sized(options, "options")?;
         let known = MLN_BOUND_OPTION_BOUNDS
             | MLN_BOUND_OPTION_MIN_ZOOM
@@ -1594,7 +1650,7 @@ pub unsafe extern "C" fn mln_map_set_style_url(
             }
             let completion = Completion::from_c(completion)?;
             // The completion waits for the style.
-            handle.command(None, false, move |entry| {
+            handle.operation(None, move |entry| {
                 entry.map.load_style_url(&url);
                 entry.style.reset();
                 entry.style_url = url;
@@ -1619,7 +1675,7 @@ pub unsafe extern "C" fn mln_map_set_style_url(
                     Payload::None,
                     String::new(),
                 );
-                Ok(Value::None)
+                Ok(())
             })
         })
     }
@@ -1627,9 +1683,8 @@ pub unsafe extern "C" fn mln_map_set_style_url(
 
 command!(
     mln_map_set_style_json(json: mln_buffer_view),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         if json.data.is_null() || json.size == 0 {
             return Err(Failure::argument("the style JSON must not be empty"));
         }
@@ -1668,7 +1723,7 @@ command!(
             }
             // A document that doesn't parse leaves the style as it was.
             result
-                .map(|()| Value::None)
+                .map(|()| Drawn::New)
                 .map_err(|e| Failure::argument(e.message()))
         })
     }
@@ -2004,9 +2059,8 @@ fn track(entry: &mut MapEntry, animation_id: Option<AnimationId>, animation: &An
 
 command!(
     mln_map_update_camera(update: *const mln_camera_update),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let update = *sized(update, "update")?;
         if update.mode > MLN_CAMERA_UPDATE_MODE_FLY {
             return Err(Failure::argument("the update's mode is invalid"));
@@ -2017,7 +2071,7 @@ command!(
         Ok(move |entry: &mut MapEntry| {
             let t = target(entry, &camera)?;
             update_camera(entry, mode, &t, &animation)?;
-            Ok(Value::None)
+            Ok(Drawn::New)
         })
     }
 );
@@ -2161,9 +2215,8 @@ fn check_delta(d: &mln_camera_delta) -> Result {
 
 command!(
     mln_map_apply_camera_delta(delta: *const mln_camera_delta),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let d = *sized(delta, "delta")?;
         check_delta(&d)?;
         let delta = Delta {
@@ -2179,7 +2232,7 @@ command!(
     }
 );
 
-command!(mln_map_get_camera(), true, false, |state, id| {
+command!(mln_map_get_camera(), query, |map| {
     Ok(|entry: &mut MapEntry| {
         Ok(Value::of(mln_camera_query_result {
             generation: entry.generation,
@@ -2208,23 +2261,17 @@ fn cancel(entry: &mut MapEntry, which: Option<u64>) {
     }
 }
 
-command!(
-    mln_map_cancel_camera_transitions(),
-    false,
-    true,
-    |state, id| {
-        Ok(job(|entry| {
-            cancel(entry, None);
-            Ok(())
-        }))
-    }
-);
+command!(mln_map_cancel_camera_transitions(), change, |map| {
+    Ok(job(|entry| {
+        cancel(entry, None);
+        Ok(())
+    }))
+});
 
 command!(
     mln_map_cancel_camera_transitions_with_id(transition_id: u64),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         Ok(job(move |entry| {
             cancel(entry, Some(transition_id));
             Ok(())
@@ -2292,9 +2339,8 @@ pub(crate) fn free_camera(map: &orb_api::Map) -> mln_free_camera {
 // transitions; what they leave out stays.
 command!(
     mln_map_set_free_camera_options(options: *const mln_free_camera_options),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let o = *sized(options, "options")?;
         let known = MLN_FREE_CAMERA_OPTION_POSITION | MLN_FREE_CAMERA_OPTION_ORIENTATION;
         if o.fields & !known != 0 {
@@ -2562,9 +2608,8 @@ fn camera_for(
 
 command!(
     mln_map_camera_for_lat_lng_bounds(b: mln_lat_lng_bounds, fit: *const mln_camera_fit_options),
-    true,
-    false,
-    |state, id| {
+    query,
+    |map| {
         check_bounds(&b)?;
         let fit = fit_from(fit)?;
         Ok(move |entry: &mut MapEntry| camera_for(entry, b, &fit).map(Value::of))
@@ -2577,9 +2622,8 @@ command!(
         count: usize,
         fit: *const mln_camera_fit_options,
     ),
-    true,
-    false,
-    |state, id| {
+    query,
+    |map| {
         let b = box_of(coordinates, count)?;
         let fit = fit_from(fit)?;
         Ok(move |entry: &mut MapEntry| camera_for(entry, b, &fit).map(Value::of))
@@ -2608,7 +2652,7 @@ unsafe fn fit_update(
 fn fit_job(
     b: mln_lat_lng_bounds,
     (mode, fit, animation): (mln_camera_update_mode, FitOptions, Animation),
-) -> impl FnOnce(&mut MapEntry) -> Result<Value> + Send + 'static {
+) -> impl FnOnce(&mut MapEntry) -> Result<Drawn> + Send + 'static {
     job(move |entry| {
         // A fit that fails leaves the camera, and ends its handler.
         let camera = match camera_for(entry, b, &fit) {
@@ -2632,9 +2676,8 @@ command!(
         b: mln_lat_lng_bounds,
         update: *const mln_camera_fit_update,
     ),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         check_bounds(&b)?;
         Ok(fit_job(b, fit_update(update)?))
     }
@@ -2646,9 +2689,8 @@ command!(
         count: usize,
         update: *const mln_camera_fit_update,
     ),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let b = box_of(coordinates, count)?;
         Ok(fit_job(b, fit_update(update)?))
     }
@@ -2656,9 +2698,8 @@ command!(
 
 command!(
     mln_map_camera_for_geometry(geometry: mln_buffer_view, fit: *const mln_camera_fit_options),
-    true,
-    false,
-    |state, id| {
+    query,
+    |map| {
         let b = geometry_box(geometry)?;
         let fit = fit_from(fit)?;
         Ok(move |entry: &mut MapEntry| camera_for(entry, b, &fit).map(Value::of))
@@ -2667,9 +2708,8 @@ command!(
 
 command!(
     mln_map_fit_camera_to_geometry(geometry: mln_buffer_view, update: *const mln_camera_fit_update),
-    false,
-    true,
-    |state, id| {
+    change,
+    |map| {
         let b = geometry_box(geometry)?;
         Ok(fit_job(b, fit_update(update)?))
     }
@@ -2677,9 +2717,8 @@ command!(
 
 command!(
     mln_map_lat_lng_bounds_for_camera(camera: *const mln_camera_options),
-    true,
-    false,
-    |state, id| {
+    query,
+    |map| {
         let camera = *sized(camera, "camera")?;
         Ok(move |entry: &mut MapEntry| {
             let mut t = target(entry, &camera)?;
