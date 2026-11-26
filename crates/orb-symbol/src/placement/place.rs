@@ -8,8 +8,8 @@ use std::sync::Arc;
 use orb_text::{Anchor, WritingMode};
 
 use crate::bucket::{
-    AnchorOffset, NONE, PlacedSymbol, SizeKind, SortKeyRange, SymbolInstance, SymbolWritingMode,
-    instance_flags, justification,
+    AnchorOffset, NONE, PlacedSymbol, SizeKind, SortKeyRange, SymbolInstance, instance_flags,
+    justification,
 };
 use crate::geometry::Point;
 use crate::layout::{anchor_justification, justification_slot};
@@ -497,19 +497,42 @@ struct VariableOffset {
     text_box_scale: f64,
 }
 
-/// What one placement decided, by cross-tile id.
-#[derive(Debug, Default)]
+/// What a placement pass decided for one label.
+#[derive(Clone, Copy, Debug)]
+struct Placed {
+    placement: JointPlacement,
+    /// The variable anchor its text shows at.
+    offset: Option<VariableOffset>,
+    /// GL JS `placedOrientations`: the writing mode its text shows in.
+    orientation: Option<WritingMode>,
+}
+
+/// What a placement pass decided, by cross-tile id.
+type Placements = HashMap<u32, Placed>;
+
+/// A committed label: what it draws with while it shows or fades out.
+#[derive(Clone, Copy, Debug)]
+struct LabelState {
+    /// This placement's decision; `None` for a label only fading out.
+    placement: Option<JointPlacement>,
+    opacity: JointOpacity,
+    /// Placed now, or kept from before while the label fades out.
+    offset: Option<VariableOffset>,
+    orientation: Option<WritingMode>,
+}
+
+/// What one placement committed: every label that shows or fades, by
+/// cross-tile id.
+#[derive(Debug)]
 struct Decisions {
-    placements: HashMap<u32, JointPlacement>,
-    opacities: HashMap<u32, JointOpacity>,
-    variable_offsets: HashMap<u32, VariableOffset>,
-    /// A [`SymbolWritingMode`] code.
-    orientations: HashMap<u32, u8>,
+    labels: HashMap<u32, LabelState>,
     commit_time: f64,
     last_change_time: f64,
     /// Some opacity is partway (see [`Committed::partway`]).
     partway: bool,
     zoom: f64,
+    /// GL JS `prevZoomAdjustment`: fades zooming out ran ahead.
+    zoom_adjustment: f64,
 }
 
 /// One world copy of a bucket, placed as a tile of its own, as GL JS
@@ -828,7 +851,7 @@ impl Placer {
         let handed_over = handed_over(dropped, self.buckets.values());
 
         let ground = frame.ground.as_ref().map(|g| &*g.0);
-        let now = match &frame.scope {
+        let mut placed = match &frame.scope {
             Scope::Tiles(tiles) => self.place_tiles(frame, tiles),
             Scope::Viewport | Scope::Still => {
                 let mut placer = Pass::new(camera, self.prev.as_ref(), ground);
@@ -837,13 +860,14 @@ impl Placer {
                 placer.now
             }
         };
-        let mut now = now;
-        self.follow(&layers, &mut now);
-        commit(&mut now, self.prev.as_ref(), frame.now, frame.fade_duration);
-        let zoom_adjustment = self
-            .prev
-            .as_ref()
-            .map_or(0.0, |p| ((p.zoom - camera.zoom) / 1.5).max(0.0));
+        self.follow(&layers, &mut placed);
+        let mut now = commit(
+            placed,
+            self.prev.as_ref(),
+            frame.now,
+            frame.fade_duration,
+            camera.zoom,
+        );
 
         let mut changed = Vec::new();
         for (params, tiles) in &layers {
@@ -863,7 +887,7 @@ impl Placer {
             changed,
             commit_time: frame.now,
             fade_duration: frame.fade_duration,
-            zoom_adjustment,
+            zoom_adjustment: now.zoom_adjustment,
             last_change_time: now.last_change_time,
             partway: now.partway,
             handed_over,
@@ -875,7 +899,7 @@ impl Placer {
     /// Gives each symbol of a layer that follows another (see
     /// [`LayerParams::follows`]) the placement of the same symbol of that
     /// layer's bucket for the same tile.
-    fn follow(&self, layers: &[(LayerParams, Vec<PlacedTile>)], now: &mut Decisions) {
+    fn follow(&self, layers: &[(LayerParams, Vec<PlacedTile>)], now: &mut Placements) {
         for (params, tiles) in layers {
             let Some(leader) = params.follows else {
                 continue;
@@ -892,14 +916,8 @@ impl Placer {
                     continue;
                 }
                 for (&from, &to) in from.ids.iter().zip(&to.ids) {
-                    if let Some(&p) = now.placements.get(&from) {
-                        now.placements.insert(to, p);
-                    }
-                    if let Some(&o) = now.variable_offsets.get(&from) {
-                        now.variable_offsets.insert(to, o);
-                    }
-                    if let Some(&o) = now.orientations.get(&from) {
-                        now.orientations.insert(to, o);
+                    if let Some(&p) = now.get(&from) {
+                        now.insert(to, p);
                     }
                 }
             }
@@ -908,12 +926,9 @@ impl Placer {
 
     /// Tile scope (see [`Scope::Tiles`]): each tile's own placement, then
     /// the labels that overlap a higher-ranked one of another tile dropped.
-    fn place_tiles(&self, frame: &Frame, tiles: &[ScopeTile]) -> Decisions {
+    fn place_tiles(&self, frame: &Frame, tiles: &[ScopeTile]) -> Placements {
         let ground = frame.ground.as_ref().map(|g| &*g.0);
-        let mut now = Decisions {
-            zoom: frame.camera.zoom,
-            ..Decisions::default()
-        };
+        let mut now = Placements::default();
         let mut records = Vec::with_capacity(tiles.len());
         for tile in tiles {
             let layers = self.drawn(&tile.layers);
@@ -922,29 +937,15 @@ impl Placer {
             pass.run(&self.buckets, &layers, frame.cross_source_collisions);
             // A label two tiles both claim (an anchor on their shared edge,
             // within rounding) keeps the first tile's placement.
-            let Decisions {
-                placements,
-                variable_offsets,
-                orientations,
-                ..
-            } = pass.now;
-            for (id, p) in placements {
-                if let std::collections::hash_map::Entry::Vacant(e) = now.placements.entry(id) {
-                    e.insert(p);
-                    if let Some(&o) = variable_offsets.get(&id) {
-                        now.variable_offsets.insert(id, o);
-                    }
-                    if let Some(&o) = orientations.get(&id) {
-                        now.orientations.insert(id, o);
-                    }
-                }
+            for (id, p) in pass.now {
+                now.entry(id).or_insert(p);
             }
             records.push(pass.record.expect("set above"));
         }
         for (id, text, icon) in super::tile_scope::outranked(tiles, &records) {
-            if let Some(p) = now.placements.get_mut(&id) {
-                p.text = text;
-                p.icon = icon;
+            if let Some(p) = now.get_mut(&id) {
+                p.placement.text = text;
+                p.placement.icon = icon;
             }
         }
         now
@@ -1002,7 +1003,7 @@ type Part<'b> = (f64, &'b PlacedTile, &'b Bucket, std::ops::Range<usize>);
 
 struct Pass<'a> {
     index: CollisionIndex,
-    now: Decisions,
+    now: Placements,
     prev: Option<&'a Decisions>,
     camera: &'a Camera,
     ground: Option<&'a dyn super::Ground>,
@@ -1024,10 +1025,7 @@ impl<'a> Pass<'a> {
     ) -> Self {
         Self {
             index: CollisionIndex::new(*camera),
-            now: Decisions {
-                zoom: camera.zoom,
-                ..Decisions::default()
-            },
+            now: Placements::default(),
             prev,
             camera,
             ground,
@@ -1115,12 +1113,6 @@ impl<'a> Pass<'a> {
         }
     }
 
-    /// GL JS `markUsedOrientation` records which orientation shows; the
-    /// words read it from `orientations`.
-    fn mark_orientation(&mut self, id: u32, orientation: u8) {
-        self.now.orientations.insert(id, orientation);
-    }
-
     /// The order the instances of bucket parts are placed in, as (part,
     /// instance): a lone part's in its order, or several slices of one
     /// ancestor merged in the ancestor's (by feature, then along each
@@ -1147,7 +1139,8 @@ impl<'a> Pass<'a> {
         // MapLibre Native's `getSortedSymbols`: in a tilted view, labels
         // shown before go first, then new ones, then those hidden before.
         if let Some(prev) = self.stable_prev().filter(|_| self.tilted()) {
-            order.sort_by_key(|&(s, i)| match prev.placements.get(&parts[s].2.ids[i]) {
+            let placed_before = |id| prev.labels.get(&id).and_then(|l| l.placement);
+            order.sort_by_key(|&(s, i)| match placed_before(parts[s].2.ids[i]) {
                 Some(p) if p.text || p.icon => 0,
                 None => 1,
                 Some(_) => 2,
@@ -1185,12 +1178,16 @@ impl<'a> Pass<'a> {
             // Rejected by the filter's camera conditions: hidden, fading
             // out as any label that doesn't fit.
             if tile.filtered(i) {
-                let hidden = JointPlacement {
-                    text: false,
-                    icon: false,
-                    skip_fade: b.just_reloaded,
+                let hidden = Placed {
+                    placement: JointPlacement {
+                        text: false,
+                        icon: false,
+                        skip_fade: b.just_reloaded,
+                    },
+                    offset: None,
+                    orientation: None,
                 };
-                self.now.placements.insert(id, hidden);
+                self.now.insert(id, hidden);
                 seen.insert(id);
                 continue;
             }
@@ -1240,12 +1237,16 @@ impl<'a> Pass<'a> {
             let icon_box = icon.filter(|b| place_icon && b.placeable);
             let circles = circles.filter(|_| place_text);
             self.insert(&c, text_box, icon_box, circles, (always_text, always_icon));
-            self.now.placements.insert(
+            self.now.insert(
                 id,
-                JointPlacement {
-                    text: place_text || always_text,
-                    icon: place_icon || always_icon,
-                    skip_fade: offscreen || b.just_reloaded,
+                Placed {
+                    placement: JointPlacement {
+                        text: place_text || always_text,
+                        icon: place_icon || always_icon,
+                        skip_fade: offscreen || b.just_reloaded,
+                    },
+                    offset: text.offset,
+                    orientation: text.orientation,
                 },
             );
             seen.insert(id);
@@ -1273,78 +1274,56 @@ impl<'a> Pass<'a> {
         } else {
             &[WritingMode::Horizontal]
         };
+        let prev = self.prev.and_then(|p| p.labels.get(&id));
         if offsets.is_empty() {
             for &mode in modes {
-                let (bx, orientation) = match mode {
-                    WritingMode::Vertical => (
-                        vertical_text_box.expect("checked"),
-                        SymbolWritingMode::Vertical,
-                    ),
-                    WritingMode::Horizontal => (text_box, SymbolWritingMode::Horizontal),
+                let bx = match mode {
+                    WritingMode::Vertical => vertical_text_box.expect("checked"),
+                    WritingMode::Horizontal => text_box,
                 };
                 let result =
                     self.index
                         .place_box(&bx, &c.base(c.f.text_overlap, c.text_translation), None);
-                if result.placeable {
-                    self.mark_orientation(id, orientation as u8);
-                }
                 text.placed = Some(result);
                 text.vertical = mode == WritingMode::Vertical;
                 if result.placeable {
+                    // GL JS `markUsedOrientation`.
+                    text.orientation = Some(mode);
                     break;
                 }
             }
         } else {
             for &mode in modes {
-                if mode == WritingMode::Vertical && text.placeable() {
-                    break;
-                }
-                let (bx, ibox, orientation) = match mode {
-                    WritingMode::Vertical => (
-                        vertical_text_box.expect("checked"),
-                        vertical_icon_box,
-                        SymbolWritingMode::Vertical,
-                    ),
-                    WritingMode::Horizontal => (text_box, icon_box, SymbolWritingMode::Horizontal),
+                let (bx, ibox) = match mode {
+                    WritingMode::Vertical => {
+                        (vertical_text_box.expect("checked"), vertical_icon_box)
+                    }
+                    WritingMode::Horizontal => (text_box, icon_box),
                 };
                 let variable_icon = if c.p.icon_text_fit && c.f.icon_overlap == Overlap::Never {
                     ibox
                 } else {
                     None
                 };
-                // GL JS records the orientation only when the bucket may
-                // place vertically.
-                let orientation = if t.allow_vertical_placement {
-                    orientation
-                } else {
-                    SymbolWritingMode::None
-                };
-                text.placed = self.place_variable(
-                    c,
-                    offsets,
-                    &bx,
-                    variable_icon,
-                    orientation,
-                    &mut text.shift,
-                );
+                self.place_variable(c, offsets, &bx, variable_icon, &mut text);
                 text.vertical = mode == WritingMode::Vertical;
                 if text.placeable() {
+                    // GL JS records the orientation only when the bucket
+                    // may place vertically.
+                    if t.allow_vertical_placement {
+                        text.orientation = Some(mode);
+                    }
                     break;
                 }
             }
             // Not placed: keep the last placement's anchor while it fades.
-            if !text.placeable()
-                && let Some(prev) = self.prev.and_then(|p| p.variable_offsets.get(&id))
-            {
-                self.now.variable_offsets.insert(id, *prev);
+            if !text.placeable() {
+                text.offset = prev.and_then(|l| l.offset);
             }
         }
         // GL JS `updatePreviousOrientationIfNotPlaced`.
-        if t.allow_vertical_placement
-            && !text.placeable()
-            && let Some(&o) = self.prev.and_then(|p| p.orientations.get(&id))
-        {
-            self.now.orientations.insert(id, o);
+        if t.allow_vertical_placement && !text.placeable() {
+            text.orientation = prev.and_then(|l| l.orientation);
         }
         text
     }
@@ -1445,17 +1424,16 @@ impl<'a> Pass<'a> {
     }
 
     /// GL JS `placeBoxForVariableAnchors` with `attemptAnchorPlacement`:
-    /// `icon_box` is an icon fitted to the text, which must fit too.
+    /// `icon_box` is an icon fitted to the text, which must fit too. Sets
+    /// the box last tried and, once one fits, its anchor and shift.
     fn place_variable(
         &mut self,
         c: &Candidate<'_>,
         offsets: &[AnchorOffset],
         text_box: &CollisionBox,
         icon_box: Option<CollisionBox>,
-        // The orientation to record, or `None`.
-        orientation: SymbolWritingMode,
-        shift_out: &mut Option<Point>,
-    ) -> Option<PlacedBox> {
+        text: &mut PlacedText,
+    ) {
         let (instance, id, f) = (c.instance, c.id, c.f);
         let width = text_box.x2 - text_box.x1;
         let height = text_box.y2 - text_box.y1;
@@ -1466,7 +1444,9 @@ impl<'a> Pass<'a> {
         // view that anchor alone.
         let reordered: Vec<AnchorOffset>;
         let mut offsets = offsets;
-        if let Some(prev) = self.stable_prev().and_then(|p| p.variable_offsets.get(&id))
+        if let Some(prev) = (self.stable_prev())
+            .and_then(|p| p.labels.get(&id))
+            .and_then(|l| l.offset)
             && let Some(found) = offsets.iter().position(|o| o.text_anchor() == prev.anchor)
             && found != 0
         {
@@ -1483,42 +1463,35 @@ impl<'a> Pass<'a> {
             2
         };
         let mut overlap = Overlap::Never;
-        let mut placed = None;
+        text.placed = None;
         for _ in 0..passes {
             for o in offsets {
                 let anchor = o.text_anchor();
                 let text_offset = o.offset.map(f64::from);
                 let shift = layout_shift(anchor, width, height, text_offset, scale);
-                let text = c.base(overlap, c.text_translation);
-                let result = self.index.place_box(text_box, &text, Some(shift));
+                let base = c.base(overlap, c.text_translation);
+                let result = self.index.place_box(text_box, &base, Some(shift));
                 if let Some(ib) = &icon_box {
                     let icon = c.base(overlap, c.icon_translation);
                     if !self.index.place_box(ib, &icon, Some(shift)).placeable {
                         continue;
                     }
                 }
-                placed = Some(result);
+                text.placed = Some(result);
                 if result.placeable {
-                    self.now.variable_offsets.insert(
-                        id,
-                        VariableOffset {
-                            text_offset,
-                            width,
-                            height,
-                            anchor,
-                            text_box_scale: scale,
-                        },
-                    );
-                    if orientation != SymbolWritingMode::None {
-                        self.now.orientations.insert(id, orientation as u8);
-                    }
-                    *shift_out = Some(shift);
-                    return placed;
+                    text.offset = Some(VariableOffset {
+                        text_offset,
+                        width,
+                        height,
+                        anchor,
+                        text_box_scale: scale,
+                    });
+                    text.shift = Some(shift);
+                    return;
                 }
             }
             overlap = f.text_overlap;
         }
-        placed
     }
 }
 
@@ -1597,6 +1570,11 @@ struct PlacedText {
     vertical: bool,
     /// The variable anchor's shift, when one placed it.
     shift: Option<Point>,
+    /// The variable anchor it shows at: this placement's, or while it
+    /// fades out the last one's.
+    offset: Option<VariableOffset>,
+    /// The writing mode it shows in, likewise.
+    orientation: Option<WritingMode>,
 }
 
 impl PlacedText {
@@ -1605,25 +1583,32 @@ impl PlacedText {
     }
 }
 
-/// GL JS `Placement.commit`.
-fn commit(now: &mut Decisions, prev: Option<&Decisions>, time: f64, fade_duration: f64) {
-    now.commit_time = time;
+/// GL JS `Placement.commit`: each label's opacity, run on from its last,
+/// with labels no longer placed fading out at the anchor and orientation
+/// they last had.
+fn commit(
+    placed: Placements,
+    prev: Option<&Decisions>,
+    time: f64,
+    fade_duration: f64,
+    zoom: f64,
+) -> Decisions {
+    let zoom_adjustment = prev.map_or(0.0, |p| ((p.zoom - zoom) / 1.5).max(0.0));
     let increment = match prev {
         None => 1.0,
         Some(_) if fade_duration == 0.0 => 1.0,
-        Some(p) => {
-            let adjustment = ((p.zoom - now.zoom) / 1.5).max(0.0);
-            (time - p.commit_time) / fade_duration + adjustment
-        }
+        Some(p) => (time - p.commit_time) / fade_duration + zoom_adjustment,
     };
-    let empty = HashMap::default();
-    let prev_opacities = prev.map_or(&empty, |p| &p.opacities);
+    let mut labels = HashMap::with_capacity_and_hasher(placed.len(), Default::default());
     let mut changed = false;
-    for (&id, placement) in &now.placements {
-        let opacity = match prev_opacities.get(&id) {
-            Some(prev) => {
-                changed |= placement.text != prev.text.placed || placement.icon != prev.icon.placed;
-                JointOpacity::new(Some(prev), increment, placement.text, placement.icon, false)
+    for (id, now) in placed {
+        let placement = now.placement;
+        let last = prev.and_then(|p| p.labels.get(&id));
+        let opacity = match last {
+            Some(last) => {
+                let o = &last.opacity;
+                changed |= placement.text != o.text.placed || placement.icon != o.icon.placed;
+                JointOpacity::new(Some(o), increment, placement.text, placement.icon, false)
             }
             None => {
                 // A label of a tile just laid out again, or offscreen,
@@ -1639,40 +1624,45 @@ fn commit(now: &mut Decisions, prev: Option<&Decisions>, time: f64, fade_duratio
                 )
             }
         };
-        now.opacities.insert(id, opacity);
+        // What this placement left unset, a label still showing keeps.
+        let kept = last.filter(|_| !opacity.is_hidden());
+        labels.insert(
+            id,
+            LabelState {
+                placement: Some(placement),
+                opacity,
+                offset: now.offset.or_else(|| kept.and_then(|l| l.offset)),
+                orientation: (now.orientation).or_else(|| kept.and_then(|l| l.orientation)),
+            },
+        );
     }
-    for (&id, prev) in prev_opacities {
-        if let std::collections::hash_map::Entry::Vacant(entry) = now.opacities.entry(id) {
-            let opacity = JointOpacity::new(Some(prev), increment, false, false, false);
+    for (&id, last) in prev.iter().flat_map(|p| &p.labels) {
+        if let std::collections::hash_map::Entry::Vacant(entry) = labels.entry(id) {
+            let opacity = JointOpacity::new(Some(&last.opacity), increment, false, false, false);
             if !opacity.is_hidden() {
-                entry.insert(opacity);
-                changed |= prev.text.placed || prev.icon.placed;
+                changed |= last.opacity.text.placed || last.opacity.icon.placed;
+                entry.insert(LabelState {
+                    placement: None,
+                    opacity,
+                    ..*last
+                });
             }
         }
     }
-    if let Some(prev) = prev {
-        for (&id, offset) in &prev.variable_offsets {
-            if !now.variable_offsets.contains_key(&id)
-                && now.opacities.get(&id).is_some_and(|o| !o.is_hidden())
-            {
-                now.variable_offsets.insert(id, *offset);
-            }
-        }
-        for (&id, &orientation) in &prev.orientations {
-            if !now.orientations.contains_key(&id)
-                && now.opacities.get(&id).is_some_and(|o| !o.is_hidden())
-            {
-                now.orientations.insert(id, orientation);
-            }
-        }
+    let partway = (labels.values()).any(|l| l.opacity.text.partway() || l.opacity.icon.partway());
+    Decisions {
+        labels,
+        commit_time: time,
+        // Without a change nor an earlier one, nothing fades.
+        last_change_time: if changed {
+            time
+        } else {
+            prev.map_or(f64::NEG_INFINITY, |p| p.last_change_time)
+        },
+        partway,
+        zoom,
+        zoom_adjustment,
     }
-    now.partway = (now.opacities.values()).any(|o| o.text.partway() || o.icon.partway());
-    // Without a change nor an earlier one, nothing fades.
-    now.last_change_time = if changed {
-        time
-    } else {
-        prev.map_or(f64::NEG_INFINITY, |p| p.last_change_time)
-    };
 }
 
 /// GL JS `updateBucketOpacities` with `_markDuplicates`, and the draw-time
@@ -1692,31 +1682,41 @@ fn bucket_states(
     };
     let duplicate = JointOpacity::new(None, 0.0, false, false, true);
     let has = (!t.text_placed.is_empty(), !t.icon_placed.is_empty());
-    let vertical = SymbolWritingMode::Vertical as u8;
     for (i, instance) in t.instances.iter().enumerate() {
         let id = b.ids[i];
-        let opacity = if !seen.insert(id) {
-            duplicate
+        // A label this placement didn't reach shows at once as its
+        // `*-overlap: always` makes it.
+        let label = *now.labels.entry(id).or_insert_with(|| {
+            let (text, icon) = params.flags_of(instance).always(has.0, has.1);
+            LabelState {
+                placement: None,
+                opacity: JointOpacity::new(None, 0.0, text, icon, true),
+                offset: None,
+                orientation: None,
+            }
+        });
+        let opacity = if seen.insert(id) {
+            label.opacity
         } else {
-            *now.opacities.entry(id).or_insert_with(|| {
-                let (text, icon) = params.flags_of(instance).always(has.0, has.1);
-                JointOpacity::new(None, 0.0, text, icon, true)
-            })
+            duplicate
         };
-        let orientation = now.orientations.get(&id).copied();
-        let horizontal_hidden = orientation == Some(vertical);
-        let vertical_hidden = orientation.is_some_and(|o| o != vertical);
+        let LabelState {
+            orientation,
+            offset,
+            ..
+        } = label;
+        let horizontal_hidden = orientation == Some(WritingMode::Vertical);
+        let vertical_hidden = orientation == Some(WritingMode::Horizontal);
         let text_hidden = opacity.text.is_hidden();
         let packed = opacity.text.pack();
-        let offset = now.variable_offsets.get(&id).copied();
         // GL JS `markUsedJustification`: with several justifications, only
         // one is drawn. GL JS marks by the variable anchor, then marks
         // `left` (or vertical) again when an orientation is recorded; the
         // last mark wins.
         let used_slot = |slot: usize| -> bool {
             let auto = match (orientation, offset) {
-                (Some(o), _) if o == vertical => instance.text[justification::VERTICAL],
-                (Some(_), _) => instance.text[justification::LEFT],
+                (Some(WritingMode::Vertical), _) => instance.text[justification::VERTICAL],
+                (Some(WritingMode::Horizontal), _) => instance.text[justification::LEFT],
                 (None, Some(o)) => {
                     instance.text[justification_slot(anchor_justification(o.anchor))]
                 }
