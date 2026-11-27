@@ -329,43 +329,53 @@ mod tests {
         (module, info)
     }
 
-    /// The cull module's functions keep no function-scope arrays: neither
-    /// array variables nor dynamic indexing into an array value, which
-    /// compilers lower to the same. An Adreno 830's Vulkan driver (Chrome
-    /// 156) miscompiled the cull dispatch with them, writing no draws or
-    /// losing the device. Shared helpers it doesn't call are compiled
-    /// out.
+    /// The cull module's functions, and the shared ones it calls, hold no
+    /// arrays: no array variables, no dynamic index into an array value,
+    /// which compilers lower to the same, and no array value bound by a
+    /// `let`. An Adreno 830's Vulkan driver (Chrome 156) miscompiled the
+    /// cull dispatch with function-scope arrays, writing no draws or losing
+    /// the device. The Adreno X1-85's (Windows driver 31.0.148.0) lost the
+    /// device compiling it once `tile_sphere_ratio` bound a tile's `sphere`
+    /// to a `let`, used across a branch, and compiles it with each element
+    /// taken out of the tile where it is read.
     #[test]
-    fn cull_shader_has_no_function_arrays() {
-        let (module, info) = parse(CULL_SHADER.label, &CULL_SHADER.source());
+    fn cull_shader_holds_no_arrays() {
         let is_array = |inner: &naga::TypeInner| matches!(inner, naga::TypeInner::Array { .. });
-        let functions = module
-            .functions
-            .iter()
-            .map(|(handle, f)| (f, &info[handle]))
-            .chain(
-                module
-                    .entry_points
-                    .iter()
-                    .enumerate()
-                    .map(|(i, e)| (&e.function, info.get_entry_point(i))),
-            );
-        for (function, function_info) in functions {
-            let name = function.name.as_deref().unwrap_or("?");
-            if !CULL.contains(&format!("fn {name}(")) {
-                continue;
-            }
-            for (_, local) in function.local_variables.iter() {
-                assert!(
-                    !is_array(&module.types[local.ty].inner),
-                    "{name}: function-scope array `{}`",
-                    local.name.as_deref().unwrap_or("?"),
-                );
-            }
-            for (_, expression) in function.expressions.iter() {
-                if let naga::Expression::Access { base, .. } = *expression {
-                    let base = function_info[base].ty.inner_with(&module.types);
-                    assert!(!is_array(base), "{name}: indexes an array value");
+        for (entry, module) in split::entry_modules(&validate(&CULL_SHADER)) {
+            let info = naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::empty(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("cull {entry}: {e}"));
+            let functions = (module.functions.iter())
+                .map(|(handle, f)| (f, &info[handle]))
+                .chain(std::iter::once((
+                    &module.entry_points[0].function,
+                    info.get_entry_point(0),
+                )));
+            for (function, function_info) in functions {
+                let name = function.name.as_deref().unwrap_or("?");
+                for (_, local) in function.local_variables.iter() {
+                    assert!(
+                        !is_array(&module.types[local.ty].inner),
+                        "{entry} {name}: function-scope array `{}`",
+                        local.name.as_deref().unwrap_or("?"),
+                    );
+                }
+                let array = |e: naga::Handle<naga::Expression>| {
+                    is_array(function_info[e].ty.inner_with(&module.types))
+                };
+                for (_, expression) in function.expressions.iter() {
+                    if let naga::Expression::Access { base, .. } = *expression {
+                        assert!(!array(base), "{entry} {name}: indexes an array value");
+                    }
+                }
+                for (&handle, binding) in function.named_expressions.iter() {
+                    assert!(
+                        !array(handle),
+                        "{entry} {name}: `let {binding}` holds an array"
+                    );
                 }
             }
         }

@@ -340,13 +340,16 @@ fn tile_world_per_px(tile: Tile) -> f32 {
 // much as the view is a globe: a line `px_scale` drew at its reference
 // latitude would show wider toward the equator (an underzoomed globe over
 // a pole drew borders several pixels wide) and thinner toward the poles.
+//
+// It reads `sphere` element by element where it uses each: bound whole to
+// a `let`, an array the cull can't hold (`cull_shader_holds_no_arrays`).
 fn tile_sphere_ratio(tile: Tile, y: f32) -> f32 {
-    let s = tile.sphere;
-    if plane || s[2] == 0.0 {
+    if plane || tile.sphere[2] == 0.0 {
         return 1.0;
     }
     // As orb-render's CPU cull writes it.
-    return (1.0 - s[2]) + s[3] / cosh(s[0] + y * s[1]) * s[2];
+    let amount = tile.sphere[2];
+    return (1.0 - amount) + tile.sphere[3] / cosh(tile.sphere[0] + y * tile.sphere[1]) * amount;
 }
 
 // World units per logical pixel at the placement's data point `p`: where
