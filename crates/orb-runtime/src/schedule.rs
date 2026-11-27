@@ -151,6 +151,16 @@ pub(crate) struct Inbox {
     pub(crate) loads: Vec<Message>,
 }
 
+impl Inbox {
+    /// Queues a tile's result: an edit's behind those before it.
+    pub(crate) fn take(&mut self, message: Message) {
+        match &message {
+            Message::Tile { job, .. } if job.cause().is_some() => self.edits.push_back(message),
+            _ => self.loads.push(message),
+        }
+    }
+}
+
 /// Vector tiles built after the view gave their loads up, kept off the GPU
 /// up to the map's [`cache_limit`](crate::Map::cache_limit) of tiles,
 /// oldest out first: a view that comes back to one uploads it rather than fetching

@@ -424,7 +424,6 @@ impl Map {
             &build,
             &mut self.events,
         );
-        style.sprites.relayout_after_pixels |= style.awaits_sprite_pixels(&build);
         let SourceState::Ready { pyramid, .. } = &style.sources[index].state else {
             return;
         };

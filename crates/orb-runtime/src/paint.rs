@@ -73,6 +73,9 @@ struct PaintInputs {
     sources: usize,
     /// The camera, where paint reads it (beyond the spec).
     camera: Option<CameraInputs>,
+    /// The sprites' icons as the jobs have them: a constant pattern they
+    /// lack is reported once they're in.
+    icons: u32,
 }
 
 /// Where node paint was written: in an epoch, at a zoom, bearing and
@@ -183,6 +186,7 @@ pub(crate) fn frame(
             .count(),
         // Paint that reads the camera is written again as it moves.
         camera: camera.is_some().then_some(inputs),
+        icons: style.icons.epoch,
     };
     let plan = camera.as_deref().unwrap_or(plan);
     let crossfade = style.paint.zoom_history.update(zoom, now);

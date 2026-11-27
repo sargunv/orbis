@@ -57,13 +57,21 @@ impl Images {
     /// before maps draw with renderers on the new one. Each map adds its
     /// images again as it lays its style out again.
     pub fn reset(&self) {
-        *self.0.lock().expect("images poisoned") = ImageState::default();
+        let mut state = self.0.lock().expect("images poisoned");
+        let epoch = state.epoch + 1;
+        *state = ImageState {
+            epoch,
+            ..ImageState::default()
+        };
     }
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct ImageState {
     pub(crate) atlas: Option<ImageAtlas>,
+    /// Counts resets: namespaces and ramps of another epoch's atlas are
+    /// gone with it.
+    epoch: u64,
     retired: Vec<u64>,
     retired_ramps: Vec<u32>,
 }
@@ -532,10 +540,6 @@ pub(crate) struct SpriteState {
     pub(crate) icon_names: Vec<Vec<String>>,
     /// Each sprite's failure has been reported, by its index.
     pub(crate) failed: Vec<bool>,
-    /// Whether labels laid out again (an edit's) took their icons' atlas
-    /// rectangles before the sprites' pixels were in: they lay out once
-    /// more when the pixels are.
-    pub(crate) relayout_after_pixels: bool,
     /// Counts the style's sprite loads: replies to an earlier one, which
     /// a new `sprite` superseded, are dropped.
     pub(crate) epoch: u64,
@@ -560,9 +564,9 @@ impl SpriteState {
 }
 
 /// What tiles and styles let go of between frames, released at the next:
-/// from the renderer, or from the runtime's image atlas. All of it is on
-/// the device, and goes with a lost one; their host data isn't
-/// ([`Map::released_host`]).
+/// from the renderer, or from the runtime's image atlas, whose epoch
+/// [`Map::image_epoch`] names. All of it is on the device, and goes with a
+/// lost one; their host data isn't ([`Map::released_host`]).
 #[derive(Debug, Default)]
 pub(crate) struct Retired {
     /// Tiles of sources and the background.
@@ -592,11 +596,12 @@ impl Retired {
         }
     }
 
-    /// Hands the atlas's images and ramps to the runtime's images, which
-    /// release them with the next sprites.
-    fn hand_to(&mut self, images: &mut ImageState) {
-        images.retired.append(&mut self.images);
-        images.retired_ramps.append(&mut self.ramps);
+    /// Forgets what the renderer held, which went with it.
+    fn forget_renderer(&mut self) {
+        self.tiles.clear();
+        self.tables.clear();
+        self.pages.clear();
+        self.reserved.clear();
     }
 }
 
@@ -777,6 +782,9 @@ pub struct Map {
     /// tiles' jobs were in flight: those tiles' arrivals free the stand-ins
     /// they replace, so these try again on the next frames.
     pub(crate) waiting: Vec<WaitingTile>,
+    /// Tiles' results whose labels show images, queued again once the
+    /// sprites' pixels are in.
+    pub(crate) for_pixels: Vec<Message>,
     /// The vector tile going up over frames, which shows once it's all in.
     pub(crate) uploading: Option<crate::arrival::Uploading>,
     /// Chunks the last frame's cull left out for want of room.
@@ -843,6 +851,9 @@ pub struct Map {
     /// What tiles and styles let go of between frames, for the next frame
     /// to release from the renderer.
     pub(crate) retired: Retired,
+    /// The epoch of the shared atlas the map's images are in
+    /// ([`Images::reset`]).
+    image_epoch: u64,
     /// Host data of tile results dropped (parked ones among them), for the
     /// next frame to release. It is host memory, which outlives a lost
     /// device: the device that replaces it takes it over, ids and all
@@ -908,10 +919,14 @@ impl Drop for Map {
         self.style_loads.abort();
         // Its tiles' loads end with it, as a Native map's requests do.
         self.cancel_tile_loads();
+        // What it holds in the shared atlas goes with the next sprites.
         let mut images = self.services.images.0.lock().expect("images poisoned");
-        self.retired.hand_to(&mut images);
-        if let Some(namespace) = self.style.as_ref().and_then(|s| s.image_namespace) {
-            images.retired.push(namespace);
+        if images.epoch == self.image_epoch {
+            images.retired.append(&mut self.retired.images);
+            images.retired_ramps.append(&mut self.retired.ramps);
+            images
+                .retired
+                .extend(self.style.as_ref().and_then(|s| s.image_namespace));
         }
     }
 }
@@ -1035,6 +1050,7 @@ impl Map {
             applied: 0,
             planned: None,
             waiting: Vec::new(),
+            for_pixels: Vec::new(),
             uploading: None,
             candidates_dropped: 0,
             services,
@@ -1063,6 +1079,7 @@ impl Map {
             style: None,
             renderer: None,
             retired: Retired::default(),
+            image_epoch: 0,
             released_host: Vec::new(),
             options: crate::MapOptions::default(),
             keep_all_cull: false,
@@ -1615,14 +1632,18 @@ impl Map {
         if let Some(style) = self.style.take() {
             self.next_generation();
             // What the host set at run time comes back with it, feature
-            // state as every install takes it.
+            // state as every install takes it, its sprites into the
+            // namespace it had in the atlas.
             self.install_revision(style.doc, Some((style.id, &style.worker)));
+            if let Some(new) = &mut self.style {
+                new.image_namespace = style.image_namespace;
+            }
             for (name, image) in style.added_images {
                 let _ = self.add_image(&name, Arc::unwrap_or_clone(image));
             }
         }
-        // What the old renderer and image atlas held went with them.
-        self.retired = Retired::default();
+        // What the old renderer held went with it.
+        self.retired.forget_renderer();
     }
 
     /// Replaces the style with a document, every tile loaded fresh, and
@@ -2572,6 +2593,15 @@ impl Map {
 
     fn start_sprites(&mut self, gpu: &mut dyn Gpu, pixel_ratio: f32) {
         let mut guard = self.services.images.0.lock().expect("images poisoned");
+        // A reset atlas holds none of what the map had in the last one.
+        if guard.epoch != self.image_epoch {
+            self.image_epoch = guard.epoch;
+            self.retired.images.clear();
+            self.retired.ramps.clear();
+            if let Some(style) = &mut self.style {
+                style.image_namespace = None;
+            }
+        }
         let retired = std::mem::take(&mut guard.retired);
         let retired_ramps = std::mem::take(&mut guard.retired_ramps);
         let images = guard.atlas.as_mut().expect("renderer initializes images");
@@ -3712,6 +3742,13 @@ impl Map {
         self.tile_generation += 1;
         self.pending.clear();
         self.upkeep = 0;
+        for message in self.for_pixels.drain(..) {
+            if let Message::Tile { result, .. } = message
+                && let Ok(crate::TileOutcome::Built(build)) = *result
+            {
+                self.released_host.push(HostData::of(&build));
+            }
+        }
         (self.parked).drop_where(|_, _| true, &mut self.released_host);
         if let Some(up) = self.uploading.take() {
             self.released_host.push(HostData::of(&up.build));

@@ -40,11 +40,15 @@ impl Map {
         let clock = Arc::clone(&self.services.clock);
         while let Ok(message) = self.receiver.try_recv() {
             match message {
-                Message::Tile { ref job, .. } => match job.cause() {
-                    Some(_) => self.inbox.edits.push_back(message),
-                    None => self.inbox.loads.push(message),
-                },
+                Message::Tile { .. } => self.inbox.take(message),
                 message => self.apply_message(gpu, renderer, message),
+            }
+        }
+        // Results held for the sprites' pixels queue again once none load,
+        // whether the last arrived or an edit left the style none to load.
+        if !(self.style.as_ref()).is_some_and(|s| s.sprites.pixels_loading > 0) {
+            for message in std::mem::take(&mut self.for_pixels) {
+                self.inbox.take(message);
             }
         }
         self.continue_upload(gpu, renderer);
@@ -426,6 +430,19 @@ impl Map {
     /// Applies a tile's result, a load's or an edit's: what a load
     /// uploads counts against the frame's bytes.
     fn apply_tile_message(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer, message: Message) {
+        // Labels take their images' atlas rectangles as they upload: a
+        // result whose labels show images waits for the sprites' pixels
+        // (layout needed only their JSON), then queues again.
+        if let Message::Tile {
+            generation, result, ..
+        } = &message
+            && *generation == self.tile_generation
+            && let Ok(TileOutcome::Built(build)) = &**result
+            && (self.style.as_ref()).is_some_and(|s| s.awaits_sprite_pixels(build))
+        {
+            self.for_pixels.push(message);
+            return;
+        }
         let allowed = self.allowed();
         let Message::Tile {
             generation,
@@ -579,9 +596,6 @@ impl Map {
                 }
             }
         }
-        if style.sprites.pixels_loading == 0 {
-            relayout |= std::mem::take(&mut style.sprites.relayout_after_pixels);
-        }
         if relayout {
             self.relayout_symbols();
         }
@@ -606,7 +620,11 @@ impl Map {
                 host.release(gpu);
                 continue;
             }
-            if deferred || waiting.tried == Some(state) {
+            // A tile parked before the sprites loaded again waits for
+            // their pixels too.
+            let pixels =
+                (self.style.as_ref()).is_some_and(|s| s.awaits_sprite_pixels(&waiting.build));
+            if deferred || pixels || waiting.tried == Some(state) {
                 self.waiting.push(waiting);
                 continue;
             }
@@ -618,7 +636,6 @@ impl Map {
                 self.waiting.push(waiting);
                 continue;
             }
-            self.applied += 1;
             let (allowed, mut reserved) = (self.allowed(), None);
             let result = Ok(TileOutcome::Built(waiting.build));
             let at = (waiting.source, waiting.tile);
@@ -633,6 +650,7 @@ impl Map {
                     self.waiting.push(waiting);
                 }
                 Applied::Done => {
+                    self.applied += 1;
                     host.release(gpu);
                     state = self.room_state(renderer);
                 }
@@ -646,9 +664,8 @@ impl Map {
     }
 
     /// What a waiting tile depends on: the scene's pools in use and their
-    /// buffers, tile page layers in use, tile jobs in flight, and sprites
-    /// whose pixels are on their way.
-    pub(crate) fn room_state(&self, renderer: &Renderer) -> [u64; 7] {
+    /// buffers, tile page layers in use and tile jobs in flight.
+    pub(crate) fn room_state(&self, renderer: &Renderer) -> [u64; 6] {
         let stats = renderer.stats();
         let loading: u64 = self
             .style
@@ -666,9 +683,6 @@ impl Map {
             renderer.pools_revision(),
             renderer.used_layers(),
             loading,
-            self.style
-                .as_ref()
-                .map_or(0, |s| u64::from(s.sprites.pixels_loading)),
         ]
     }
 
@@ -916,12 +930,6 @@ impl Map {
             let at = (plan, source, key, tile);
             image_build(at, tile_image, mesh, patches, (fade_from, endpoint))
         });
-        // Labels take their images' atlas rectangles as they upload: a tile
-        // whose labels show images waits for the sprites' pixels (layout
-        // needed only their JSON).
-        if style.awaits_sprite_pixels(&build) {
-            return Applied::Waits(build);
-        }
         // Room: the scene's blocks, tables and the source's page grow to
         // hold it, whatever the camera does. Past the device's limits,
         // unused tiles go, this source's before others': the cache, within

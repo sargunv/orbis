@@ -239,7 +239,7 @@ pub(crate) struct WaitingTile {
     pub(crate) tile: TileIndex,
     pub(crate) build: TileResult,
     /// [`Map::room_state`] when it was last tried.
-    pub(crate) tried: Option<[u64; 7]>,
+    pub(crate) tried: Option<[u64; 6]>,
 }
 
 /// Raises the nodes' row maxima to those of new meshes, counting each
