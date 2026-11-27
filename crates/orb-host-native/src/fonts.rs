@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use orb_host::{LocalFace, LocalGlyphs, TextMetrics};
-use orb_text::FontId;
 use orb_text::font::{Drawn, Face, draw};
 use orb_text::sdf::InkBox;
 
@@ -58,7 +57,12 @@ const FALLBACKS: &[&str] = &[
 
 struct State {
     db: fontdb::Database,
-    faces: HashMap<fontdb::ID, Option<Arc<Face>>>,
+    /// Each face opened, at its default instance.
+    faces: HashMap<fontdb::ID, Option<Face>>,
+    /// Each face at a weight it was drawn at: a variable font's instance
+    /// there, which keeps what it derives from the location, or a static
+    /// face as it is.
+    weighted: HashMap<(fontdb::ID, u16), Face>,
     /// Per code point, the face a fallback search found.
     fallback: HashMap<char, Option<fontdb::ID>>,
     /// Per family, weight and style, the face the database matched: each
@@ -91,47 +95,56 @@ impl State {
         Self {
             db,
             faces: HashMap::new(),
+            weighted: HashMap::new(),
             fallback: HashMap::new(),
             queries: HashMap::new(),
             last: None,
         }
     }
 
-    fn face(&mut self, id: fontdb::ID) -> Option<Arc<Face>> {
-        if let Some(face) = self.faces.get(&id) {
-            return face.clone();
+    /// The face `id` at its default instance, opened once.
+    fn face(&mut self, id: fontdb::ID) -> Option<&Face> {
+        if !self.faces.contains_key(&id) {
+            // Mapped, not read: CJK fallbacks are files of 20 to 60 MB, of
+            // which a map touches the few tables and glyphs it draws. The
+            // faces of one collection share its mapping.
+            // SAFETY: the mapping is of an installed font file, which
+            // nothing writes while it is installed (the system's are
+            // read-only), as browsers map them. A file changed under the
+            // map would show the change, not fault, unless truncated.
+            #[allow(unsafe_code)]
+            let shared = unsafe { self.db.make_shared_face_data(id) };
+            let face = shared.and_then(|(bytes, index)| Face::new(bytes, index));
+            self.faces.insert(id, face);
         }
-        // A system face is identified by its place in the database.
-        let key = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::hash::DefaultHasher::new();
-            id.hash(&mut h);
-            h.finish()
-        };
-        // Mapped, not read: CJK fallbacks are files of 20 to 60 MB, of
-        // which a map touches the few tables and glyphs it draws. The
-        // faces of one collection share its mapping.
-        // SAFETY: the mapping is of an installed font file, which nothing
-        // writes while it is installed (the system's are read-only), as
-        // browsers map them. A file changed under the map would show the
-        // change, not fault, unless truncated.
-        #[allow(unsafe_code)]
-        let shared = unsafe { self.db.make_shared_face_data(id) };
-        let face = shared
-            .and_then(|(bytes, index)| Face::identified(bytes, index, FontId(key)))
-            .map(Arc::new);
-        self.faces.insert(id, face.clone());
-        face
+        self.faces[&id].as_ref()
     }
 
-    /// The face for `text` in `font`: the first family that has its first
-    /// code point, else a fallback face that does.
-    fn choose(&mut self, font: &LocalFace<'_>, text: &str) -> Option<Arc<Face>> {
-        let first = text.chars().next()?;
+    /// The face for `text` in `font`, at its weight: the first family that
+    /// has its first code point, else a fallback face that does.
+    fn choose(&mut self, font: &LocalFace<'_>, text: &str) -> Option<Face> {
         let weight = font
             .weight
             .and_then(|w| w.parse().ok())
             .map_or(fontdb::Weight::NORMAL, fontdb::Weight);
+        let id = self.choose_id(font, weight, text)?;
+        if let Some(face) = self.weighted.get(&(id, weight.0)) {
+            return Some(face.clone());
+        }
+        let face = self.face(id)?.at_weight(f32::from(weight.0));
+        self.weighted.insert((id, weight.0), face.clone());
+        Some(face)
+    }
+
+    /// The database's face for `text` in `font`, as [`choose`](Self::choose)
+    /// picks it.
+    fn choose_id(
+        &mut self,
+        font: &LocalFace<'_>,
+        weight: fontdb::Weight,
+        text: &str,
+    ) -> Option<fontdb::ID> {
+        let first = text.chars().next()?;
         let style = match font.style {
             "italic" => fontdb::Style::Italic,
             "oblique" => fontdb::Style::Oblique,
@@ -165,13 +178,12 @@ impl State {
             let db = &self.db;
             let matched = *self.queries.entry(key).or_insert_with(|| db.query(&query));
             if let Some(id) = matched
-                && let Some(face) = self.face(id)
-                && face.covers(first)
+                && self.face(id).is_some_and(|face| face.covers(first))
             {
-                return Some(face);
+                return Some(id);
             }
         }
-        let id = match self.fallback.get(&first) {
+        match self.fallback.get(&first) {
             Some(id) => *id,
             None => {
                 // The first installed face that has it, in the database's
@@ -185,8 +197,7 @@ impl State {
                 self.fallback.insert(first, id);
                 id
             }
-        };
-        self.face(id?)
+        }
     }
 
     fn drawn(&mut self, font: &LocalFace<'_>, text: &str) -> Option<&Drawn> {

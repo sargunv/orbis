@@ -1,6 +1,6 @@
 [package]
 name = "orb-shaper"
-description = "shaper.wasm: font-faces files drawn with HarfRust and skrifa, loaded lazily by the web's job workers"
+description = "shaper.wasm: font-faces files shaped and outlined by HarfRust, loaded lazily by the web's job workers"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true

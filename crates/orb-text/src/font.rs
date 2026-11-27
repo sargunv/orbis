@@ -1,83 +1,71 @@
-//! Glyphs drawn from font bytes: HarfRust shapes a cluster,
-//! skrifa outlines it, and its coverage goes through TinySDF as GL JS's
-//! local path draws a canvas glyph. Declared `font-faces` files and, on
+//! Glyphs drawn from font bytes: HarfRust shapes a cluster, its
+//! `read-fonts` model outlines it at the same place in a variable font's
+//! design space, and its coverage goes through TinySDF as GL JS's local
+//! path draws a canvas glyph. Declared `font-faces` files and, on
 //! native hosts, system fonts draw this way; every platform computes the
 //! same metrics and bitmaps from the same bytes.
 
 use std::sync::Arc;
 
-use skrifa::instance::{LocationRef, Size};
-use skrifa::outline::{DrawSettings, OutlinePen};
-use skrifa::{FontRef, MetadataProvider};
+use harfrust::font::Kind;
+use harfrust::font::glyph::outline::{DrawMemory, DrawOptions, PathSink};
 
-use crate::glyph::FontId;
 pub use crate::sdf::local::TextMetrics;
 use crate::sdf::{InkBox, local};
 
 /// Font file bytes, shared without copying (a memory-mapped system font).
 pub type FontBytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
 
-/// A font face from file bytes (TrueType or OpenType outlines).
+/// The weight a canvas draws a font at when none is asked for, and the one
+/// a `font-faces` file draws at: GL JS registers each file as a CSS
+/// `FontFace` with no weight descriptor, which is `normal`, and a browser
+/// clamps the weight it draws a variable font at to that.
+pub const REGULAR_WEIGHT: f32 = 400.0;
+
+/// A font face from file bytes (TrueType or OpenType outlines) at one
+/// place in its design space, which shaping, metrics and outlines all
+/// read. Cloning shares the font.
 #[derive(Clone)]
 pub struct Face {
-    bytes: FontBytes,
-    index: u32,
-    shaping: harfrust::Font,
-    id: FontId,
+    font: harfrust::Font,
 }
 
 impl std::fmt::Debug for Face {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Face")
-            .field("id", &self.id)
+            .field("coords", &self.font.normalized_coords())
             .finish_non_exhaustive()
     }
 }
 
 impl Face {
-    /// The face at `index` of `bytes` (a collection's member, or 0),
-    /// identified by a hash of its bytes.
+    /// The face at `index` of `bytes` (a collection's member, or 0), at
+    /// its default instance. Only sfnt fonts open, as in a browser.
     pub fn new(bytes: FontBytes, index: u32) -> Option<Self> {
-        let id = FontId(hash((*bytes).as_ref(), index));
-        Self::identified(bytes, index, id)
+        let font = harfrust::Font::new(bytes, index)?;
+        matches!(font.kind(), Kind::Sfnt(..)).then_some(Self { font })
     }
 
-    /// The face at `index` of `bytes`, with an identity the caller vouches
-    /// for (a system font's path), so large files are not hashed.
-    pub fn identified(bytes: FontBytes, index: u32, id: FontId) -> Option<Self> {
-        FontRef::from_index((*bytes).as_ref(), index).ok()?;
-        let shaping = harfrust::Font::new(Arc::clone(&bytes), index)?;
-        Some(Self {
-            id,
-            bytes,
-            index,
-            shaping,
-        })
-    }
-
-    /// Identifies the face by its bytes, so every worker agrees on it.
-    pub fn id(&self) -> FontId {
-        self.id
-    }
-
-    fn outlines(&self) -> FontRef<'_> {
-        FontRef::from_index((*self.bytes).as_ref(), self.index).expect("checked at construction")
+    /// The face as a browser draws it at CSS weight `weight`: a variable
+    /// font at that weight within the range of its `wght` axis (its
+    /// default instance can be far from it: the variable Noto Sans CJK
+    /// defaults to Thin), any other font as it is. Every other axis stays
+    /// at its default, `opsz` included, which a canvas would set to the
+    /// font size.
+    #[must_use]
+    pub fn at_weight(&self, weight: f32) -> Self {
+        let font = self
+            .font
+            .instance_builder()
+            .variations([("wght", weight)])
+            .build();
+        Self { font }
     }
 
     /// Whether the face maps `c` to a glyph.
     pub fn covers(&self, c: char) -> bool {
-        self.outlines().charmap().map(c).is_some()
+        self.font.charmap().map_unicode(c).is_some()
     }
-}
-
-/// FNV-1a over the bytes and face index.
-fn hash(bytes: &[u8], index: u32) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes.iter().chain(&index.to_le_bytes()) {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-    h
 }
 
 /// A text shaped and rasterized at one size, with the baseline origin at
@@ -104,7 +92,7 @@ impl Pen {
     }
 }
 
-impl OutlinePen for Pen {
+impl PathSink for Pen {
     fn move_to(&mut self, x: f32, y: f32) {
         let p = self.at(x, y);
         self.commands.push(zeno::Command::MoveTo(p));
@@ -130,15 +118,15 @@ impl OutlinePen for Pen {
 /// and direction it guesses) and rasterizes it at `size` pixels, as a canvas
 /// would fill it at an integer origin.
 pub fn draw(face: &Face, text: &str, size: f32) -> Drawn {
-    let shaper = harfrust::ShaperFont::new(&face.shaping);
+    let shaper = harfrust::ShaperFont::new(&face.font);
     let mut buffer = harfrust::Buffer::new();
     buffer.push_str(text);
     buffer.guess_segment_properties();
     // A malformed font draws nothing, as a canvas without the glyph would.
     let shaped = harfrust::shape(&shaper, &mut buffer, harfrust::ShapeOptions::new()).is_ok();
-    let scale = size / f32::from(face.shaping.units_per_em());
-    let fref = face.outlines();
-    let outlines = fref.outline_glyphs();
+    let scale = size / f32::from(face.font.units_per_em());
+    let outlines = face.font.outline_glyphs();
+    let options = DrawOptions::new().with_ppem(Some(size));
     let mut pen = Pen {
         commands: Vec::new(),
         x: 0.0,
@@ -149,9 +137,8 @@ pub fn draw(face: &Face, text: &str, size: f32) -> Drawn {
         for (info, pos) in buffer.glyph_infos().iter().zip(buffer.glyph_positions()) {
             pen.x = (advance + pos.x_offset) as f32 * scale;
             pen.y = -(pos.y_offset as f32) * scale;
-            if let Some(glyph) = outlines.get(skrifa::GlyphId::new(info.glyph_id)) {
-                let settings = DrawSettings::unhinted(Size::new(size), LocationRef::default());
-                let _ = glyph.draw(settings, &mut pen);
+            if let Some(glyph) = outlines.get(harfrust::GlyphId::new(info.glyph_id)) {
+                let _ = glyph.draw(&options, DrawMemory::Scratch, &mut pen);
             }
             advance += pos.x_advance;
         }
@@ -310,10 +297,13 @@ pub struct Files {
 }
 
 impl Files {
-    /// Opens `url`'s bytes (TrueType, OpenType, WOFF or WOFF2).
+    /// Opens `url`'s bytes (TrueType, OpenType, WOFF or WOFF2), drawn at
+    /// [`REGULAR_WEIGHT`].
     pub fn open(&mut self, url: &str, bytes: &[u8]) -> Result<(), String> {
         let sfnt = sfnt(bytes)?;
-        let face = Face::new(Arc::new(sfnt), 0).ok_or("not a font file")?;
+        let face = Face::new(Arc::new(sfnt), 0)
+            .ok_or("not a font file")?
+            .at_weight(REGULAR_WEIGHT);
         self.faces.insert(url.to_string(), face);
         Ok(())
     }
@@ -367,6 +357,99 @@ mod tests {
         let m = files.measure("latin", "á");
         assert!(m.advance > 20.0 && m.ascent > 30.0, "{m:?}");
         assert!(files.open("bad", b"<html>").is_err());
+    }
+
+    fn test_face(name: &str) -> Face {
+        let path = format!("{}/tests/data/fonts/{name}", env!("CARGO_MANIFEST_DIR"));
+        let bytes = std::fs::read(path).expect("the test font");
+        Face::new(Arc::new(bytes), 0).expect("a font")
+    }
+
+    /// The ink of `text` drawn with `face`: its advance and the sum of its
+    /// coverage.
+    fn ink(face: &Face, text: &str) -> (f64, u64) {
+        let drawn = draw(face, text, local::FONT_SIZE as f32);
+        let sum = drawn.alpha.iter().map(|&a| u64::from(a)).sum();
+        (drawn.metrics.advance, sum)
+    }
+
+    /// Noto Sans CJK's variable font defaults to Thin; a browser draws it
+    /// at the weight asked, as its static instance of that weight.
+    #[test]
+    fn a_variable_font_draws_at_the_weight_asked() {
+        let variable = test_face("NotoSansCJKjp-VF.otf");
+        let regular = test_face("NotoSansCJKjp-Regular.otf");
+        let thin = test_face("NotoSansCJKjp-Thin.otf");
+        for text in ["中", "A"] {
+            let (advance, sum) = ink(&variable.at_weight(REGULAR_WEIGHT), text);
+            let (static_advance, static_sum) = ink(&regular, text);
+            // The static instance's outlines and advances are rounded to
+            // whole units, 0.048 px each.
+            assert!(
+                (advance - static_advance).abs() < 0.1,
+                "{text}: {advance} vs {static_advance}"
+            );
+            assert!(
+                sum.abs_diff(static_sum) * 100 < static_sum,
+                "{text}: {sum} vs {static_sum}"
+            );
+            // Unasked, it is Thin.
+            let (_, thin_sum) = ink(&thin, text);
+            assert!(
+                thin_sum * 3 < static_sum * 2,
+                "{text}: {thin_sum} vs {static_sum}"
+            );
+            let (_, default_sum) = ink(&variable, text);
+            assert!(
+                default_sum.abs_diff(thin_sum) * 100 < thin_sum,
+                "{text}: {default_sum} vs {thin_sum}"
+            );
+            // Bolder draws more ink, up to the axis's end (900).
+            let (_, bold_sum) = ink(&variable.at_weight(700.0), text);
+            assert!(bold_sum > sum, "{text}: {bold_sum} vs {sum}");
+            assert_eq!(
+                ink(&variable.at_weight(950.0), text),
+                ink(&variable.at_weight(900.0), text)
+            );
+        }
+        // "A" widens with weight.
+        assert!(ink(&variable.at_weight(700.0), "A").0 > ink(&variable.at_weight(400.0), "A").0);
+    }
+
+    #[test]
+    fn a_static_font_draws_as_it_is_at_any_weight() {
+        let face = test_face("NotoSans.ttf");
+        assert_eq!(ink(&face.at_weight(700.0), "Ag"), ink(&face, "Ag"));
+    }
+
+    /// GL JS declares each file with no weight, so a browser draws it at
+    /// regular weight whatever the font's default instance.
+    #[test]
+    fn font_files_draw_at_regular_weight() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/fonts/NotoSansCJKjp-VF.otf"
+        );
+        let mut files = Files::default();
+        files
+            .open("cjk", &std::fs::read(path).expect("the test font"))
+            .expect("a font");
+        let regular = test_face("NotoSansCJKjp-Regular.otf");
+        let m = files.measure("cjk", "中");
+        let expected = draw(&regular, "中", local::FONT_SIZE as f32).metrics;
+        assert!(
+            (m.advance - expected.advance).abs() < 0.1,
+            "{m:?} vs {expected:?}"
+        );
+        assert_eq!(
+            (m.ascent, m.descent, m.left, m.right),
+            (
+                expected.ascent,
+                expected.descent,
+                expected.left,
+                expected.right
+            )
+        );
     }
 
     /// `sfnt` as a WOFF 1.0 file, each table zlib-compressed when that

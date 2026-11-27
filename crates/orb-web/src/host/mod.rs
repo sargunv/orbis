@@ -674,8 +674,8 @@ impl orb_host::LocalGlyphs for CanvasGlyphs {
 }
 
 /// `font-faces` files drawn by `shaper.wasm`, which the job
-/// worker loads the first time a style declares a file: HarfRust and
-/// skrifa, as natively, outside `core.wasm`.
+/// worker loads the first time a style declares a file: HarfRust,
+/// as natively, outside `core.wasm`.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ShaperFiles;
 

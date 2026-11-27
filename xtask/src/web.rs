@@ -35,7 +35,7 @@ const NAMED_CORE: &str = "target/web/core-names.wasm";
 /// same margin, and when a change shrinks a module, lower it.
 const CORE_WATCH_KIB: usize = 730;
 const CORE_GL_WATCH_KIB: usize = 1020;
-const SHAPER_WATCH_KIB: usize = 380;
+const SHAPER_WATCH_KIB: usize = 320;
 
 /// Crates whose code the size report attributes separately.
 const CRATES: &[&str] = &[

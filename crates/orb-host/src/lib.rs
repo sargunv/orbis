@@ -496,7 +496,7 @@ pub trait LocalGlyphs: Send + Sync + std::fmt::Debug {
 
 /// Draws glyphs from font files a style declares (`font-faces`), from the
 /// same bytes on every platform so labels lay out identically:
-/// HarfRust shapes, skrifa outlines. Natively `orb-text` links in; on
+/// HarfRust shapes and outlines, at regular weight. Natively `orb-text` links in; on
 /// the web a lazily loaded `shaper.wasm` holds it. Files are keyed by URL.
 pub trait FontFiles: Send + Sync + std::fmt::Debug {
     /// Calls `ready` once files can be opened: at once, unless the engine

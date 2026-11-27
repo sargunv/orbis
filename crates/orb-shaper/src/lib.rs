@@ -1,5 +1,5 @@
 //! `shaper.wasm`: the `font-faces` files of a style, drawn
-//! with HarfRust and skrifa as natively, so labels lay out identically.
+//! with HarfRust as natively, so labels lay out identically.
 //! Job workers load it the first time a style declares a file, and
 //! `orb-web`'s `ShaperFiles` calls it as the map's
 //! `orb_host::FontFiles`. Its module is separate from `core.wasm`, so maps
