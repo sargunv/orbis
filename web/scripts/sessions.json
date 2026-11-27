@@ -1,0 +1,157 @@
+{
+  "$comment": [
+    "The sessions `pnpm session` (session.mjs) and its native twin `cargo xtask bench session` (orb-bench's session.rs) both run, so that a session means the same style, camera and hand on the web and natively.",
+    "`style` is a catalogue key as load.html takes it (data/scenes.json's, or `alps`, styles.js's key-only entry); The demo's own styles (data/scenes.json's local entries) open with the map options' defaults, as the demo opens them; `globe` instead puts the style on the globe under the demo's sky alone (load.html's `?globe`, data/globe-sky.json). `at` is the first camera, the style's own `center`, `zoom`, `bearing` and `pitch` filling what it leaves out. `pause` is the ms between moves.",
+    "Moves, timed from their first event; points are fractions of the viewport: `wheel`, `n` notches of `delta` px at `at`, `ms` apart, negative zooming in; `drag`, the primary button from `from` by `by` px over `ms`; `turn`, the secondary button from the centre (tilts and turns), as a drag; `fling`, `levels` zoomed in (out, negative) by wheel notches `ms` apart, each a notch Orbis zooms a third of a level by; `scroll`, `levels` zoomed by a trackpad's 8 px every 8 ms; `fly`, the camera's centre carried straight from lon, lat `from` to `to` over `ms`, a step every 16 ms. A drag is held still 150 ms before its release, so no engine glides on and every engine ends where the hand stopped."
+  ],
+  "sessions": [
+    {
+      "name": "manhattan",
+      "about": "Liberty over Midtown at z13, wheel-zoomed in to about z16 as the buildings load, tilted to 70, turned and dragged across the island",
+      "style": "liberty",
+      "at": {
+        "center": [-73.9855, 40.758],
+        "zoom": 13,
+        "bearing": 0,
+        "pitch": 0
+      },
+      "pause": 400,
+      "moves": [
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "turn": { "by": [0, -140], "ms": 800 } },
+        { "turn": { "by": [160, 0], "ms": 800 } },
+        { "drag": { "from": [0.5, 0.8], "by": [0, -200], "ms": 800 } },
+        { "drag": { "from": [0.5, 0.8], "by": [-300, -100], "ms": 800 } },
+        { "drag": { "from": [0.5, 0.8], "by": [0, -200], "ms": 800 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": 100, "n": 8, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 8, "ms": 50 } }
+      ]
+    },
+    {
+      "name": "paris",
+      "about": "Liberty over central Paris tilted from pitch 60 to the limit (85), panned and turned there",
+      "style": "liberty",
+      "at": {
+        "center": [2.3417, 48.8559],
+        "zoom": 15,
+        "bearing": 30,
+        "pitch": 60
+      },
+      "pause": 400,
+      "moves": [
+        { "turn": { "by": [0, -200], "ms": 600 } },
+        { "drag": { "from": [0.5, 0.8], "by": [0, -150], "ms": 800 } },
+        { "turn": { "by": [200, 0], "ms": 1000 } },
+        { "drag": { "from": [0.5, 0.8], "by": [250, -100], "ms": 800 } },
+        { "drag": { "from": [0.5, 0.8], "by": [0, -150], "ms": 800 } },
+        { "turn": { "by": [-300, 0], "ms": 1200 } },
+        { "drag": { "from": [0.5, 0.8], "by": [-250, -100], "ms": 800 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 8, "ms": 50 } },
+        { "drag": { "from": [0.5, 0.8], "by": [0, -150], "ms": 800 } }
+      ]
+    },
+    {
+      "name": "alps",
+      "about": "The Alps terrain style at its own camera (pitch 72), dragged, turned and zoomed",
+      "style": "alps",
+      "at": {},
+      "pause": 400,
+      "moves": [
+        { "drag": { "from": [0.5, 0.8], "by": [0, -400], "ms": 800 } },
+        { "turn": { "by": [250, 0], "ms": 1200 } },
+        { "drag": { "from": [0.5, 0.8], "by": [200, -300], "ms": 800 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 8, "ms": 50 } },
+        { "turn": { "by": [-300, 0], "ms": 1200 } },
+        { "drag": { "from": [0.5, 0.8], "by": [0, -400], "ms": 800 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": 100, "n": 12, "ms": 50 } },
+        { "drag": { "from": [0.5, 0.8], "by": [-300, -200], "ms": 800 } }
+      ]
+    },
+    {
+      "name": "rotate",
+      "about": "The Alps terrain style turned slowly at pitch 75 to 85: what a turn alone changes of the terrain's cover and its drape (the native session also reports how still the cover held)",
+      "style": "alps",
+      "at": { "zoom": 12, "pitch": 78 },
+      "pause": 400,
+      "moves": [
+        { "turn": { "by": [300, 0], "ms": 4000 } },
+        { "turn": { "by": [0, -60], "ms": 600 } },
+        { "turn": { "by": [300, 0], "ms": 4000 } },
+        { "turn": { "by": [0, 20], "ms": 600 } },
+        { "turn": { "by": [-300, 0], "ms": 4000 } }
+      ]
+    },
+    {
+      "name": "globe",
+      "about": "The Globe entry (terrain on) over New York, wheel-zoomed from z2 to about z8.5, tilting to the limit on the way",
+      "style": "globe",
+      "at": {
+        "center": [-73.9855, 40.758],
+        "zoom": 2,
+        "bearing": 0,
+        "pitch": 0
+      },
+      "pause": 400,
+      "moves": [
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "turn": { "by": [0, -200], "ms": 800 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "wheel": { "at": [0.5, 0.5], "delta": -100, "n": 6, "ms": 50 } },
+        { "drag": { "from": [0.5, 0.8], "by": [0, -400], "ms": 800 } },
+        { "turn": { "by": [200, 0], "ms": 1000 } }
+      ]
+    },
+    {
+      "name": "nepal",
+      "about": "The Globe entry flung in and out between the whole globe (z1) and regional zooms (z7) over the Himalaya, twice: a spun mouse wheel (a notch every 16-25 ms) and a trackpad's scroll (8 px every 8 ms), barely pausing between flings",
+      "style": "globe",
+      "at": { "center": [84, 28], "zoom": 1, "bearing": 0, "pitch": 0 },
+      "pause": 150,
+      "moves": [
+        { "fling": { "levels": 6, "ms": 20 } },
+        { "fling": { "levels": -6, "ms": 20 } },
+        { "fling": { "levels": 6, "ms": 16 } },
+        { "fling": { "levels": -3, "ms": 16 } },
+        { "fling": { "levels": 3, "ms": 25 } },
+        { "fling": { "levels": -6, "ms": 16 } },
+        { "scroll": { "levels": 6 } },
+        { "scroll": { "levels": -6 } },
+        { "fling": { "levels": 6, "ms": 20 } },
+        { "fling": { "levels": -6, "ms": 20 } },
+        { "fling": { "levels": 6, "ms": 16 } },
+        { "fling": { "levels": -3, "ms": 16 } },
+        { "fling": { "levels": 3, "ms": 25 } },
+        { "fling": { "levels": -6, "ms": 16 } },
+        { "scroll": { "levels": 6 } },
+        { "scroll": { "levels": -6 } }
+      ]
+    },
+    {
+      "name": "spin",
+      "about": "Liberty on the globe carried at z4 from Switzerland 130 degrees east to Japan in a second, as mln-rs measures its fetch order: its settle time is how long the new view takes to complete",
+      "style": "liberty",
+      "globe": true,
+      "at": { "center": [8.23, 46.82], "zoom": 4, "bearing": 0, "pitch": 0 },
+      "pause": 400,
+      "moves": [
+        { "fly": { "from": [8.23, 46.82], "to": [138.25, 36.2], "ms": 1000 } }
+      ]
+    }
+  ]
+}

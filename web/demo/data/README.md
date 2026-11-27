@@ -54,6 +54,10 @@ sprites once served.
   from ETOPO1 and GEBCO; every source is in
   [their attribution list](https://github.com/tilezen/joerd/blob/master/docs/attribution.md).
   Old `?style=terrain` links open it.
+- `globe-sky.json`: the sky `?style=…&globe` puts around any style on the
+  globe for the benches and measurements (`styles.js`), and that the
+  `spin` session puts on Liberty on the web and natively
+  (`web/scripts/sessions.json`); written for this repository.
 - `protomaps-light.json`: [Protomaps](https://github.com/protomaps/basemaps)'
   Light style in English (`style@5.7.2`) as `api.protomaps.com` serves it,
   a source or layer per line; `cargo xtask demo-data protomaps` pins it

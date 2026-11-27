@@ -3,6 +3,7 @@ import alpsFlight from "./data/alps-flight.json";
 import alps from "./data/alps.json?url";
 import arctic from "./data/crs/arctic.json?url";
 import earthquake from "./data/earthquake.json?url";
+import GLOBE_SKY from "./data/globe-sky.json";
 import globe from "./data/globe.json?url";
 import neon from "./data/neon.json?url";
 import osmCarto from "./data/osm-carto.json?url";
@@ -75,33 +76,6 @@ const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
  *   quake?: { epicentre: [number, number], wave: Record<string, number> }, marker?: { view: object }, own?: boolean,
  *   unsupported?: { gljs?: string, native?: string } }} Scene
  */
-
-/**
- * A blue sky around the globe, a subtle rim at low zoom that thins out as
- * it hands over to Mercator: what `?globe` puts on any style for the
- * benches and measurements.
- */
-const GLOBE_SKY = {
-  "sky-color": "#4f8fd9",
-  "horizon-color": "#d6e8fb",
-  "fog-color": "#e4eef8",
-  "sky-horizon-blend": 0.7,
-  "horizon-fog-blend": 0.6,
-  "fog-ground-blend": 0.7,
-  "atmosphere-blend": [
-    "interpolate",
-    ["linear"],
-    ["zoom"],
-    0,
-    0.4,
-    2,
-    0.32,
-    4,
-    0.18,
-    8,
-    0,
-  ],
-};
 
 /** The catalogue's local files, as the build emits them. */
 const LOCAL = {
@@ -302,7 +276,10 @@ export function demoStyle(params, fallback = "live") {
  * own style with its map options as the app opens them: its defaults, which draw
  * nothing GL JS and Native can't, or those `params` names (`&blend=1`,
  * `&terrain=0`); `globe` in `params` puts
- * Liberty-on-the-globe's projection and sky (GLOBE_SKY) in any style.
+ * Liberty-on-the-globe's projection and sky in any style: a blue sky
+ * around the globe, a subtle rim at low zoom that thins out as it hands
+ * over to Mercator (data/globe-sky.json, which orb-bench's sessions put
+ * on too).
  * Otherwise the style's URL.
  */
 export async function demoStyleWithScene(params, fallback = "live") {

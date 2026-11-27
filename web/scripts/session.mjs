@@ -6,23 +6,18 @@
 // the installed Firefox (headed, on WebGPU: serve.mjs's `launchFirefox`) or
 // Playwright's WebKit, in Orbis and the pinned GL JS on demo/load.html.
 //
-//   pnpm session [--session=manhattan|paris|alps|rotate|globe|nepal] [--browser=chromium|firefox|webkit]
-//     [--engines=orbis,gljs] [--runs=n] [--style=key|url] [--size=WxH]
-//     [--ratio=r] [--start=ms] [--input=ms] [--warm] [--driver] [--headed]
-//     [--worst=n] [--backend=webgpu|webgl2] [--pkgs=a,b] [--fetches=a,b]
-//     [--latency=ms] [--deep] [--terrain=0|1] [--gpu] [--dump=prefix]
+//   pnpm session [--session=manhattan|paris|alps|rotate|globe|nepal|spin]
+//     [--browser=chromium|firefox|webkit] [--engines=orbis,gljs] [--runs=n]
+//     [--style=key|url] [--size=WxH] [--ratio=r] [--start=ms] [--input=ms]
+//     [--warm] [--driver] [--headed] [--worst=n] [--backend=webgpu|webgl2]
+//     [--pkgs=a,b] [--fetches=a,b] [--latency=ms] [--deep] [--terrain=0|1]
+//     [--gpu] [--dump=prefix]
 //
-// Sessions: `manhattan` opens Liberty over Midtown at z13 and wheel-zooms
-// in to about z16 as the buildings load, tilts to 70, turns and drags
-// across the island; `paris` tilts Liberty over central Paris from pitch
-// 60 to the limit (85) and pans and turns there; `alps` drags, turns and
-// zooms the Alps terrain style at pitch 72; `rotate` turns it slowly at
-// pitch 75 to 85; `globe` wheel-zooms the demo's
-// Globe entry (terrain on) over New York from z2 to about z8.5, tilting
-// to the limit on the way; `nepal` flings the Globe entry in and out
-// between z1 and z7 over the Himalaya at a spun wheel's and a trackpad's
-// rates, its moves given in zoom levels and each engine's deltas sized
-// to zoom them (Orbis's notch zooms twice GL JS's). The moves end where the hand stops (no fling),
+// The sessions, their styles, first cameras and moves, are sessions.json's,
+// which `cargo xtask bench session` runs natively too; its `about` says
+// what each does. Moves given in zoom levels (`fling`, `scroll`) size each
+// engine's deltas to zoom them (Orbis's notch zooms twice GL JS's). The
+// moves end where the hand stops (no fling),
 // so every engine and browser ends at the same camera (`camera` in the
 // report says where). `--style` gives a session's moves another catalogue
 // key or style URL; `--terrain=0` turns a catalogue entry's terrain off
@@ -122,12 +117,10 @@ const fetchCaps = args.fetches ? args.fetches.split(",").map(Number) : [null];
 const latency = Number(args.latency ?? 0);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const alps = JSON.parse(
-  readFileSync(
-    fileURLToPath(new URL("../demo/data/alps.json", import.meta.url)),
-    "utf8",
-  ),
-);
+const readJson = (path) =>
+  JSON.parse(
+    readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8"),
+  );
 
 /** Drags with `button` from (x0, y0) by (dx, dy) over `ms`, a move a
  * display frame, placed by the time gone: a browser slow to take moves
@@ -208,101 +201,83 @@ function scroll(page, levels) {
   );
 }
 
-const c = [width / 2, height / 2];
-const low = [width / 2, height * 0.8];
-/** Each session: its style, its first camera and its moves, each a
- * function of the page; `moves` are timed, the pauses between them not. */
-const SESSIONS = {
-  manhattan: {
-    style: "liberty",
-    at: [-73.9855, 40.758, 13, 0, 0],
-    moves: [
-      ...Array.from({ length: 6 }, () => (p) => wheel(p, c, -100, 6)),
-      (p) => drag(p, c, [0, -140], 800, "right"),
-      (p) => drag(p, c, [160, 0], 800, "right"),
-      (p) => drag(p, low, [0, -200], 800),
-      (p) => drag(p, low, [-300, -100], 800),
-      (p) => drag(p, low, [0, -200], 800),
-      (p) => wheel(p, c, 100, 8),
-      (p) => wheel(p, c, -100, 8),
-    ],
-  },
-  paris: {
-    style: "liberty",
-    at: [2.3417, 48.8559, 15, 30, 60],
-    moves: [
-      (p) => drag(p, c, [0, -200], 600, "right"),
-      (p) => drag(p, low, [0, -150], 800),
-      (p) => drag(p, c, [200, 0], 1000, "right"),
-      (p) => drag(p, low, [250, -100], 800),
-      (p) => drag(p, low, [0, -150], 800),
-      (p) => drag(p, c, [-300, 0], 1200, "right"),
-      (p) => drag(p, low, [-250, -100], 800),
-      (p) => wheel(p, c, -100, 8),
-      (p) => drag(p, low, [0, -150], 800),
-    ],
-  },
-  alps: {
-    style: "alps",
-    at: [...alps.center, alps.zoom, alps.bearing, alps.pitch],
-    moves: [
-      (p) => drag(p, low, [0, -400], 800),
-      (p) => drag(p, c, [250, 0], 1200, "right"),
-      (p) => drag(p, low, [200, -300], 800),
-      (p) => wheel(p, c, -100, 8),
-      (p) => drag(p, c, [-300, 0], 1200, "right"),
-      (p) => drag(p, low, [0, -400], 800),
-      (p) => wheel(p, c, 100, 12),
-      (p) => drag(p, low, [-300, -200], 800),
-    ],
-  },
-  // Turned slowly at pitch 75 to 85 over the Alps terrain style: what a
-  // turn alone changes in the terrain's cover and its drape (the native
-  // session also reports how still the cover held).
-  rotate: {
-    style: "alps",
-    at: [...alps.center, 12, alps.bearing, 78],
-    moves: [
-      (p) => drag(p, c, [300, 0], 4000, "right"),
-      (p) => drag(p, c, [0, -60], 600, "right"),
-      (p) => drag(p, c, [300, 0], 4000, "right"),
-      (p) => drag(p, c, [0, 20], 600, "right"),
-      (p) => drag(p, c, [-300, 0], 4000, "right"),
-    ],
-  },
-  // Flung in and out over the Himalaya on the Globe entry (terrain on),
-  // between the whole globe (z1) and regional zooms (z7), twice: a spun
-  // mouse wheel (a notch every 16-25 ms) and a trackpad's scroll (small
-  // deltas every 8 ms), barely pausing between flings.
-  nepal: {
-    style: "globe",
-    at: [84, 28, 1, 0, 0],
-    pause: 150,
-    moves: [1, 2].flatMap(() => [
-      (p) => fling(p, 6, 20),
-      (p) => fling(p, -6, 20),
-      (p) => fling(p, 6, 16),
-      (p) => fling(p, -3, 16),
-      (p) => fling(p, 3, 25),
-      (p) => fling(p, -6, 16),
-      (p) => scroll(p, 6),
-      (p) => scroll(p, -6),
-    ]),
-  },
-  globe: {
-    style: "globe",
-    at: [-73.9855, 40.758, 2, 0, 0],
-    moves: [
-      ...Array.from({ length: 8 }, () => (p) => wheel(p, c, -100, 6)),
-      (p) => drag(p, c, [0, -200], 800, "right"),
-      ...Array.from({ length: 6 }, () => (p) => wheel(p, c, -100, 6)),
-      (p) => drag(p, low, [0, -400], 800),
-      (p) => drag(p, c, [200, 0], 1000, "right"),
-    ],
-  },
-};
-const session = SESSIONS[sessionName];
+/** A point given as fractions of the viewport, in pixels. */
+const point = ([x, y]) => [width * x, height * y];
+const c = point([0.5, 0.5]);
+
+/** Carries the camera's centre straight from `from` to `to` (lon, lat)
+ * over `ms`, a step every 16 ms, as an animation carries it. */
+function fly(page, from, to, ms) {
+  return page.evaluate(
+    ([from, to, ms]) =>
+      new Promise((resolve) => {
+        const start = performance.now();
+        const steps = Math.ceil(ms / 16);
+        let i = 0;
+        const step = () => {
+          const f = i / steps;
+          globalThis.mapJump({
+            center: [0, 1].map((k) => from[k] + (to[k] - from[k]) * f),
+          });
+          if (++i > steps) return resolve();
+          const next = start + (i / steps) * ms;
+          setTimeout(step, Math.max(0, next - performance.now()));
+        };
+        step();
+      }),
+    [from, to, ms],
+  );
+}
+
+/** A sessions.json move as a function of the page. */
+function moveOf(move) {
+  const [[kind, m]] = Object.entries(move);
+  switch (kind) {
+    case "wheel":
+      return (p) => wheel(p, point(m.at), m.delta, m.n, m.ms);
+    case "drag":
+      return (p) => drag(p, point(m.from), m.by, m.ms);
+    case "turn":
+      return (p) => drag(p, c, m.by, m.ms, "right");
+    case "fling":
+      return (p) => fling(p, m.levels, m.ms);
+    case "scroll":
+      return (p) => scroll(p, m.levels);
+    case "fly":
+      return (p) => fly(p, m.from, m.to, m.ms);
+  }
+  throw new Error(`sessions.json: unknown move ${kind}`);
+}
+
+/** Where a catalogue key's style is a file in demo/data: `alps`
+ * (styles.js's key-only entry) or an entry with a relative URL. */
+function styleFile(key) {
+  if (key === "alps") return "alps.json";
+  const scene = readJson("../demo/data/scenes.json")
+    .groups.flatMap((g) => g.scenes)
+    .find((s) => s.key === key);
+  return scene && !/^[a-z][a-z\d+.-]*:/i.test(scene.url) ? scene.url : null;
+}
+
+/** A session's first camera, lon, lat, zoom, bearing and pitch: its
+ * `at`, the style's own filling what it leaves out. */
+function firstCamera({ style, at }) {
+  const whole = at.center && at.zoom != null;
+  const file = whole ? null : styleFile(style);
+  if (!whole && !file)
+    throw new Error(`sessions.json: give ${style}'s camera a centre and zoom`);
+  const own = file ? readJson(`../demo/data/${file}`) : {};
+  const { center, zoom, bearing = 0, pitch = 0 } = { ...own, ...at };
+  return [...center, zoom, bearing, pitch];
+}
+
+const session = readJson("./sessions.json").sessions.find(
+  (s) => s.name === sessionName,
+);
 if (!session) throw new Error(`unknown session ${sessionName}`);
+/** The session's moves, each a function of the page. */
+const hand = session.moves.map(moveOf);
+const firstAt = firstCamera(session);
 const style = args.style ?? session.style;
 
 /** Percentiles of `xs`, and how many exceed 25 and 50 ms. */
@@ -551,7 +526,8 @@ async function run(server, engine, fetches) {
       new URLSearchParams({
         engine,
         style,
-        at: session.at.join(","),
+        at: firstAt.join(","),
+        ...(session.globe && { globe: "" }),
         frames: "",
         ...(args.terrain && { terrain: args.terrain }),
         ...(engine === "orbis" && args.backend && { backend: args.backend }),
@@ -812,12 +788,12 @@ async function run(server, engine, fetches) {
     };
     const moves = async () => {
       const windows = [];
-      for (const move of session.moves) {
+      for (const move of hand) {
         const a = await page.evaluate(() => performance.now());
         await move(page);
         const b = await page.evaluate(() => performance.now());
         windows.push([a, b]);
-        await sleep(session.pause ?? 400);
+        await sleep(session.pause);
       }
       return windows;
     };

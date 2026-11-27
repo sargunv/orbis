@@ -11,22 +11,18 @@
 //! display asks for them: a beat whose map has news draws a frame, and
 //! input waits for the beat after it comes, as an event loop's would.
 //!
-//! The sessions: `manhattan` (Liberty over Midtown, z13 wheel-zoomed to
-//! about z16 as the buildings load, tilted to 70, turned and dragged),
-//! `paris` (Liberty tilted from 60 to the limit, panned and turned),
-//! `alps` (the Alps terrain style at pitch 72), `rotate` (the Alps turned
-//! slowly at pitch 75 to 85, which reports how still the terrain's cover
-//! holds as it turns: [`crate::steadiness`]) and `globe` (Liberty on the
-//! globe with the Globe entry's Mapterhorn terrain, wheel-zoomed from z2
-//! over New York, tilting on the way) and `nepal` (the same, flung in and
-//! out between z1 and z7 over the Himalaya at a spun wheel's and a
-//! trackpad's rates) and `spin` (Liberty on the globe, alone, carried at
-//! z4 from Switzerland 130° east to Japan in a second, as mln-rs measures
-//! its fetch order: its settle time is how long the new view takes to
-//! complete). A style given that sets a projection of its own
-//! draws as it is in the globe sessions: the web demo's Globe entry, say,
-//! as `load.html` designs it (its `mapStyle`). `--dump prefix` writes each
-//! session's frames to `<prefix>-<session>.tsv`. `--filter` picks them by name;
+//! The sessions, their styles, first cameras and moves, are
+//! `web/scripts/sessions.json`'s, which `pnpm session` runs too; its
+//! `about` says what each does. A session names its style by the
+//! catalogue key `load.html` takes, and a style given the bench stands in
+//! for live Liberty. The web demo's own styles (the Globe entry's) open as
+//! the demo opens them, with the map options' defaults, unless the session
+//! puts the style on the globe, which puts in its projection and sky
+//! alone, as `load.html`'s `?globe` does. Over terrain on
+//! the plane (`alps`, `rotate`) the report says how still the terrain's
+//! cover held between frames ([`crate::steadiness`]). `--dump prefix`
+//! writes each session's frames to `<prefix>-<session>.tsv`. `--filter`
+//! picks them by name;
 //! `--warm` runs each once untimed first and keeps its state directory
 //! and shaders, as a user's later launch; `--stale` as well, its HTTP
 //! cache made stale, as a launch after the servers' lifetimes lapsed
@@ -41,14 +37,16 @@
 //! compiling during the moves, and what the slowest intervals spent.
 
 use std::fmt::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use glam::DVec2;
 use orb_api::{
     Button, CameraState, FrameReport, Geodetic, GpuCounters, Input, Modifiers, PointerKind,
-    Runtime, RuntimeOptions, Target, WheelDelta,
+    Runtime, RuntimeOptions, Target, Transaction, WheelDelta,
 };
+use serde::Deserialize;
+use serde_json::{Value, json};
 
 use crate::report::{ms, percentile};
 use crate::{Settings, clock};
@@ -57,8 +55,6 @@ use crate::{Settings, clock};
 const BEAT: Duration = Duration::from_micros(16_667);
 /// How long after the first frame drawing tiles input starts.
 const START: f64 = 500.0;
-/// The pause between moves.
-const PAUSE: f64 = 400.0;
 /// How long the map may take to settle after the last input.
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long the first frame drawing tiles may take.
@@ -71,28 +67,63 @@ const WORST: usize = 6;
 /// pixels, not a notch.
 const NOTCH: f64 = 0.5;
 
-/// One move: wheel notches, a drag with a button held, or the camera
-/// carried.
-#[derive(Clone, Copy, Debug)]
+/// The sessions, as `pnpm session` runs them too.
+const SESSIONS: &str = include_str!("../../../web/scripts/sessions.json");
+/// The demo's map catalogue, which names the sessions' styles.
+const CATALOGUE: &str = include_str!("../../../web/demo/data/scenes.json");
+/// The sky a session on the globe has around it, as on the web.
+const GLOBE_SKY: &str = include_str!("../../../web/demo/data/globe-sky.json");
+/// The demo's map options, whose defaults its own styles open with.
+const OPTIONS: &str = include_str!("../../../web/demo/data/options.json");
+
+#[derive(Deserialize)]
+struct Sessions {
+    sessions: Vec<Session>,
+}
+
+/// A session, as `web/scripts/sessions.json` describes its fields.
+#[derive(Debug, Deserialize)]
+struct Session {
+    name: String,
+    /// A catalogue key.
+    style: String,
+    /// Whether it draws on the globe, under [`GLOBE_SKY`].
+    #[serde(default)]
+    globe: bool,
+    /// The first camera; the style's own fills what it leaves out.
+    at: crate::StyleCamera,
+    /// The pause between moves, in ms.
+    pause: f64,
+    moves: Vec<Move>,
+}
+
+/// One move: points are fractions of the viewport, times in ms.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "lowercase", deny_unknown_fields)]
 enum Move {
-    /// `n` notches of `delta` pixels at a point (as a fraction of the
-    /// viewport), `ms` apart: negative zooms in.
+    /// `n` notches of `delta` pixels at a point, `ms` apart: negative
+    /// zooms in.
     Wheel {
         at: [f64; 2],
         delta: f64,
         n: u32,
         ms: f64,
     },
-    /// From a point (a fraction of the viewport) by `by` logical pixels
-    /// over `ms`, held still 150 ms before the release.
+    /// The primary button from a point by `by` logical pixels over `ms`.
     Drag {
-        at: [f64; 2],
+        from: [f64; 2],
         by: [f64; 2],
         ms: f64,
-        button: Button,
     },
-    /// The camera's centre carried straight from one lon, lat to another
-    /// over `ms`, a step every 16 ms, as an animation carries it.
+    /// The secondary button from the centre: a tilt and turn.
+    Turn { by: [f64; 2], ms: f64 },
+    /// `levels` zoomed in (out, negative) by notches `ms` apart, each a
+    /// third of a level (100 px heard at 1/300 a pixel).
+    Fling { levels: f64, ms: f64 },
+    /// `levels` zoomed by a trackpad's scroll, 8 px heard every 8 ms.
+    Scroll { levels: f64 },
+    /// The camera's centre carried straight from one lon, lat to another,
+    /// a step every 16 ms, as an animation carries it.
     Fly {
         from: [f64; 2],
         to: [f64; 2],
@@ -108,216 +139,181 @@ enum Step {
 }
 
 const C: [f64; 2] = [0.5, 0.5];
-const LOW: [f64; 2] = [0.5, 0.8];
 
-const fn wheel(delta: f64, n: u32) -> Move {
-    fling(delta, n, 50.0)
+/// The demo's catalogue (`web/demo/data/scenes.json`): each entry's key
+/// and style URL, relative to the data directory for the demo's own.
+#[derive(Deserialize)]
+struct Catalogue {
+    groups: Vec<Group>,
 }
 
-/// Wheel notches `ms` apart: a spun wheel's or a trackpad's.
-const fn fling(delta: f64, n: u32, ms: f64) -> Move {
-    Move::Wheel {
-        at: C,
-        delta,
-        n,
-        ms,
+#[derive(Deserialize)]
+struct Group {
+    scenes: Vec<Entry>,
+}
+
+#[derive(Deserialize)]
+struct Entry {
+    key: String,
+    url: String,
+    /// The switches its style designs that start off.
+    #[serde(default)]
+    off: Vec<String>,
+}
+
+/// A map option (`web/demo/data/options.json`), as far as its default
+/// reads it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Opt {
+    key: String,
+    #[serde(default)]
+    orbis_only: bool,
+}
+
+/// A session's style, found by its catalogue key.
+#[derive(Debug)]
+struct Style {
+    /// What the map loads.
+    url: String,
+    /// The file in the demo data it is, where it is one.
+    file: Option<PathBuf>,
+    /// Whether it is the demo's own (a catalogue entry in the data
+    /// directory), which the web opens with the map options' defaults.
+    own: bool,
+    /// The switches its catalogue entry starts off.
+    off: Vec<String>,
+}
+
+impl Style {
+    /// The style `key` names as `load.html` takes it, in the demo data
+    /// directory `data`: `alps` (`styles.js`'s entry by key only) or a
+    /// catalogue entry, `liberty` standing in for live Liberty.
+    fn find(key: &str, data: &Path, liberty: &str) -> Result<Self, String> {
+        let local = |file: PathBuf, own, off| Self {
+            url: crate::file_url(&file),
+            file: Some(file),
+            own,
+            off,
+        };
+        if key == "alps" {
+            return Ok(local(data.join("alps.json"), false, Vec::new()));
+        }
+        let catalogue: Catalogue = serde_json::from_str(CATALOGUE).map_err(|e| e.to_string())?;
+        let entry = (catalogue.groups.iter().flat_map(|g| &g.scenes))
+            .find(|e| e.key == key)
+            .ok_or_else(|| format!("sessions.json: no catalogue entry {key}"))?;
+        if !entry.url.contains("://") {
+            return Ok(local(data.join(&entry.url), true, entry.off.clone()));
+        }
+        Ok(Self {
+            url: match entry.url == crate::LIBERTY {
+                true => liberty.to_string(),
+                false => entry.url.clone(),
+            },
+            file: None,
+            own: false,
+            off: Vec::new(),
+        })
     }
 }
 
-/// Zooms `levels` (whole, or halves) in, or out where negative, with
-/// notches `ms` apart, each a third of a level (100 px heard at 1/300 a
-/// pixel), as `pnpm session`'s `fling` does.
-const fn levels(levels: i32, ms: f64) -> Move {
-    let delta = (if levels < 0 { 100.0 } else { -100.0 }) / NOTCH;
-    fling(delta, levels.unsigned_abs() * 3, ms)
-}
+impl Session {
+    /// The session's first camera: its `at`, the style's own filling what
+    /// it leaves out.
+    fn camera(&self, style: &Style) -> Result<CameraState, String> {
+        let at = match (self.at.state(), &style.file) {
+            (Some(camera), _) => return Ok(camera),
+            (None, Some(file)) => self.at.or(crate::StyleCamera::read(file)?),
+            (None, None) => self.at,
+        };
+        at.state()
+            .ok_or_else(|| format!("{}: its camera needs a centre and zoom", self.name))
+    }
 
-/// Zooms whole `levels` with a trackpad's scroll, 8 px heard every 8 ms
-/// (37.5 events a level), as `pnpm session`'s `scroll` does.
-const fn scroll(levels: i32) -> Move {
-    let delta = (if levels < 0 { 8.0 } else { -8.0 }) / NOTCH;
-    fling(delta, levels.unsigned_abs() * 75 / 2, 8.0)
-}
-
-const fn drag(at: [f64; 2], by: [f64; 2], ms: f64) -> Move {
-    Move::Drag {
-        at,
-        by,
-        ms,
-        button: Button::Primary,
+    /// The edits the session makes to its style once it arrives (`style`,
+    /// as JSON): on the globe, its projection and sky alone, as
+    /// `load.html`'s `?globe` puts them in; else the web demo's defaults
+    /// for its own.
+    fn opening(&self, style: &Style, json: &str) -> Result<Option<Transaction>, String> {
+        let mut commands = Vec::new();
+        if style.own && !self.globe {
+            defaults_known(&self.name, style)?;
+            let doc: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+            commands.extend(unblended(&doc));
+        }
+        if self.globe {
+            let sky: Value = serde_json::from_str(GLOBE_SKY).map_err(|e| e.to_string())?;
+            commands.push(json!(["setProjection", {"type": "globe"}]));
+            commands.push(json!(["setSky", sky]));
+        }
+        if commands.is_empty() {
+            return Ok(None);
+        }
+        Transaction::from_commands(&Value::Array(commands).to_string()).map(Some)
     }
 }
 
-const fn turn(by: [f64; 2], ms: f64) -> Move {
-    Move::Drag {
-        at: C,
-        by,
-        ms,
-        button: Button::Secondary,
+/// Whether [`unblended`] is all the web demo's map options change of
+/// `style` by default (`web/demo/app/options.js`'s `opening`): an
+/// Orbis-only option besides the blend, or a switch the catalogue entry
+/// starts off, would draw the session differently from the web's until
+/// the bench learns it.
+fn defaults_known(session: &str, style: &Style) -> Result<(), String> {
+    let options: Vec<Opt> = serde_json::from_str(OPTIONS).map_err(|e| e.to_string())?;
+    if let Some(option) = options.iter().find(|o| o.orbis_only && o.key != "blend") {
+        return Err(format!(
+            "{session}: the bench opens no Orbis-only option but the blend off, not {}",
+            option.key
+        ));
+    }
+    match style.off.first() {
+        Some(key) => Err(format!(
+            "{session}: the bench starts no switch off as its style's catalogue entry does {key}"
+        )),
+        None => Ok(()),
     }
 }
 
-/// Which style a session draws.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Style {
-    Liberty,
-    Alps,
-    /// Liberty on the globe with the Globe entry's terrain.
-    Globe,
-    /// Liberty on the globe, without terrain.
-    Sphere,
+/// What the web demo's map options change of its own styles by default
+/// (`web/demo/app/options.js`'s `opening`): their one Orbis-only option,
+/// style-spec#1661's blend of a hillshade or colour relief, starts off,
+/// so each blended layer loses its blend and takes the paint its
+/// `demo:unblended` metadata keeps for it drawn normally.
+fn unblended(style: &Value) -> Vec<Value> {
+    const BLENDS: [(&str, &str); 2] = [
+        ("hillshade", "dev.sargunv.orbis:hillshade-layer-blend"),
+        ("color-relief", "dev.sargunv.orbis:color-relief-layer-blend"),
+    ];
+    let mut commands = Vec::new();
+    for layer in style["layers"].as_array().into_iter().flatten() {
+        let Some(&(_, blend)) = BLENDS.iter().find(|(kind, _)| layer["type"] == *kind) else {
+            continue;
+        };
+        if matches!(layer["paint"].get(blend), None | Some(Value::Null))
+            || layer["paint"][blend] == "normal"
+        {
+            continue;
+        }
+        let id = &layer["id"];
+        for (name, value) in layer["metadata"]["demo:unblended"]
+            .as_object()
+            .into_iter()
+            .flatten()
+        {
+            commands.push(json!(["setPaintProperty", id, name, value]));
+        }
+        commands.push(json!(["setPaintProperty", id, blend, null]));
+    }
+    commands
 }
 
-/// A session: its style, first camera (lon, lat, zoom, bearing, pitch)
-/// and moves, as `web/scripts/session.mjs` has them.
-struct Session {
-    name: &'static str,
-    style: Style,
-    at: [f64; 5],
-    moves: &'static [Move],
-    /// The pause between moves, in ms.
-    pause: f64,
+/// The sessions sessions.json describes.
+fn sessions() -> Result<Vec<Session>, String> {
+    let parsed: Sessions =
+        serde_json::from_str(SESSIONS).map_err(|e| format!("sessions.json: {e}"))?;
+    Ok(parsed.sessions)
 }
-
-const SESSIONS: &[Session] = &[
-    Session {
-        name: "manhattan",
-        style: Style::Liberty,
-        at: [-73.9855, 40.758, 13.0, 0.0, 0.0],
-        moves: &[
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            turn([0.0, -140.0], 800.0),
-            turn([160.0, 0.0], 800.0),
-            drag(LOW, [0.0, -200.0], 800.0),
-            drag(LOW, [-300.0, -100.0], 800.0),
-            drag(LOW, [0.0, -200.0], 800.0),
-            wheel(100.0, 8),
-            wheel(-100.0, 8),
-        ],
-        pause: PAUSE,
-    },
-    Session {
-        name: "paris",
-        style: Style::Liberty,
-        at: [2.3417, 48.8559, 15.0, 30.0, 60.0],
-        moves: &[
-            turn([0.0, -200.0], 600.0),
-            drag(LOW, [0.0, -150.0], 800.0),
-            turn([200.0, 0.0], 1000.0),
-            drag(LOW, [250.0, -100.0], 800.0),
-            drag(LOW, [0.0, -150.0], 800.0),
-            turn([-300.0, 0.0], 1200.0),
-            drag(LOW, [-250.0, -100.0], 800.0),
-            wheel(-100.0, 8),
-            drag(LOW, [0.0, -150.0], 800.0),
-        ],
-        pause: PAUSE,
-    },
-    Session {
-        name: "alps",
-        style: Style::Alps,
-        at: [crate::ALPS.0, crate::ALPS.1, 11.6, -32.0, 72.0],
-        moves: &[
-            drag(LOW, [0.0, -400.0], 800.0),
-            turn([250.0, 0.0], 1200.0),
-            drag(LOW, [200.0, -300.0], 800.0),
-            wheel(-100.0, 8),
-            turn([-300.0, 0.0], 1200.0),
-            drag(LOW, [0.0, -400.0], 800.0),
-            wheel(100.0, 12),
-            drag(LOW, [-300.0, -200.0], 800.0),
-        ],
-        pause: PAUSE,
-    },
-    Session {
-        name: "rotate",
-        style: Style::Alps,
-        at: [crate::ALPS.0, crate::ALPS.1, 12.0, -32.0, 78.0],
-        moves: &[
-            turn([300.0, 0.0], 4000.0),
-            turn([0.0, -60.0], 600.0),
-            turn([300.0, 0.0], 4000.0),
-            turn([0.0, 20.0], 600.0),
-            turn([-300.0, 0.0], 4000.0),
-        ],
-        pause: PAUSE,
-    },
-    Session {
-        name: "globe",
-        style: Style::Globe,
-        at: [-73.9855, 40.758, 2.0, 0.0, 0.0],
-        moves: &[
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            turn([0.0, -200.0], 800.0),
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            wheel(-100.0, 6),
-            drag(LOW, [0.0, -400.0], 800.0),
-            turn([200.0, 0.0], 1000.0),
-        ],
-        pause: PAUSE,
-    },
-    Session {
-        name: "nepal",
-        style: Style::Globe,
-        at: [84.0, 28.0, 1.0, 0.0, 0.0],
-        moves: &[
-            levels(6, 20.0),
-            levels(-6, 20.0),
-            levels(6, 16.0),
-            levels(-3, 16.0),
-            levels(3, 25.0),
-            levels(-6, 16.0),
-            scroll(6),
-            scroll(-6),
-            levels(6, 20.0),
-            levels(-6, 20.0),
-            levels(6, 16.0),
-            levels(-3, 16.0),
-            levels(3, 25.0),
-            levels(-6, 16.0),
-            scroll(6),
-            scroll(-6),
-        ],
-        pause: 150.0,
-    },
-    Session {
-        name: "spin",
-        style: Style::Sphere,
-        at: [8.23, 46.82, 4.0, 0.0, 0.0],
-        moves: &[Move::Fly {
-            from: [8.23, 46.82],
-            to: [138.25, 36.2],
-            ms: 1000.0,
-        }],
-        pause: PAUSE,
-    },
-];
-
-/// Liberty on the globe.
-const SPHERE: &str = r#"[["setProjection", {"type": "globe"}]]"#;
-
-/// The Globe entry's terrain, on Liberty on the globe.
-const GLOBE: &str = r#"[
-    ["setProjection", {"type": "globe"}],
-    ["addSource", "terrain", {"type": "raster-dem", "tiles": ["https://tiles.mapterhorn.com/{z}/{x}/{y}.webp"], "encoding": "terrarium", "tileSize": 512, "maxzoom": 17}],
-    ["setTerrain", {"source": "terrain", "exaggeration": 1.3}]
-]"#;
 
 /// The inputs a session's moves make from `start` (ms), each at its
 /// time, and each move's window.
@@ -333,68 +329,90 @@ fn timeline(
     let mut t = start;
     for &m in moves {
         let from = t;
-        match m {
-            Move::Wheel { at, delta, n, ms } => {
-                for i in 0..n {
-                    t = from + f64::from(i) * ms;
-                    inputs.push((
-                        t,
-                        Step::Input(Input::Wheel {
-                            position: px(at),
-                            delta: WheelDelta::Pixels(delta * NOTCH),
-                            modifiers: Modifiers::default(),
-                        }),
-                    ));
-                }
-                t += ms;
-            }
-            Move::Drag { at, by, ms, button } => {
-                let at = px(at);
-                let by = DVec2::from(by);
+        // `n` notches of `delta` pixels sent at `at`, `ms` apart.
+        let mut notches = |at: [f64; 2], delta: f64, n: u32, ms: f64| {
+            for i in 0..n {
                 inputs.push((
-                    t,
-                    Step::Input(Input::PointerDown {
-                        id: 1,
-                        kind: PointerKind::Mouse,
-                        button,
-                        position: at,
+                    from + f64::from(i) * ms,
+                    Step::Input(Input::Wheel {
+                        position: px(at),
+                        delta: WheelDelta::Pixels(delta * NOTCH),
                         modifiers: Modifiers::default(),
                     }),
                 ));
-                let steps = (ms / 16.0).ceil() as u32;
-                for i in 1..=steps {
-                    let f = f64::from(i) / f64::from(steps);
-                    inputs.push((
-                        from + f * ms,
-                        Step::Input(Input::PointerMove {
-                            id: 1,
-                            position: at + by * f,
-                        }),
-                    ));
-                }
-                t = from + ms + 150.0;
-                inputs.push((
-                    t,
-                    Step::Input(Input::PointerUp {
-                        id: 1,
-                        position: at + by,
-                    }),
-                ));
             }
+            from + f64::from(n.max(1)) * ms
+        };
+        // `levels` zoomed by notches of `heard` pixels, `ms` apart, at
+        // 1/300 a pixel.
+        let mut zoom = |levels: f64, heard: f64, ms: f64| {
+            let n = (levels.abs() * 300.0 / heard).round() as u32;
+            notches(C, -levels.signum() * heard / NOTCH, n, ms)
+        };
+        t = match m {
+            Move::Wheel { at, delta, n, ms } => notches(at, delta, n, ms),
+            Move::Fling { levels, ms } => zoom(levels, 100.0, ms),
+            Move::Scroll { levels } => zoom(levels, 8.0, 8.0),
+            Move::Drag { from: at, by, ms } => {
+                drag(&mut inputs, (px(at), by, Button::Primary), from, ms)
+            }
+            Move::Turn { by, ms } => drag(&mut inputs, (px(C), by, Button::Secondary), from, ms),
             Move::Fly { from: a, to: b, ms } => {
                 let steps = (ms / 16.0).ceil() as u32;
                 for i in 0..=steps {
                     let f = f64::from(i) / f64::from(steps);
                     let centre = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
-                    inputs.push((t + f * ms, Step::Centre(centre)));
+                    inputs.push((from + f * ms, Step::Centre(centre)));
                 }
-                t += ms;
+                from + ms
             }
-        }
+        };
         windows.push([from, t]);
         t += pause;
     }
     (inputs, windows)
+}
+
+/// A drag with `button` held from `at` by `by` logical pixels, starting
+/// at `from` (ms) and moving over `ms`, held still 150 ms before the
+/// release: when it ends.
+fn drag(
+    inputs: &mut Vec<(f64, Step)>,
+    (at, by, button): (DVec2, [f64; 2], Button),
+    from: f64,
+    ms: f64,
+) -> f64 {
+    let by = DVec2::from(by);
+    inputs.push((
+        from,
+        Step::Input(Input::PointerDown {
+            id: 1,
+            kind: PointerKind::Mouse,
+            button,
+            position: at,
+            modifiers: Modifiers::default(),
+        }),
+    ));
+    let steps = (ms / 16.0).ceil() as u32;
+    for i in 1..=steps {
+        let f = f64::from(i) / f64::from(steps);
+        inputs.push((
+            from + f * ms,
+            Step::Input(Input::PointerMove {
+                id: 1,
+                position: at + by * f,
+            }),
+        ));
+    }
+    let end = from + ms + 150.0;
+    inputs.push((
+        end,
+        Step::Input(Input::PointerUp {
+            id: 1,
+            position: at + by,
+        }),
+    ));
+    end
 }
 
 /// One frame drawn: when it ended (ms on the session's clock), its CPU
@@ -416,7 +434,7 @@ struct Frame {
 /// A session's run.
 #[derive(Debug)]
 pub(crate) struct SessionResult {
-    name: &'static str,
+    name: String,
     style: String,
     /// How it launched: "" cold, else " (warm)" or " (warm, stale)".
     launch: &'static str,
@@ -467,23 +485,22 @@ impl Drop for StateDir {
 }
 
 /// Runs each session the filter keeps, cold (or `--warm`), on runtimes of
-/// their own.
+/// their own: `liberty` stands in for live Liberty, and `data` is the
+/// demo data directory, which holds the demo's own styles.
 pub(crate) fn run(
     settings: &Settings,
     about: Vec<String>,
-    (liberty, alps): (&str, &str),
+    liberty: &str,
+    data: &Path,
     mut progress: impl FnMut(&str),
 ) -> Result<SessionReport, String> {
     let mut results = Vec::new();
     let mut warnings = Vec::new();
-    let chosen = SESSIONS
-        .iter()
+    let sessions = sessions()?;
+    let chosen = (sessions.iter())
         .filter(|s| (settings.filter.as_ref()).is_none_or(|f| s.name.contains(f.as_str())));
     for session in chosen {
-        let style = match session.style {
-            Style::Liberty | Style::Globe | Style::Sphere => liberty,
-            Style::Alps => alps,
-        };
+        let style = Style::find(&session.style, data, liberty)?;
         let state = StateDir::new()?;
         let nonce = Some(std::process::id() ^ clock::now().subsec_nanos());
         if settings.warm {
@@ -491,7 +508,7 @@ pub(crate) fn run(
             run_session(
                 settings,
                 session,
-                style,
+                &style,
                 (&state, nonce, false),
                 &mut warnings,
             )?;
@@ -506,7 +523,7 @@ pub(crate) fn run(
         let mut result = run_session(
             settings,
             session,
-            style,
+            &style,
             (&state, nonce, stale),
             &mut warnings,
         )?;
@@ -529,7 +546,7 @@ pub(crate) fn run(
 fn run_session(
     settings: &Settings,
     session: &Session,
-    style: &str,
+    style: &Style,
     (state, nonce, stale): (&StateDir, Option<u32>, bool),
     warnings: &mut Vec<String>,
 ) -> Result<SessionResult, String> {
@@ -546,19 +563,10 @@ fn run_session(
     let device_ms = made.elapsed().as_secs_f64() * 1000.0;
     let (width, height) = settings.physical_size();
     let mut target = Target::texture(&runtime, width, height, f64::from(settings.ratio));
-    let [lon, lat, zoom, bearing, pitch] = session.at;
-    let camera = CameraState {
-        bearing,
-        pitch,
-        ..CameraState::new(Geodetic::new(lon, lat), zoom, &crate::web_mercator())
-    };
-    let mut map = crate::new_map(&runtime, style, camera, settings.antialias);
-    let mut edit = match session.style {
-        Style::Globe => Some(orb_api::Transaction::from_commands(GLOBE)?),
-        Style::Sphere => Some(orb_api::Transaction::from_commands(SPHERE)?),
-        _ => None,
-    };
-    let mut edited = false;
+    let camera = session.camera(style)?;
+    let mut map = crate::new_map(&runtime, &style.url, camera, settings.antialias);
+    // Whether the style has yet to arrive for its opening edits.
+    let mut opening = true;
     let gpu_timestamps = runtime.stats().gpu_timestamps;
     runtime.set_gpu_timing(gpu_timestamps);
     let epoch = Instant::now();
@@ -594,17 +602,13 @@ fn run_session(
                 }),
             }
         }
-        if let Some(tx) = &edit {
+        if opening {
             map.apply_arrivals().map_err(|e| e.to_string())?;
-            if let Some(doc) = map.style() {
-                // A style that sets its projection itself (the Globe entry
-                // as the web demo designs it, `load.html`'s `mapStyle`)
-                // draws as it is.
-                if doc.root("projection").is_none() {
-                    map.edit(tx).map_err(|e| e.to_string())?;
-                    edited = true;
+            if let Some(json) = map.style_json() {
+                if let Some(tx) = session.opening(style, &json)? {
+                    map.edit(&tx).map_err(|e| e.to_string())?;
                 }
-                edit = None;
+                opening = false;
             }
         }
         if map.has_news() || frames.is_empty() {
@@ -634,7 +638,7 @@ fn run_session(
             let t = now();
             if first_ms.is_none() && report.tiles_drawn > 0 {
                 first_ms = Some(t);
-                let (moves, w) = timeline(session.moves, session.pause, viewport, t + START);
+                let (moves, w) = timeline(&session.moves, session.pause, viewport, t + START);
                 inputs.extend(moves);
                 last_input = w.last().map(|w| w[1]);
                 windows = w;
@@ -647,7 +651,7 @@ fn run_session(
                 zoom: map.camera().zoom(&crate::web_mercator()),
                 report,
                 // Kept, and measured once the session ends.
-                terrain: (session.style == Style::Alps)
+                terrain: (map.surface().globe.is_none())
                     .then(|| map.terrain_probe())
                     .flatten(),
             });
@@ -742,11 +746,10 @@ fn run_session(
         _ => Vec::new(),
     };
     Ok(SessionResult {
-        name: session.name,
-        style: match (edited, session.style) {
-            (true, Style::Sphere) => format!("{style} on the globe"),
-            (true, _) => format!("{style} on the globe, with the Globe entry's terrain"),
-            (false, _) => style.to_string(),
+        name: session.name.clone(),
+        style: match session.globe {
+            true => format!("{} on the globe", style.url),
+            false => style.url.clone(),
         },
         launch: "",
         device_ms,
@@ -1297,5 +1300,52 @@ fn top_stages(t: &orb_api::FrameTimes) -> String {
     match named.is_empty() {
         true => format!("total {:.1}", f64::from(t.total) / 1000.0),
         false => named.join(", "),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every session `pnpm session` runs, natively: its style found in
+    /// the demo data, a first camera, and opening edits a map takes.
+    #[test]
+    fn sessions_run_natively() {
+        let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/demo/data");
+        let sessions = sessions().unwrap();
+        assert!(!sessions.is_empty());
+        for session in &sessions {
+            let style = Style::find(&session.style, &data, crate::LIBERTY).unwrap();
+            session.camera(&style).unwrap();
+            let json = match &style.file {
+                Some(file) => std::fs::read_to_string(file).unwrap(),
+                None => r#"{"version": 8, "sources": {}, "layers": []}"#.into(),
+            };
+            session.opening(&style, &json).unwrap();
+            assert!(!session.moves.is_empty(), "{}", session.name);
+        }
+    }
+
+    /// The Alps sessions open at the Alps style's own camera, `rotate`
+    /// with its own zoom and pitch over it.
+    #[test]
+    fn a_camera_left_out_is_the_styles() {
+        let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/demo/data");
+        let own = crate::StyleCamera::read(&data.join("alps.json")).unwrap();
+        let sessions = sessions().unwrap();
+        let camera = |name: &str| {
+            let session = sessions.iter().find(|s| s.name == name).unwrap();
+            session
+                .camera(&Style::find(&session.style, &data, crate::LIBERTY).unwrap())
+                .unwrap()
+        };
+        assert_eq!(camera("alps"), own.state().unwrap());
+        let rotate = camera("rotate");
+        assert_eq!(rotate.target, own.state().unwrap().target);
+        let at = sessions.iter().find(|s| s.name == "rotate").unwrap().at;
+        assert_eq!(
+            (rotate.pitch, rotate.bearing),
+            (at.pitch.unwrap(), own.bearing.unwrap())
+        );
     }
 }

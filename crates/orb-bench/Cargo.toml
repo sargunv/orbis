@@ -15,6 +15,7 @@ orb-host-native.workspace = true
 orb-runtime.workspace = true
 orb-source.workspace = true
 orb-style.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]

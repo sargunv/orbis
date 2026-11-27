@@ -31,6 +31,7 @@ use orb_api::{
     CameraState, Event, FrameReport, Geodetic, Map, MapEvent, MapOptions, Runtime, Target,
 };
 use report::{FramesReport, Summary, ViewResult};
+use serde::Deserialize;
 pub use session::SessionReport;
 pub use stutter::{LIBERTY, StutterReport};
 pub use tiles::TilesReport;
@@ -38,9 +39,62 @@ pub use tiles::TilesReport;
 /// The committed Tokyo extract's view, by the Imperial Palace
 /// (`web/demo/data/README.md`).
 pub const TOKYO: (f64, f64) = (139.74, 35.685);
-/// The Alps terrain style's view over the Valais Alps: Zermatt and the
-/// Matterhorn, as `web/demo/data/alps-flight.json` ends.
-pub const ALPS: (f64, f64) = (7.7491, 46.0207);
+
+/// A camera as a style's root gives one: its `center`, `zoom`, `bearing`
+/// and `pitch`, each where given.
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct StyleCamera {
+    pub center: Option<[f64; 2]>,
+    pub zoom: Option<f64>,
+    pub bearing: Option<f64>,
+    pub pitch: Option<f64>,
+}
+
+impl StyleCamera {
+    /// The root camera of the style file at `path`: the Alps terrain
+    /// style's (`alps.json`) is over the Valais Alps, Zermatt and the
+    /// Matterhorn.
+    pub fn read(path: &std::path::Path) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// This camera, with `other`'s fields filling those it leaves out.
+    #[must_use]
+    pub fn or(self, other: Self) -> Self {
+        Self {
+            center: self.center.or(other.center),
+            zoom: self.zoom.or(other.zoom),
+            bearing: self.bearing.or(other.bearing),
+            pitch: self.pitch.or(other.pitch),
+        }
+    }
+
+    /// The camera, bearing and pitch 0 where not given; `None` without a
+    /// centre or zoom.
+    pub fn state(&self) -> Option<CameraState> {
+        let [lon, lat] = self.center?;
+        Some(CameraState {
+            bearing: self.bearing.unwrap_or(0.0),
+            pitch: self.pitch.unwrap_or(0.0),
+            ..CameraState::new(Geodetic::new(lon, lat), self.zoom?, &web_mercator())
+        })
+    }
+}
+
+/// The Alps terrain style in `data`, the demo data, as a `file://` URL,
+/// and its own camera.
+fn alps(data: &std::path::Path) -> Result<(String, CameraState), String> {
+    let file = data.join("alps.json");
+    let camera = StyleCamera::read(&file)?.state();
+    Ok((file_url(&file), camera.ok_or("alps.json gives no camera")?))
+}
+
+/// A file's `file://` URL.
+pub(crate) fn file_url(path: &std::path::Path) -> String {
+    format!("file://{}", path.display())
+}
+
 /// Name, zoom, pitch, and the buildings the style gains.
 const VIEWS: &[(&str, f64, f64, Buildings)] = &[
     ("z12", 12.0, 0.0, Buildings::None),
@@ -443,13 +497,11 @@ pub fn run(
             return tiles::run(settings, about, data, progress).map(Report::Tiles);
         }
         Experiment::Stutter => {
-            let alps = format!("file://{}", data.join("alps.json").display());
-            return stutter::run(runtime, settings, about, (style, &alps), progress)
+            return stutter::run(runtime, settings, about, style, alps(data)?, progress)
                 .map(Report::Stutter);
         }
         Experiment::Session => {
-            let alps = format!("file://{}", data.join("alps.json").display());
-            return session::run(settings, about, (style, &alps), progress).map(Report::Session);
+            return session::run(settings, about, style, data, progress).map(Report::Session);
         }
         Experiment::Frames => {}
     }

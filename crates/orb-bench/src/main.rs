@@ -10,7 +10,8 @@
 //! stutter`, whose Liberty scenarios draw OpenFreeMap's live Liberty unless
 //! a style URL (say, `cargo xtask h2h mirror`'s) stands in. `session` is
 //! `--experiment session` at 1440×900, `pnpm session`'s native twin, on
-//! live Liberty and the Alps style. `--views` reads cameras in mln-rs's
+//! the styles `web/scripts/sessions.json` names, a style URL standing in
+//! for live Liberty there too. `--views` reads cameras in mln-rs's
 //! `views.txt` format, keeping those whose style column is the style URL's
 //! last path segment (`liberty` for `…/styles/liberty`). `--capture N` asks
 //! the graphics debugger the bench runs under (Xcode, RenderDoc) to capture
@@ -44,7 +45,9 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "alps") {
         // The Alps terrain style's view, unless `--at` says otherwise.
-        settings.center = orb_api::Geodetic::new(orb_bench::ALPS.0, orb_bench::ALPS.1);
+        let camera = orb_bench::StyleCamera::read(&data.join("alps.json"))?;
+        let [lon, lat] = camera.center.ok_or("alps.json gives no centre")?;
+        settings.center = orb_api::Geodetic::new(lon, lat);
     }
     if args.iter().any(|a| a == "session") {
         // `pnpm session`'s viewport, unless `--size` says otherwise.
@@ -98,6 +101,9 @@ fn run() -> Result<(), String> {
     if live.contains(&settings.experiment) && !style_given {
         style = orb_bench::LIBERTY.to_string();
         about_data = format!("{style}, and the Alps terrain style");
+    }
+    if settings.experiment == orb_bench::Experiment::Session {
+        about_data = format!("web/scripts/sessions.json's styles, {style} for Liberty");
     }
     if let Some(path) = &views_file {
         let name = style_name(&style);

@@ -14,8 +14,9 @@
 // through a gesture tour, a camera a display frame, and resolves once it
 // is idle again. With `?frames`, `window.mapFrames` holds every frame the
 // map draws, by `performance.now()` as the page hears of it, with Orbis's
-// counters (session.mjs); `window.mapIdle()` waits for the map's next idle and
-// `window.mapCamera()` gives Orbis's or GL JS's camera.
+// counters (session.mjs); `window.mapIdle()` waits for the map's next idle,
+// `window.mapCamera()` gives Orbis's or GL JS's camera and
+// `window.mapJump(target)` moves it at once (session.mjs's `fly`).
 import { bustShaderCaches } from "./cold.js";
 import { demoStyleWithScene } from "./styles.js";
 
@@ -304,6 +305,7 @@ try {
   const map = await engines[engine](style);
   window.mapIdle = map.idle;
   window.mapCamera = map.camera;
+  window.mapJump = (target) => map.jumpTo(target);
   await map.idle();
   window.tour = async (frames = 360) => {
     for (let f = 1; f < frames; f++) {

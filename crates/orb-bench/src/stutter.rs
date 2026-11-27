@@ -60,13 +60,14 @@ struct Scenario {
     edit: Option<&'static str>,
     /// Frames the path takes; a flight takes its legs instead.
     frames: usize,
-    /// The camera at `f` in `0..=1`; a flight's first camera.
-    camera: fn(f64) -> CameraState,
+    /// The camera at `f` in `0..=1`, or a flight's first, given the Alps
+    /// terrain style's own camera.
+    camera: fn(f64, &CameraState) -> CameraState,
     flight: bool,
 }
 
 /// 5 s zooming in over Midtown at pitch 60, 5 s panning down the avenues.
-fn manhattan(f: f64) -> CameraState {
+fn manhattan(f: f64, _: &CameraState) -> CameraState {
     let (lon, lat) = MANHATTAN;
     let zoom = lerp(12.0, 16.0, ease((2.0 * f).min(1.0)));
     let pan = (2.0 * f - 1.0).clamp(0.0, 1.0);
@@ -79,7 +80,7 @@ fn manhattan(f: f64) -> CameraState {
 
 /// 6 s from the whole globe down to Midtown at z16, tilting to pitch 60
 /// as the buildings come in, then 2 s turning there.
-fn globe_manhattan(f: f64) -> CameraState {
+fn globe_manhattan(f: f64, _: &CameraState) -> CameraState {
     let zoom_in = (f / 0.75).min(1.0);
     let e = ease(zoom_in);
     let g = ease((zoom_in / 0.6).min(1.0));
@@ -129,14 +130,10 @@ const SCENARIOS: &[Scenario] = &[
         style: Style::Alps,
         edit: None,
         frames: 360,
-        camera: |f| {
-            camera(
-                crate::ALPS.0,
-                crate::ALPS.1,
-                11.6,
-                -32.0 + 3.0 * 360.0 * f,
-                80.0,
-            )
+        camera: |f, alps| CameraState {
+            bearing: alps.bearing + 3.0 * 360.0 * f,
+            pitch: 80.0,
+            ..*alps
         },
         flight: false,
     },
@@ -145,7 +142,7 @@ const SCENARIOS: &[Scenario] = &[
         style: Style::Alps,
         edit: None,
         frames: 0,
-        camera: |_| camera(crate::ALPS.0, crate::ALPS.1, 11.6, -32.0, 72.0),
+        camera: |_, alps| *alps,
         flight: true,
     },
     Scenario {
@@ -153,7 +150,7 @@ const SCENARIOS: &[Scenario] = &[
         style: Style::Liberty,
         edit: Some(r#"[["setProjection", {"type": "globe"}]]"#),
         frames: 480,
-        camera: |f| {
+        camera: |f, _| {
             let e = ease(f);
             let lon = lerp(ASIA.0, TOKYO_STATION.0, ease(f.min(0.6) / 0.6));
             let lat = lerp(ASIA.1, TOKYO_STATION.1, ease(f.min(0.6) / 0.6));
@@ -269,12 +266,14 @@ pub struct StutterReport {
 }
 
 /// Runs each scenario the settings' filter keeps. `liberty` is the style
-/// URL Liberty's scenarios draw, `alps` the Alps terrain style.
+/// URL Liberty's scenarios draw, `alps` the Alps terrain style's and its
+/// own camera.
 pub(crate) fn run(
     runtime: &Runtime,
     settings: &Settings,
     about: Vec<String>,
-    (liberty, alps): (&str, &str),
+    liberty: &str,
+    (alps, alps_camera): (String, CameraState),
     mut progress: impl FnMut(&str),
 ) -> Result<StutterReport, String> {
     let (width, height) = settings.physical_size();
@@ -291,10 +290,15 @@ pub(crate) fn run(
     for scenario in chosen {
         let style = match scenario.style {
             Style::Liberty => liberty,
-            Style::Alps => alps,
+            Style::Alps => alps.as_str(),
         };
         progress(&format!("{}: loading its first view", scenario.name));
-        let mut map = crate::new_map(runtime, style, (scenario.camera)(0.0), settings.antialias);
+        let mut map = crate::new_map(
+            runtime,
+            style,
+            (scenario.camera)(0.0, &alps_camera),
+            settings.antialias,
+        );
         let epoch = clock::now();
         frame(&mut map, &mut target, 0.0)?;
         settle(&mut map, &mut target, &mut warnings)?;
@@ -309,7 +313,7 @@ pub(crate) fn run(
             runtime,
             &mut map,
             &mut target,
-            (scenario, base),
+            (scenario, &alps_camera, base),
             settings.legs,
             &mut warnings,
         )?;
@@ -381,11 +385,12 @@ fn flight_legs() -> Vec<(CameraTarget, FlyOptions)> {
 
 /// Moves the camera along the path once each 60 Hz frame from `base`
 /// (milliseconds), timing each; a flight flies its first `first_legs`.
+/// `alps` is the Alps terrain style's own camera.
 fn run_path(
     runtime: &Runtime,
     map: &mut Map,
     target: &mut Target,
-    (scenario, base): (&Scenario, f64),
+    (scenario, alps, base): (&Scenario, &CameraState, f64),
     first_legs: Option<usize>,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<Frame>, String> {
@@ -411,7 +416,10 @@ fn run_path(
         } else if f as usize > scenario.frames {
             break;
         } else {
-            map.jump_to_state((scenario.camera)(f64::from(f) / scenario.frames as f64));
+            map.jump_to_state((scenario.camera)(
+                f64::from(f) / scenario.frames as f64,
+                alps,
+            ));
         }
         let before = runtime.stats().counters.uploaded_bytes();
         // The target keeps two frames in flight, as a swapchain does.
