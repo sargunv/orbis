@@ -1,7 +1,11 @@
 //! Local glyphs from system fonts: fontdb finds a face for
 //! the CSS family list GL JS would hand a canvas, falling back per code
-//! point as a browser does, and `orb-text` draws it as TinySDF draws a
-//! canvas glyph.
+//! point as a browser does (on Apple platforms to the fonts CoreText
+//! falls back to for the user's languages), and `orb-text` draws it as
+//! TinySDF draws a canvas glyph.
+
+#[cfg(target_vendor = "apple")]
+mod apple;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -17,21 +21,10 @@ pub struct SystemFonts {
 }
 
 /// Families a browser falls back to for scripts the requested ones lack,
-/// tried before every installed face.
-#[cfg(target_os = "macos")]
-const FALLBACKS: &[&str] = &[
-    "Hiragino Sans",
-    "PingFang SC",
-    "Apple SD Gothic Neo",
-    "Kohinoor Devanagari",
-    "Thonburi",
-    "Geeza Pro",
-    "Arial Hebrew",
-    "Khmer Sangam MN",
-    "Myanmar Sangam MN",
-];
-/// Windows's own faces for those scripts, installed with every language:
-/// without them every CJK code point would scan the installed faces.
+/// tried before every installed face; Apple platforms ask CoreText
+/// instead. On Windows its own faces for those scripts, installed with
+/// every language: without them every CJK code point would scan the
+/// installed faces.
 #[cfg(windows)]
 const FALLBACKS: &[&str] = &[
     "Yu Gothic UI",
@@ -43,7 +36,7 @@ const FALLBACKS: &[&str] = &[
     "Khmer UI",
     "Myanmar Text",
 ];
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(not(any(target_vendor = "apple", windows)))]
 const FALLBACKS: &[&str] = &[
     "Noto Sans CJK JP",
     "Noto Sans CJK SC",
@@ -63,8 +56,11 @@ struct State {
     /// there, which keeps what it derives from the location, or a static
     /// face as it is.
     weighted: HashMap<(fontdb::ID, u16), Face>,
-    /// Per code point, the face a fallback search found.
+    /// Per code point, the face a search of every installed face found.
     fallback: HashMap<char, Option<fontdb::ID>>,
+    /// The fonts CoreText falls back to for the user's languages.
+    #[cfg(target_vendor = "apple")]
+    cascade: apple::Fallbacks,
     /// Per family, weight and style, the face the database matched: each
     /// query scans every installed face.
     queries: HashMap<(String, u16, fontdb::Style), Option<fontdb::ID>>,
@@ -97,6 +93,8 @@ impl State {
             faces: HashMap::new(),
             weighted: HashMap::new(),
             fallback: HashMap::new(),
+            #[cfg(target_vendor = "apple")]
+            cascade: apple::Fallbacks::default(),
             queries: HashMap::new(),
             last: None,
         }
@@ -104,20 +102,7 @@ impl State {
 
     /// The face `id` at its default instance, opened once.
     fn face(&mut self, id: fontdb::ID) -> Option<&Face> {
-        if !self.faces.contains_key(&id) {
-            // Mapped, not read: CJK fallbacks are files of 20 to 60 MB, of
-            // which a map touches the few tables and glyphs it draws. The
-            // faces of one collection share its mapping.
-            // SAFETY: the mapping is of an installed font file, which
-            // nothing writes while it is installed (the system's are
-            // read-only), as browsers map them. A file changed under the
-            // map would show the change, not fault, unless truncated.
-            #[allow(unsafe_code)]
-            let shared = unsafe { self.db.make_shared_face_data(id) };
-            let face = shared.and_then(|(bytes, index)| Face::new(bytes, index));
-            self.faces.insert(id, face);
-        }
-        self.faces[&id].as_ref()
+        open(&mut self.faces, &mut self.db, id)
     }
 
     /// The face for `text` in `font`, at its weight: the first family that
@@ -155,11 +140,10 @@ impl State {
             .split(',')
             .map(|f| f.trim().to_string())
             .collect();
-        for name in names
-            .iter()
-            .map(String::as_str)
-            .chain(FALLBACKS.iter().copied())
-        {
+        let names = names.iter().map(String::as_str);
+        #[cfg(not(target_vendor = "apple"))]
+        let names = names.chain(FALLBACKS.iter().copied());
+        for name in names {
             let family = match name {
                 "sans-serif" => fontdb::Family::SansSerif,
                 "serif" => fontdb::Family::Serif,
@@ -183,14 +167,31 @@ impl State {
                 return Some(id);
             }
         }
+        #[cfg(target_vendor = "apple")]
+        {
+            let italic = style != fontdb::Style::Normal;
+            let faces = &mut self.faces;
+            let opens = |db: &mut fontdb::Database, id| open(faces, db, id).is_some();
+            if let Some(id) =
+                (self.cascade).face(&mut self.db, font.family, first, weight.0, italic, opens)
+            {
+                return Some(id);
+            }
+        }
         match self.fallback.get(&first) {
             Some(id) => *id,
             None => {
                 // The first installed face that has it, in the database's
-                // order whatever was drawn before. Each face is mapped
-                // once and kept: opening every file again for each code
-                // point cost Windows seconds per CJK view (#141).
-                let ids: Vec<fontdb::ID> = self.db.faces().map(|f| f.id).collect();
+                // order whatever was drawn before, so not the fallbacks
+                // rebuilt in memory. Each face is mapped once and kept:
+                // opening every file again for each code point cost
+                // Windows seconds per CJK view (#141).
+                let ids: Vec<fontdb::ID> = self
+                    .db
+                    .faces()
+                    .filter(|f| !matches!(f.source, fontdb::Source::Binary(_)))
+                    .map(|f| f.id)
+                    .collect();
                 let id = ids
                     .into_iter()
                     .find(|&id| self.face(id).is_some_and(|f| f.covers(first)));
@@ -213,6 +214,31 @@ impl State {
         }
         self.last.as_ref().map(|(_, _, d)| d)
     }
+}
+
+/// The face `id` of `db` at its default instance, opened once into
+/// `faces`.
+fn open<'a>(
+    faces: &'a mut HashMap<fontdb::ID, Option<Face>>,
+    db: &mut fontdb::Database,
+    id: fontdb::ID,
+) -> Option<&'a Face> {
+    faces
+        .entry(id)
+        .or_insert_with(|| {
+            // Mapped, not read: CJK fallbacks are files of 20 to 60 MB, of
+            // which a map touches the few tables and glyphs it draws. The
+            // faces of one collection share its mapping.
+            // SAFETY: the mapping is of an installed font file, which
+            // nothing writes while it is installed (the system's are
+            // read-only), as browsers map them. A file changed under the
+            // map would show the change, not fault, unless truncated. A
+            // face rebuilt in memory is shared, not mapped.
+            #[allow(unsafe_code)]
+            let shared = unsafe { db.make_shared_face_data(id) };
+            shared.and_then(|(bytes, index)| Face::new(bytes, index))
+        })
+        .as_ref()
 }
 
 impl SystemFonts {
@@ -270,6 +296,78 @@ mod tests {
             let ink = orb_text::sdf::local::ink_box(text, &m);
             let alpha = fonts.coverage(&face, text, &ink);
             assert!(alpha.contains(&255), "{text} has solid ink");
+        }
+    }
+
+    /// The face `state` draws `text` in, in the default sans-serif at
+    /// `weight`: its PostScript name and the ink it draws.
+    #[cfg(target_vendor = "apple")]
+    fn drawn_in(state: &mut State, text: &str, weight: &str) -> (String, u64) {
+        let font = LocalFace {
+            family: "sans-serif",
+            weight: Some(weight),
+            style: "normal",
+        };
+        let id = state
+            .choose_id(&font, fontdb::Weight(weight.parse().unwrap()), text)
+            .unwrap_or_else(|| panic!("no face for {text}"));
+        let name = state.db.face(id).unwrap().post_script_name.clone();
+        let face = state.choose(&font, text).unwrap();
+        let ink = coverage(&face, text).iter().map(|&a| u64::from(a)).sum();
+        (name, ink)
+    }
+
+    /// `text`'s coverage in `face`, as a glyph job reads it.
+    #[cfg(target_vendor = "apple")]
+    fn coverage(face: &Face, text: &str) -> Vec<u8> {
+        let drawn = draw(face, text, 48.0);
+        drawn.ink_alpha(&orb_text::sdf::local::ink_box(text, &drawn.metrics))
+    }
+
+    /// Han ideographs take the forms of the language the user reads: the
+    /// font CoreText falls back to for it. (Chinese can't be checked
+    /// this way: recent macOS's Chinese fonts have only `hvgl` outlines,
+    /// so Chinese falls through to the Japanese font.)
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn ideographs_take_the_users_language_and_the_weight_asked() {
+        let mut faces = Vec::new();
+        for language in ["ja-JP", "ko-KR"] {
+            let mut state = State::new();
+            state.cascade = apple::Fallbacks::with_languages(vec![language.to_string()]);
+            let (regular, regular_ink) = drawn_in(&mut state, "直", "400");
+            let (bold, bold_ink) = drawn_in(&mut state, "直", "700");
+            assert!(regular_ink > 0, "{language}: {regular} draws the ideograph");
+            assert!(
+                bold_ink > regular_ink,
+                "{language}: {bold} draws bolder than {regular}"
+            );
+            faces.push(regular);
+        }
+        assert_ne!(faces[0], faces[1], "Japanese and Korean forms differ");
+    }
+
+    /// A fallback font the database lacks (every system font on iOS,
+    /// whose files an app can't read) is rebuilt from its tables into one
+    /// that draws.
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn fallback_fonts_without_files_are_rebuilt_from_their_tables() {
+        let mut db = fontdb::Database::new();
+        let mut faces = HashMap::new();
+        let mut fallbacks = apple::Fallbacks::with_languages(vec!["ja".to_string()]);
+        for c in ['直', 'A', 'ก'] {
+            let id = fallbacks
+                .face(&mut db, "sans-serif", c, 400, false, |db, id| {
+                    open(&mut faces, db, id).is_some()
+                })
+                .unwrap_or_else(|| panic!("a face for {c}"));
+            let face = open(&mut faces, &mut db, id).unwrap();
+            assert!(face.covers(c), "{c}");
+            assert!(
+                coverage(face, &c.to_string()).contains(&255),
+                "{c} has solid ink"
+            );
         }
     }
 }

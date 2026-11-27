@@ -1,6 +1,6 @@
 [package]
 name = "orb-host-native"
-description = "Host services on native platforms: HTTP via ureq, or HttpURLConnection on Android, files, fonts, and locale expressions through the system ICU"
+description = "Host services on native platforms: HTTP via ureq, or HttpURLConnection on Android, files, system fonts (through CoreText's fallbacks on Apple platforms), and locale expressions through the system ICU"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -37,9 +37,23 @@ ureq = { workspace = true, features = [
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"
 
+# The user's locale and languages, and CoreText's fallback fonts.
 [target.'cfg(target_vendor = "apple")'.dependencies]
-core-foundation = "0.10.1"
-core-foundation-sys = "0.8.7"
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = [
+  "CFArray",
+  "CFData",
+  "CFDictionary",
+  "CFLocale",
+  "CFNumber",
+  "CFString",
+  "CFURL",
+  "std",
+] }
+objc2-core-text = { version = "0.3.2", default-features = false, features = [
+  "CTFont",
+  "CTFontDescriptor",
+  "CTFontTraits",
+] }
 
 # On Android HTTP goes through the app's HttpURLConnection, and locale
 # expressions through android.icu, in the JVM the app hands in

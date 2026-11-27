@@ -3,13 +3,11 @@
 //! version suffixes; the user's locale is Foundation's current locale,
 //! as Safari's `Intl` takes it.
 
-#![allow(unsafe_code, reason = "dlopen, dlsym and Core Foundation")]
+#![allow(unsafe_code, reason = "dlopen and dlsym")]
 
 use std::ffi::{CString, c_void};
 
-use core_foundation::base::TCFType;
-use core_foundation::string::CFString;
-use core_foundation_sys::locale::{CFLocaleCopyCurrent, CFLocaleGetIdentifier};
+use objc2_core_foundation::CFLocale;
 
 use super::Backend;
 use super::icu4c::Icu;
@@ -37,12 +35,8 @@ pub(in crate::locale) fn open() -> Option<Box<dyn Backend>> {
 
 /// The user's current locale's identifier, `en_US` or `de_DE@rg=chzzzz`.
 fn current_locale() -> String {
-    // SAFETY: CFLocaleCopyCurrent returns a locale we own, whose
-    // identifier we only borrow while it lives.
-    unsafe {
-        let locale = CFLocaleCopyCurrent();
-        let identifier = CFString::wrap_under_get_rule(CFLocaleGetIdentifier(locale)).to_string();
-        core_foundation_sys::base::CFRelease(locale.cast());
-        identifier
-    }
+    CFLocale::current()
+        .and_then(|locale| locale.identifier())
+        .map(|identifier| identifier.to_string())
+        .unwrap_or_default()
 }
