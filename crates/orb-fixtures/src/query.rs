@@ -13,6 +13,8 @@ use orb_api::{Event, Map};
 use serde_json::{Value, json};
 
 use crate::metadata::Metadata;
+use crate::platform::Platform;
+use crate::status::Status;
 use crate::tally::{self, Tally};
 use crate::{
     Backend, assets, discover, finish_skip, record_warnings, render_native, scope, test_id,
@@ -37,7 +39,7 @@ fn geometry(test: &Value) -> Option<[f64; 4]> {
     }
 }
 
-pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
+pub(crate) fn run_suite(root: &Path, filter: &str, platform: Platform) -> Result<Value, String> {
     let fixtures = root.join("fixtures/gl-js/query");
     if !fixtures.is_dir() {
         return Err(format!(
@@ -45,9 +47,9 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
             fixtures.display()
         ));
     }
-    let mut tally = Tally::start(root.join("docs/scratch/rt/query").join(name))?;
+    let mut tally = Tally::start(root.join("docs/scratch/rt/query").join(platform.name()))?;
     let output = tally.output.clone();
-    let mut backend = tally::backend(root, name, &assets(root), crate::fetch::Assets::GlJs)?;
+    let mut backend = tally::backend(root, platform, &assets(root), crate::fetch::Assets::GlJs)?;
     let mut paths = Vec::new();
     discover(&fixtures, &mut paths)?;
     paths.sort();
@@ -56,23 +58,23 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
     let (mut unordered, mut shapes) = (0, 0);
     for path in paths {
         let id = test_id(&path, &fixtures);
-        let result = run_test(&path, &id, &output, name, &assets, &mut backend)?;
-        if result["same_features"] == true && result["status"] == "fail" {
+        let result = run_test(&path, &id, &output, platform, &assets, &mut backend)?;
+        if result["same_features"] == true && Status::of(&result)? == Status::Fail {
             unordered += 1;
         }
         if result["geometry_only"] == true {
             shapes += 1;
         }
-        tally.add(&prefix(&id), result);
+        tally.add(&prefix(&id), result)?;
     }
-    tally.print(&format!("query {name}"));
+    tally.print(&format!("query {platform}"));
     println!("  {unordered} failures have GL JS's features in another order");
     println!(
         "  {shapes} of {} failures differ only in geometry",
         tally.totals.fail
     );
     tally.finish(json!({
-        "platform": name,
+        "platform": platform.name(),
         "out_of_order": unordered,
         "geometry_only": shapes,
     }))
@@ -83,7 +85,7 @@ fn run_test(
     path: &Path,
     id: &str,
     output: &Path,
-    name: &str,
+    platform: Platform,
     assets: &Path,
     backend: &mut Backend,
 ) -> Result<Value, String> {
@@ -165,7 +167,7 @@ fn run_test(
         }
     }
     let (same, in_order) = compare(&actual, &expected);
-    result["status"] = json!(if in_order { "pass" } else { "fail" });
+    result["status"] = Status::passed(in_order).into();
     result["same_features"] = json!(same);
     result["actual"] = json!(actual.as_array().map_or(0, Vec::len));
     result["expected"] = json!(expected.as_array().map_or(0, Vec::len));
@@ -175,7 +177,7 @@ fn run_test(
         let shapes = !same && compare(&without_geometry(&actual), &without_geometry(&expected)).0;
         result["geometry_only"] = json!(shapes);
         eprintln!(
-            "FAIL query {name} {id}: {} features, expected {}{}",
+            "FAIL query {platform} {id}: {} features, expected {}{}",
             result["actual"],
             result["expected"],
             if shapes {

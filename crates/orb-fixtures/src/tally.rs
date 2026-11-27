@@ -8,6 +8,8 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 
+use crate::platform::Platform;
+use crate::status::Status;
 use crate::write_json;
 
 /// A suite's tests so far.
@@ -57,8 +59,8 @@ impl Tally {
 
     /// Counts a test's `result` (its `status`, `skip_reasons` and
     /// `native_ignored`) under `prefix`, and keeps it for the summary.
-    pub(crate) fn add(&mut self, prefix: &str, result: Value) {
-        let status = result["status"].as_str().expect("our status");
+    pub(crate) fn add(&mut self, prefix: &str, result: Value) -> Result<(), String> {
+        let status = Status::of(&result)?;
         self.totals.add(status);
         self.prefixes.entry(prefix.into()).or_default().add(status);
         if result["native_ignored"].is_string() {
@@ -72,6 +74,7 @@ impl Tally {
                 .or_default() += 1;
         }
         self.tests.push(result);
+        Ok(())
     }
 
     /// Writes the summary: `fields` (an object), then the time taken, the
@@ -117,15 +120,8 @@ impl Tally {
         }
         print!("{:indent$}", "");
         self.totals.print("TOTAL");
-        let ignored = &self.native_ignored;
-        if ignored.any() {
-            println!(
-                "  Native ignores {} of them: {} pass, {} fail, {} skip",
-                ignored.pass + ignored.fail + ignored.skip,
-                ignored.pass,
-                ignored.fail,
-                ignored.skip
-            );
+        if self.native_ignored.any() {
+            self.native_ignored.print_ignored();
         }
         if self.late > 0 {
             println!(
@@ -150,12 +146,11 @@ pub(crate) struct Counts {
 }
 
 impl Counts {
-    fn add(&mut self, status: &str) {
+    fn add(&mut self, status: Status) {
         match status {
-            "pass" => self.pass += 1,
-            "fail" => self.fail += 1,
-            "skip" => self.skip += 1,
-            _ => unreachable!(),
+            Status::Pass => self.pass += 1,
+            Status::Fail => self.fail += 1,
+            Status::Skip => self.skip += 1,
         }
     }
 
@@ -182,6 +177,17 @@ impl Counts {
         }
     }
 
+    /// Prints them as the tests Native's manifest ignores.
+    pub(crate) fn print_ignored(&self) {
+        println!(
+            "  Native ignores {} of them: {} pass, {} fail, {} skip",
+            self.pass + self.fail + self.skip,
+            self.pass,
+            self.fail,
+            self.skip
+        );
+    }
+
     pub(crate) fn print(&self, name: &str) {
         let rate = self
             .rate()
@@ -193,33 +199,18 @@ impl Counts {
     }
 }
 
-/// The backend for `platform`: a browser (`chrome`, `chrome-webgl2`, on a
-/// phone `android-chrome`, `android-chrome-webgl2`, and `firefox`,
-/// `webkit`) or the native runtime, fetching `assets` as the suite's server
-/// serves them.
+/// The backend for `platform`: a browser, or the native runtime, fetching
+/// `assets` as the suite's server serves them.
 pub(crate) fn backend(
     root: &Path,
-    platform: &str,
+    platform: Platform,
     assets: &Path,
     kind: crate::fetch::Assets,
 ) -> Result<crate::Backend, String> {
-    match platform {
-        "chrome"
-        | "chrome-webgl2"
-        | "android-chrome"
-        | "android-chrome-webgl2"
-        | "firefox"
-        | "webkit" => Ok(crate::Backend::Chrome(crate::chrome::Chrome::new(
-            root,
-            assets,
-            kind,
-            platform.ends_with("webgl2"),
-            match platform {
-                "firefox" | "webkit" => Some(platform),
-                _ if platform.starts_with("android-") => Some("android"),
-                _ => None,
-            },
+    match platform.browser() {
+        Some((browser, webgl2)) => Ok(crate::Backend::Chrome(crate::chrome::Chrome::new(
+            root, assets, kind, browser, webgl2,
         )?)),
-        _ => crate::runtime(assets, kind),
+        None => crate::runtime(assets, kind),
     }
 }

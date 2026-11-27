@@ -8,9 +8,9 @@ Native's. Use it through `cargo xtask rt`:
 ```sh
 cargo xtask rt                                   # GL JS render suite, native
 cargo xtask rt --filter line-width               # tests whose id contains a substring
-cargo xtask rt --platform native|chrome|lavapipe|all
+cargo xtask rt --platform <platform>             # one of those below, or all
 cargo xtask rt --suite query [--platform native|chrome|all]
-cargo xtask rt --suite native-render [--platform native|chrome|lavapipe|all]
+cargo xtask rt --suite native-render [--platform <platform>]
 cargo xtask rt --suite native-query [--platform native|chrome|all]
 cargo xtask rt --suite native-expression
 ```
@@ -158,7 +158,17 @@ lists.
 
 ## Platforms
 
+`src/platform.rs` declares them: each one's backend and what it runs beside in
+the same invocation. `cargo xtask rt` builds `web/pkg` first when a selected
+platform draws in a browser. A platform runs after what it is compared with.
+
 - **native**: the host's wgpu backend (Metal, Vulkan or D3D12).
+- **native-cpu**, **native-cpu-tex**, **native-webgl2**, **native-gl** (render
+  suites): native, then the suite again in a process of its own on WebGL 2's CPU
+  frame driver (its tables in storage buffers or data textures; `native-webgl2`
+  with everything else WebGL 2 lacks too) or on wgpu's GLES back end (through
+  ANGLE on macOS), comparing each test's image with native's byte for byte into
+  `<platform>-identity.json`.
 - **chrome**: builds `core.wasm`, then starts one Node and Playwright process
   (`web/scripts/render-fixtures.mjs`) that speaks line-oriented JSON. Node
   serves the demo build and the mirror's assets over loopback and opens
@@ -177,7 +187,13 @@ lists.
   lavapipe's ICD. The checkout is mounted read-only except for the report
   directory; the named volumes `orbis-rt-target`, `orbis-rt-registry` and
   `orbis-rt-git` cache Linux builds and downloads. Docker must be running.
-- **all**: every platform above.
+- **chrome-webgl2**: Chrome on WebGPU, then without it on WebGL 2; **firefox**
+  (the installed one, headed) and **webkit**: Chrome, then that browser on
+  WebGPU; **android-chrome** and **android-chrome-webgl2**: this machine's
+  Chrome, then the assigned phone's on the same backend. Each lists the tests
+  the first passes and the second doesn't, by cause, as the combined summary's
+  `beside`.
+- **all**: native, chrome and lavapipe.
 
 Chrome always runs native too, for an **identity** check: for every native pass,
 the native and Chrome images are compared with the suite's comparison and that

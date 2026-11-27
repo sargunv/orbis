@@ -9,7 +9,8 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{Value, json};
 
-use crate::{fetch::Assets, images::Image, metadata::Metadata};
+use crate::platform::Browser;
+use crate::{Drawn, fetch::Assets, images::Image, metadata::Metadata};
 
 pub(crate) struct Chrome {
     child: Child,
@@ -20,23 +21,28 @@ pub(crate) struct Chrome {
 }
 
 impl Chrome {
-    /// The driver, drawing on WebGPU or with `webgl2` on WebGL 2 (in a
-    /// Chrome without WebGPU), in this machine's Chromium or `browser`
-    /// (`android`: the assigned phone's Chrome; `firefox`, `webkit`),
-    /// serving `assets` to the page as `kind`'s suite serves them.
+    /// The driver, drawing in `browser` on WebGPU or with `webgl2` on
+    /// WebGL 2 (in a browser without WebGPU), serving `assets` to the page
+    /// as `kind`'s suite serves them.
     pub(crate) fn new(
         root: &Path,
         assets: &Path,
         kind: Assets,
+        browser: Browser,
         webgl2: bool,
-        browser: Option<&str>,
     ) -> Result<Self, String> {
+        let browser = match browser {
+            Browser::Chromium => None,
+            Browser::Android => Some("--android"),
+            Browser::Firefox => Some("--firefox"),
+            Browser::Webkit => Some("--webkit"),
+        };
         let mut child = Command::new("node")
             .arg(root.join("web/scripts/render-fixtures.mjs"))
             .arg(assets)
             .args((kind == Assets::Native).then_some("--offline"))
             .args(webgl2.then_some("--webgl2"))
-            .args(browser.map(|b| format!("--{b}")))
+            .args(browser)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -101,18 +107,21 @@ impl Chrome {
         self.receive()
     }
 
-    /// Renders a test: its RGBA pixels, unpremultiplied as the native
-    /// readback is, or `None` with the driver's error in the response.
+    /// Renders a GL JS render test: its RGBA pixels, unpremultiplied as
+    /// the native readback is, and what drawing them reported; or the
+    /// driver's error.
     pub(crate) fn render(
         &mut self,
         style: &str,
         metadata: &Metadata,
         output: &Path,
-    ) -> Result<(Option<Image>, Value), String> {
+    ) -> Result<Result<(Image, Drawn), Value>, String> {
         let response = self.send(style, metadata, json!({"output": output}))?;
         if !response["error"].is_null() {
-            return Ok((None, response));
+            return Ok(Err(response["error"].clone()));
         }
+        let drawn: Drawn = serde_json::from_value(response)
+            .map_err(|e| format!("Chrome driver's drawing: {e}"))?;
         let (width, height) = metadata.physical_size();
         let pixels = std::fs::read(output).map_err(|e| e.to_string())?;
         std::fs::remove_file(output).map_err(|e| e.to_string())?;
@@ -125,7 +134,7 @@ impl Chrome {
             pixels,
         };
         image.unpremultiply();
-        Ok((Some(image), response))
+        Ok(Ok((image, drawn)))
     }
 
     /// Settles a query test's style as [`render`](Self::render) does, then

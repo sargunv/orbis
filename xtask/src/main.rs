@@ -17,6 +17,10 @@ mod h2h;
 mod labels;
 mod mln_ffi;
 mod native_fixtures;
+/// The fixture platforms `rt` takes, for what each needs built.
+#[allow(dead_code)]
+#[path = "../../crates/orb-fixtures/src/platform.rs"]
+mod platform;
 mod pmtiles;
 mod split;
 mod support;
@@ -26,6 +30,8 @@ mod web;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+
+use platform::{Platform, Selection};
 
 const HELP: &str = "\
 cargo xtask <task>
@@ -193,27 +199,17 @@ fn rt(args: &[String]) -> Result<(), String> {
     if suite == "native-render" {
         fixtures::ensure()?;
     }
-    if args.windows(2).any(|pair| {
-        pair[0] == "--platform"
-            && [
-                "chrome",
-                "chrome-webgl2",
-                "android-chrome",
-                "android-chrome-webgl2",
-                "firefox",
-                "webkit",
-                "all",
-            ]
-            .contains(&pair[1].as_str())
-    }) {
+    let selection: Selection = args
+        .windows(2)
+        .find(|pair| pair[0] == "--platform")
+        .map_or(Ok(Selection::One(Platform::Native)), |pair| pair[1].parse())?;
+    // A browser loads the package.
+    if (selection.platforms().iter()).any(|platform| platform.browser().is_some()) {
         web::build(Default::default())?;
     }
     let mut command = vec!["run", "--release", "-p", "orb-fixtures"];
     // wgpu's GLES back end (through ANGLE on macOS) for `native-gl`.
-    if args
-        .windows(2)
-        .any(|pair| pair[0] == "--platform" && pair[1] == "native-gl")
-    {
+    if selection == Selection::One(Platform::NativeGl) {
         command.extend(["--features", "gl"]);
     }
     command.push("--");

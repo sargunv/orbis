@@ -13,6 +13,7 @@ use orb_expr::conformance::{Reference, check};
 use serde_json::json;
 
 use crate::native::{Manifest, mirror};
+use crate::status::Status;
 use crate::tally::Tally;
 
 pub(crate) fn run(root: &Path, filter: &str) -> Result<(), String> {
@@ -47,7 +48,7 @@ pub(crate) fn run(root: &Path, filter: &str) -> Result<(), String> {
         }
         let status = if reason.is_some_and(|r| r.starts_with("skip")) {
             result["skip_reasons"] = json!(["native:skip"]);
-            "skip"
+            Status::Skip
         } else {
             let text = std::fs::read_to_string(&path).map_err(|e| format!("{id}: {e}"))?;
             let fixture = orb_expr::json::parse(&text).map_err(|e| format!("{id}: {e:?}"))?;
@@ -56,17 +57,17 @@ pub(crate) fn run(root: &Path, filter: &str) -> Result<(), String> {
             let outcome = std::panic::catch_unwind(|| check(&id, &fixture, Reference::Native))
                 .unwrap_or_else(|_| Err(format!("{id}: the runner panicked")));
             match outcome {
-                Ok(()) => "pass",
+                Ok(()) => Status::Pass,
                 Err(message) => {
                     println!("FAIL {message}");
                     result["failure"] = json!(message);
-                    "fail"
+                    Status::Fail
                 }
             }
         };
-        result["status"] = json!(status);
+        result["status"] = status.into();
         let rel = id.strip_prefix("expression-tests/").unwrap_or(&id);
-        tally.add(rel.split('/').next().unwrap_or(rel), result);
+        tally.add(rel.split('/').next().unwrap_or(rel), result)?;
     }
     tally.print("native-expression");
     let report = tally.summary_path();

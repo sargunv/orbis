@@ -13,9 +13,11 @@ mod native_expression;
 mod operations;
 mod pixelmatch;
 mod pixelmatch_cpp;
+mod platform;
 mod platforms;
 mod query;
 mod scope;
+mod status;
 mod tally;
 
 use std::cell::Cell;
@@ -31,6 +33,8 @@ use serde_json::{Value, json};
 
 use images::Image;
 use metadata::Metadata;
+use platform::{Platform, Selection};
+use status::Status;
 use tally::Tally;
 
 fn main() -> ExitCode {
@@ -46,36 +50,29 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let mut filter = String::new();
-    let mut platform = "native".to_string();
+    let mut selection = Selection::One(Platform::Native);
     let mut suite = "render".to_string();
-    const USAGE: &str = "usage: orb-fixtures [--suite render|query|native-render|native-query|native-expression] [--filter <substring>[,<substring>…]] [--platform native|chrome|chrome-webgl2|android-chrome|android-chrome-webgl2|firefox|webkit|lavapipe|all|native-cpu|native-cpu-tex|native-webgl2|native-gl]";
+    let usage = format!(
+        "usage: orb-fixtures [--suite render|query|native-render|native-query|native-expression] \
+         [--filter <substring>[,<substring>…]] [--platform {}]",
+        Selection::usage()
+    );
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--suite" => suite = args.next().ok_or(USAGE)?,
-            "--filter" => filter = args.next().ok_or("--filter needs a substring (or several, comma-separated)")?,
-            "--platform" => {
-                platform = args.next().ok_or(
-                    "--platform needs native|chrome|chrome-webgl2|android-chrome|android-chrome-webgl2|firefox|webkit|lavapipe|all|native-cpu|native-cpu-tex|native-webgl2|native-gl",
-                )?
+            "--suite" => suite = args.next().ok_or(&usage)?,
+            "--filter" => {
+                filter = args
+                    .next()
+                    .ok_or("--filter needs a substring (or several, comma-separated)")?
             }
-            _ => return Err(format!("unknown argument {arg}; {USAGE}")),
+            "--platform" => {
+                let name = args
+                    .next()
+                    .ok_or_else(|| format!("--platform needs {}", Selection::usage()))?;
+                selection = name.parse()?;
+            }
+            _ => return Err(format!("unknown argument {arg}; {usage}")),
         }
-    }
-    if ![
-        "native",
-        "chrome",
-        "chrome-webgl2",
-        "android-chrome",
-        "android-chrome-webgl2",
-        "firefox",
-        "webkit",
-        "lavapipe",
-        "all",
-    ]
-    .contains(&platform.as_str())
-        && platforms::beside_native(&platform).is_none()
-    {
-        return Err(format!("unknown platform {platform}"));
     }
     // The repository, as Cargo gave the manifest's directory: not
     // canonicalized, which on Windows makes a `\\?\D:\…` path Node can't
@@ -86,19 +83,22 @@ fn run() -> Result<(), String> {
         .ok_or("orb-fixtures sits two levels below the repository")?
         .to_path_buf();
     match suite.as_str() {
-        "render" => platforms::run(&root, &filter, &platform, Suite::Render),
-        "native-render" => platforms::run(&root, &filter, &platform, Suite::NativeRender),
+        "render" => platforms::run(&root, &filter, selection, Suite::Render),
+        "native-render" => platforms::run(&root, &filter, selection, Suite::NativeRender),
         "query" | "native-query" => {
-            if !["native", "chrome", "all"].contains(&platform.as_str()) {
-                return Err("the query suites run natively and in Chrome".into());
-            }
-            for name in ["native", "chrome"] {
-                if platform == name || platform == "all" {
-                    if suite == "query" {
-                        query::run_suite(&root, &filter, name)?;
-                    } else {
-                        native::run_query_suite(&root, &filter, name)?;
-                    }
+            // Nothing compares the platforms' answers: each runs alone.
+            let platforms = match selection {
+                Selection::All => vec![Platform::Native, Platform::Chrome],
+                Selection::One(p @ (Platform::Native | Platform::Chrome)) => vec![p],
+                Selection::One(_) => {
+                    return Err("the query suites run natively and in Chrome".into());
+                }
+            };
+            for platform in platforms {
+                if suite == "query" {
+                    query::run_suite(&root, &filter, platform)?;
+                } else {
+                    native::run_query_suite(&root, &filter, platform)?;
                 }
             }
             Ok(())
@@ -106,7 +106,7 @@ fn run() -> Result<(), String> {
         // The expressions evaluate on the CPU, the same code on every
         // platform.
         "native-expression" => native_expression::run(&root, &filter),
-        _ => Err(format!("unknown suite {suite}; {USAGE}")),
+        _ => Err(format!("unknown suite {suite}; {usage}")),
     }
 }
 
@@ -130,7 +130,12 @@ impl Suite {
     }
 
     /// Runs the suite on one platform; its summary.
-    pub(crate) fn run(self, root: &Path, filter: &str, platform: &str) -> Result<Value, String> {
+    pub(crate) fn run(
+        self,
+        root: &Path,
+        filter: &str,
+        platform: Platform,
+    ) -> Result<Value, String> {
         match self {
             Suite::Render => run_suite(root, filter, platform),
             Suite::NativeRender => native::run_render_suite(root, filter, platform),
@@ -170,7 +175,7 @@ pub(crate) fn matches(id: &str, filter: &str) -> bool {
     filter.split(',').any(|f| id.contains(f))
 }
 
-fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
+fn run_suite(root: &Path, filter: &str, platform: Platform) -> Result<Value, String> {
     let fixtures = root.join("fixtures/gl-js/render");
     if !fixtures.is_dir() {
         return Err(format!(
@@ -178,10 +183,10 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
             fixtures.display()
         ));
     }
-    let mut tally = Tally::start(root.join("docs/scratch/rt").join(name))?;
+    let mut tally = Tally::start(root.join("docs/scratch/rt").join(platform.name()))?;
     let output = tally.output.clone();
     std::fs::create_dir_all(output.join("failures")).map_err(|e| e.to_string())?;
-    let mut backend = tally::backend(root, name, &assets(root), fetch::Assets::GlJs)?;
+    let mut backend = tally::backend(root, platform, &assets(root), fetch::Assets::GlJs)?;
     let mut paths = Vec::new();
     discover(&fixtures, &mut paths)?;
     paths.sort();
@@ -190,12 +195,12 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
     for path in paths {
         let id = test_id(&path, &fixtures);
         let result = run_test(&path, &id, &output, &assets, &mut backend)?;
-        print_failure(name, &id, &result);
-        tally.add(prefix(&id), result);
+        print_failure(platform.name(), &id, &result);
+        tally.add(prefix(&id), result)?;
     }
     tally.finish(json!({
         "filter": filter,
-        "platform": platform(name, &backend),
+        "platform": crate::platform(platform, &backend),
         "comparison": {"metric":"pixelmatch-8.0.0-oklab-hyab", "includeAA":false, "checkerboard":true, "default_threshold":0.1285, "default_allowed":0.00025},
     }))
 }
@@ -206,7 +211,7 @@ pub(crate) fn print_failure(suite: &str, id: &str, result: &Value) {
     if let Some(late) = result["pipelines_late"].as_u64() {
         eprintln!("LATE {suite} {id}: {late} pipelines outside the style's set");
     }
-    if result["status"] == "fail" {
+    if Status::of(result) == Ok(Status::Fail) {
         eprintln!(
             "FAIL {suite} {id}: {} ({:.2}% pixels)",
             result["failure_reason"],
@@ -215,14 +220,14 @@ pub(crate) fn print_failure(suite: &str, id: &str, result: &Value) {
     }
 }
 
-/// A render suite summary's `platform`: `name`, where it ran, and Chrome's
-/// version for a backend in Chrome.
-pub(crate) fn platform(name: &str, backend: &Backend) -> Value {
+/// A render suite summary's `platform`: its name, where it ran, and the
+/// browser's version for a backend in a browser.
+pub(crate) fn platform(platform: Platform, backend: &Backend) -> Value {
     let browser = match backend {
         Backend::Chrome(c) => c.version.clone(),
         Backend::Native(_) => Value::Null,
     };
-    json!({"name":name,"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"browser":browser})
+    json!({"name":platform.name(),"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"browser":browser})
 }
 
 fn write_json(path: &Path, value: &Value) -> Result<(), String> {
@@ -401,37 +406,38 @@ fn run_test(
             None
         }
         Backend::Chrome(chrome) => {
-            let (image, rendered) =
-                chrome.render(&text, &metadata, &output.join("readback.rgba"))?;
-            let Some(image) = image else {
-                result["status"] = json!("fail");
-                result["failure_reason"] = json!("browser-render");
-                result["diagnostics"] = json!([rendered["error"]]);
-                result["seconds"] = json!(started.elapsed().as_secs_f64());
-                return Ok(result);
-            };
-            for warning in rendered["warnings"].as_array().expect("Chrome warnings") {
-                let warning = warning.as_str().expect("warning string");
-                note_warning(warning.to_string(), &mut reasons, &mut diagnostics);
+            match chrome.render(&text, &metadata, &output.join("readback.rgba"))? {
+                Ok((image, drawn)) => {
+                    for warning in &drawn.warnings {
+                        note_warning(warning.clone(), &mut reasons, &mut diagnostics);
+                    }
+                    Some((image, drawn))
+                }
+                Err(error) => {
+                    result["status"] = Status::Fail.into();
+                    result["failure_reason"] = json!("browser-render");
+                    result["diagnostics"] = json!([error]);
+                    result["seconds"] = json!(started.elapsed().as_secs_f64());
+                    return Ok(result);
+                }
             }
-            Some((image, rendered))
         }
     };
-    let Some((actual, rendered)) = rendered else {
+    let Some((actual, drawn)) = rendered else {
         finish_skip(&mut result, &reasons, started);
         return Ok(result);
     };
-    result["frames"] = rendered["frames"].clone();
-    result["tiles_drawn"] = rendered["tiles_drawn"].clone();
-    if rendered["pipelines_late"].as_u64().is_some_and(|n| n > 0) {
-        result["pipelines_late"] = rendered["pipelines_late"].clone();
+    result["frames"] = json!(drawn.frames);
+    result["tiles_drawn"] = json!(drawn.tiles_drawn);
+    if drawn.pipelines_late > 0 {
+        result["pipelines_late"] = json!(drawn.pipelines_late);
     }
     result["diagnostics"] = json!(diagnostics);
     if !reasons.is_empty() {
         finish_skip(&mut result, &reasons, started);
         return Ok(result);
     }
-    if rendered["timed_out"] == true {
+    if drawn.timed_out {
         failure = Some("timeout");
     }
     if !diagnostics.is_empty() {
@@ -493,12 +499,10 @@ fn run_test(
     if difference > metadata.allowed {
         failure.get_or_insert("pixels");
     }
-    result["status"] = json!(if failure.is_some() { "fail" } else { "pass" });
-    // The gaps the map reported (`MapEvent::Degraded`): a failure drawn
-    // with one is filed under it, a known difference of the GPU.
-    let gaps: Vec<&str> = (rendered["degraded"].as_array().into_iter().flatten())
-        .filter_map(Value::as_str)
-        .collect();
+    result["status"] = Status::passed(failure.is_none()).into();
+    // A failure drawn with a gap the map reported is filed under it, a
+    // known difference of the GPU.
+    let gaps = &drawn.degraded;
     if !gaps.is_empty() {
         result["degraded"] = json!(gaps);
     }
@@ -524,6 +528,26 @@ fn run_test(
     Ok(result)
 }
 
+/// What drawing a GL JS render test reported, natively or from the browser
+/// driver (`web/demo/fixture.html`'s answer).
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct Drawn {
+    frames: u32,
+    tiles_drawn: u32,
+    timed_out: bool,
+    /// Pipelines the frames asked for that the style's set left out
+    /// (natively).
+    #[serde(default)]
+    pipelines_late: u32,
+    /// The gaps the map reported (`MapEvent::Degraded`; in a browser).
+    #[serde(default)]
+    degraded: Vec<String>,
+    /// The map's warnings and errors in a browser; natively they're read
+    /// from its events as it draws.
+    #[serde(default)]
+    warnings: Vec<String>,
+}
+
 /// Renders the test natively and reads it back; `None` with a skip reason
 /// when its canvas is larger than the device's textures.
 fn render_native(
@@ -533,7 +557,7 @@ fn render_native(
     assets: &Path,
     reasons: &mut BTreeSet<String>,
     diagnostics: &mut Vec<String>,
-) -> Option<(Image, Value)> {
+) -> Option<(Image, Drawn)> {
     let (width, height) = metadata.physical_size();
     if width.max(height) > runtime.stats().max_texture_size {
         reasons.insert("device:canvas-size".into());
@@ -654,13 +678,15 @@ fn render_native(
         pixels,
     };
     image.unpremultiply();
-    let report = json!({
-        "frames": frames,
-        "tiles_drawn": tiles_drawn,
-        "timed_out": failure.is_some(),
-        "pipelines_late": late.get(),
-    });
-    Some((image, report))
+    let drawn = Drawn {
+        frames,
+        tiles_drawn,
+        timed_out: failure.is_some(),
+        pipelines_late: late.get(),
+        degraded: Vec::new(),
+        warnings: Vec::new(),
+    };
+    Some((image, drawn))
 }
 
 /// Milliseconds since `started`: frames' time, which nothing in a test
@@ -696,7 +722,7 @@ fn note_warning(warning: String, reasons: &mut BTreeSet<String>, diagnostics: &m
 }
 
 fn finish_skip(result: &mut Value, reasons: &BTreeSet<String>, started: Instant) {
-    result["status"] = json!("skip");
+    result["status"] = Status::Skip.into();
     result["skip_reasons"] = json!(reasons);
     result["seconds"] = json!(started.elapsed().as_secs_f64());
 }

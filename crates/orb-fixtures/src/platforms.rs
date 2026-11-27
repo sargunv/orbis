@@ -7,10 +7,17 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 
+use crate::platform::{Device, Platform, Selection};
+use crate::status::Status;
 use crate::tally::Counts;
 use crate::{Suite, images::Image, native, pixelmatch, pixelmatch_cpp, write_json};
 
-pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Result<(), String> {
+pub(crate) fn run(
+    root: &Path,
+    filter: &str,
+    selection: Selection,
+    suite: Suite,
+) -> Result<(), String> {
     let output = match suite {
         Suite::Render => root.join("docs/scratch/rt"),
         Suite::NativeRender => root.join("docs/scratch/rt").join(suite.name()),
@@ -18,16 +25,18 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Re
     // Only the container sets this; its suite writes its own report without
     // recursively launching Docker or replacing the host's combined report.
     if std::env::var_os("ORB_FIXTURES_LAVAPIPE").is_some() {
-        suite.run(root, filter, "lavapipe")?;
+        suite.run(root, filter, Platform::Lavapipe)?;
         return Ok(());
     }
-    // A beside-native platform's own process, its device made to take it.
-    if std::env::var_os(CHILD).is_some() {
-        suite.run(root, filter, platform)?;
-        return Ok(());
-    }
-    if let Some(env) = beside_native(platform) {
-        return run_beside_native(root, filter, platform, &env?, suite);
+    if let Selection::One(platform) = selection
+        && let Some(device) = platform.beside_native()
+    {
+        // A beside-native platform's own process, its device made to take it.
+        if std::env::var_os(CHILD).is_some() {
+            suite.run(root, filter, platform)?;
+            return Ok(());
+        }
+        return run_beside_native(root, filter, platform, &device_env(device)?, suite);
     }
     std::fs::create_dir_all(&output).map_err(|e| e.to_string())?;
     let combined = output.join("summary.json");
@@ -36,40 +45,35 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Re
     }
     let started = Instant::now();
     let mut reports = BTreeMap::new();
-    // Chrome always gets a fresh native baseline from the same invocation.
-    if ["native", "chrome", "all"].contains(&platform) {
-        reports.insert("native", suite.run(root, filter, "native")?);
-    }
-    if ["chrome", "all"].contains(&platform) {
-        reports.insert("chrome", suite.run(root, filter, "chrome")?);
-    }
-    // WebGL 2 beside WebGPU in the same Chrome: what GL alone fails.
-    if platform == "chrome-webgl2" {
-        reports.insert("chrome", suite.run(root, filter, "chrome")?);
-        reports.insert("chrome-webgl2", suite.run(root, filter, "chrome-webgl2")?);
-    }
-    // A phone's Chrome beside this machine's on the same backend, and
-    // Firefox or WebKit beside Chrome: what the one alone fails.
-    if let Some(reference) = beside_chrome(platform) {
-        reports.insert(reference, suite.run(root, filter, reference)?);
-        reports.insert(platform, suite.run(root, filter, platform)?);
-    }
-    if ["lavapipe", "all"].contains(&platform) {
-        let start = Instant::now();
-        container(root, filter, suite, &output)?;
-        let path = output.join("lavapipe/summary.json");
-        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-        let mut report: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-        report["container_seconds"] = json!(start.elapsed().as_secs_f64());
-        reports.insert("lavapipe", report);
-    }
-    let identity =
-        if let (Some(native), Some(chrome)) = (reports.get("native"), reports.get("chrome")) {
-            identity(&output, native, chrome, suite)?
-        } else {
-            Value::Null
+    for platform in selection.platforms() {
+        let report = match platform {
+            Platform::Lavapipe => {
+                let start = Instant::now();
+                container(root, filter, suite, &output)?;
+                let path = output.join("lavapipe/summary.json");
+                let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+                let mut report: Value =
+                    serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                report["container_seconds"] = json!(start.elapsed().as_secs_f64());
+                report
+            }
+            _ => suite.run(root, filter, platform)?,
         };
-    let width = reports.keys().map(|p| p.len()).max().unwrap_or(0).max(8);
+        reports.insert(platform, report);
+    }
+    let identity = match (
+        reports.get(&Platform::Native),
+        reports.get(&Platform::Chrome),
+    ) {
+        (Some(native), Some(chrome)) => identity(&output, native, chrome, suite)?,
+        _ => Value::Null,
+    };
+    let width = reports
+        .keys()
+        .map(|p| p.name().len())
+        .max()
+        .unwrap_or(0)
+        .max(8);
     println!(
         "\n{:<width$}  prefix          pass  fail  skip  in-scope pass rate",
         "platform"
@@ -82,15 +86,7 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Re
         print!("{platform:<width$}  ");
         Counts::from_json(&report["totals"]).print("TOTAL");
         if let Some(ignored) = report.get("native_ignored") {
-            println!(
-                "  Native ignores {} of them: {} pass, {} fail, {} skip",
-                ignored["pass"].as_u64().unwrap_or(0)
-                    + ignored["fail"].as_u64().unwrap_or(0)
-                    + ignored["skip"].as_u64().unwrap_or(0),
-                ignored["pass"],
-                ignored["fail"],
-                ignored["skip"]
-            );
+            Counts::from_json(ignored).print_ignored();
         }
         if let Some(gl_js) = report.get("gl_js") {
             println!(
@@ -119,7 +115,7 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Re
             identity["match"], identity["different"], identity["unavailable"], identity["eligible"]
         );
         for test in identity["tests"].as_array().expect("identity tests") {
-            if test["status"] != "match" {
+            if test["status"] != Value::from(Agreement::Match) {
                 println!(
                     "  {}: {} (difference {}, allowed {})",
                     test["id"], test["status"], test["difference"], test["allowed"]
@@ -127,60 +123,64 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Re
             }
         }
     }
-    let webgl2 = match (reports.get("chrome"), reports.get("chrome-webgl2")) {
-        (Some(webgpu), Some(gl)) => lost_report("WebGPU", webgpu, "GL", gl),
-        _ => Value::Null,
+    // A browser beside another (WebGL 2 beside WebGPU in the same Chrome,
+    // a phone's Chrome beside this machine's, Firefox or WebKit beside
+    // Chrome): what the one alone fails.
+    let beside = match selection {
+        Selection::One(platform) => match platform.reference() {
+            Some(reference) if reference.browser().is_some() => lost_report(
+                reference,
+                &reports[&reference],
+                platform,
+                &reports[&platform],
+            )?,
+            _ => Value::Null,
+        },
+        Selection::All => Value::Null,
     };
-    let beside = match beside_chrome(platform) {
-        Some(reference) => {
-            lost_report(reference, &reports[reference], platform, &reports[platform])
-        }
-        None => Value::Null,
-    };
-    let summary = json!({"filter":filter, "total_seconds":started.elapsed().as_secs_f64(), "platforms":reports,"identity":identity,"webgl2":webgl2,"beside":beside});
+    let reports: serde_json::Map<String, Value> = (reports.into_iter())
+        .map(|(platform, report)| (platform.name().to_string(), report))
+        .collect();
+    let summary = json!({"filter":filter, "total_seconds":started.elapsed().as_secs_f64(), "platforms":reports,"identity":identity,"beside":beside});
     write_json(&combined, &summary)?;
     println!("\nReport: {}", combined.display());
     Ok(())
-}
-
-/// The Chrome a browser platform runs beside, for what it alone fails: a
-/// phone's beside this machine's on the same backend, Firefox and WebKit
-/// beside Chrome on WebGPU.
-fn beside_chrome(platform: &str) -> Option<&'static str> {
-    match platform {
-        "android-chrome" | "firefox" | "webkit" => Some("chrome"),
-        "android-chrome-webgl2" => Some("chrome-webgl2"),
-        _ => None,
-    }
 }
 
 /// The tests `first` passes and `second` doesn't, by cause: a gap the map
 /// reported (`degraded:<gap>`), or one the renderer didn't, which is a bug
 /// of the second's path (WebGL 2's against WebGPU, #140; a phone's against
 /// this machine; Firefox's or WebKit's against Chrome). Printed, and the
-/// summary's `webgl2` or `beside`.
-fn lost_report(first_name: &str, webgpu: &Value, second_name: &str, gl: &Value) -> Value {
-    let status = |report: &Value| -> BTreeMap<String, Value> {
+/// summary's `beside`.
+fn lost_report(
+    first: Platform,
+    first_report: &Value,
+    second: Platform,
+    second_report: &Value,
+) -> Result<Value, String> {
+    let tests = |report: &Value| -> BTreeMap<String, Value> {
         (report["tests"].as_array().into_iter().flatten())
             .map(|t| (t["id"].as_str().unwrap_or_default().to_string(), t.clone()))
             .collect()
     };
-    let (webgpu, gl) = (status(webgpu), status(gl));
+    let (ours, theirs) = (tests(first_report), tests(second_report));
     let mut causes: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (id, test) in &webgpu {
-        let Some(theirs) = gl.get(id) else { continue };
-        if test["status"] != "pass" || theirs["status"] == "pass" {
+    for (id, test) in &ours {
+        let Some(their) = theirs.get(id) else {
+            continue;
+        };
+        let status = Status::of(their)?;
+        if Status::of(test)? != Status::Pass || status == Status::Pass {
             continue;
         }
-        let cause = match (theirs["status"].as_str(), theirs["failure_reason"].as_str()) {
-            (Some("fail"), Some(reason)) => reason.to_string(),
-            (Some(status), _) => status.to_string(),
-            _ => "missing".to_string(),
+        let cause = match (status, their["failure_reason"].as_str()) {
+            (Status::Fail, Some(reason)) => reason.to_string(),
+            _ => status.name().to_string(),
         };
         causes.entry(cause).or_default().push(id.clone());
     }
     let lost: usize = causes.values().map(Vec::len).sum();
-    println!("\n{lost} tests {first_name} passes fail on {second_name}, by cause:");
+    println!("\n{lost} tests {first} passes fail on {second}, by cause:");
     for (cause, ids) in &causes {
         println!("  {cause}: {}", ids.len());
         if !cause.starts_with("degraded:") {
@@ -189,7 +189,7 @@ fn lost_report(first_name: &str, webgpu: &Value, second_name: &str, gl: &Value) 
             }
         }
     }
-    json!({"lost": lost, "causes": causes})
+    Ok(json!({"lost": lost, "causes": causes}))
 }
 
 /// Runs the suite in the software-rendering container: Mesa's lavapipe
@@ -317,7 +317,7 @@ fn identity(output: &Path, native: &Value, chrome: &Value, suite: Suite) -> Resu
         .as_array()
         .expect("tests")
         .iter()
-        .filter(|t| t["status"] == "pass")
+        .filter(|t| Status::of(t) == Ok(Status::Pass))
     {
         let id = test["id"].as_str().unwrap();
         let metadata = &test["metadata"];
@@ -356,10 +356,10 @@ fn identity(output: &Path, native: &Value, chrome: &Value, suite: Suite) -> Resu
             result["different_pixels"] = json!(count);
             if fraction <= allowed {
                 matches += 1;
-                result["status"] = json!("match");
+                result["status"] = Agreement::Match.into();
             } else {
                 different += 1;
-                result["status"] = json!("different");
+                result["status"] = Agreement::Different.into();
                 let target = dir.join(id);
                 std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
                 a.write(&target.join("native.png"))?;
@@ -374,7 +374,7 @@ fn identity(output: &Path, native: &Value, chrome: &Value, suite: Suite) -> Resu
             }
         } else {
             unavailable += 1;
-            result["status"] = json!("unavailable");
+            result["status"] = Agreement::Unavailable.into();
             result["chrome_status"] = chrome.get(id).map_or(Value::Null, |t| t["status"].clone());
         }
         tests.push(result);
@@ -384,25 +384,40 @@ fn identity(output: &Path, native: &Value, chrome: &Value, suite: Suite) -> Resu
     )
 }
 
+/// Whether Chrome's image of a native pass matches native's, in the
+/// identity report's `status`.
+#[derive(Clone, Copy)]
+enum Agreement {
+    /// Within the test's `allowed`.
+    Match,
+    Different,
+    /// Chrome drew no image of it.
+    Unavailable,
+}
+
+impl From<Agreement> for Value {
+    fn from(agreement: Agreement) -> Value {
+        match agreement {
+            Agreement::Match => "match",
+            Agreement::Different => "different",
+            Agreement::Unavailable => "unavailable",
+        }
+        .into()
+    }
+}
+
 /// Set in a beside-native platform's process.
 const CHILD: &str = "ORB_FIXTURES_CPU_DRIVER";
 
-/// The environment of a platform that runs the native suite again in a
-/// process of its own, beside native: WebGL 2's frame driver (#140,
-/// `ORB_DRIVER`), `native-cpu` with the tables in storage buffers,
-/// `native-cpu-tex` in data textures, `native-webgl2` with everything
-/// else WebGL 2 lacks too (compute: drawn mips; its gaps); or `native-gl`,
-/// wgpu's GLES back end itself (`ORB_BACKEND=gl`), through ANGLE on macOS,
-/// where GL's own quirks show without a browser.
-pub(crate) fn beside_native(platform: &str) -> Option<Result<Vec<(&'static str, String)>, String>> {
-    let driver = match platform {
-        "native-cpu" => "cpu",
-        "native-cpu-tex" => "cpu-tex",
-        "native-webgl2" => "webgl2",
-        "native-gl" => return Some(gl_env()),
-        _ => return None,
-    };
-    Some(Ok(vec![("ORB_DRIVER", driver.to_string())]))
+/// The environment of a beside-native platform's process: WebGL 2's
+/// frame driver (#140, `ORB_DRIVER`), or wgpu's GLES back end itself
+/// (`ORB_BACKEND=gl`), through ANGLE on macOS, where GL's own quirks show
+/// without a browser.
+fn device_env(device: Device) -> Result<Vec<(&'static str, String)>, String> {
+    match device {
+        Device::Driver(driver) => Ok(vec![("ORB_DRIVER", driver.to_string())]),
+        Device::Gl => gl_env(),
+    }
 }
 
 /// `native-gl`'s environment: GLES, and on macOS ANGLE's libraries from
@@ -457,7 +472,7 @@ fn gl_env() -> Result<Vec<(&'static str, String)>, String> {
 fn run_beside_native(
     root: &Path,
     filter: &str,
-    platform: &str,
+    platform: Platform,
     env: &[(&'static str, String)],
     suite: Suite,
 ) -> Result<(), String> {
@@ -465,7 +480,7 @@ fn run_beside_native(
         Suite::Render => root.join("docs/scratch/rt"),
         Suite::NativeRender => root.join("docs/scratch/rt").join(suite.name()),
     };
-    let native = suite.run(root, filter, "native")?;
+    let native = suite.run(root, filter, Platform::Native)?;
     for (key, value) in env {
         println!("{platform}: {key}={value}");
     }
@@ -478,18 +493,18 @@ fn run_beside_native(
                 "--filter",
                 filter,
                 "--platform",
-                platform,
+                platform.name(),
             ])
             .envs(env.iter().map(|(k, v)| (k, v)))
             .env(CHILD, "1"),
     )?;
-    let path = output.join(platform).join("summary.json");
+    let path = output.join(platform.name()).join("summary.json");
     let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let other: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     println!("\nplatform        pass  fail  skip");
-    for (name, report) in [("native", &native), (platform, &other)] {
+    for (platform, report) in [(Platform::Native, &native), (platform, &other)] {
         let c = Counts::from_json(&report["totals"]);
-        println!("{name:<15} {:>4}  {:>4}  {:>4}", c.pass, c.fail, c.skip);
+        println!("{platform:<15} {:>4}  {:>4}  {:>4}", c.pass, c.fail, c.skip);
     }
     let identity = byte_identity(&output, &native, &other, platform)?;
     println!(
@@ -519,7 +534,7 @@ fn byte_identity(
     output: &Path,
     native: &Value,
     other: &Value,
-    platform: &str,
+    platform: Platform,
 ) -> Result<Value, String> {
     let dir = output.join(format!("{platform}-identity"));
     if dir.exists() {
@@ -536,11 +551,13 @@ fn byte_identity(
     for test in tests {
         let id = test["id"].as_str().unwrap_or_default();
         let theirs = others.get(id);
-        let status = |t: &Value| t["status"].as_str().unwrap_or_default().to_string();
-        let statuses = theirs
-            .map(|t| status(t))
-            .filter(|s| *s != status(test))
-            .map(|s| format!("{} natively, {s} here", status(test)));
+        let ours = Status::of(test)?;
+        let statuses = match theirs.map(|t| Status::of(t)).transpose()? {
+            Some(status) if status != ours => {
+                Some(format!("{} natively, {} here", ours.name(), status.name()))
+            }
+            _ => None,
+        };
         let images = test["image"]
             .as_str()
             .zip(theirs.and_then(|t| t["image"].as_str()));
@@ -552,7 +569,7 @@ fn byte_identity(
             continue;
         };
         let a = Image::read(&output.join("native").join(a))?;
-        let b = Image::read(&output.join(platform).join(b))?;
+        let b = Image::read(&output.join(platform.name()).join(b))?;
         let same_size = (a.width, a.height) == (b.width, b.height);
         let pixels = if same_size {
             a.pixels

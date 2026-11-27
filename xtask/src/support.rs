@@ -18,6 +18,13 @@ use serde_json::Value;
 
 use crate::root;
 
+/// A fixture test's status, as the fixtures write it.
+#[allow(dead_code)]
+#[path = "../../crates/orb-fixtures/src/status.rs"]
+mod status;
+
+use status::Status;
+
 const SPEC: &str = "web/node_modules/@maplibre/maplibre-gl-style-spec";
 const OUTPUT: &str = "docs/style-support.md";
 
@@ -49,7 +56,7 @@ pub(crate) fn run() -> Result<(), String> {
 /// A fixture run: its name and each test's id and whether it passed.
 struct Suite {
     name: String,
-    tests: Vec<(String, &'static str)>,
+    tests: Vec<(String, Status)>,
 }
 
 /// Every fixture summary under `dir`, one or two levels down.
@@ -90,17 +97,15 @@ fn fixture_suites(dir: &Path) -> Result<Vec<Suite>, String> {
             );
             continue;
         }
-        let tests = tests
-            .iter()
-            .filter_map(|t| {
-                let status = match t["status"].as_str()? {
-                    "pass" => "pass",
-                    "skip" => "skip",
-                    _ => "fail",
-                };
-                Some((t["id"].as_str()?.to_string(), status))
+        let tests = (tests.iter())
+            .map(|t| {
+                let id = t["id"].as_str().unwrap_or_default().to_string();
+                Ok((
+                    id,
+                    Status::of(t).map_err(|e| format!("{}: {e}", path.display()))?,
+                ))
             })
-            .collect();
+            .collect::<Result<_, String>>()?;
         suites.push(Suite { name, tests });
     }
     Ok(suites)
@@ -232,10 +237,10 @@ fn fixtures(name: &str, suite: &Suite) -> String {
     let (mut pass, mut fail, mut skip) = (0, 0, 0);
     for (id, status) in &suite.tests {
         if names(id, name) {
-            match *status {
-                "pass" => pass += 1,
-                "skip" => skip += 1,
-                _ => fail += 1,
+            match status {
+                Status::Pass => pass += 1,
+                Status::Skip => skip += 1,
+                Status::Fail => fail += 1,
             }
         }
     }

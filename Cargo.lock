@@ -2908,6 +2908,7 @@ dependencies = [
  "orb-runtime",
  "orb-style",
  "png",
+ "serde",
  "serde_json",
 ]
 

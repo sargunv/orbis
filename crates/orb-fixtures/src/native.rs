@@ -15,6 +15,8 @@ use serde_json::{Value, json};
 
 use crate::fetch::Assets;
 use crate::images::Image;
+use crate::platform::Platform;
+use crate::status::Status;
 use crate::tally::{self, Tally};
 use crate::{
     Backend, dem, finish_skip, note_warning, operations, pixelmatch_cpp, record_warnings, scope,
@@ -766,14 +768,21 @@ fn compare(actual: &Image, expected: &[PathBuf], allowed: f64) -> Result<Compare
     best.ok_or_else(|| "no expected image".into())
 }
 
-pub(crate) fn run_render_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
+pub(crate) fn run_render_suite(
+    root: &Path,
+    filter: &str,
+    platform: Platform,
+) -> Result<Value, String> {
     let manifest = Manifest::read(root)?;
     let tests = discover(root, "render-tests", filter)?;
-    let mut tally = Tally::start(root.join("docs/scratch/rt/native-render").join(name))?;
+    let mut tally = Tally::start(
+        root.join("docs/scratch/rt/native-render")
+            .join(platform.name()),
+    )?;
     let output = tally.output.clone();
     std::fs::create_dir_all(output.join("failures")).map_err(|e| e.to_string())?;
     let assets = assets(root);
-    let mut backend = tally::backend(root, name, &assets, Assets::Native)?;
+    let mut backend = tally::backend(root, platform, &assets, Assets::Native)?;
     let gl_js = root.join("fixtures/gl-js/render");
     let mut opinion = SecondOpinion::default();
     for (id, path) in tests {
@@ -786,16 +795,15 @@ pub(crate) fn run_render_suite(root: &Path, filter: &str, name: &str) -> Result<
             &gl_js,
             &mut backend,
         )?;
-        let status = result["status"].as_str().expect("our status");
-        opinion.add(&result["gl_js"], status);
-        crate::print_failure(&format!("native-render {name}"), &id, &result);
+        opinion.add(&result["gl_js"], Status::of(&result)?);
+        crate::print_failure(&format!("native-render {platform}"), &id, &result);
         let rel = id.strip_prefix("render-tests/").unwrap_or(&id);
-        tally.add(crate::prefix(rel), result);
+        tally.add(crate::prefix(rel), result)?;
     }
     tally.finish(json!({
         "suite": "native-render",
         "filter": filter,
-        "platform": crate::platform(name, &backend),
+        "platform": crate::platform(platform, &backend),
         "comparison": {"metric":"pixelmatch-cpp-61f433cb-yiq-premultiplied", "threshold":THRESHOLD, "default_allowed":ALLOWED},
         "gl_js": opinion.json(),
     }))
@@ -909,7 +917,7 @@ fn run_render_test(
             result["diff"] = json!(format!("failures/{id}/diff.png"));
         }
     }
-    result["status"] = json!(if failure.is_some() { "fail" } else { "pass" });
+    result["status"] = Status::passed(failure.is_none()).into();
     if let Some(failure) = failure {
         result["failure_reason"] = json!(failure);
     }
@@ -1047,7 +1055,7 @@ struct SecondOpinion {
 }
 
 impl SecondOpinion {
-    fn add(&mut self, opinion: &Value, status: &str) {
+    fn add(&mut self, opinion: &Value, status: Status) {
         if opinion.is_null() {
             return;
         }
@@ -1067,7 +1075,7 @@ impl SecondOpinion {
             self.agree += 1;
             return;
         }
-        let key = match (status == "pass", gl_js) {
+        let key = match (status == Status::Pass, gl_js) {
             (true, true) => "both",
             (true, false) => "native",
             (false, true) => "gl_js",
@@ -1092,27 +1100,34 @@ impl SecondOpinion {
 /// `queryRenderedFeatures` runs at its point or box; the answer must equal
 /// `expected.json` in order, numbers to six significant figures, as the
 /// runner's `deepEqual` compares.
-pub(crate) fn run_query_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
+pub(crate) fn run_query_suite(
+    root: &Path,
+    filter: &str,
+    platform: Platform,
+) -> Result<Value, String> {
     let manifest = Manifest::read(root)?;
     let tests = discover(root, "query-tests", filter)?;
-    let mut tally = Tally::start(root.join("docs/scratch/rt/native-query").join(name))?;
+    let mut tally = Tally::start(
+        root.join("docs/scratch/rt/native-query")
+            .join(platform.name()),
+    )?;
     let output = tally.output.clone();
     let assets = assets(root);
-    let mut backend = tally::backend(root, name, &assets, Assets::Native)?;
+    let mut backend = tally::backend(root, platform, &assets, Assets::Native)?;
     let mut unordered = 0;
     for (id, path) in tests {
         let result = run_query_test(&manifest, &id, &path, &output, &assets, &mut backend)?;
-        if result["same_features"] == true && result["status"] == "fail" {
+        if result["same_features"] == true && Status::of(&result)? == Status::Fail {
             unordered += 1;
         }
         let rel = id.strip_prefix("query-tests/").unwrap_or(&id);
-        tally.add(rel.split('/').next().unwrap_or(rel), result);
+        tally.add(rel.split('/').next().unwrap_or(rel), result)?;
     }
-    tally.print(&format!("native-query {name}"));
+    tally.print(&format!("native-query {platform}"));
     println!("  {unordered} failures have Native's features in another order");
     tally.finish(json!({
         "suite": "native-query",
-        "platform": name,
+        "platform": platform.name(),
         "out_of_order": unordered,
     }))
 }
@@ -1203,7 +1218,7 @@ fn run_query_test(
     }
     result["diagnostics"] = json!(diagnostics);
     let Some(mut actual) = actual else {
-        result["status"] = json!("fail");
+        result["status"] = Status::Fail.into();
         result["failure_reason"] = json!("render");
         result["seconds"] = json!(started.elapsed().as_secs_f64());
         return Ok(result);
@@ -1241,7 +1256,7 @@ fn run_query_test(
         equal &= deep_equal(&actual, expected);
         same_features &= unordered_equal(&actual, expected);
     }
-    result["status"] = json!(if equal { "pass" } else { "fail" });
+    result["status"] = Status::passed(equal).into();
     result["actual"] = json!(actual.as_array().map_or(0, Vec::len));
     result["expected"] = json!(expected_count);
     if !equal {
