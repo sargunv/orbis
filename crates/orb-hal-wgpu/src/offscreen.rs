@@ -13,20 +13,22 @@ use orb_hal::{BufferId, TextureId};
 
 use crate::WgpuGpu;
 
-/// Readback buffers not in use, shared with the readbacks' futures.
-pub(crate) type Readbacks = std::sync::Arc<std::sync::Mutex<Vec<wgpu::Buffer>>>;
+/// Readbacks' buffers not in use, each readback's bands together, shared
+/// with the readbacks' futures.
+pub(crate) type Readbacks = std::sync::Arc<std::sync::Mutex<Vec<Vec<wgpu::Buffer>>>>;
 
-/// The most readback buffers kept.
+/// The most readbacks' buffers kept.
 const READBACKS: usize = 2;
 
-/// A texture's pixels copied into a readback buffer, rows padded to
-/// wgpu's copy alignment.
+/// A texture's pixels copied into readback buffers, rows padded to wgpu's
+/// copy alignment: in bands of rows, each buffer within the device's
+/// largest, since a frame as wide as the device's textures can
+/// take more bytes than one buffer holds (16384² takes 1 GiB).
 #[derive(Debug)]
 pub(crate) struct Readback {
-    buffer: wgpu::Buffer,
+    bands: Vec<wgpu::Buffer>,
     row: u32,
     padded_row: u32,
-    height: u32,
 }
 
 /// An instance, configured from the environment ([`with_env`]), and its default adapter.
@@ -198,7 +200,7 @@ impl WgpuGpu {
             .map(|id| (id, self.encode_copy(encoder, self.texture(id))));
         let unread = std::mem::replace(&mut self.copied, copy);
         if let Some((_, unread)) = unread {
-            keep(&self.readbacks, unread.buffer);
+            keep(&self.readbacks, unread.bands);
         }
     }
 
@@ -215,43 +217,67 @@ impl WgpuGpu {
         copy
     }
 
-    /// Encodes a copy of `texture` into a readback buffer, a kept one of
-    /// its size if there is one.
+    /// Encodes a copy of `texture` into readback buffers, kept ones of
+    /// their sizes if there are some.
     fn encode_copy(&self, encoder: &mut wgpu::CommandEncoder, texture: &wgpu::Texture) -> Readback {
         let (width, height) = (texture.width(), texture.height());
         let row = width * 4;
         let padded_row = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-        let size = u64::from(padded_row * height);
+        let largest = self.device.limits().max_buffer_size;
+        let band_rows = (largest / u64::from(padded_row)).clamp(1, u64::from(height)) as u32;
+        let sizes: Vec<u64> = (0..height)
+            .step_by(band_rows as usize)
+            .map(|y| u64::from(padded_row) * u64::from(band_rows.min(height - y)))
+            .collect();
         let kept = {
             let mut kept = self.readbacks.lock().expect("readbacks poisoned");
-            let at = kept.iter().position(|b| b.size() == size);
+            let at = (kept.iter()).position(|bands| {
+                bands
+                    .iter()
+                    .map(wgpu::Buffer::size)
+                    .eq(sizes.iter().copied())
+            });
             at.map(|at| kept.swap_remove(at))
         };
-        let buffer = kept.unwrap_or_else(|| {
-            self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("readback"),
-                size,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            })
+        let bands = kept.unwrap_or_else(|| {
+            (sizes.iter())
+                .map(|&size| {
+                    self.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("readback"),
+                        size,
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                        mapped_at_creation: false,
+                    })
+                })
+                .collect()
         });
-        encoder.copy_texture_to_buffer(
-            texture.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_row),
-                    rows_per_image: None,
+        for (band, y) in bands.iter().zip((0..height).step_by(band_rows as usize)) {
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
                 },
-            },
-            texture.size(),
-        );
+                wgpu::TexelCopyBufferInfo {
+                    buffer: band,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded_row),
+                        rows_per_image: None,
+                    },
+                },
+                wgpu::Extent3d {
+                    width,
+                    height: band_rows.min(height - y),
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
         Readback {
-            buffer,
+            bands,
             row,
             padded_row,
-            height,
         }
     }
 
@@ -260,20 +286,22 @@ impl WgpuGpu {
         let (device, readbacks) = (self.device.clone(), self.readbacks.clone());
         async move {
             let Readback {
-                buffer,
+                bands,
                 row,
                 padded_row,
-                height,
             } = copy;
-            let mapped = map_read(&device, &buffer).await;
-            let mut pixels = Vec::with_capacity((row * height) as usize);
-            for y in 0..height {
-                let start = (y * padded_row) as usize;
-                pixels.extend_from_slice(&mapped[start..start + row as usize]);
+            let (row, padded_row) = (row as usize, padded_row as usize);
+            let bytes: u64 = bands.iter().map(wgpu::Buffer::size).sum();
+            let mut pixels = Vec::with_capacity(bytes as usize / padded_row * row);
+            for band in &bands {
+                let mapped = map_read(&device, band).await;
+                for padded in mapped.chunks_exact(padded_row) {
+                    pixels.extend_from_slice(&padded[..row]);
+                }
+                drop(mapped);
+                band.unmap();
             }
-            drop(mapped);
-            buffer.unmap();
-            keep(&readbacks, buffer);
+            keep(&readbacks, bands);
             pixels
         }
     }
@@ -301,13 +329,13 @@ impl WgpuGpu {
     }
 }
 
-/// Keeps an unmapped readback buffer for the next readback of its size.
-fn keep(readbacks: &Readbacks, buffer: wgpu::Buffer) {
+/// Keeps a readback's unmapped buffers for the next readback of their sizes.
+fn keep(readbacks: &Readbacks, bands: Vec<wgpu::Buffer>) {
     let mut kept = readbacks.lock().expect("readbacks poisoned");
     if kept.len() == READBACKS {
         kept.remove(0);
     }
-    kept.push(buffer);
+    kept.push(bands);
 }
 
 /// What `ready` gives once it gives something, the device polled before
@@ -412,4 +440,64 @@ fn racy_vulkan_loader() -> bool {
             .unwrap_or(ash::vk::API_VERSION_1_0);
         version < ash::vk::make_api_version(0, 1, 4, 345)
     })
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use orb_hal::{Gpu, TextureDesc, TextureFormat, TextureRegion, TextureUsages};
+
+    use super::*;
+
+    #[test]
+    fn a_texture_past_the_largest_buffer_reads_back_in_bands() {
+        let (_instance, adapter, _) = pollster::block_on(adapter()).expect("a GPU adapter");
+        // Rows of 16 KiB, 64 to a buffer: 150 rows read as 64, 64 and 22.
+        const LARGEST: u64 = 1 << 20;
+        let required_limits = wgpu::Limits {
+            max_buffer_size: LARGEST,
+            ..crate::device_limits(&adapter)
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits,
+            ..Default::default()
+        }))
+        .expect("a device");
+        assert_eq!(device.limits().max_buffer_size, LARGEST);
+        let mut gpu = WgpuGpu::new(device, queue);
+        let (width, height) = (4096, 150);
+        let texture = gpu.create_texture(&TextureDesc {
+            label: "banded",
+            width,
+            height,
+            array_layers: 1,
+            dimension: orb_hal::TextureViewDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::COPY_SRC | TextureUsages::COPY_DST,
+            sample_count: 1,
+            mip_levels: 1,
+        });
+        let texels: Vec<u8> = (0..width * height * 4).map(|i| (i % 251) as u8).collect();
+        // In strips, each within the largest staging buffer.
+        let strip = 30;
+        for (y, texels) in (0..height)
+            .step_by(strip)
+            .zip(texels.chunks(strip * width as usize * 4))
+        {
+            gpu.write_texture(
+                &TextureRegion {
+                    texture,
+                    x: 0,
+                    y,
+                    layer: 0,
+                    width,
+                    height: strip as u32,
+                    level: 0,
+                },
+                texels,
+            );
+        }
+        assert_eq!(pollster::block_on(gpu.read_texture(texture)), texels);
+        // Again into the kept buffers.
+        assert_eq!(pollster::block_on(gpu.read_texture(texture)), texels);
+    }
 }

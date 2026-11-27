@@ -235,10 +235,10 @@ impl Test {
                 ))
             })
             .collect();
-        for logical in [width, height] {
-            if !(1.0..=8192.0).contains(&(logical * pixel_ratio).floor()) {
-                skips.insert("metadata:canvas-size".into());
-            }
+        // A canvas wider than the device's textures skips at render time
+        // (`device:canvas-size`).
+        if (width.min(height) * pixel_ratio).floor() < 1.0 {
+            skips.insert("metadata:canvas-size".into());
         }
         Self {
             width: width as u32,
@@ -620,6 +620,19 @@ fn render(
     reasons: &mut BTreeSet<String>,
     diagnostics: &mut Vec<String>,
 ) -> Result<Rendered, String> {
+    let (width, height) = test.physical_size();
+    let max_size = match backend {
+        Backend::Native(runtime) => runtime.stats().max_texture_size,
+        Backend::Chrome(chrome) => chrome.max_size,
+    };
+    if width.max(height) > max_size {
+        reasons.insert("device:canvas-size".into());
+        return Ok(Rendered {
+            image: None,
+            failure: None,
+            map: None,
+        });
+    }
     match backend {
         Backend::Native(runtime) => {
             render_native(runtime, test, text, assets, reasons, diagnostics)
@@ -637,15 +650,6 @@ fn render(
             })
         }
         Backend::Chrome(chrome) => {
-            let (width, height) = test.physical_size();
-            if width.max(height) > chrome.max_size {
-                reasons.insert("device:canvas-size".into());
-                return Ok(Rendered {
-                    image: None,
-                    failure: None,
-                    map: None,
-                });
-            }
             let response = chrome.request(request(
                 test,
                 text,

@@ -174,13 +174,17 @@ fn device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
 
 /// The limits Orbis asks `adapter`'s device for: WebGPU's defaults, lowered
 /// where the adapter falls short of them (the iOS simulator has 15
-/// inter-stage variables), with buffers and storage bindings as large as it
-/// allows up to 1 GiB. The scene's pools grow within one storage binding
-/// to what the tiles in view need: at WebGPU's default 128 MiB, a pitched
-/// view over a dense city ran out.
+/// inter-stage variables), with 2D textures as wide as it allows, and
+/// buffers and storage bindings as large as it allows up to 1 GiB. A
+/// frame is as wide as the device's textures (16384 on most GPUs, past
+/// WebGPU's default 8192: a 1792 × 256 still at ratio 5), while what the
+/// renderer keeps sizes itself. The scene's pools grow within one storage
+/// binding to what the tiles in view need: at WebGPU's default 128 MiB, a
+/// pitched view over a dense city ran out.
 pub fn device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     let offered = adapter.limits();
     let mut limits = wgpu::Limits::default().or_worse_values_from(&offered);
+    limits.max_texture_dimension_2d = offered.max_texture_dimension_2d;
     limits.max_buffer_size =
         (offered.max_buffer_size.min(LARGEST_BUFFER)).max(limits.max_buffer_size);
     limits.max_storage_buffer_binding_size = (offered.max_storage_buffer_binding_size)
@@ -644,8 +648,7 @@ impl WgpuGpu {
             limits: Limits {
                 max_buffer_size: limits.max_buffer_size,
                 max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size,
-                max_texture_dimension_2d: (limits.max_texture_dimension_2d)
-                    .min(wgpu::Limits::default().max_texture_dimension_2d),
+                max_texture_dimension_2d: limits.max_texture_dimension_2d,
                 max_texture_array_layers: limits.max_texture_array_layers,
                 max_texture_bytes: if gl { GL_TEXTURE_BYTES } else { u64::MAX },
                 min_uniform_buffer_offset_alignment: limits.min_uniform_buffer_offset_alignment,
@@ -760,7 +763,6 @@ impl WgpuGpu {
         self.caps.clip_distances = false;
         // What wgpu asks of WebGL 2 by default (`device_limits`).
         let limits = &mut self.caps.limits;
-        limits.max_texture_dimension_2d = limits.max_texture_dimension_2d.min(8192);
         limits.max_texture_array_layers = limits.max_texture_array_layers.min(256);
         limits.max_texture_bytes = limits.max_texture_bytes.min(GL_TEXTURE_BYTES);
         self.gl_layers = true;

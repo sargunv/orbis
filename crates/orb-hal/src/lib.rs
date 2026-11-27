@@ -388,9 +388,10 @@ pub fn level_bytes(desc: &TextureDesc<'_>, layers: u32) -> u64 {
 pub struct Limits {
     pub max_buffer_size: u64,
     pub max_storage_buffer_binding_size: u64,
-    /// The 2D texture side everything sizes by: the device's, up to
-    /// WebGPU's default (8192), so that what a map draws doesn't depend on
-    /// a device that offers more.
+    /// The device's 2D texture side: the widest frame it draws. What the
+    /// renderer keeps in textures of its own caps its side below this
+    /// where a device that offers more would otherwise change what a map
+    /// draws (the terrain drape's pages, the color-relief ramp).
     pub max_texture_dimension_2d: u32,
     pub max_texture_array_layers: u32,
     /// The most bytes a texture's first mip level may take over its

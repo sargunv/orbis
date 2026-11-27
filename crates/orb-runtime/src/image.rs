@@ -306,7 +306,7 @@ pub(crate) fn paint(
             let size = match *ramp {
                 Some(size) => size,
                 None => {
-                    let max = gpu.caps().limits.max_texture_dimension_2d as usize;
+                    let max = gpu.caps().limits.max_texture_dimension_2d.min(RAMP_STOPS) as usize;
                     let (colors, elevations) = color_ramp(l.ramp(COLOR_RELIEF_COLOR), unpack, max);
                     renderer.set_ramp(gpu, index, &colors, &elevations);
                     *ramp.insert(colors.len() as u32)
@@ -322,6 +322,10 @@ pub(crate) fn paint(
         _ => unreachable!("image nodes are raster, hillshade or color-relief layers"),
     })
 }
+
+/// The most stops a color-relief ramp keeps: WebGPU's default texture
+/// side, so a long ramp draws alike on devices that offer more.
+const RAMP_STOPS: u32 = 8192;
 
 /// GL JS's `_createColorRamp` and `getColorRampTextures`: per stop, its
 /// colour as the texel GL JS uploads (unpremultiplied to bytes, then

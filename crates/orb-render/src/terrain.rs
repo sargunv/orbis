@@ -64,11 +64,16 @@ const PAGE_PX: [u32; 2] = [DRAPE_SLOT_PX, SLOPE_SLOT_PX];
 /// The most a slot's side halves: to 64 texels a colour slot.
 pub const MAX_SHRINK: u8 = 4;
 
-/// Places a side of the drape grid on this device, whose sides stop at
-/// WebGPU's default, 8192: the drape space slots draw in, a place each,
-/// [`DRAPE_SLOT_PX`] texels a side.
+/// The drape grid's side in texels on every device whose textures are
+/// that wide (WebGPU's default), so that a device that offers more holds
+/// no more slots and draws a view's terrain no differently.
+const DRAPE_SIDE: u32 = 8192;
+
+/// Places a side of the drape grid on this device: the drape space slots
+/// draw in, a place each, [`DRAPE_SLOT_PX`] texels a side, within
+/// [`DRAPE_SIDE`].
 fn grid_side(gpu: &dyn Gpu) -> u32 {
-    (gpu.caps().limits.max_texture_dimension_2d.min(8192) / DRAPE_SLOT_PX).max(1)
+    (gpu.caps().limits.max_texture_dimension_2d.min(DRAPE_SIDE) / DRAPE_SLOT_PX).max(1)
 }
 
 /// Where tile slot `slot` lies in a grid `side` places a side: its column
@@ -78,7 +83,7 @@ fn slot_place(slot: u32, side: u32) -> [u32; 2] {
 }
 
 /// The terrain tiles the drape can hold with `stacks` colour and slope
-/// stacks: the places of a grid of WebGPU's default texture side (64) on
+/// stacks: the places of a grid [`DRAPE_SIDE`] texels a side (64) on
 /// every device that has it, so that a view's terrain doesn't depend on
 /// which, or none where a tile's whole slots take more layers or bytes
 /// than the device allocates a texture ([`Gpu::texture_fits`], GL's
