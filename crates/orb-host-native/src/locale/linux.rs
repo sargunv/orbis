@@ -81,7 +81,7 @@ fn symbol(library: NonNull<c_void>, name: &str) -> Option<NonNull<c_void>> {
 /// The user's locale for messages, by POSIX's precedence (`LC_ALL`, then
 /// `LC_MESSAGES`, then `LANG`) without its encoding or modifier:
 /// `de_DE.UTF-8@euro` is `de_DE`. `C` and `POSIX` name no language.
-fn user_locale() -> Option<String> {
+pub(crate) fn user_locale() -> Option<String> {
     let value = ["LC_ALL", "LC_MESSAGES", "LANG"]
         .into_iter()
         .find_map(|name| std::env::var(name).ok().filter(|v| !v.is_empty()))?;

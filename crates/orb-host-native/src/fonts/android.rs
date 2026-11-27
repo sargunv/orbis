@@ -14,7 +14,7 @@
 #![allow(unsafe_code, reason = "the NDK's font matcher is the FFI here")]
 
 use std::collections::HashMap;
-use std::ffi::{CStr, CString, c_char, c_void};
+use std::ffi::{CStr, CString, c_char};
 use std::path::PathBuf;
 use std::ptr::NonNull;
 
@@ -51,7 +51,7 @@ impl Fallbacks {
         italic: bool,
         mut draws: impl FnMut(&mut fontdb::Database, fontdb::ID) -> bool,
     ) -> Option<fontdb::ID> {
-        let key = (generic(families), c, weight, italic);
+        let key = (super::generic(families), c, weight, italic);
         if let Some(&id) = self.found.get(&key) {
             return id;
         }
@@ -76,23 +76,6 @@ impl Fallbacks {
         }
         self.matcher.as_mut().and_then(Option::as_mut)
     }
-}
-
-/// The family of minikin's that the CSS family list `families` falls back
-/// through: its first generic family (each family's fallback chain ends
-/// in the same fonts, but serif's takes serif forms of CJK first), else
-/// sans-serif. Names minikin lacks would be sans-serif too.
-fn generic(families: &str) -> &'static str {
-    families
-        .split(',')
-        .find_map(|name| match name.trim() {
-            "serif" => Some("serif"),
-            "monospace" => Some("monospace"),
-            "cursive" => Some("cursive"),
-            "sans-serif" => Some("sans-serif"),
-            _ => None,
-        })
-        .unwrap_or("sans-serif")
 }
 
 /// The app's languages, most preferred first, as comma-separated BCP 47
@@ -130,48 +113,9 @@ fn language_tags(env: &mut Env<'_>) -> Result<String, JniError> {
     env.cast_local::<JString>(tags)?.try_to_string(env)
 }
 
-/// Declares the NDK's font functions as pointers resolved from
-/// `libandroid.so` at run time.
-macro_rules! functions {
-    ($($name:ident($($arg:ty),*) $(-> $ret:ty)?;)*) => {
-        #[expect(non_snake_case, reason = "the NDK's names")]
-        struct Functions {
-            $($name: unsafe extern "C" fn($($arg),*) $(-> $ret)?,)*
-        }
-
-        impl Functions {
-            /// The functions, or `None` below API level 29.
-            fn load() -> Option<Self> {
-                // SAFETY: a NUL-terminated name, and flags dlopen takes.
-                // The library, which the process has loaded already,
-                // stays loaded.
-                let library = NonNull::new(unsafe {
-                    libc::dlopen(c"libandroid.so".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL)
-                })?;
-                Some(Self {
-                    $($name: {
-                        let name = concat!(stringify!($name), "\0");
-                        // SAFETY: the library is open, and the name
-                        // NUL-terminated.
-                        let symbol = NonNull::new(unsafe {
-                            libc::dlsym(library.as_ptr(), name.as_ptr().cast())
-                        })?;
-                        // SAFETY: the library exports the function under
-                        // this name, with the NDK's signature, declared
-                        // here.
-                        unsafe {
-                            std::mem::transmute::<*mut c_void, unsafe extern "C" fn($($arg),*) $(-> $ret)?>(
-                                symbol.as_ptr(),
-                            )
-                        }
-                    },)*
-                })
-            }
-        }
-    };
-}
-
+// The NDK's font functions, which the process has loaded already.
 functions! {
+    [c"libandroid.so"]
     AFontMatcher_create() -> *mut AFontMatcher;
     AFontMatcher_destroy(*mut AFontMatcher);
     AFontMatcher_setStyle(*mut AFontMatcher, u16, bool);
@@ -248,21 +192,5 @@ impl Drop for Matcher {
     fn drop(&mut self) {
         // SAFETY: made by `AFontMatcher_create` and not destroyed before.
         unsafe { (self.api.AFontMatcher_destroy)(self.matcher.as_ptr()) };
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::generic;
-
-    #[test]
-    fn falls_back_through_the_lists_generic_family() {
-        assert_eq!(
-            generic("Open Sans Semibold,Arial Unicode MS Bold,sans-serif"),
-            "sans-serif"
-        );
-        assert_eq!(generic("Noto Serif Regular, serif"), "serif");
-        assert_eq!(generic("Fira Mono,monospace,serif"), "monospace");
-        assert_eq!(generic("Open Sans"), "sans-serif");
     }
 }

@@ -3,12 +3,61 @@
 //! point as a browser does (on Apple platforms to the fonts CoreText
 //! falls back to for the user's languages, on Android to its fallback
 //! chain for the app's, on Windows to DirectWrite's for the user's
-//! locale), and `orb-text` draws it as TinySDF draws a canvas glyph.
+//! locale, on Linux to fontconfig's for the user's language), and
+//! `orb-text` draws it as TinySDF draws a canvas glyph.
+
+/// Declares a system library's functions as pointers resolved at run
+/// time from the first of `libraries` that loads, so the binary links
+/// nothing new and still runs where the library or a function is
+/// missing.
+#[cfg(any(target_os = "android", target_os = "linux"))]
+macro_rules! functions {
+    ([$($library:literal),+] $($name:ident($($arg:ty),*) $(-> $ret:ty)?;)*) => {
+        #[expect(non_snake_case, reason = "the library's names")]
+        struct Functions {
+            $($name: unsafe extern "C" fn($($arg),*) $(-> $ret)?,)*
+        }
+
+        impl Functions {
+            /// The functions, or `None` where the library or one of them
+            /// is missing.
+            fn load() -> Option<Self> {
+                let library = [$($library),+].into_iter().find_map(|name: &std::ffi::CStr| {
+                    // SAFETY: a NUL-terminated name, and flags dlopen
+                    // takes. The library stays loaded for the process.
+                    std::ptr::NonNull::new(unsafe {
+                        libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL)
+                    })
+                })?;
+                Some(Self {
+                    $($name: {
+                        let name = concat!(stringify!($name), "\0");
+                        // SAFETY: the library is open, and the name
+                        // NUL-terminated.
+                        let symbol = std::ptr::NonNull::new(unsafe {
+                            libc::dlsym(library.as_ptr(), name.as_ptr().cast())
+                        })?;
+                        // SAFETY: the library exports the function under
+                        // this name, with the signature declared here.
+                        unsafe {
+                            std::mem::transmute::<
+                                *mut std::ffi::c_void,
+                                unsafe extern "C" fn($($arg),*) $(-> $ret)?,
+                            >(symbol.as_ptr())
+                        }
+                    },)*
+                })
+            }
+        }
+    };
+}
 
 #[cfg(target_os = "android")]
 mod android;
 #[cfg(target_vendor = "apple")]
 mod apple;
+#[cfg(target_os = "linux")]
+mod fontconfig;
 #[cfg(windows)]
 mod windows;
 
@@ -17,11 +66,13 @@ mod windows;
 use self::android::Fallbacks;
 #[cfg(target_vendor = "apple")]
 use self::apple::Fallbacks;
+#[cfg(target_os = "linux")]
+use self::fontconfig::Fallbacks;
 #[cfg(windows)]
 use self::windows::Fallbacks;
 
 use std::collections::HashMap;
-#[cfg(any(target_os = "android", windows))]
+#[cfg(any(target_os = "android", target_os = "linux", windows))]
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -38,8 +89,9 @@ pub struct SystemFonts {
 /// Families a browser falls back to for scripts the requested ones lack,
 /// tried before every installed face; Apple platforms ask CoreText
 /// instead, Android its font matcher, which takes these only before the
-/// app gave its JVM or below API level 29, and Windows DirectWrite, which
-/// takes these only where it fails. On Windows its own faces for those
+/// app gave its JVM or below API level 29, Windows DirectWrite, which
+/// takes these only where it fails, and Linux fontconfig, which leaves
+/// these to systems without libfontconfig. On Windows its own faces for those
 /// scripts, installed with every language: without them every CJK code
 /// point would scan the installed faces.
 #[cfg(windows)]
@@ -76,7 +128,12 @@ struct State {
     /// Per code point, the face a search of every installed face found.
     fallback: HashMap<char, Option<fontdb::ID>>,
     /// The fonts the system falls back to for the user's languages.
-    #[cfg(any(target_vendor = "apple", target_os = "android", windows))]
+    #[cfg(any(
+        target_vendor = "apple",
+        target_os = "android",
+        target_os = "linux",
+        windows
+    ))]
     system: Fallbacks,
     /// Per family, weight and style, the face the database matched: each
     /// query scans every installed face.
@@ -110,7 +167,12 @@ impl State {
             faces: HashMap::new(),
             weighted: HashMap::new(),
             fallback: HashMap::new(),
-            #[cfg(any(target_vendor = "apple", target_os = "android", windows))]
+            #[cfg(any(
+                target_vendor = "apple",
+                target_os = "android",
+                target_os = "linux",
+                windows
+            ))]
             system: Fallbacks::default(),
             queries: HashMap::new(),
             last: None,
@@ -158,7 +220,12 @@ impl State {
                 return Some(id);
             }
         }
-        #[cfg(any(target_vendor = "apple", target_os = "android", windows))]
+        #[cfg(any(
+            target_vendor = "apple",
+            target_os = "android",
+            target_os = "linux",
+            windows
+        ))]
         {
             let italic = style != fontdb::Style::Normal;
             let faces = &mut self.faces;
@@ -244,12 +311,30 @@ impl State {
     }
 }
 
+/// The generic family the system falls back through for the CSS family
+/// list `families`: its first (each one's fallbacks end in the same fonts,
+/// but serif's take serif forms of CJK first), else sans-serif, which
+/// names the system lacks would be too.
+#[cfg(any(target_os = "android", target_os = "linux"))]
+fn generic(families: &str) -> &'static str {
+    families
+        .split(',')
+        .find_map(|name| match name.trim() {
+            "serif" => Some("serif"),
+            "monospace" => Some("monospace"),
+            "cursive" => Some("cursive"),
+            "sans-serif" => Some("sans-serif"),
+            _ => None,
+        })
+        .unwrap_or("sans-serif")
+}
+
 /// The face of the file at `path` that is its collection's `index`, where
 /// `same` says a path of the database's is that file; loaded into the
 /// database if its scan missed the file (a font installed outside the
 /// directories it scans), nameless then so that no family query matches
 /// it and a face queried by name doesn't depend on what fell back before.
-#[cfg(any(target_os = "android", windows))]
+#[cfg(any(target_os = "android", target_os = "linux", windows))]
 fn resolve(
     db: &mut fontdb::Database,
     path: &Path,
@@ -345,6 +430,18 @@ impl LocalGlyphs for SystemFonts {
 mod tests {
     use super::*;
 
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    #[test]
+    fn falls_back_through_the_lists_generic_family() {
+        assert_eq!(
+            generic("Open Sans Semibold,Arial Unicode MS Bold,sans-serif"),
+            "sans-serif"
+        );
+        assert_eq!(generic("Noto Serif Regular, serif"), "serif");
+        assert_eq!(generic("Fira Mono,monospace,serif"), "monospace");
+        assert_eq!(generic("Open Sans"), "sans-serif");
+    }
+
     #[test]
     fn draws_latin_and_complex_scripts_from_system_fonts() {
         let fonts = SystemFonts::new();
@@ -381,7 +478,7 @@ mod tests {
     }
 
     /// `text`'s coverage in `face`, as a glyph job reads it.
-    #[cfg(target_vendor = "apple")]
+    #[cfg(any(target_vendor = "apple", target_os = "linux"))]
     fn coverage(face: &Face, text: &str) -> Vec<u8> {
         let drawn = draw(face, text, 48.0);
         drawn.ink_alpha(&orb_text::sdf::local::ink_box(text, &drawn.metrics))
@@ -468,6 +565,52 @@ mod tests {
                 coverage(face, &c.to_string()).contains(&255),
                 "{c} has solid ink"
             );
+        }
+    }
+
+    /// Han ideographs take the forms of the user's language, as
+    /// fontconfig orders the fonts for it, at the weight asked.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ideographs_take_the_users_language_through_fontconfig() {
+        if !fontconfig::Fallbacks::available() {
+            eprintln!("skipped: libfontconfig isn't installed");
+            return;
+        }
+        let mut state = State::new();
+        for family in ["Noto Sans CJK SC", "Noto Sans CJK JP"] {
+            let installed = state
+                .db
+                .faces()
+                .any(|f| f.families.iter().any(|(n, _)| n == family));
+            if !installed {
+                eprintln!("skipped: {family} isn't installed");
+                return;
+            }
+        }
+        let font = |weight| LocalFace {
+            family: "Open Sans Regular,Arial Unicode MS Regular,sans-serif",
+            weight: Some(weight),
+            style: "normal",
+        };
+        for (language, family) in [("zh-CN", "Noto Sans CJK SC"), ("ja-JP", "Noto Sans CJK JP")] {
+            state.system = fontconfig::Fallbacks::with_language(language);
+            state.weighted.clear();
+            let id = state
+                .choose_id(&font("400"), fontdb::Weight::NORMAL, "直")
+                .unwrap_or_else(|| panic!("{language}: no face for 直"));
+            let families = &state.db.face(id).unwrap().families;
+            assert!(
+                families.iter().any(|(n, _)| n == family),
+                "{language}: 直 in {families:?}, not {family}"
+            );
+            let ink = |state: &mut State, weight| -> u64 {
+                let face = state.choose(&font(weight), "直").unwrap();
+                coverage(&face, "直").iter().map(|&a| u64::from(a)).sum()
+            };
+            let (regular, bold) = (ink(&mut state, "400"), ink(&mut state, "700"));
+            assert!(regular > 0, "{language}: {family} draws 直");
+            assert!(bold > regular, "{language}: bold draws bolder");
         }
     }
 }

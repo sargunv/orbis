@@ -61,6 +61,9 @@ mod linux;
 #[cfg(windows)]
 mod windows;
 
+/// The user's locale, which fontconfig's font fallback also takes.
+#[cfg(target_os = "linux")]
+pub(crate) use self::linux::user_locale;
 /// The user's locale, which DirectWrite's font fallback also takes.
 #[cfg(windows)]
 pub(crate) use self::windows::user_locale;
