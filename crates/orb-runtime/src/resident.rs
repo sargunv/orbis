@@ -8,7 +8,7 @@ use orb_crs::TileIndex;
 use orb_hal::{Gpu, HostBytesId};
 use orb_render::{GpuTile, ImageAtlas, MeshData, MeshId, OutOfSpace, Renderer, TileKey};
 use orb_source::endpoint::TileEndpoint;
-use orb_source::{Draw, TilePyramid};
+use orb_source::{Backoff, Draw, TilePyramid};
 
 use crate::MapEvent;
 use crate::image::ResidentImage;
@@ -42,13 +42,15 @@ pub(crate) struct ResidentTile {
     /// Its labels drew glyphs of a range that failed: a glyph retry lays
     /// them out again ([`TileResult::glyphs_failed`]).
     pub(crate) glyphs_failed: bool,
-    /// When it loads again if drawn (Unix seconds): when the data it
-    /// shows expires, if it came fresh ([`TileResult::fresh_until`]), or
-    /// while a reload is under way, when it's tried again should it fail.
-    pub(crate) reload_at: Option<u64>,
-    /// Reloads tried in a row since one last brought a lifetime: the
-    /// next waits [`orb_source::retry_delay`] of them.
-    pub(crate) reloads_tried: u32,
+    /// When the data it shows expires (Unix ms), if it came fresh
+    /// ([`TileResult::fresh_until`]): drawn then, it loads again. Kept on
+    /// the wall clock, which HTTP's lifetimes are measured on and which,
+    /// unlike the monotonic one, runs on while the system sleeps.
+    pub(crate) expires: Option<f64>,
+    /// Its reloads since one last brought a lifetime: each counts as a
+    /// failure from when it starts, so one that fails or never answers is
+    /// tried again when the backoff is due, or when its server asked.
+    pub(crate) reloads: Backoff,
 }
 
 impl ResidentTile {
@@ -63,9 +65,24 @@ impl ResidentTile {
             cost: 0,
             neighbour: false,
             glyphs_failed: false,
-            reload_at: None,
-            reloads_tried: 0,
+            expires: None,
+            reloads: Backoff::default(),
         }
+    }
+
+    /// The data it shows came fresh until `fresh_until` (Unix seconds) if
+    /// that's given, or for good: its reloads start over.
+    pub(crate) fn renew(&mut self, fresh_until: Option<u64>) {
+        self.expires = fresh_until.map(|until| until as f64 * 1000.0);
+        self.reloads.succeeded();
+    }
+
+    /// When (ms on the monotonic clock, at `now` there and `unix` on the
+    /// wall clock) it loads again if drawn: when a reload is due again,
+    /// while one is under way or failed, else when its data expires,
+    /// measured again each time it's asked.
+    pub(crate) fn reload_due(&self, now: f64, unix: f64) -> Option<f64> {
+        (self.reloads.due()).or(self.expires.map(|expires| now + (expires - unix)))
     }
 }
 

@@ -6,7 +6,8 @@
 //! that camera takes, whatever it asked for on the way. A globe turned to
 //! its far side shows coarse tiles there at once, and a view turned back
 //! and forth receives each vector tile once. (mln-rs's fast camera test
-//! models its network alike.)
+//! models its network alike.) A server that puts a reload off is asked
+//! again no sooner than it said, on a clock the test moves.
 
 mod common;
 
@@ -418,4 +419,153 @@ fn a_view_turned_back_and_forth_rests_on_a_fresh_maps_tile_pages() {
             "tile pages at rest after swings of {frames} frames, against a fresh map's"
         );
     }
+}
+
+/// A clock a test moves: milliseconds since it was made, and as many past
+/// a fixed Unix time, plus what the system slept, which the monotonic
+/// clock (`Instant`, `performance.now()`) doesn't count.
+#[derive(Default)]
+struct HandClock {
+    now: Mutex<f64>,
+    slept: Mutex<f64>,
+}
+
+impl HandClock {
+    const EPOCH_MS: f64 = 1.7e12;
+
+    fn advance(&self, ms: f64) {
+        *self.now.lock().unwrap() += ms;
+    }
+
+    fn sleep(&self, ms: f64) {
+        *self.slept.lock().unwrap() += ms;
+    }
+}
+
+impl orb_host::Clock for HandClock {
+    fn now(&self) -> f64 {
+        *self.now.lock().unwrap()
+    }
+
+    fn unix_ms(&self) -> f64 {
+        Self::EPOCH_MS + *self.slept.lock().unwrap() + self.now()
+    }
+}
+
+/// A server whose one tile comes fresh for a minute, whose reload of it
+/// it answers with 429 and `Retry-After: 30`, and which then serves it
+/// with no lifetime: each answer at once, on the asking thread.
+struct Throttling {
+    vector: Vec<u8>,
+    requests: Mutex<Vec<f64>>,
+    clock: Arc<HandClock>,
+}
+
+impl Fetch for Throttling {
+    fn get(&self, _: ResourceKind, url: &str, _: &Abort, done: FetchDone) {
+        assert!(url.starts_with("model://v/"), "{url}");
+        let n = {
+            let mut requests = self.requests.lock().unwrap();
+            requests.push(orb_host::Clock::now(&*self.clock));
+            requests.len()
+        };
+        let unix = orb_host::Clock::unix_ms(&*self.clock) / 1000.0;
+        done(match n {
+            1 => Ok(orb_host::Fetched {
+                bytes: self.vector.clone(),
+                fresh_until: Some(unix as u64 + 60),
+                stale: false,
+            }),
+            2 => Err(FetchError::RetryAfter {
+                error: Box::new(FetchError::Status(429)),
+                after: std::time::Duration::from_secs(30),
+            }),
+            _ => Ok(self.vector.clone().into()),
+        });
+    }
+
+    fn get_range(&self, _: ResourceKind, _: &str, _: u64, _: u64, _: &Abort, done: FetchDone) {
+        done(Err(FetchError::NotFound));
+    }
+}
+
+/// A tile whose data expired reloads, once the wall clock passes its
+/// lifetime, the system's sleep included; a server that puts the reload
+/// off (429 with `Retry-After`) is asked again no sooner than it said,
+/// not on the backoff's first second, as a first load waits.
+#[test]
+fn a_reload_its_server_puts_off_waits_as_long_as_it_asks() {
+    let Ok(_) = pollster::block_on(common::WgpuGpu::offscreen()) else {
+        eprintln!("no GPU adapter; skipped");
+        return;
+    };
+    let clock = Arc::new(HandClock::default());
+    let server = Arc::new(Throttling {
+        vector: Network::new().vector.clone(),
+        requests: Mutex::default(),
+        clock: Arc::clone(&clock),
+    });
+    let fetch: Arc<dyn Fetch> = server.clone();
+    let jobs = orb_runtime::PoolJobs::new(
+        fetch.clone(),
+        Arc::new(common::NativeImageDecode),
+        Arc::new(orb_host::jobs::Inline),
+    );
+    let services = Services {
+        clock: clock.clone(),
+        image_decode: Arc::new(common::NativeImageDecode),
+        images: Default::default(),
+        jobs,
+        fetch,
+        wake: Arc::new(|| {}),
+    };
+    let mut map = Map::new(services, Some(at(0.0, 0.0, 0.0)));
+    map.set_placement_lane(Arc::new(orb_runtime::InlinePlacement::default()));
+    map.set_style_json(
+        r##"{"version": 8,
+        "sources": {"v": {"type": "vector", "tiles": ["model://v/{z}/{x}/{y}.mvt"], "maxzoom": 0}},
+        "layers": [{"id": "v", "type": "fill", "source": "v", "source-layer": "building",
+            "paint": {"fill-color": "#0000ff"}}]}"##,
+    )
+    .unwrap();
+    let mut map = Offscreen::with_map(map).unwrap();
+    let requests = || server.requests.lock().unwrap().clone();
+    // Frames, 100 ms of the clock apart, until the map is idle: its wake.
+    let settle = |map: &mut Offscreen| {
+        for _ in 0..200 {
+            let report = map.frame();
+            if report.idle() {
+                return report.wake_in;
+            }
+            clock.advance(100.0);
+        }
+        panic!("the map never idled");
+    };
+    let wake = settle(&mut map).expect("woken for the expiry");
+    assert_eq!(requests().len(), 1);
+    assert!(wake.as_secs_f64() <= 60.0, "woken in {wake:?}");
+    // Asleep past the tile's minute: the first frame on waking reloads it.
+    clock.sleep(3_600_000.0);
+    map.frame();
+    assert_eq!(requests().len(), 2, "the expired tile drawn on waking");
+    // The reload, put off: woken for the server's wait.
+    let wake = settle(&mut map).expect("woken for the retry");
+    let asked = requests();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    // From when the map heard the answer, a frame or so after the ask.
+    let due = orb_host::Clock::now(&*clock) + wake.as_secs_f64() * 1000.0;
+    let wait = due - asked[1];
+    assert!(
+        (30_000.0..31_000.0).contains(&wait),
+        "woken {wait} ms after the ask"
+    );
+    // Not asked before then, whatever frames come.
+    while orb_host::Clock::now(&*clock) + 500.0 < due {
+        clock.advance(500.0);
+        map.frame();
+    }
+    assert_eq!(requests().len(), 2, "asked again before the server's wait");
+    clock.advance(500.0);
+    assert_eq!(settle(&mut map), None, "the reload brought no lifetime");
+    assert_eq!(requests().len(), 3);
 }

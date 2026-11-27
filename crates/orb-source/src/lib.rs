@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+mod backoff;
 pub mod endpoint;
 mod gzip;
 #[cfg(feature = "mbtiles")]
@@ -21,6 +22,8 @@ use std::collections::BTreeMap;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use orb_crs::{CoveredTile, TileIndex};
+
+pub use backoff::Backoff;
 
 /// What to draw for one tile this frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,30 +72,13 @@ enum State<T> {
     Missing,
     /// Failed for a reason that may pass, such as the network: ancestors or
     /// children stand in, as for a loading tile, its nearest ancestor
-    /// requested if none is loaded, and it is requested again
-    /// once [`TilePyramid::retry_failed`] finds `retry_at` (ms) has passed.
-    Failed {
-        retry_at: f64,
-    },
+    /// requested if none is loaded, and it is requested again once
+    /// [`TilePyramid::retry_failed`] finds its entry's backoff due.
+    Failed,
     /// Failed, and due for a retry ([`TilePyramid::retry_failed`]): as if
-    /// never requested, but for its entry's count of failures, which the
-    /// next failure's backoff doubles from.
+    /// never requested, but for its entry's backoff, which counts its
+    /// failures on.
     Retry,
-}
-
-/// The first retry's delay after a failure; each further failure doubles
-/// it, up to [`RETRY_MAX_MS`].
-const RETRY_MS: f64 = 1000.0;
-const RETRY_MAX_MS: f64 = 60_000.0;
-/// The longest wait a server's `Retry-After` is taken at: a day. One
-/// asking for longer is asked again then rather than at a time that
-/// never comes (or past what the clock can hold).
-const RETRY_AFTER_MAX_MS: f64 = 86_400_000.0;
-
-/// How long to wait (ms) before retrying what failed `failures` times in
-/// a row before: [`RETRY_MS`], doubling with each, up to [`RETRY_MAX_MS`].
-pub fn retry_delay(failures: u32) -> f64 {
-    (RETRY_MS * 2f64.powi(failures.min(16) as i32)).min(RETRY_MAX_MS)
 }
 
 /// `tile`'s place along the Z-order curve over the whole tileset, at
@@ -154,9 +140,9 @@ impl<T> State<T> {
 struct Entry<T> {
     state: State<T>,
     last_used: u64,
-    /// Failures in a row, for the backoff: kept while the tile fails and
-    /// is retried, cleared once it settles otherwise.
-    failures: u32,
+    /// Its failures in a row and when it's retried: kept while the tile
+    /// fails and is retried, cleared once it settles otherwise.
+    backoff: Backoff,
 }
 
 /// What a load's answer for a tile finds in its pyramid
@@ -216,20 +202,18 @@ impl<T> TilePyramid<T> {
         self.revision
     }
 
-    /// Settles loading `tile` in `state`, its failures in a row counted
-    /// on if it failed again and cleared otherwise; gives `state` back if
-    /// `tile` isn't loading.
-    fn settle(&mut self, tile: TileIndex, state: State<T>) -> Result<(), State<T>> {
+    /// Settles loading `tile` in `state`, its backoff cleared unless it
+    /// failed; gives `state` back if `tile` isn't loading.
+    fn settle(&mut self, tile: TileIndex, state: State<T>) -> Result<&mut Entry<T>, State<T>> {
         match self.tiles.get_mut(&tile) {
             Some(entry) if entry.state.is_loading() => {
                 self.loading -= usize::from(entry.state.in_flight());
-                entry.failures = match state {
-                    State::Failed { .. } => entry.failures.saturating_add(1),
-                    _ => 0,
-                };
+                if !matches!(state, State::Failed) {
+                    entry.backoff.succeeded();
+                }
                 entry.state = state;
                 self.revision += 1;
-                Ok(())
+                Ok(entry)
             }
             _ => Err(state),
         }
@@ -357,7 +341,7 @@ impl<T> TilePyramid<T> {
                     continue;
                 }
                 Some(State::Empty) => continue,
-                Some(State::Loading | State::GivenUp | State::Arrived | State::Failed { .. }) => {}
+                Some(State::Loading | State::GivenUp | State::Arrived | State::Failed) => {}
                 // A missing tile's nearest ancestor in the tileset stands
                 // in for it, whatever else is resident: other tiles stand
                 // in only while that ancestor loads.
@@ -376,7 +360,7 @@ impl<T> TilePyramid<T> {
 
             let failed = matches!(
                 self.tiles.get(&ideal).map(|e| &e.state),
-                Some(State::Failed { .. })
+                Some(State::Failed)
             );
             let mut descendants = Vec::new();
             let mut missing = Vec::new();
@@ -470,7 +454,7 @@ impl<T> TilePyramid<T> {
             let entry = self.tiles.entry(tile).or_insert(Entry {
                 state: State::Retry,
                 last_used: frame,
-                failures: 0,
+                backoff: Backoff::default(),
             });
             if matches!(entry.state, State::Retry) {
                 entry.state = State::Loading;
@@ -559,7 +543,7 @@ impl<T> TilePyramid<T> {
     /// results before they can reach newly requested entries.
     pub fn insert(&mut self, tile: TileIndex, value: T) -> Option<T> {
         match self.settle(tile, State::Ready(value)) {
-            Ok(()) => None,
+            Ok(_) => None,
             Err(State::Ready(value)) => Some(value),
             Err(_) => unreachable!("given back as given"),
         }
@@ -572,15 +556,12 @@ impl<T> TilePyramid<T> {
 
     /// Marks a loading tile as failed at `now` (ms) for a reason that may
     /// pass: ancestors or children stand in until it's retried, after a
-    /// delay that doubles with each failure in a row, or the `wait` (ms)
-    /// its server asked for (`Retry-After`) when that's longer, up to a
-    /// day.
+    /// [`Backoff`] that doubles with each failure in a row, or the `wait`
+    /// (ms) its server asked for (`Retry-After`) when that's longer.
     pub fn insert_failed(&mut self, tile: TileIndex, now: f64, wait: f64) {
-        let Some(entry) = self.tiles.get(&tile) else {
-            return;
-        };
-        let retry_at = now + retry_delay(entry.failures).max(wait.min(RETRY_AFTER_MAX_MS));
-        let _ = self.settle(tile, State::Failed { retry_at });
+        if let Ok(entry) = self.settle(tile, State::Failed) {
+            entry.backoff.fail(now, wait);
+        }
     }
 
     /// Readies failed tiles due for a retry at `now` (ms), so the next
@@ -591,15 +572,14 @@ impl<T> TilePyramid<T> {
     pub fn retry_failed(&mut self, now: f64) -> Option<f64> {
         let (mut next, mut due) = (None::<f64>, false);
         for entry in self.tiles.values_mut() {
-            match entry.state {
-                State::Failed { retry_at } if retry_at <= now => {
-                    entry.state = State::Retry;
-                    due = true;
-                }
-                State::Failed { retry_at } => {
-                    next = Some(next.map_or(retry_at, |next| next.min(retry_at)));
-                }
-                _ => {}
+            if !matches!(entry.state, State::Failed) {
+                continue;
+            }
+            if entry.backoff.take(now) {
+                entry.state = State::Retry;
+                due = true;
+            } else if let Some(at) = entry.backoff.due() {
+                next = Some(next.map_or(at, |next| next.min(at)));
             }
         }
         self.revision += u64::from(due);
@@ -615,7 +595,7 @@ impl<T> TilePyramid<T> {
         self.tiles.retain(|&tile, entry| {
             !matches!(
                 entry.state,
-                State::Empty | State::Missing | State::Failed { .. } | State::Retry
+                State::Empty | State::Missing | State::Failed | State::Retry
             ) || !which(tile)
         });
         self.revision += u64::from(self.tiles.len() != before);
@@ -764,7 +744,7 @@ impl<T> TilePyramid<T> {
                     && self
                         .tiles
                         .get(&t)
-                        .is_some_and(|e| e.failures > 0 || matches!(e.state, State::Missing))
+                        .is_some_and(|e| e.backoff.failed() || matches!(e.state, State::Missing))
             })
     }
 
@@ -895,7 +875,7 @@ impl<T> TilePyramid<T> {
                     }
                     return StandIn::Loading;
                 }
-                Some(State::Missing | State::Failed { .. }) => tile = parent,
+                Some(State::Missing | State::Failed) => tile = parent,
                 Some(State::Loading | State::GivenUp | State::Arrived) => {
                     return StandIn::Loading;
                 }

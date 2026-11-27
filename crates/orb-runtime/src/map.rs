@@ -28,6 +28,7 @@ use crate::state::FeatureStates;
 use crate::style::StylePlan;
 use crate::turns::FetchCounts;
 use crate::worker::{StyleUpdate, TileJob, TileRequest, TileWorker};
+use orb_source::Backoff;
 use orb_source::endpoint::{TileEndpoint, TileLocation};
 
 /// Logical pixel size of vector/background tiles and pattern origins.
@@ -37,6 +38,9 @@ pub(crate) const TILE_PX: f64 = 512.0;
 /// edit's, so the map waits for them but [`Map::generation`] passes over
 /// them, no edit having been made.
 const RELOAD: u64 = 0;
+
+/// The furthest a map's wake is set out (ms): a day.
+const DAY_MS: f64 = 86_400_000.0;
 
 impl TileJob {
     /// The edit generation the job counts under until it applies
@@ -454,46 +458,26 @@ impl NodeState {
 }
 
 /// When tiles whose labels drew glyphs of a range that failed lay out
-/// again, fetching the range again: on the tiles' backoff
-/// ([`orb_source::retry_delay`]) while it keeps failing, by a frame the
-/// map is woken for when it's [`due`](Self::due)
-/// ([`FrameReport::wake_in`]), and at once when the host asks
+/// again, fetching the range again: one [`Backoff`] for them all, its
+/// retry by a frame the map is woken for when it's due
+/// ([`FrameReport::wake_in`]), or at once when the host asks
 /// ([`Map::retry_failed_tiles`]).
 #[derive(Debug, Default)]
-pub(crate) struct GlyphRetry {
-    /// When the next retry is due (ms): set as a tile arrives that drew a
-    /// failed range.
-    due: Option<f64>,
-    /// Retries since a range last loaded.
-    failures: u32,
-}
+pub(crate) struct GlyphRetry(Backoff);
 
 impl GlyphRetry {
-    /// A tile arrived whose labels drew a failed range (`failed`) or none
-    /// at `now`, having drawn one before or not (`had_failed`).
+    /// A tile arrived at `now` whose labels drew a failed range (`failed`)
+    /// or none, having drawn one before or not (`had_failed`). The first
+    /// failure since a retry sets the next, which later ones don't put
+    /// off; a range that loaded starts the backoff over, unless a retry
+    /// waits for tiles still failing.
     pub(crate) fn arrived(&mut self, failed: bool, had_failed: bool, now: f64) {
-        if failed {
-            let failures = self.failures;
-            self.due
-                .get_or_insert_with(|| now + orb_source::retry_delay(failures));
-        } else if had_failed {
-            self.failures = 0;
+        let waiting = self.0.due().is_some();
+        if failed && !waiting {
+            self.0.fail(now, 0.0);
+        } else if !failed && had_failed && !waiting {
+            self.0.succeeded();
         }
-    }
-
-    /// When the next retry is due (ms), if a range failed.
-    fn due(&self) -> Option<f64> {
-        self.due
-    }
-
-    /// Whether a retry is due at `now`, which it then starts.
-    fn take(&mut self, now: f64) -> bool {
-        if self.due.is_none_or(|due| due > now) {
-            return false;
-        }
-        self.due = None;
-        self.failures = self.failures.saturating_add(1);
-        true
     }
 }
 
@@ -1225,16 +1209,20 @@ impl Map {
     }
 
     /// Requests every tile that failed (the network, say) again now, as
-    /// when the host learns the network is back; until then each waits out
-    /// its backoff ([`FrameReport::wake_in`]).
+    /// when the host learns the network is back, the reloads of expired
+    /// tiles included; until then each waits out its backoff
+    /// ([`FrameReport::wake_in`]).
     pub fn retry_failed_tiles(&mut self) {
         let Some(style) = &mut self.style else {
             return;
         };
-        style.glyph_retry = GlyphRetry {
-            due: Some(f64::NEG_INFINITY),
-            failures: 0,
-        };
+        for source in &mut style.sources {
+            if let SourceState::Ready { pyramid, .. } = &mut source.state {
+                pyramid
+                    .used_mut()
+                    .for_each(|(_, resident)| resident.reloads.hurry());
+            }
+        }
         self.retry_failed(f64::INFINITY);
         (self.services.wake)();
     }
@@ -1252,7 +1240,7 @@ impl Map {
         let terrain = (style.terrain.get_mut()).map(|t| t.pyramid.retry_failed(now));
         let tiles = pyramids.chain(terrain).flatten().reduce(f64::min);
         self.retry_glyphs(now);
-        let glyphs = self.style.as_ref().and_then(|s| s.glyph_retry.due());
+        let glyphs = self.style.as_ref().and_then(|s| s.glyph_retry.0.due());
         tiles.into_iter().chain(glyphs).reduce(f64::min)
     }
 
@@ -1271,7 +1259,7 @@ impl Map {
         let Some(style) = &mut self.style else {
             return;
         };
-        if !style.glyph_retry.take(now) {
+        if !style.glyph_retry.0.take(now) {
             return;
         }
         let plan = style.worker.plan();
@@ -2274,10 +2262,14 @@ impl Map {
         // Failed tiles and glyph ranges due for a retry are asked for
         // again; a still map is woken for the next, as for the next
         // expiry.
+        // Woken no later than a day out, which the frame then measures
+        // again: a lifetime past what the clock holds is no wake.
         let now = clock.now();
-        let retry = (self.retry_failed(now))
-            .map(|due| std::time::Duration::from_secs_f64((due - now).max(0.0) / 1000.0));
-        report.wake_in = self.reload_expired().into_iter().chain(retry).min();
+        let next = (self.retry_failed(now).into_iter())
+            .chain(self.reload_expired(now))
+            .reduce(f64::min);
+        report.wake_in = next
+            .map(|due| std::time::Duration::from_secs_f64((due - now).clamp(0.0, DAY_MS) / 1000.0));
         // Terrain's DEM and cover first: the sources cover over its
         // elevations, and drape over its tiles.
         let at = clock.now();
@@ -2971,26 +2963,23 @@ impl Map {
     /// until its new layout replaces it, as an edit's relayout does: a
     /// frame shows what a fresh map loading the same data would. A reload
     /// that fails is tried again later, waiting longer each time, as a
-    /// failed load is. Returns how long until the next is due.
-    fn reload_expired(&mut self) -> Option<std::time::Duration> {
-        let now = self.services.clock.unix_ms();
-        let second = (now / 1000.0) as u64;
+    /// failed load is. Returns when (ms) the next is due, at `now`.
+    fn reload_expired(&mut self, now: f64) -> Option<f64> {
+        let unix = self.services.clock.unix_ms();
         let style = self.style.as_mut()?;
-        let (mut expired, mut next) = (Vec::new(), None::<u64>);
+        let (mut expired, mut next) = (Vec::new(), None::<f64>);
         for (index, source) in style.sources.iter_mut().enumerate() {
             let SourceState::Ready { pyramid, .. } = &mut source.state else {
                 continue;
             };
             for (tile, resident) in pyramid.used_mut() {
-                let Some(mut due) = resident.reload_at else {
+                let Some(mut due) = resident.reload_due(now, unix) else {
                     continue;
                 };
-                // Until its reload answers with a lifetime of its own.
-                if due <= second {
-                    let wait = orb_source::retry_delay(resident.reloads_tried) / 1000.0;
-                    resident.reloads_tried = resident.reloads_tried.saturating_add(1);
-                    due = second + wait.ceil() as u64;
-                    resident.reload_at = Some(due);
+                // Failed until it answers with a lifetime of its own.
+                if due <= now {
+                    resident.reloads.fail(now, 0.0);
+                    due = resident.reloads.due().expect("just failed");
                     expired.push((index, tile));
                 }
                 next = Some(next.map_or(due, |next| next.min(due)));
@@ -2999,7 +2988,7 @@ impl Map {
         for (index, tile) in expired {
             self.send_edit_job(index, tile, TileJob::Revalidate);
         }
-        next.map(|until| std::time::Duration::from_secs_f64((until as f64 - now / 1000.0).max(0.0)))
+        next
     }
 
     /// Ranks the loads still waiting for their fetches again, by the
@@ -3796,18 +3785,23 @@ mod tests {
     #[test]
     fn glyph_retries_back_off_while_a_range_fails() {
         let mut retry = GlyphRetry::default();
-        assert!(!retry.take(f64::INFINITY), "nothing failed");
+        assert!(!retry.0.take(f64::INFINITY), "nothing failed");
         retry.arrived(true, false, 0.0);
-        assert_eq!(retry.due(), Some(1000.0), "the frame woken for it");
-        assert!(!retry.take(999.0) && retry.take(1000.0));
+        assert_eq!(retry.0.due(), Some(1000.0), "the frame woken for it");
+        assert!(!retry.0.take(999.0) && retry.0.take(1000.0));
         // Failing again, twice as long; a second tile doesn't put it off.
         retry.arrived(true, true, 5000.0);
         retry.arrived(true, false, 5500.0);
-        assert!(!retry.take(6999.0) && retry.take(7000.0));
+        assert!(!retry.0.take(6999.0) && retry.0.take(7000.0));
         // Loaded: the next failure waits a second again.
         retry.arrived(false, true, 8000.0);
         retry.arrived(true, false, 9000.0);
-        assert!(retry.take(10_000.0));
+        assert!(retry.0.take(10_000.0));
+        // A tile that loaded while others wait for their retry doesn't
+        // drop it.
+        retry.arrived(true, false, 11_000.0);
+        retry.arrived(false, true, 11_500.0);
+        assert_eq!(retry.0.due(), Some(13_000.0));
     }
 
     #[test]

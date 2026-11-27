@@ -386,7 +386,7 @@ impl Map {
             // A reload that brought the data drawn again: the tile stays,
             // fresh as long as the fetch said, for good if it gave no
             // lifetime, as a new body without one does. One no server
-            // answered tries again when its reload was due to.
+            // answered tries again when its reload's backoff is due.
             Ok(TileOutcome::Built(build)) if build.renewed => {
                 let SourceState::Ready { pyramid, .. } = &mut style.sources[index].state else {
                     return;
@@ -394,8 +394,7 @@ impl Map {
                 if let Some(resident) = pyramid.get_mut(tile)
                     && !build.stale
                 {
-                    resident.reload_at = build.fresh_until;
-                    resident.reloads_tried = 0;
+                    resident.renew(build.fresh_until);
                 }
                 return;
             }
@@ -406,7 +405,19 @@ impl Map {
                 return;
             }
             Ok(TileOutcome::Cancelled) => return,
-            Err(e) | Ok(TileOutcome::RetryAfter { error: e, .. }) => {
+            // A reload its server puts off is tried again no sooner than
+            // it asked, as a first load is.
+            Ok(TileOutcome::RetryAfter { error, wait_ms }) => {
+                self.warnings.push(format!("tile {tile}: {error}"));
+                if *job == TileJob::Revalidate
+                    && let SourceState::Ready { pyramid, .. } = &mut style.sources[index].state
+                    && let Some(resident) = pyramid.get_mut(tile)
+                {
+                    resident.reloads.defer(self.services.clock.now(), wait_ms);
+                }
+                return;
+            }
+            Err(e) => {
                 self.warnings.push(format!("tile {tile}: {e}"));
                 return;
             }
@@ -500,8 +511,7 @@ impl Map {
             // A whole tile's data loaded again (it expired) brings its
             // lifetime, if it has one.
             if *job == TileJob::Revalidate {
-                resident.reload_at = build.fresh_until;
-                resident.reloads_tried = 0;
+                resident.renew(build.fresh_until);
             }
             // Whether its labels drew a failed glyph range: as the build
             // has it where it laid out every symbol layer, else either.
