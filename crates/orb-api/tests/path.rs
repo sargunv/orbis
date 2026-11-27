@@ -322,6 +322,65 @@ fn extrusions_after_a_gesture_are_a_fresh_map_s() {
     assert_same("extrusions", both_ways(&extruded_tokyo(), start, end, 30));
 }
 
+/// A map moved to a display of another pixel ratio draws what a fresh
+/// map started there draws: from 1 to 2 its sprites load again at `@2x`,
+/// and from 2 to 3 its icons lay out again, filtered as icons drawn at
+/// another ratio than their own are.
+#[test]
+fn a_new_pixel_ratio_draws_what_a_map_started_there_does() {
+    let style = tokyo("", "");
+    let at = (STATION, 16.0, 0.0, 0.0);
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let fetched = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = fetched.clone();
+    runtime.set_request_transform(Some(std::sync::Arc::new(move |url: &str| {
+        seen.lock().unwrap().push(url.to_owned());
+        Some(orb_api::Request {
+            url: url.to_owned(),
+            headers: Vec::new(),
+        })
+    })));
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let mut moved = Map::new(&runtime, options());
+    moved.set_constraints(steep());
+    moved.set_style_json(&style).unwrap();
+    moved.jump_to(&camera(at));
+    common::settle(&mut moved, &mut target);
+    // The sprite resources fetched since the record was cleared.
+    let sprites = || -> Vec<String> {
+        let fetched = fetched.lock().unwrap();
+        let sprites = fetched.iter().filter(|url| url.contains("/sprites/ofm"));
+        sprites.cloned().collect()
+    };
+    let one = sprites();
+    assert!(
+        one.iter().any(|url| url.ends_with("/ofm.png"))
+            && !one.iter().any(|url| url.contains("ofm@2x")),
+        "a map at 1 loads the 1x sprite: {one:?}"
+    );
+    for scale in [2.0, 3.0] {
+        // Not what the fresh map at the last ratio fetched.
+        fetched.lock().unwrap().clear();
+        target.resize(WIDTH, HEIGHT, scale);
+        common::settle(&mut moved, &mut target);
+        let loaded = sprites();
+        if scale == 2.0 {
+            assert!(
+                loaded.iter().any(|url| url.ends_with("/ofm@2x.png")),
+                "a map moved to 2 loads the @2x sprite: {loaded:?}"
+            );
+        } else {
+            assert!(
+                loaded.is_empty(),
+                "a map moved from 2 to {scale} keeps its sprite: {loaded:?}"
+            );
+        }
+        let moved_pixels = target.read_pixels().unwrap();
+        let (fresh_pixels, _) = fresh_at(&runtime, &mut target, &style, at);
+        assert_same(&format!("ratio-{scale}"), (moved_pixels, fresh_pixels));
+    }
+}
+
 /// Panning around a circle frame by frame, as the bench's moving camera
 /// does, stopping six times to idle and compare with a fresh map there.
 #[test]

@@ -583,6 +583,19 @@ pub(crate) struct SpriteState {
     pub(crate) stale: Option<HashSet<String>>,
 }
 
+impl SpriteState {
+    /// Loads the sprites again next frame, into the same namespace: the
+    /// images in now stay until the new ones are, and those the new ones
+    /// lack go then.
+    pub(crate) fn reload(&mut self) {
+        self.started = false;
+        let names = std::mem::take(&mut self.names);
+        self.stale
+            .get_or_insert_with(Default::default)
+            .extend(names);
+    }
+}
+
 /// What tiles and styles let go of between frames, released at the next:
 /// from the renderer, or from the runtime's image atlas.
 #[derive(Debug, Default)]
@@ -2644,6 +2657,20 @@ impl Map {
             images.release(gpu, namespace);
         }
         let Some(style) = &mut self.style else { return };
+        // What a frame shows at a ratio doesn't depend on the ratio the
+        // map started at: one that picks the sprites' other resolution
+        // loads them again, and any other lays icons out again, as their
+        // filtering depends on it (`icons_need_linear`).
+        let ratio = f64::from(pixel_ratio);
+        if style.sprites.started && style.icons.pixel_ratio != ratio {
+            if crate::sprite::retina(style.icons.pixel_ratio) == crate::sprite::retina(ratio) {
+                style.icons.pixel_ratio = ratio;
+                drop(guard);
+                self.icons_changed();
+                return;
+            }
+            style.sprites.reload();
+        }
         if style.sprites.started {
             return;
         }
@@ -2660,7 +2687,7 @@ impl Map {
         style.sprites.pixels_loading = sprites.len() as u32;
         style.sprites.icon_names = vec![Vec::new(); sprites.len()];
         style.sprites.failed = vec![false; sprites.len()];
-        style.icons.pixel_ratio = f64::from(pixel_ratio);
+        style.icons.pixel_ratio = ratio;
         // A style without a sprite reports an empty one loaded, as Native
         // does; each sprite reports its request.
         if sprites.is_empty() {

@@ -111,10 +111,16 @@ pub(crate) fn load(
     }
 }
 
+/// Whether a map drawing at pixel ratio `ratio` loads sprites' `@2x`
+/// resources: past 1, as GL JS and MapLibre Native pick them.
+pub(crate) fn retina(ratio: f64) -> bool {
+    ratio > 1.0
+}
+
 fn resource_url(base: &str, ratio: f32, extension: &str) -> String {
     let split = base.find(['?', '#']).unwrap_or(base.len());
     let (path, query) = base.split_at(split);
-    let scale = if ratio > 1.0 { "@2x" } else { "" };
+    let scale = if retina(f64::from(ratio)) { "@2x" } else { "" };
     format!("{path}{scale}{extension}{query}")
 }
 

@@ -160,13 +160,7 @@ impl Map {
         );
         // Another sprite loads over the old one, next frame.
         if patch.changes.contains(&Change::Sprite) {
-            style.sprites.started = false;
-            let names = std::mem::take(&mut style.sprites.names);
-            style
-                .sprites
-                .stale
-                .get_or_insert_with(Default::default)
-                .extend(names);
+            style.sprites.reload();
         }
         self.style = Some(style);
         for index in added {
