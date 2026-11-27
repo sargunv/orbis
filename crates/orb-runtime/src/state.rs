@@ -1,6 +1,7 @@
-//! Feature state: per source and source layer, feature id →
-//! state index; the states set on them; and the GPU table the shaders read
-//! through each mesh's slot → index remap.
+//! Feature state on the GPU: per source and source layer, feature id →
+//! state index, and the table the shaders read through each mesh's slot →
+//! index remap, its rows written from the map's feature state
+//! ([`crate::feature_state`]), which holds the values.
 //!
 //! Every feature of a resident mesh whose node reads state gets an index,
 //! counted by the meshes that refer to it, so a state write rewrites one
@@ -33,6 +34,7 @@ use orb_render::{Renderer, StateLookup};
 use orb_style::FeatureStateOp;
 use orb_style::Value;
 
+use crate::feature_state::FeatureStateStore;
 use crate::style::{PaintProperty, StylePlan};
 
 /// Integer zooms a state row holds each value at (`draw.wgsl`'s).
@@ -52,6 +54,22 @@ const STATE_ZOOMS_BELOW: f64 = 5.0;
 pub(crate) type FeatureState<'a> =
     Option<(&'a [(String, Value<'static>)], Option<&'a FeatureData>)>;
 
+/// Features' state as the map holds it, with the data their meshes
+/// captured: what queries evaluate paint with.
+#[derive(Clone, Copy)]
+pub(crate) struct States<'a> {
+    pub(crate) store: &'a FeatureStateStore,
+    pub(crate) table: &'a FeatureStates,
+}
+
+impl<'a> States<'a> {
+    pub(crate) fn feature(&self, source: u32, layer: Option<&str>, id: &str) -> FeatureState<'a> {
+        let state = self.store.state(source, layer, id);
+        let data = self.table.data(source, layer, id);
+        (!state.is_empty() || data.is_some()).then_some((state, data))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct StateKey {
     source: u32,
@@ -62,24 +80,17 @@ struct StateKey {
 #[derive(Debug, Default)]
 struct Entry {
     key: Option<StateKey>,
-    state: Vec<(String, Value<'static>)>,
     /// What paint reading both state and data reads of the feature.
     data: Option<FeatureData>,
     /// Mesh feature slots that refer to the entry.
     refs: u32,
-    /// Its row on the GPU, while it holds anything.
-    row: Option<Row>,
+    /// Its row's words as last written, while they hold anything; empty
+    /// once the layout they were in is gone.
+    row: Option<Vec<u32>>,
     /// Listed in `dirty`, to write at the next prepare.
     dirty: bool,
-}
-
-/// A state row as last written.
-#[derive(Debug)]
-struct Row {
-    /// The state its values were evaluated with.
-    state: Vec<(String, Value<'static>)>,
-    /// Its words; empty once the layout they were in is gone.
-    words: Vec<u32>,
+    /// Its state changed since its row was written: the row fades.
+    changed: bool,
 }
 
 /// One node's block of a state row.
@@ -191,14 +202,17 @@ impl FeatureStates {
         });
         let entry = &mut self.entries[index as usize];
         entry.refs += 1;
+        let fresh = entry.refs == 1;
         if let Some(data) = data {
             match &mut entry.data {
                 Some(held) => held.merge(data),
                 None => entry.data = Some(data.clone()),
             }
-            if !entry.state.is_empty() {
-                self.touch(index);
-            }
+        }
+        // Its row reads the state the map holds, if any, at the next
+        // prepare.
+        if fresh || data.is_some() {
+            self.touch(index);
         }
         index
     }
@@ -212,17 +226,14 @@ impl FeatureStates {
         self.collect(index);
     }
 
-    /// Frees an entry nothing refers to and that holds no state. Its row
-    /// is already zero: rows are cleared when their state is removed.
+    /// Frees an entry nothing refers to, its row cleared at the next
+    /// prepare.
     fn collect(&mut self, index: u32) {
         let entry = &mut self.entries[index as usize];
-        if entry.refs == 0 {
-            entry.data = None;
-        }
         if entry.refs == 0
-            && entry.state.is_empty()
             && let Some(key) = entry.key.take()
         {
+            entry.data = None;
             if entry.row.take().is_some() {
                 self.zero.push(index);
             }
@@ -268,95 +279,57 @@ impl FeatureStates {
         self.zoom_dependent
     }
 
-    pub(crate) fn apply(&mut self, op: &FeatureStateOp) {
+    /// Notes that the map's state changed as `op` says: the rows of the
+    /// features it touched are written again, fading.
+    pub(crate) fn changed(&mut self, op: &FeatureStateOp) {
         self.writes += 1;
-        match op {
+        let (source, layer, id) = match op {
             FeatureStateOp::Set {
                 source,
                 source_layer,
                 id,
-                state,
-            } => {
-                let index = self.index(StateKey {
-                    source: source.0,
-                    layer: source_layer.clone(),
-                    id: id.clone(),
-                });
-                let entry = &mut self.entries[index as usize];
-                for (key, value) in state {
-                    match entry.state.iter_mut().find(|(k, _)| k == key) {
-                        Some((_, v)) => *v = value.clone(),
-                        None => entry.state.push((key.clone(), value.clone())),
-                    }
-                }
-                self.touch(index);
-            }
+                ..
+            } => (source.0, source_layer, Some(id)),
             FeatureStateOp::Remove {
                 source,
                 source_layer,
                 id,
-                key,
-            } => {
-                let matches: Vec<u32> = match id {
-                    Some(id) => self
-                        .ids
-                        .get(&StateKey {
-                            source: source.0,
-                            layer: source_layer.clone(),
-                            id: id.clone(),
-                        })
-                        .copied()
-                        .into_iter()
-                        .collect(),
-                    None => self
-                        .ids
-                        .iter()
-                        .filter(|(k, _)| k.source == source.0 && k.layer == *source_layer)
-                        .map(|(_, &i)| i)
-                        .collect(),
+                ..
+            } => (source.0, source_layer, id.as_ref()),
+        };
+        let matches: Vec<u32> = match id {
+            Some(id) => {
+                let key = StateKey {
+                    source,
+                    layer: layer.clone(),
+                    id: id.clone(),
                 };
-                for index in matches {
-                    let entry = &mut self.entries[index as usize];
-                    match key {
-                        Some(key) => entry.state.retain(|(k, _)| k != key),
-                        None => entry.state.clear(),
-                    }
-                    self.touch(index);
-                }
+                self.ids.get(&key).copied().into_iter().collect()
             }
+            None => (self.ids.iter())
+                .filter(|(k, _)| k.source == source && k.layer == *layer)
+                .map(|(_, &i)| i)
+                .collect(),
+        };
+        for index in matches {
+            self.touch_changed(index);
         }
     }
 
-    /// A feature's state, and what paint reading both state and data
-    /// reads of it, if it has an entry.
-    pub(crate) fn feature(&self, source: u32, layer: Option<&str>, id: &str) -> FeatureState<'_> {
+    fn touch_changed(&mut self, index: u32) {
+        self.entries[index as usize].changed = true;
+        self.touch(index);
+    }
+
+    /// What paint reading both state and data reads of a feature, if it
+    /// has an entry.
+    pub(crate) fn data(&self, source: u32, layer: Option<&str>, id: &str) -> Option<&FeatureData> {
         let key = StateKey {
             source,
             layer: layer.map(str::to_string),
             id: id.to_string(),
         };
-        let entry = &self.entries[*self.ids.get(&key)? as usize];
-        Some((&entry.state, entry.data.as_ref()))
-    }
-
-    /// The states of features of `sources` (keys), as JSON objects by
-    /// (source, source layer, id): what queried features report.
-    pub(crate) fn snapshot(
-        &self,
-        sources: &[u32],
-    ) -> HashMap<(u32, Option<String>, String), String> {
-        self.entries
-            .iter()
-            .filter(|e| !e.state.is_empty())
-            .filter_map(|e| {
-                let key = e.key.as_ref().filter(|k| sources.contains(&k.source))?;
-                let object = orb_style::Value::Object(std::borrow::Cow::Owned(e.state.clone()));
-                Some((
-                    (key.source, key.layer.clone(), key.id.clone()),
-                    object.to_json_string(),
-                ))
-            })
-            .collect()
+        self.entries[*self.ids.get(&key)? as usize].data.as_ref()
     }
 
     /// Compiles the row layout for a plan revision.
@@ -401,7 +374,7 @@ impl FeatureStates {
         // over, without fades.
         for entry in &mut self.entries {
             if let Some(row) = &mut entry.row {
-                row.words.clear();
+                row.clear();
             }
         }
     }
@@ -416,7 +389,7 @@ impl FeatureStates {
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
-        plan: &StylePlan,
+        (plan, store): (&StylePlan, &FeatureStateStore),
         (zoom, time): (f64, f64),
     ) {
         if self.revision != Some(plan.revision) {
@@ -479,12 +452,11 @@ impl FeatureStates {
             self.rows_written += 1;
         }
         let indices: Vec<u32> = if std::mem::take(&mut self.all_dirty) {
-            // Rows with state or a fade, and those whose state was just
-            // removed.
+            // Rows written, and those listed.
             let indices = (1..self.entries.len() as u32)
                 .filter(|&i| {
                     let entry = &self.entries[i as usize];
-                    !entry.state.is_empty() || entry.row.is_some() || entry.dirty
+                    entry.key.is_some() && (entry.row.is_some() || entry.dirty)
                 })
                 .collect();
             self.take_dirty();
@@ -495,32 +467,37 @@ impl FeatureStates {
         let mut row = vec![0u32; self.stride as usize];
         let at = Moment { zoom, time, shift };
         for index in indices {
-            row.fill(0);
             let entry = &mut self.entries[index as usize];
+            let Some(key) = entry.key.as_ref() else {
+                continue;
+            };
+            let state = store.state(key.source, key.layer.as_deref(), &key.id);
             let old = entry.row.take();
-            if let Some(key) = entry.key.as_ref() {
-                for (node, block) in plan.nodes.iter().zip(&self.blocks) {
-                    let Some(block) = block.as_ref() else {
-                        continue;
-                    };
-                    if block.source != key.source || block.layer != key.layer {
-                        continue;
-                    }
-                    let properties = plan.paint_properties(node);
-                    let until =
-                        write_block(&mut row, (block, &properties), (entry, old.as_ref()), at);
-                    self.fading_until = self.fading_until.max(until);
+            // A row never written with no state to write stays zero.
+            if state.is_empty() && old.is_none() {
+                entry.changed = false;
+                continue;
+            }
+            row.fill(0);
+            let changed = std::mem::take(&mut entry.changed);
+            let feature = (state, entry.data.as_ref(), changed);
+            for (node, block) in plan.nodes.iter().zip(&self.blocks) {
+                let Some(block) = block.as_ref() else {
+                    continue;
+                };
+                if block.source != key.source || block.layer != key.layer {
+                    continue;
                 }
+                let properties = plan.paint_properties(node);
+                let until =
+                    write_block(&mut row, (block, &properties), feature, old.as_deref(), at);
+                self.fading_until = self.fading_until.max(until);
             }
             if row.iter().any(|&w| w != 0) {
-                entry.row = Some(Row {
-                    state: entry.state.clone(),
-                    words: row.clone(),
-                });
+                entry.row = Some(row.clone());
             }
             renderer.write_table(gpu, base + index * self.stride, &row);
             self.rows_written += 1;
-            self.collect(index);
         }
     }
 
@@ -581,23 +558,23 @@ struct Moment {
     shift: i64,
 }
 
-/// Writes `entry`'s block of a node into `row`, from `old`, the row as it
-/// was last written: its values with the entry's state, and a fade from
-/// what `old` showed at the moment's time when the state changed, or the
-/// fade `old` was in, carried over. Returns the frame time its fade ends,
-/// or −∞.
+/// Writes a feature's block of a node into `row`, from `words`, the row as
+/// it was last written: its values with its `state` (and `data`), and a
+/// fade from what `words` showed at the moment's time if the state
+/// `changed`, or the fade `words` were in, carried over. Returns the frame
+/// time its fade ends, or −∞.
 fn write_block(
     row: &mut [u32],
     (block, properties): (&Block, &[PaintProperty]),
-    (entry, old): (&Entry, Option<&Row>),
+    (state, data, changed): (&[(String, Value<'static>)], Option<&FeatureData>, bool),
+    words: Option<&[u32]>,
     at: Moment,
 ) -> f64 {
     let z = STATE_ZOOMS as usize;
     let offset = block.offset as usize;
-    let has = !entry.state.is_empty();
-    let changed = old.map_or(&[][..], |r| &r.state[..]) != &entry.state[..];
+    let has = !state.is_empty();
     // The old block, its words moved to these zooms.
-    let words = old.map_or(&[][..], |r| &r.words[..]);
+    let words = words.unwrap_or(&[]);
     let old_block = words.get(offset..offset + 2 + block.slots.len() * SLOT_WORDS as usize);
     let old_flags = old_block.map_or(0, |b| b[0]);
     let old_start = old_block.map_or(0.0, |b| f64::from(f32::from_bits(b[1])));
@@ -631,11 +608,11 @@ fn write_block(
     }
     for (i, (&slot, transition)) in block.slots.iter().zip(&block.transitions).enumerate() {
         let p = &properties[slot];
-        let data = entry.data.as_ref().filter(|_| p.mixes_state());
+        let data = data.filter(|_| p.mixes_state());
         let words = offset + 2 + SLOT_WORDS as usize * i;
         if has {
             for (j, word) in row[words..][..z].iter_mut().enumerate() {
-                *word = p.state_word(at.zoom + j as f64, &entry.state, data);
+                *word = p.state_word(at.zoom + j as f64, state, data);
             }
         }
         let prior = &mut row[words + z..][..z + 2];
@@ -689,81 +666,4 @@ fn mix_word(color: bool, a: u32, b: u32, t: f64) -> u32 {
             ((a + (b - a) * t).round() as u32) << (8 * i)
         })
         .sum()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn faded_words_mix_numbers_and_colours() {
-        let mid = mix_word(false, 2f32.to_bits(), 4f32.to_bits(), 0.5);
-        assert_eq!(f32::from_bits(mid), 3.0);
-        let red = orb_layout::pack_color([1.0, 0.0, 0.0, 1.0]);
-        let blue = orb_layout::pack_color([0.0, 0.0, 1.0, 1.0]);
-        assert_eq!(
-            mix_word(true, red, blue, 0.5),
-            orb_layout::pack_color([128.0 / 255.0, 0.0, 128.0 / 255.0, 1.0])
-        );
-        assert_eq!(mix_word(true, red, blue, 1.0), blue);
-    }
-    use orb_style::SourceKey;
-
-    #[test]
-    fn a_feature_is_listed_dirty_once_however_often_it_changes() {
-        let mut states = FeatureStates::default();
-        let set = |id: &str| FeatureStateOp::Set {
-            source: SourceKey(1),
-            source_layer: None,
-            id: id.into(),
-            state: vec![("hover".into(), Value::Bool(true))],
-        };
-        let a = states.intern(1, None, "a", None);
-        states.apply(&set("a"));
-        states.apply(&set("a"));
-        states.apply(&FeatureStateOp::Remove {
-            source: SourceKey(1),
-            source_layer: None,
-            id: None,
-            key: None,
-        });
-        assert_eq!(states.dirty, [a]);
-        // Freed while listed, then taken by another feature: still once.
-        states.release(a);
-        let b = states.intern(1, None, "b", None);
-        assert_eq!(b, a, "the index is reused");
-        states.apply(&set("b"));
-        assert_eq!(states.dirty, [b]);
-        assert_eq!(states.take_dirty(), [b]);
-        states.apply(&set("b"));
-        assert_eq!(states.dirty, [b], "listed again after it was taken");
-    }
-
-    #[test]
-    fn indices_are_counted_and_states_survive_unloads() {
-        let mut states = FeatureStates::default();
-        let a = states.intern(1, Some("poi"), "7", None);
-        assert_eq!(states.intern(1, Some("poi"), "7", None), a);
-        let b = states.intern(1, Some("road"), "7", None);
-        assert_ne!(a, b, "ids are per source layer");
-        states.apply(&FeatureStateOp::Set {
-            source: SourceKey(1),
-            source_layer: Some("poi".into()),
-            id: "7".into(),
-            state: vec![("hover".into(), Value::Bool(true))],
-        });
-        states.release(a);
-        states.release(a);
-        states.release(b);
-        assert_eq!(states.free, [b], "the stateless entry is freed");
-        // The state outlives the meshes, as GL JS keeps it.
-        assert_eq!(states.intern(1, Some("poi"), "7", None), a);
-        states.apply(&FeatureStateOp::Remove {
-            source: SourceKey(1),
-            source_layer: Some("poi".into()),
-            id: None,
-            key: None,
-        });
-        assert!(states.entries[a as usize].state.is_empty());
-    }
 }

@@ -108,12 +108,12 @@ impl crate::Map {
             let layer_key = plan.layer_keys[order];
             // The state its paint is evaluated with; the answer's `state`
             // member is read apart, with every queried feature's.
+            let states = crate::state::States {
+                store: &self.feature_state,
+                table: &style.states,
+            };
             let state = (hit.id.as_deref())
-                .and_then(|id| {
-                    style
-                        .states
-                        .feature(key.source, hit.source_layer.as_deref(), id)
-                })
+                .and_then(|id| states.feature(key.source, hit.source_layer.as_deref(), id))
                 .filter(|(state, _)| !state.is_empty())
                 .map(|(state, _)| orb_style::Value::Object(state.into()).to_json_string());
             drawn
@@ -289,7 +289,7 @@ impl crate::Map {
         let style = self.style.as_ref().expect("queries need a style");
         let plan = style.worker.plan();
         let sources: Vec<u32> = requests.iter().map(|(_, r)| r.tile.source).collect();
-        let states = style.states.snapshot(&sources);
+        let states = self.feature_state.snapshot(&sources);
         // Source features: their source's members, by plan index.
         let source_members: HashMap<usize, (String, u32, bool)> = requests
             .iter()

@@ -133,9 +133,58 @@ pub enum Progress {
     Cancelled,
 }
 
+/// A condition frames find while it holds, warned of once when it
+/// starts ([`DrapeRefused`](Self::DrapeRefused) once a style revision,
+/// as it clears between refusals).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Warn {
+    TerrainPipelines,
+    TerrainTms { dem: String, map: String },
+    PlacementsFull,
+    BackgroundPlacementsFull,
+    DrapeRoom,
+    DrapeRefused { mib: u64, fewer: bool },
+    SceneFull,
+}
+
+impl std::fmt::Display for Warn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Warn::TerrainPipelines => {
+                f.write_str("terrain: the GPU failed to make its pipelines; the map is flat")
+            }
+            Warn::TerrainTms { dem, map } => write!(
+                f,
+                "terrain: the DEM source's tiles ({dem}) are not the map's ({map}); the map is flat"
+            ),
+            Warn::PlacementsFull => f.write_str("out of tile placements; some tiles are not drawn"),
+            Warn::BackgroundPlacementsFull => {
+                f.write_str("out of tile placements; the background is not drawn")
+            }
+            Warn::DrapeRoom => {
+                f.write_str("too many drape stacks for the drape atlas; terrain is flat")
+            }
+            Warn::DrapeRefused { mib, fewer } => write!(
+                f,
+                "the GPU refused a drape texture's {mib} MiB; terrain {} until the map settles",
+                if *fewer {
+                    "covers the view in fewer tiles"
+                } else {
+                    "is flat"
+                }
+            ),
+            Warn::SceneFull => f.write_str("out of scene memory; an image layer misses tiles"),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct EventQueue {
     pub(crate) queue: Vec<MapEvent>,
+    /// The conditions found since the last drawn frame, and those it
+    /// found.
+    held: Vec<Warn>,
+    shown: Vec<Warn>,
     loaded: bool,
     idle: bool,
     /// The map has been idle once (GL JS `_idleTriggered`).
@@ -150,8 +199,23 @@ impl EventQueue {
         self.queue.push(event);
     }
 
-    /// Records a frame's end state: `load` once, `idle` on entering it.
+    /// Notes that `warn` holds for the frame being drawn.
+    pub(crate) fn hold(&mut self, warn: Warn) {
+        if !self.held.contains(&warn) {
+            self.held.push(warn);
+        }
+    }
+
+    /// Records a frame's end state: `load` once, `idle` on entering it,
+    /// and a warning for each condition that started.
     pub(crate) fn frame(&mut self, loaded: bool, idle: bool) {
+        for warn in &self.held {
+            if !self.shown.contains(warn) {
+                let message = warn.to_string();
+                self.queue.push(MapEvent::Warning { message });
+            }
+        }
+        self.shown = std::mem::take(&mut self.held);
         if loaded && !self.loaded {
             self.loaded = true;
             self.queue.push(MapEvent::Load);

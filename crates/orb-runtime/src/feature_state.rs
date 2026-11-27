@@ -1,7 +1,6 @@
 //! Feature state as the app set it, by source id, source layer and
-//! feature id: the one home of feature state. Reads come from here, and
-//! the GPU state table ([`crate::state`]) mirrors what it holds for the
-//! installed style's sources.
+//! feature id: the one home of feature state. Reads come from here, the
+//! GPU state table's rows ([`crate::state`]) among them.
 //!
 //! State lasts until it is removed, its source leaves the style (or is
 //! defined anew, which makes it another source), or a style loads
@@ -41,21 +40,45 @@ struct SourceStates {
     features: HashMap<Option<String>, HashMap<String, State>>,
 }
 
-impl SourceStates {
-    /// Its state as the edits that give it to source `key`.
-    fn ops(&self, key: SourceKey) -> impl Iterator<Item = FeatureStateOp> + '_ {
-        (self.features.iter()).flat_map(move |(layer, features)| {
-            (features.iter()).map(move |(id, state)| FeatureStateOp::Set {
-                source: key,
-                source_layer: layer.clone(),
-                id: id.clone(),
-                state: state.clone(),
-            })
-        })
-    }
-}
-
 impl FeatureStateStore {
+    /// The state of a feature of the style's source `key`.
+    pub(crate) fn state(
+        &self,
+        key: u32,
+        layer: Option<&str>,
+        id: &str,
+    ) -> &[(String, Value<'static>)] {
+        (self.sources.values())
+            .find(|s| s.key == Some(SourceKey(key)))
+            .and_then(|s| {
+                let (_, features) = s.features.iter().find(|(l, _)| l.as_deref() == layer)?;
+                features.get(id)
+            })
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// The states of features of the style's `sources` (keys), as JSON
+    /// objects by (source, source layer, id): what queried features
+    /// report.
+    pub(crate) fn snapshot(
+        &self,
+        sources: &[u32],
+    ) -> HashMap<(u32, Option<String>, String), String> {
+        let bound = (self.sources.values())
+            .filter_map(|s| Some((s.key?.0, s)))
+            .filter(|(key, _)| sources.contains(key));
+        bound
+            .flat_map(|(key, s)| {
+                (s.features.iter()).flat_map(move |(layer, features)| {
+                    features.iter().map(move |(id, state)| {
+                        let object = Value::Object(std::borrow::Cow::Borrowed(state));
+                        ((key, layer.clone(), id.clone()), object.to_json_string())
+                    })
+                })
+            })
+            .collect()
+    }
+
     /// The state of `target`'s feature; none without an id.
     fn get(&self, target: &FeatureTarget) -> &[(String, Value<'static>)] {
         let Some(id) = &target.id else {
@@ -151,31 +174,18 @@ impl FeatureStateStore {
 
     /// Follows `doc`'s sources: the state of a source that left it or was
     /// defined anew goes, and state kept for a source it now has applies
-    /// to it, returned as the edits that give it.
-    fn follow(&mut self, doc: &StyleDoc) -> Vec<FeatureStateOp> {
-        let mut bound = Vec::new();
+    /// to it.
+    pub(crate) fn follow(&mut self, doc: &StyleDoc) {
         self.sources.retain(|id, source| {
             let now = doc.source_key(id);
             match (source.key, now) {
                 (Some(was), now) => now == Some(was),
-                (None, Some(key)) => {
-                    source.key = Some(key);
-                    bound.extend(source.ops(key));
+                (None, now) => {
+                    source.key = now;
                     true
                 }
-                (None, None) => true,
             }
         });
-        bound
-    }
-
-    /// Every state that applies to the style's sources, as the edits that
-    /// give it: what a style table starts with.
-    fn ops(&self) -> Vec<FeatureStateOp> {
-        (self.sources.values())
-            .filter_map(|s| Some(s.ops(s.key?)))
-            .flatten()
-            .collect()
     }
 
     /// Drops every state, returned as the edits that take it from the
@@ -271,7 +281,7 @@ impl Map {
         };
         let mut mirror = Vec::new();
         if !patch.changes.is_empty() {
-            mirror = self.feature_state.follow(doc);
+            self.feature_state.follow(doc);
         }
         // Each edit's source by id, if a later edit of the transaction
         // didn't remove or redefine it.
@@ -318,27 +328,16 @@ impl Map {
         self.mirror_states(&mirror);
     }
 
-    /// Gives the installed style's state table `ops`, of sources of
-    /// [`style_doc`](Self::style_doc): a style waiting for its modules
-    /// takes the store's whole state once it's installed.
+    /// Tells the installed style's state table of `ops`, changes to the
+    /// state of sources of [`style_doc`](Self::style_doc).
     fn mirror_states(&mut self, ops: &[FeatureStateOp]) {
-        if ops.is_empty() || self.waiting_style.is_some() {
-            return;
-        }
-        if let Some(style) = &mut self.style {
+        if let Some(style) = &mut self.style
+            && !ops.is_empty()
+        {
             for op in ops {
-                style.states.apply(op);
+                style.states.changed(op);
             }
             self.events.wake();
-        }
-    }
-
-    /// The state table of a style being installed from `doc`: the store's
-    /// state of its sources.
-    pub(crate) fn seed_states(&mut self, doc: &StyleDoc, states: &mut crate::state::FeatureStates) {
-        self.feature_state.follow(doc);
-        for op in self.feature_state.ops() {
-            states.apply(&op);
         }
     }
 }

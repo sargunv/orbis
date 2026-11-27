@@ -190,8 +190,7 @@ impl Map {
         if failed {
             // The driver's failure is named with the device's stats; a
             // terrain drawn without its pipelines would lose its drape.
-            let warning = "terrain: the GPU failed to make its pipelines; the map is flat";
-            self.warnings.push(warning.to_owned());
+            self.events.hold(crate::events::Warn::TerrainPipelines);
             return None;
         }
         match &style.sources[index].state {
@@ -200,12 +199,10 @@ impl Map {
                 Some((index, Some(Arc::clone(endpoint))))
             }
             SourceState::Ready { endpoint, .. } => {
-                let warning = format!(
-                    "terrain: the DEM source's tiles ({}) are not the map's ({}); the map is flat",
-                    endpoint.tms.id(),
-                    self.surface.tms().id()
-                );
-                self.warnings.push(warning);
+                self.events.hold(crate::events::Warn::TerrainTms {
+                    dem: endpoint.tms.id().to_string(),
+                    map: self.surface.tms().id().to_string(),
+                });
                 None
             }
             SourceState::Failed => None,

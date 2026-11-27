@@ -1709,8 +1709,8 @@ impl Map {
             .collect();
         // The feature state kept for its sources, through restyles and
         // device losses alike.
-        let mut states = FeatureStates::default();
-        self.seed_states(&doc, &mut states);
+        self.feature_state.follow(&doc);
+        let states = FeatureStates::default();
         self.style = Some(LoadedStyle {
             nodes: (plan.nodes.iter())
                 .map(|n| (n.key, NodeState::new(plan, n, 0)))
@@ -2133,6 +2133,10 @@ impl Map {
         }
         report.frame = renderer.render(gpu, &frame, target, clear, &|| clock.now());
         times.render = report.frame.times;
+        // What a settling frame moved to give memory back the next frame
+        // draws again from where it went (drape slots of raster tiles).
+        report.resized = renderer.take_resized();
+        let rests = rests && !(settling && report.resized.moves > 0);
         // A frame that left something out for a compiling pipeline isn't
         // complete. Only a compile still pending wakes the host when it
         // finishes: a frame that waited with none pending (a pipeline's
@@ -2174,7 +2178,7 @@ impl Map {
         let fetches = self.services.jobs.fetch_counts();
         report.fetches = fetches - std::mem::replace(&mut self.fetches_seen, fetches);
         report.tiles_arrived = std::mem::take(&mut self.tiles_arrived);
-        report.resized = renderer.take_resized();
+        report.resized += renderer.take_resized();
         let counted = gpu.counters();
         report.gpu = counted.since(&self.counted);
         // This map's asks alone: other maps share the device.
@@ -2224,7 +2228,7 @@ impl Map {
         let (fading, missing) = crate::paint::frame(
             gpu,
             renderer,
-            style,
+            (style, &self.feature_state),
             &mut self.transitions,
             (zoom, camera),
             (now, time),
@@ -2551,8 +2555,7 @@ impl Map {
             .collect();
         // New nodes of image sources draw the tiles already resident.
         if !renderer.remap_nodes(gpu, &nodes, &retained) {
-            self.warnings
-                .push("out of scene memory; an image layer misses tiles".into());
+            self.events.hold(crate::events::Warn::SceneFull);
         }
         if !self.retired.pages.is_empty() {
             // The terrain may bind a retired terrain page; it turns on

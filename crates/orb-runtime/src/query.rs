@@ -1051,7 +1051,7 @@ pub(crate) struct Scene<'a> {
     /// The terrain's elevations, metres, as the frame drew them.
     pub(crate) elevation: Option<&'a dyn orb_camera::Elevation>,
     /// Feature states, for paint that reads them.
-    pub(crate) states: Option<&'a crate::state::FeatureStates>,
+    pub(crate) states: Option<crate::state::States<'a>>,
 }
 
 /// A dimension as it draws in the query's context under the feature's
@@ -2377,7 +2377,10 @@ impl crate::Map {
             period: self.surface.period(),
             generation: picking.generation,
             elevation: elevation.as_deref(),
-            states: self.style.as_ref().map(|s| &s.states),
+            states: self.style.as_ref().map(|s| crate::state::States {
+                store: &self.feature_state,
+                table: &s.states,
+            }),
         };
         Some(f(
             &scene,

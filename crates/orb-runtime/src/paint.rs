@@ -161,7 +161,7 @@ pub(crate) fn camera_plan(
 pub(crate) fn frame(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
-    style: &mut LoadedStyle,
+    (style, store): (&mut LoadedStyle, &crate::feature_state::FeatureStateStore),
     transitions: &mut crate::transitions::Transitions,
     (zoom, inputs): (f64, CameraInputs),
     (now, time): (f64, f64),
@@ -169,7 +169,9 @@ pub(crate) fn frame(
 ) -> (bool, Vec<String>) {
     let worker = Arc::clone(&style.worker);
     let plan = worker.plan();
-    style.states.prepare(gpu, renderer, plan, (zoom, time));
+    style
+        .states
+        .prepare(gpu, renderer, (plan, store), (zoom, time));
     let camera = camera_plan(style, plan, inputs);
     let key = PaintInputs {
         revision: plan.revision,

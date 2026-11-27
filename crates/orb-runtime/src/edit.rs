@@ -520,6 +520,9 @@ impl Map {
                 let now = self.services.clock.now();
                 (style.glyph_retry).arrived(resident.glyphs_failed, had_failed, now);
             }
+            // The old meshes' state rows, released once the new ones hold
+            // theirs: a fade in progress carries over.
+            let mut released = Vec::new();
             for &key in &build.nodes {
                 let Some(state) = style.nodes.get(&key) else {
                     continue;
@@ -541,9 +544,7 @@ impl Map {
                 resident.meshes = kept;
                 for mut old in old {
                     renderer.remove_mesh(resident.gpu, old.mesh);
-                    for index in old.states.drain(..) {
-                        style.states.release(index);
-                    }
+                    released.append(&mut old.states);
                     self.retired.ramps.append(&mut old.ramps);
                 }
                 // A symbol layer comes back whole with its group's bucket,
@@ -594,6 +595,9 @@ impl Map {
                         true,
                     )
                     .is_err();
+            for index in released {
+                style.states.release(index);
+            }
         }
         if no_room {
             drop(images);

@@ -558,8 +558,7 @@ impl Map {
                 }
                 report.tiles_drawn += rows.len() as u32;
                 if renderer.place(resident.gpu, extent, &rows).is_err() {
-                    self.warnings
-                        .push("out of tile placements; some tiles are not drawn".into());
+                    self.events.hold(crate::events::Warn::PlacementsFull);
                 }
             }
         }
@@ -887,8 +886,8 @@ impl Map {
         full: DrapeFull,
     ) -> bool {
         let mut fewer = false;
-        let warning = match full {
-            DrapeFull::Room => "too many drape stacks for the drape atlas; terrain is flat".into(),
+        match full {
+            DrapeFull::Room => self.events.hold(crate::events::Warn::DrapeRoom),
             DrapeFull::Refused(bytes) => {
                 // A device short of memory: what's kept out of view goes
                 // first, and the next frame's cover keeps to the tiles the
@@ -898,18 +897,15 @@ impl Map {
                 self.release_cached = true;
                 let room = renderer.drape_room(gpu);
                 fewer = room > 0;
-                format!(
-                    "the GPU refused a drape texture's {} MiB; terrain {} until the map settles",
-                    bytes >> 20,
-                    if room > 0 {
-                        "covers the view in fewer tiles"
-                    } else {
-                        "is flat"
-                    }
-                )
+                // Once a style revision: the refusal clears with the
+                // smaller cover and comes back each time the map settles.
+                let warning = crate::events::Warn::DrapeRefused {
+                    mib: bytes >> 20,
+                    fewer,
+                };
+                self.warnings.push(warning.to_string());
             }
-        };
-        self.warnings.push(warning);
+        }
         renderer.set_terrain(gpu, None);
         fewer
     }
@@ -1038,8 +1034,8 @@ impl Map {
             placed = renderer.place(background.quad, 8192, &slots);
         }
         if placed.and(renderer.place(tile, 8192, &rows)).is_err() {
-            self.warnings
-                .push("out of tile placements; the background is not drawn".into());
+            self.events
+                .hold(crate::events::Warn::BackgroundPlacementsFull);
             return;
         }
         // Flat on the plane, its tiles cover every pixel when the plane
