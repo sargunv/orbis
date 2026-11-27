@@ -21,7 +21,9 @@ pub enum TileLocation {
     Pmtiles(String),
     /// An MBTiles archive's URL ([`archive_url`]).
     Mbtiles(String),
-    /// The app's answer for a tile of a source it feeds.
+    /// The app's answer for a tile of a source it feeds, or
+    /// [`HostTile::Empty`] for a source with nothing to fetch (an `image`
+    /// without a URL).
     Host(HostTile),
 }
 
@@ -37,7 +39,8 @@ pub enum HostTile {
     /// Its source layers as GeoJSON: a JSON object of layer names and
     /// GeoJSON documents in longitude and latitude, which the map tiles.
     GeoJson(String),
-    /// The tile has nothing in it.
+    /// The tile has nothing in it (also every tile of a source with
+    /// nothing to fetch).
     Empty,
 }
 
@@ -45,7 +48,9 @@ pub enum HostTile {
 /// sources).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TileEndpoint {
-    archive: Option<TileLocation>,
+    /// Where every tile is, when one place holds them all: an archive, or
+    /// nothing, for an `image` source without a URL.
+    whole: Option<TileLocation>,
     pub bounds: Option<[f64; 4]>,
     pub templates: Vec<String>,
     /// A whole GeoJSON document; an empty URL denotes inline source data.
@@ -163,7 +168,7 @@ impl TileEndpoint {
             _ => VectorSource::DEFAULT_ENCODING,
         };
         Ok(Self {
-            archive,
+            whole: archive,
             bounds,
             templates,
             data_url: None,
@@ -182,7 +187,7 @@ impl TileEndpoint {
     /// worker supplies geometry rather than decoding a vector tile response.
     pub fn geojson(source: &GeoJsonSource, tms: TileMatrixSet) -> Self {
         Self {
-            archive: None,
+            whole: None,
             bounds: None,
             templates: Vec::new(),
             data_url: Some(match &source.data {
@@ -201,7 +206,7 @@ impl TileEndpoint {
     }
 
     /// An `image` source on `projection`'s plane: one tile, the image at
-    /// its URL, in a one-tile set around its quad.
+    /// its URL (empty without one), in a one-tile set around its quad.
     pub fn image(source: &orb_style::ImageSource, projection: &orb_crs::Projection) -> Self {
         let corners = source
             .coordinates
@@ -213,16 +218,21 @@ impl TileEndpoint {
             min: bounds.center() - half,
             max: bounds.center() + half,
         };
+        let (whole, templates) = match &source.content {
+            orb_style::ImageContent::Image(Some(url)) => (None, vec![url.clone()]),
+            orb_style::ImageContent::Image(None) => {
+                (Some(TileLocation::Host(HostTile::Empty)), Vec::new())
+            }
+            // A video's or a canvas's frames come from its host, not a
+            // fetch.
+            orb_style::ImageContent::Video(_) | orb_style::ImageContent::Canvas(_) => {
+                (None, Vec::new())
+            }
+        };
         Self {
-            archive: None,
+            whole,
             bounds: None,
-            // A video's frames come from its host, not a fetch.
-            templates: match &source.content {
-                orb_style::ImageContent::Image(url) => vec![url.clone()],
-                orb_style::ImageContent::Video(_) | orb_style::ImageContent::Canvas(_) => {
-                    Vec::new()
-                }
-            },
+            templates,
             data_url: None,
             scheme: Scheme::Xyz,
             minzoom: 0,
@@ -244,12 +254,12 @@ impl TileEndpoint {
 
     /// Whether the app feeds the source's tiles ([`HOST_TILES`]).
     pub fn host(&self) -> bool {
-        self.archive.is_none() && self.templates.iter().any(|t| t.starts_with(HOST_TILES))
+        self.whole.is_none() && self.templates.iter().any(|t| t.starts_with(HOST_TILES))
     }
 
     pub fn location(&self, tile: TileIndex) -> TileLocation {
-        match &self.archive {
-            Some(archive) => archive.clone(),
+        match &self.whole {
+            Some(whole) => whole.clone(),
             None => TileLocation::Url(self.url(tile)),
         }
     }

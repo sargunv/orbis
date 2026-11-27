@@ -927,8 +927,9 @@ impl Job {
                     }
                 }
                 SourceKind::Image(image) => {
-                    // A video streams from its host's player: not stored.
-                    if let orb_style::ImageContent::Image(url) = &image.content {
+                    // A video streams from its host's player, and an image
+                    // without a URL has nothing to store.
+                    if let orb_style::ImageContent::Image(Some(url)) = &image.content {
                         self.resource(url.clone(), Then::Keep(ResourceKind::Image));
                     }
                 }

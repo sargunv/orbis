@@ -1481,6 +1481,42 @@ fn canvas_sources_show_the_pixels_the_app_hands_in() {
 }
 
 #[test]
+fn image_sources_without_a_url_draw_nothing_and_idle() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_viewport(f64::from(SIZE), f64::from(SIZE));
+    map.set_style_json(
+        r##"{"version": 8, "center": [0, 0], "zoom": 2,
+            "sources": {"i": {"type": "image",
+                "coordinates": [[-120, 70], [120, 70], [120, -70], [-120, -70]]}},
+            "layers": [
+                {"id": "background", "type": "background", "paint": {"background-color": "#ff0000"}},
+                {"id": "i", "type": "raster", "source": "i"}]}"##,
+    )
+    .expect("style");
+    let events = settle(&mut map, &mut target);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Map(MapEvent::Idle))),
+        "{events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            Event::Map(MapEvent::Error { .. } | MapEvent::Warning { .. })
+        )),
+        "{events:?}"
+    );
+    let pixels = target.read_pixels().unwrap();
+    assert_eq!(pixel(&pixels, SIZE / 2, SIZE / 2), [255, 0, 0, 255]);
+    let still = map.snapshot(SIZE, SIZE, 1.0).expect("a still");
+    let i = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;
+    assert_eq!(still.pixels[i..i + 4], [255, 0, 0, 255]);
+}
+
+#[test]
 fn geojson_diffs_change_what_queries_find() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
     let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);

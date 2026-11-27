@@ -194,16 +194,19 @@ fn parse_image(cx: &mut Cx, json: &Json, path: &str, ty: &str) -> Option<ImageSo
         _ => "url",
     };
     let url_path = format!("{path}.{key}");
-    let Some(url) = json.get(key) else {
-        cx.error(
-            path,
-            json.span,
-            format!("missing required property \"{key}\""),
-        );
-        return None;
-    };
-    let content = match ty {
-        "video" => {
+    let content = match (ty, json.get(key)) {
+        // An image's `url` is optional: without one, the source starts
+        // empty.
+        ("image", None) => ImageContent::Image(None),
+        (_, None) => {
+            cx.error(
+                path,
+                json.span,
+                format!("missing required property \"{key}\""),
+            );
+            return None;
+        }
+        ("video", Some(url)) => {
             let items = cx.array(url, &url_path)?;
             let urls = items
                 .iter()
@@ -212,8 +215,8 @@ fn parse_image(cx: &mut Cx, json: &Json, path: &str, ty: &str) -> Option<ImageSo
                 .collect::<Option<Vec<_>>>()?;
             ImageContent::Video(urls)
         }
-        "canvas" => ImageContent::Canvas(cx.string(url, &url_path)?),
-        _ => ImageContent::Image(cx.string(url, &url_path)?),
+        ("canvas", Some(url)) => ImageContent::Canvas(cx.string(url, &url_path)?),
+        (_, Some(url)) => ImageContent::Image(Some(cx.string(url, &url_path)?)),
     };
     let coordinates_path = format!("{path}.coordinates");
     let Some(coordinates) = json.get("coordinates") else {

@@ -33,8 +33,9 @@ pub struct ImageSource {
 /// What an [`ImageSource`] shows.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ImageContent {
-    /// An `image` source's image URL.
-    Image(String),
+    /// An `image` source's image URL; `None` for a source without one,
+    /// which starts empty and draws nothing.
+    Image(Option<String>),
     /// A `video` source's URLs, in the order a host tries them (formats
     /// differ in what each platform plays).
     Video(Vec<String>),

@@ -99,6 +99,27 @@ fn raster_dem_sources_and_image_layers() {
 }
 
 #[test]
+fn an_image_source_needs_no_url_but_a_video_needs_its_urls() {
+    let source = |json: &str| {
+        parse(&format!(
+            r#"{{"version": 8, "sources": {{"s": {json}}}, "layers": []}}"#
+        ))
+    };
+    let corners = r#""coordinates": [[0, 1], [1, 1], [1, 0], [0, 0]]"#;
+    let s = source(&format!(r#"{{"type": "image", {corners}}}"#)).unwrap();
+    assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+    let SourceKind::Image(image) = &s.source("s").unwrap().kind else {
+        panic!()
+    };
+    assert_eq!(image.content, crate::ImageContent::Image(None));
+    let errors = source(&format!(r#"{{"type": "video", {corners}}}"#)).unwrap_err();
+    assert!(
+        errors.errors[0].to_string().contains("\"urls\""),
+        "{errors:?}"
+    );
+}
+
+#[test]
 fn image_layers_need_matching_sources() {
     let errors = errors(
         r#"[{"id": "h", "type": "hillshade", "source": "r"},
