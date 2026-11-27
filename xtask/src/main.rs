@@ -352,46 +352,46 @@ fn checks(selection: &affected::Selection) -> Result<(), String> {
     boundaries::check()
 }
 
-/// The renderer's tests, `orb-runtime`'s frame tests and `orb-api`'s path,
-/// terrain and picking tests again on the CPU frame driver with its tables
-/// in data textures, WebGL 2's path (#140), run natively
-/// (`ORB_DRIVER=cpu-tex`), for the selected packages among them, then
-/// `orb-api`'s once more on the whole of WebGL 2's stand-in
+/// Every test in `orb-render`, `orb-runtime` and `orb-api` (whole, drawing or
+/// not, which keeps the filter simple), for the selected packages among them,
+/// run again on the CPU frame driver with its tables in data textures
+/// (`ORB_DRIVER=cpu-tex`), and again on the whole of WebGL 2's stand-in
 /// (`ORB_DRIVER=webgl2`: no compute either, so drawn mip levels, and GL's
-/// texture layers), where the drape draws otherwise than on any other
-/// native device (#204). `orb-runtime`'s `drivers` test holds the CPU
-/// driver to the GPU's word for word in every run.
+/// texture layers), as WebGL 2 shares every pass with WebGPU (#140, #204).
+/// `validation` runs too, as those drivers call the graphics API otherwise.
+/// Left out are the binaries that pick their driver themselves: `orb-runtime`'s
+/// `drivers`, which makes its own device on the CPU driver and holds it to the
+/// GPU's word for word in every run, and `cull`, which tests the GPU driver's
+/// cull.
 fn cpu_driver_tests(selection: &affected::Selection) -> Result<(), String> {
     let runs = [
         ("orb-render", "package(orb-render)"),
-        ("orb-runtime", "package(orb-runtime) & binary(frames)"),
         (
-            "orb-api",
-            "package(orb-api) & (binary(path) | binary(terrain) | binary(picking))",
+            "orb-runtime",
+            "package(orb-runtime) & !(binary(drivers) | binary(cull))",
         ),
+        ("orb-api", "package(orb-api)"),
     ];
-    let mut test = nextest();
+    let mut packages = Vec::new();
     let mut filters = Vec::new();
     for (package, filter) in runs {
         if selection.contains(package) {
-            test.args(["-p", package]);
+            packages.extend(["-p", package]);
             filters.push(format!("({filter})"));
         }
     }
     if filters.is_empty() {
         return Ok(());
     }
-    run(test
-        .args(["-E", &filters.join(" | ")])
-        .env("ORB_DRIVER", "cpu-tex"))?;
-    if !selection.contains("orb-api") {
-        return Ok(());
+    let filter = filters.join(" | ");
+    for driver in ["cpu-tex", "webgl2"] {
+        eprintln!("check: the renderer's tests again on ORB_DRIVER={driver}");
+        run(nextest()
+            .args(&packages)
+            .args(["-E", &filter])
+            .env("ORB_DRIVER", driver))?;
     }
-    run(nextest()
-        .args([
-            "-p", "orb-api", "--test", "path", "--test", "terrain", "--test", "picking",
-        ])
-        .env("ORB_DRIVER", "webgl2"))
+    Ok(())
 }
 
 /// `cargo nextest run`, which `check` runs the tests under: each test in a

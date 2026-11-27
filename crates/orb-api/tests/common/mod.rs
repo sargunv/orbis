@@ -137,7 +137,7 @@ pub(crate) fn options() -> MapOptions {
 }
 
 /// The cull dispatches a frame runs: one on the GPU driver, none on the
-/// CPU's (`cargo xtask check` runs the path and terrain tests on it too).
+/// CPU's (`cargo xtask check` runs every test here on it too).
 pub(crate) fn culls() -> u32 {
     let driver = std::env::var("ORB_DRIVER").unwrap_or_default();
     u32::from(driver.is_empty() || driver == "gpu")
