@@ -501,9 +501,16 @@ pub(crate) struct LoadedStyle {
     /// Sources an edit removed, whose tiles leave the scene next frame.
     pub(crate) retired: Vec<SourceState>,
     pub(crate) nodes: HashMap<u32, NodeState>,
+    /// Changes whenever a node's row maxima rise
+    /// ([`record_maxima`](crate::resident::record_maxima)), which its
+    /// paint scales rows by.
+    pub(crate) maxima: u64,
     /// The node keys the renderer's nodes are of, in order: the plan's,
     /// except between an edit and the next frame.
     pub(crate) drawn: Vec<u32>,
+    /// Changes whenever the renderer takes its nodes or render targets
+    /// afresh ([`Map::sync_nodes`]): paint is written to them again.
+    pub(crate) scene: u64,
     pub(crate) paint: crate::paint::PaintState,
     pub(crate) image_namespace: Option<u64>,
     pub(crate) sprites: SpriteState,
@@ -1677,7 +1684,9 @@ impl Map {
             nodes: (plan.nodes.iter())
                 .map(|n| (n.key, NodeState::new(plan, n, 0)))
                 .collect(),
+            maxima: 0,
             drawn: Vec::new(),
+            scene: 0,
             id: self.style_id,
             doc,
             worker: Arc::clone(&worker),
@@ -2480,7 +2489,7 @@ impl Map {
         if fresh || style.targets != Some(plan.revision) {
             style.targets = Some(plan.revision);
             renderer.set_targets(gpu, plan.targets.render_plan(&plan.style));
-            style.paint.rewrite_processes();
+            style.scene += 1;
         }
         // A projection edit put the map on or off a globe: the background
         // takes the mesh it bends (image tiles take theirs as they draw).
@@ -2552,7 +2561,7 @@ impl Map {
         }
         style.background = make_background(gpu, renderer, plan, globe);
         style.drawn = keys;
-        style.paint.invalidate();
+        style.scene += 1;
     }
 
     fn start_sprites(&mut self, gpu: &mut dyn Gpu, pixel_ratio: f32) {
@@ -2647,7 +2656,6 @@ impl Map {
                     atlas.clear(gpu, namespace, name);
                 }
             }
-            style.paint.invalidate();
         }
         style.icons.epoch += 1;
         self.services

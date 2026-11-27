@@ -235,7 +235,6 @@ impl Map {
                 self.warnings.push(format!("image {name}: {e}"));
             }
         }
-        style.paint.invalidate();
     }
 }
 

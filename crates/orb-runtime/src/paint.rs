@@ -23,22 +23,20 @@ use crate::worker::TileWorker;
 /// What a style's paint was last written for.
 #[derive(Debug, Default)]
 pub(crate) struct PaintState {
-    /// The zoom and bearing node paint was written for, and whether
-    /// draped nodes draped (on terrain they show their drape paint);
-    /// `None` to rewrite.
-    written: Option<(f64, f64, bool)>,
-    fade: Option<Crossfade>,
-    /// Counts rewrites of all paint: what camera-free nodes were written
-    /// in.
+    /// What all paint was last written from; `None` while transitions
+    /// ease, when every frame writes it.
+    inputs: Option<PaintInputs>,
+    /// Counts the frames whose inputs changed: what camera-free nodes,
+    /// the drape and image-process operations were written in.
     epoch: u64,
+    /// Where node paint was last written.
+    written: Option<NodesAt>,
     zoom_history: ZoomHistory,
     /// The draped nodes' paint for the drape slots.
     drape: DrapePaint,
-    /// The camera inputs paint that reads the camera was written at.
-    camera: Option<CameraInputs>,
-    /// The zoom, and the camera where they read it, image-process
+    /// The epoch, zoom, and the camera where they read it, image-process
     /// operations were written at.
-    processes: Option<(f64, Option<CameraInputs>)>,
+    processes: Option<(u64, f64, Option<CameraInputs>)>,
     /// This frame's plan with its transitions eased in, which the drape
     /// paints from too; `None` with nothing easing.
     pub(crate) overlay: Option<Arc<StylePlan>>,
@@ -55,17 +53,38 @@ struct CameraPlan {
     plan: Arc<StylePlan>,
 }
 
-impl PaintState {
-    /// Every node's paint is written again with the next frame.
-    pub(crate) fn invalidate(&mut self) {
-        self.written = None;
-    }
+/// Everything but the view that paint is written from: all of it is
+/// written again in a frame where one changed.
+#[derive(Clone, Debug, PartialEq)]
+struct PaintInputs {
+    /// The plan's revision: an edit, or labels laid out again (images
+    /// added or removed, sprites reloaded). Patterns and dashes hold
+    /// image ids, which stay as their pixels change.
+    revision: u64,
+    /// The renderer's nodes and render targets ([`LoadedStyle::scene`]).
+    scene: u64,
+    /// The nodes' row maxima ([`LoadedStyle::maxima`]).
+    maxima: u64,
+    /// Where nodes read their feature state
+    /// ([`FeatureStates::lookups`](crate::state::FeatureStates::lookups)).
+    lookups: u64,
+    /// The sources whose endpoints resolved, which image nodes decode
+    /// by: within a revision a source resolves once.
+    sources: usize,
+    /// The camera, where paint reads it (beyond the spec).
+    camera: Option<CameraInputs>,
+}
 
-    /// The image-process operations are written again with the next
-    /// frame: the renderer took a new target plan.
-    pub(crate) fn rewrite_processes(&mut self) {
-        self.processes = None;
-    }
+/// Where node paint was written: in an epoch, at a zoom, bearing and
+/// cross-fade, and whether draped nodes draped (on terrain they show
+/// their drape paint).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct NodesAt {
+    epoch: u64,
+    zoom: f64,
+    bearing: f64,
+    crossfade: Crossfade,
+    draping: bool,
 }
 
 /// What `state` gives values that read the camera: its pitch and bearing.
@@ -150,15 +169,19 @@ pub(crate) fn frame(
 ) -> (bool, Vec<String>) {
     let worker = Arc::clone(&style.worker);
     let plan = worker.plan();
-    if style.states.prepare(gpu, renderer, plan, (zoom, time)) {
-        style.paint.invalidate();
-    }
-    // Paint that reads the camera is written again as it moves.
+    style.states.prepare(gpu, renderer, plan, (zoom, time));
     let camera = camera_plan(style, plan, inputs);
-    if camera.is_some() && style.paint.camera != Some(inputs) {
-        style.paint.camera = Some(inputs);
-        style.paint.invalidate();
-    }
+    let key = PaintInputs {
+        revision: plan.revision,
+        scene: style.scene,
+        maxima: style.maxima,
+        lookups: style.states.lookups(),
+        sources: (style.sources.iter())
+            .filter(|s| matches!(s.state, SourceState::Ready { .. }))
+            .count(),
+        // Paint that reads the camera is written again as it moves.
+        camera: camera.is_some().then_some(inputs),
+    };
     let plan = camera.as_deref().unwrap_or(plan);
     let crossfade = style.paint.zoom_history.update(zoom, now);
     let fading = crossfade.mix < 1.0
@@ -169,14 +192,14 @@ pub(crate) fn frame(
             }
         });
     // Paint transitions write from the style overlaid with their eased
-    // values, and once more when they end. A layer fading through its
-    // composite waits for it to compile.
+    // values, every frame, and once more when they end. A layer fading
+    // through its composite waits for it to compile.
     let composite_ready = !transitions.awaits_composite() || renderer.layer_composite_ready(gpu);
     let overlay = (transitions.overlay(plan, zoom, now, composite_ready)).map(Arc::new);
-    if overlay.is_some() || std::mem::take(&mut transitions.ran) {
-        style.paint.invalidate();
-        // Draped paint eases alike: it is draped again.
-        style.paint.drape.painted = None;
+    let key = overlay.is_none().then_some(key);
+    if key.is_none() || key != style.paint.inputs {
+        style.paint.inputs = key;
+        style.paint.epoch += 1;
     }
     style.paint.overlay.clone_from(&overlay);
     let plan = overlay.as_deref().unwrap_or(plan);
@@ -208,6 +231,7 @@ pub(crate) fn drape(
     let bearing = inputs.bearing;
     let camera = camera_plan(style, plan, inputs);
     let plan = camera.as_deref().unwrap_or(plan);
+    let painted = (style.paint.epoch, zoom.to_bits());
     let drape = &mut style.paint.drape;
     if drape.generation != Some(generation) || drape.stacks.len() != stacks {
         // A new atlas, or one whose slots all draw again.
@@ -215,13 +239,8 @@ pub(crate) fn drape(
         drape.painted = None;
         drape.stacks = vec![StackPaint::default(); stacks];
     }
-    // Paint that reads the camera is draped again as it moves.
-    if camera.is_some() && drape.camera != Some(inputs) {
-        drape.camera = Some(inputs);
-        drape.painted = None;
-    }
     let turns = drape.stacks.iter().any(|s| s.turns);
-    if drape.painted == Some(zoom.to_bits()) && (!turns || drape.bearing == bearing) {
+    if drape.painted == Some(painted) && (!turns || drape.bearing == bearing) {
         return;
     }
     let at = PaintAt {
@@ -273,7 +292,7 @@ pub(crate) fn drape(
             ..now
         };
     }
-    drape.painted = Some(zoom.to_bits());
+    drape.painted = Some(painted);
     drape.bearing = bearing;
 }
 
@@ -310,15 +329,13 @@ pub(crate) struct Crossfade {
 /// tells its slots' content changed with it.
 #[derive(Debug, Default)]
 struct DrapePaint {
-    /// The zoom (bits) paint was written at since it last changed.
-    painted: Option<u64>,
+    /// The paint epoch and zoom (bits) it was written at.
+    painted: Option<(u64, u64)>,
     /// The bearing it was written at.
     bearing: f64,
     stacks: Vec<StackPaint>,
     /// The drape layout generation written for.
     generation: Option<u64>,
-    /// The camera inputs paint that reads the camera was draped at.
-    camera: Option<CameraInputs>,
 }
 
 /// What a drape stack's slots show of the draped paint.
@@ -453,16 +470,11 @@ fn write_paint(
 ) -> Vec<String> {
     let mut missing = Vec::new();
     let bearing = inputs.bearing;
-    if style.paint.written.is_none() {
-        // What draped nodes draw with may have changed.
-        style.paint.drape.painted = None;
-        style.paint.epoch += 1;
-        style.paint.processes = None;
-    }
+    let epoch = style.paint.epoch;
     // Image-process operations, at the zoom and, where they read it, the
     // camera: a change of their values rewrites only their passes'
     // uniforms.
-    let processes = (zoom, plan.targets.camera.then_some(inputs));
+    let processes = (epoch, zoom, plan.targets.camera.then_some(inputs));
     if style.paint.processes != Some(processes) {
         style.paint.processes = Some(processes);
         for (process, layer) in plan.targets.layers().enumerate() {
@@ -474,20 +486,21 @@ fn write_paint(
     }
     // Draped nodes on terrain draw their drape paint, which leaves them
     // out where their layers don't draw ([`drape`]).
-    let draping = renderer.terrain_on();
-    if style.paint.written == Some((zoom, bearing, draping)) && style.paint.fade == Some(crossfade)
-    {
+    let at = NodesAt {
+        epoch,
+        zoom,
+        bearing,
+        crossfade,
+        draping: renderer.terrain_on(),
+    };
+    let draping = at.draping;
+    let written = style.paint.written.replace(at);
+    if written == Some(at) {
         return missing;
     }
     // Only image nodes' paint reads the bearing (a viewport-anchored
     // hillshade's light): a turn alone repaints them.
-    let turned_only = style
-        .paint
-        .written
-        .is_some_and(|(z, _, d)| z == zoom && d == draping)
-        && style.paint.fade == Some(crossfade);
-    style.paint.written = Some((zoom, bearing, draping));
-    style.paint.fade = Some(crossfade);
+    let turned_only = written.is_some_and(|w| NodesAt { bearing, ..w } == at);
     for (index, node) in plan.nodes.iter().enumerate() {
         if turned_only && !node.family.is_image() {
             continue;
@@ -532,11 +545,11 @@ fn write_paint(
             }
         }
         // Paint that is the same for every camera was written this epoch.
-        if state.painted == Some(style.paint.epoch) {
+        if state.painted == Some(epoch) {
             continue;
         }
         if camera_free(plan, node) && shown {
-            state.painted = Some(style.paint.epoch);
+            state.painted = Some(epoch);
         }
         if matches!(node.family, Family::Circle | Family::Heatmap) {
             let properties = plan.paint_properties(node).len();

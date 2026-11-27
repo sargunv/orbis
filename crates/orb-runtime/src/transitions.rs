@@ -29,8 +29,6 @@ use crate::style::StylePlan;
 pub(crate) struct Transitions {
     running: Vec<Running>,
     fades: Vec<Fade>,
-    /// A transition ran in the last frame: the next writes final values.
-    pub(crate) ran: bool,
 }
 
 #[derive(Debug)]
@@ -261,7 +259,6 @@ impl Transitions {
         }
         self.fades
             .retain(|f| f.span.is_none_or(|(_, end)| end > now));
-        self.ran |= self.running();
         if !self.running() {
             return None;
         }

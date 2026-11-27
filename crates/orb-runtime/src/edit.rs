@@ -168,7 +168,6 @@ impl Map {
                 .get_or_insert_with(Default::default)
                 .extend(names);
         }
-        style.paint.invalidate();
         self.style = Some(style);
         for index in added {
             let state = self.start_source(plan, index);
@@ -336,7 +335,6 @@ impl Map {
                 relayout.entry(node.source).or_default().push(node.key);
             }
         }
-        style.paint.invalidate();
         self.style = Some(style);
         for (source, nodes) in relayout {
             for tile in self.resident_tiles(source, None) {
@@ -606,7 +604,7 @@ impl Map {
         // Rows from a column job can raise a node's maxima (a radius made
         // per feature, say), which culling pads by; results skipped as
         // stale can only pad more than needed.
-        record_maxima(&mut style.nodes, &build.meshes, &mut style.paint);
+        record_maxima(&mut style.nodes, &build.meshes, &mut style.maxima);
         resident.cost = crate::resident::tile_cost(renderer, resident);
         drop(images);
         // Labels a whole relayout left out while their glyphs loaded

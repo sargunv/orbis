@@ -191,12 +191,12 @@ pub(crate) struct WaitingTile {
     pub(crate) tried: Option<[u64; 7]>,
 }
 
-/// Raises the nodes' row maxima to those of new meshes; paint is written
-/// again when they grow.
+/// Raises the nodes' row maxima to those of new meshes, counting each
+/// rise in `revision`.
 pub(crate) fn record_maxima(
     nodes: &mut HashMap<u32, NodeState>,
     meshes: &[ResultMesh],
-    paint: &mut crate::paint::PaintState,
+    revision: &mut u64,
 ) {
     for mesh in meshes {
         let Some(node) = nodes.get_mut(&mesh.node) else {
@@ -208,7 +208,7 @@ pub(crate) fn record_maxima(
         for (max, &value) in node.maxima.iter_mut().zip(&mesh.maxima) {
             if value > *max {
                 *max = value;
-                paint.invalidate();
+                *revision += 1;
             }
         }
     }

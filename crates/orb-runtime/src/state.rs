@@ -122,6 +122,8 @@ pub(crate) struct FeatureStates {
     pub(crate) rows_written: u64,
     /// State operations applied.
     writes: u64,
+    /// Changes whenever node lookups do ([`lookups`](Self::lookups)).
+    lookups: u64,
 }
 
 impl Default for FeatureStates {
@@ -143,6 +145,7 @@ impl Default for FeatureStates {
             fading_until: f64::NEG_INFINITY,
             rows_written: 0,
             writes: 0,
+            lookups: 0,
         }
     }
 }
@@ -406,16 +409,16 @@ impl FeatureStates {
     /// Brings the GPU table up to date for this frame, at `zoom` and frame
     /// time `time` (the shaders'): the layout for the plan, the values for
     /// `zoom`, room for every index and the rows that changed, fading from
-    /// what they showed. Returns whether node lookups changed, so paint
-    /// must be written again.
+    /// what they showed. A change of where nodes read their state
+    /// counts in [`lookups`](Self::lookups); past the device's buffer
+    /// limit they change every frame, which asks again.
     pub(crate) fn prepare(
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
         plan: &StylePlan,
         (zoom, time): (f64, f64),
-    ) -> bool {
-        let mut lookups_changed = false;
+    ) {
         if self.revision != Some(plan.revision) {
             let stride = self.stride;
             self.compile(plan);
@@ -424,7 +427,7 @@ impl FeatureStates {
             {
                 renderer.free_table(table);
             }
-            lookups_changed = true;
+            self.lookups += 1;
         }
         let zoom = (zoom.floor() - STATE_ZOOMS_BELOW).max(0.0);
         // How far the rows' zooms move: their words move with them.
@@ -433,14 +436,14 @@ impl FeatureStates {
             false => (zoom - self.zoom) as i64,
         };
         if zoom != self.zoom {
-            lookups_changed = true;
+            self.lookups += 1;
             self.zoom = zoom;
             self.all_dirty |= self.zoom_dependent;
         }
         if self.stride == 0 {
             self.take_dirty();
             self.zero.clear();
-            return lookups_changed;
+            return;
         }
         let rows = self.entries.len() as u32;
         let capacity = self
@@ -460,10 +463,13 @@ impl FeatureStates {
                 }
                 // Past the device's buffer limit: features draw without
                 // state, and the next frame asks again.
-                Err(_) => return true,
+                Err(_) => {
+                    self.lookups += 1;
+                    return;
+                }
             }
             self.all_dirty = true;
-            lookups_changed = true;
+            self.lookups += 1;
             self.zero.clear();
         }
         let base = self.table.as_ref().expect("allocated above").start;
@@ -516,7 +522,12 @@ impl FeatureStates {
             self.rows_written += 1;
             self.collect(index);
         }
-        lookups_changed
+    }
+
+    /// Changes whenever where nodes read their state does
+    /// ([`lookup`](Self::lookup)), which node paint holds.
+    pub(crate) fn lookups(&self) -> u64 {
+        self.lookups
     }
 
     /// Where node `node` (an index into the plan the layout is for) reads

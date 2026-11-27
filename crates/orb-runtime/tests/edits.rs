@@ -418,6 +418,25 @@ fn a_transition_set_after_a_change_eases_it() {
     assert!(some_frame_between(&black, &white, &frames));
 }
 
+/// A paint transition that ends between two frames leaves the paint at
+/// its final value, not where the last frame of it eased to.
+#[test]
+fn a_transition_ends_at_its_final_value() {
+    let mut map = tokyo();
+    edit(
+        &mut map,
+        r##"[["setPaintProperty", "background", "background-color", "#000000"],
+            ["setPaintProperty", "background", "background-color-transition", {"duration": 50}]]"##,
+    );
+    settle(&mut map);
+    edit(
+        &mut map,
+        r##"[["setPaintProperty", "background", "background-color", "#ffffff"]]"##,
+    );
+    settle(&mut map);
+    assert_matches_fresh(&mut map);
+}
+
 /// Frames until the map idles after an edit, each frame's pixels.
 fn frames_until_idle(map: &mut Offscreen) -> Vec<Vec<u8>> {
     let started = Instant::now();

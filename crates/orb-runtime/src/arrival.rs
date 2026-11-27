@@ -415,7 +415,6 @@ impl Map {
                     ready_source(endpoint, &def.id, image, &mut self.events);
                 self.events.sources.insert(source);
                 // Color-relief ramps wait for their source's encoding.
-                style.paint.invalidate();
                 for node in plan.nodes.iter().filter(|n| n.source == index) {
                     style.nodes.entry(node.key).or_default().ramp = None;
                 }
@@ -1084,7 +1083,7 @@ impl Map {
         resident.reload_at = build.fresh_until;
         (style.glyph_retry).arrived(build.glyphs_failed, false, self.services.clock.now());
         self.counts.meshes_uploaded += build.meshes.len() as u32;
-        record_maxima(&mut style.nodes, &build.meshes, &mut style.paint);
+        record_maxima(&mut style.nodes, &build.meshes, &mut style.maxima);
         resident.cost = tile_cost(renderer, &resident);
         if let Some(unwanted) = pyramid.insert(tile, resident) {
             self.retired
