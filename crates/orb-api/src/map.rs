@@ -96,13 +96,8 @@ pub struct Map {
     device_woken: Arc<AtomicBool>,
     /// Calls the hook for the device's wakes: the runtime holds it weakly.
     _device_wake: Arc<dyn Fn() + Send + Sync>,
-    /// The last frame waited for a compile, or the device's replacement.
-    waiting: bool,
-    /// The last frame left nothing to change but by the camera
-    /// ([`orb_runtime::Activity::Idle`]).
-    settled: bool,
-    /// The scale of the target the map last drew into.
-    scale: f64,
+    /// Where the last frame, or the last try at one, left the map.
+    shown: Shown,
     /// Notified with `woken`, for still output to wait on.
     signal: Arc<(Mutex<()>, Condvar)>,
     /// What still output last drew into: a snapshot or a tile.
@@ -121,11 +116,6 @@ pub struct Map {
     renderer: Option<orb_runtime::Renderer>,
     /// The runtime's device generation the map's GPU state is of.
     device: u64,
-    /// Whether the map has reported that the runtime stopped replacing
-    /// lost devices.
-    gave_up: bool,
-    /// The last frame left work: loads, fades or placement.
-    busy: bool,
     /// A command or input since the last frame changed what it shows.
     dirty: bool,
     /// How the map renders now.
@@ -134,6 +124,30 @@ pub struct Map {
     /// itself (still output, [`render_until_idle`](Self::render_until_idle))
     /// go on from it, on the host's clock.
     last_frame: Option<(f64, Instant)>,
+}
+
+/// Where a map's last frame, or its last try at one, left it: what of
+/// the device's wakes and the map's own work is news to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shown {
+    /// A frame drew: what kept it changing, and whether it asked for
+    /// another of its own accord ([`FrameReport::needs_frame`]). Waiting
+    /// only for pipelines, it draws again when one compiles.
+    Drew { activity: Activity, busy: bool },
+    /// The device was lost and its replacement waits out a backoff: the
+    /// device's wake when it's due is the only news.
+    AwaitingDevice,
+    /// The runtime stopped replacing lost devices: the map never draws
+    /// again, and has said why once as an error event.
+    GaveUp,
+}
+
+impl Shown {
+    /// No frame drawn yet on the device: as one still loading.
+    const FRESH: Self = Self::Drew {
+        activity: Activity::Loading,
+        busy: true,
+    };
 }
 
 /// Waits for a map's wakes ([`Map::waiter`]).
@@ -243,9 +257,7 @@ impl Map {
             woken,
             device_woken,
             _device_wake: device_wake,
-            waiting: false,
-            settled: false,
-            scale: 1.0,
+            shown: Shown::FRESH,
             signal,
             offscreen: None,
             hook,
@@ -256,8 +268,6 @@ impl Map {
             next_query: 0,
             renderer: None,
             device: runtime.shared.generation(),
-            gave_up: false,
-            busy: true,
             dirty: true,
             mode: RenderMode::Continuous,
             last_frame: None,
@@ -363,13 +373,22 @@ impl Map {
     /// Whether drawing a frame would show something new: data arrived, the
     /// camera moves, a gesture or animation runs, loads and fades are under
     /// way, a pipeline the last frame waited for compiled, or the device
-    /// was lost or replaced.
+    /// was lost or replaced. While a lost device's replacement waits out
+    /// its backoff only the device's wake when it's due is news, and once
+    /// the runtime has stopped replacing lost devices nothing is, as no
+    /// frame can draw: the frame that found it failed with the reason.
     pub fn has_news(&self) -> bool {
-        self.dirty
-            || self.busy
-            || self.woken.load(Ordering::Acquire)
-            || self.map.is_moving()
-            || self.device_news()
+        match self.shown {
+            Shown::GaveUp => false,
+            Shown::AwaitingDevice => self.device_news(),
+            Shown::Drew { busy, .. } => {
+                self.dirty
+                    || busy
+                    || self.woken.load(Ordering::Acquire)
+                    || self.map.is_moving()
+                    || self.device_news()
+            }
+        }
     }
 
     /// The device's wakes that are news to this map: a compile or a lost
@@ -377,18 +396,32 @@ impl Map {
     /// watchdog's, which a frame must find to recover from), or another
     /// map's replacing the device its picture was on, which went with it.
     fn device_news(&self) -> bool {
+        let waiting = matches!(
+            self.shown,
+            Shown::AwaitingDevice
+                | Shown::Drew {
+                    activity: Activity::Compiling,
+                    ..
+                }
+        );
         (self.renderer.is_some() && self.device != self.runtime.shared.generation())
-            || (self.device_woken.load(Ordering::Acquire) && (self.waiting || self.runtime.lost()))
+            || (self.device_woken.load(Ordering::Acquire) && (waiting || self.runtime.lost()))
     }
 
     /// As [`has_news`](Self::has_news), but for the camera: data arrived,
     /// or loads, fades or style transitions go on (MapLibre Native's
     /// `needsRepaint`). A moving camera alone leaves it false.
     pub fn needs_repaint(&self) -> bool {
-        self.dirty
-            || self.woken.load(Ordering::Acquire)
-            || self.device_news()
-            || !(self.settled || self.waiting)
+        match self.shown {
+            Shown::GaveUp => false,
+            Shown::AwaitingDevice => self.device_news(),
+            Shown::Drew { activity, .. } => {
+                self.dirty
+                    || self.woken.load(Ordering::Acquire)
+                    || self.device_news()
+                    || !matches!(activity, Activity::Idle | Activity::Compiling)
+            }
+        }
     }
 
     /// Requests the tiles that failed again now: call it when the network
@@ -1392,11 +1425,10 @@ impl Map {
         self.events
             .extend(self.map.take_events().into_iter().map(Event::Map));
         self.dirty = lost;
-        // A map waiting only for pipelines draws again when one compiles.
-        self.waiting = report.activity == Activity::Compiling;
-        self.settled = report.activity == Activity::Idle;
-        self.scale = target.scale();
-        self.busy = report.needs_frame();
+        self.shown = Shown::Drew {
+            activity: report.activity,
+            busy: report.needs_frame(),
+        };
         self.alarm.set(report.wake_in);
         if report.idle() {
             // A failed write costs the next run its warm start, nothing else.
@@ -1422,6 +1454,10 @@ impl Map {
         // many losses in a row the runtime stops, and the map says why
         // once, as an error event, besides failing each frame.
         if self.runtime.lost() {
+            // The wakes so far are spent before the check, so the
+            // backoff's wake, landing during it, stays news.
+            self.woken.store(false, Ordering::Release);
+            self.device_woken.store(false, Ordering::Release);
             let recovered = self.runtime.recovery_due().and_then(|due| {
                 if due {
                     if target.is_window() {
@@ -1435,19 +1471,14 @@ impl Map {
                 Ok(true) => {}
                 Ok(false) => {
                     // Nothing draws until the backoff's timer wakes the
-                    // map: a host asking `needs_frame` doesn't spin.
-                    self.dirty = false;
-                    self.busy = false;
-                    self.waiting = true;
-                    self.woken.store(false, Ordering::Release);
-                    self.device_woken.store(false, Ordering::Release);
+                    // map: a host asking `needs_frame`, or waiting for a
+                    // wake, doesn't spin.
+                    self.shown = Shown::AwaitingDevice;
                     return Ok(false);
                 }
                 Err(e) => {
-                    // No device will come: the loss is no news again.
-                    self.waiting = false;
-                    self.device_woken.store(false, Ordering::Release);
-                    if !std::mem::replace(&mut self.gave_up, true) {
+                    // No device will come: nothing is news again.
+                    if std::mem::replace(&mut self.shown, Shown::GaveUp) != Shown::GaveUp {
                         self.events.push_back(Event::Map(MapEvent::Error {
                             message: e.message().to_owned(),
                         }));
@@ -1457,10 +1488,11 @@ impl Map {
             }
         }
         // The runtime replaced its device: draw on the new one, laying the
-        // tiles out again.
+        // tiles out again. A map waiting for the replacement waits no more.
         if self.device != self.runtime.shared.generation() {
             self.device = self.runtime.shared.generation();
             self.renderer = None;
+            self.shown = Shown::FRESH;
             self.dirty = true;
         }
         Ok(true)

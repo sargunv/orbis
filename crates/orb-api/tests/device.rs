@@ -30,7 +30,8 @@ const HANG_CHILD: &str = "ORB_TEST_HANG_CHILD";
 /// none, and the watchdog wakes it when the compile runs past its limit.
 /// The next frame finds the compile hung and the device lost, and the
 /// frame after fails naming it rather than make a device that would hang
-/// the same way. In a child process: the fault is set from the environment.
+/// the same way, after which the map asks for no frames, whatever it's
+/// told. In a child process: the fault is set from the environment.
 #[test]
 fn a_hung_compile_is_reported() {
     if std::env::var_os(HANG_CHILD).is_some() {
@@ -68,6 +69,7 @@ fn a_hung_compile_is_reported() {
         assert!(idle > 0, "the map waits for the watchdog's wake");
         let error = map.render(&mut target, 0.0).unwrap_err();
         assert!(error.message().contains(&hung), "{error}");
+        assert_stopped(&mut map);
         return;
     }
     let child = std::process::Command::new(std::env::current_exe().unwrap())
@@ -258,7 +260,7 @@ fn losses_in_a_row_back_off_then_stop() {
     runtime.lose_device();
     let error = map.render(&mut target, 0.0).unwrap_err();
     assert!(error.message().contains("lost 4 times"), "{error}");
-    assert!(!map.has_news(), "a stopped runtime's loss is news");
+    assert_stopped(&mut map);
     let events: Vec<_> = std::iter::from_fn(|| map.poll_event()).collect();
     let reported = events
         .iter()
@@ -273,6 +275,34 @@ fn losses_in_a_row_back_off_then_stop() {
         std::iter::from_fn(|| map.poll_event())
             .all(|e| !matches!(e, orb_api::Event::Map(orb_api::MapEvent::Error { .. }))),
         "once"
+    );
+}
+
+/// Asserts that a map whose runtime stopped replacing lost devices asks
+/// for no frames, nor once moved: a host drawing when it asks would spin.
+fn assert_stopped(map: &mut Map) {
+    assert!(
+        !map.needs_frame(),
+        "a stopped runtime's map asks for frames"
+    );
+    assert!(
+        !map.needs_repaint(),
+        "a stopped runtime's map needs repaints"
+    );
+    map.jump_to(&orb_api::CameraTarget {
+        zoom: Some(3.0),
+        ..Default::default()
+    });
+    map.ease_to(
+        &orb_api::CameraTarget {
+            zoom: Some(4.0),
+            ..Default::default()
+        },
+        &orb_api::EaseOptions::default(),
+    );
+    assert!(
+        !map.needs_frame(),
+        "a moved map of a stopped runtime asks for frames"
     );
 }
 

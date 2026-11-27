@@ -502,7 +502,7 @@ impl Runtime {
                             std::thread::sleep(wait);
                             wake();
                         })
-                        .map_err(|e| Error::Native(format!("a backoff timer: {e}")))?;
+                        .map_err(|e| recovery.fail(format!("a backoff timer: {e}")))?;
                 }
                 due
             }
