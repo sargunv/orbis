@@ -1,41 +1,43 @@
-// Callback registrations (wakes, completions) and delivery queues.
+// Callback registrations and delivery queues.
 //
-// A registration without a queue runs on the library thread that produces the
-// call; with one, the call waits in the queue until the caller dispatches it,
-// and the queue's wake says when the empty queue gains a call. On a runtime
-// thread, calls wait in its outbox until the work that raised them is done,
-// so a callback can call the library back. Runtime and session threads
-// both have one.
+// A registration's calls run on the library thread that makes them, or,
+// with a queue, wait in it until the caller dispatches them; the queue's
+// wake says when the empty queue gains a call. A library thread with an
+// outbox (runtime and session threads) holds its calls until the work that
+// raised them is done, so a callback can call the library back.
 //
-// A completion reports once whatever becomes of the work it waits for: work
-// dropped unrun, or a panic that unwound it, reports as it goes. Only inside
-// the entry point that took it does a completion go silently, as the call
-// then fails and the C API runs no callback of a failed call.
+// A registration gives its user data back once: released after its last
+// call, through its queue; abandoned to the queue's callback if the queue
+// goes first; or left with the caller when the entry point that took it
+// fails. A completion reports once whatever becomes of its work: dropped
+// unrun, it reports `MLN_STATUS_CANCELLED`, or the panic that unwound it.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
+use std::ffi::c_void;
+use std::mem::ManuallyDrop;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::base::{Failure, Result, UserData, boundary, lock, put, sized, view};
+use crate::base::{Failure, Result, UserData, boundary, lock, put, sized, to_host, view};
 use crate::handles::{self, Object};
 use crate::sys::*;
 
-pub(crate) type Call = Box<dyn FnOnce() + Send + 'static>;
+type Call = Box<dyn FnOnce() + Send + 'static>;
 
-/// A call on its way, and the user data its registration releases after
-/// it: a queue released before the call runs reports that user data as
-/// abandoned instead.
-pub(crate) struct Pending {
+/// A call on its way, and what it keeps alive until it is in its queue or
+/// has run: a release that comes of dropping it then follows the call.
+struct Pending {
     run: Call,
-    abandons: Option<UserData>,
+    keep: Option<Box<dyn Send>>,
 }
 
 thread_local! {
     /// The calls a library thread delivers once its work is done.
     static OUTBOX: RefCell<Option<Vec<(u64, Pending)>>> = const { RefCell::new(None) };
-    /// The entry points running on this thread: more than one when a
-    /// callback calls the library back.
-    static CALLS: Cell<u32> = const { Cell::new(0) };
+    /// The entry points running on this thread, innermost last: more than
+    /// one when a callback calls the library back.
+    static CALLS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     /// Completions dropped as a panic unwound this thread, for the
     /// [`catch`](crate::base::catch) that stops it to report with the
     /// panic's message.
@@ -45,6 +47,9 @@ thread_local! {
     static CATCHES: Cell<u32> = const { Cell::new(0) };
 }
 
+/// Numbers entry points, so a registration knows the call that took it.
+static NEXT_CALL: AtomicU64 = AtomicU64::new(1);
+
 /// Runs a [`catch`](crate::base::catch)'s `body`, which doesn't unwind.
 pub(crate) fn catching<R>(body: impl FnOnce() -> R) -> R {
     CATCHES.with(|c| c.set(c.get() + 1));
@@ -53,13 +58,23 @@ pub(crate) fn catching<R>(body: impl FnOnce() -> R) -> R {
     out
 }
 
-/// Runs an entry point's body, inside which a completion dropped unsent
-/// belongs to the failing call and never runs.
+/// Runs an entry point's body: a registration it takes and drops before it
+/// returns stays the caller's, as the call failed or never kept it.
 pub(crate) fn in_call<R>(body: impl FnOnce() -> R) -> R {
-    CALLS.with(|c| c.set(c.get() + 1));
+    let id = NEXT_CALL.fetch_add(1, Ordering::Relaxed);
+    CALLS.with(|c| c.borrow_mut().push(id));
     let out = body();
-    CALLS.with(|c| c.set(c.get() - 1));
+    CALLS.with(|c| c.borrow_mut().pop());
     out
+}
+
+/// The entry point running innermost on this thread, or 0.
+fn current_call() -> u64 {
+    CALLS
+        .try_with(|c| c.borrow().last().copied())
+        .ok()
+        .flatten()
+        .unwrap_or(0)
 }
 
 /// Reports the completions a panic dropped on this thread with its
@@ -97,31 +112,21 @@ pub(crate) fn flush() {
     }
 }
 
-fn send(queue: u64, call: Pending) {
+/// Runs `call` or hands it to `queue`; a call for a queue that is gone
+/// never runs.
+fn send(queue: u64, Pending { run, keep }: Pending) {
     if queue == 0 {
-        (call.run)();
-        return;
+        run();
+    } else if let Some(Object::Queue(queue)) = handles::get(queue) {
+        queue.push(run);
     }
-    // A call for a queue that went never runs.
-    if let Some(Object::Queue(queue)) = handles::get(queue) {
-        queue.push(call);
-    }
+    drop(keep);
 }
 
-/// Runs `call` on this thread (after the runtime's work) or hands it to
-/// `queue`. A call for a queue that is gone never runs.
-pub(crate) fn deliver(queue: u64, call: Call) {
-    deliver_pending(
-        queue,
-        Pending {
-            run: call,
-            abandons: None,
-        },
-    );
-}
-
-fn deliver_pending(queue: u64, call: Pending) {
-    // A completion dropped as the thread ends, its outbox gone, goes now.
+/// Runs `call` on this thread (after its work, on a library thread) or
+/// hands it to `queue`.
+fn deliver(queue: u64, call: Pending) {
+    // A call made as the thread ends, its outbox gone, goes now.
     let mut call = Some(call);
     let _ = OUTBOX.try_with(|o| {
         if let Ok(mut o) = o.try_borrow_mut()
@@ -135,136 +140,240 @@ fn deliver_pending(queue: u64, call: Pending) {
     }
 }
 
-/// Runs `call` on this thread now, or hands it to `queue`, even on a
-/// runtime thread: for calls the library makes as it goes (log records).
-pub(crate) fn deliver_now(queue: u64, call: Call) {
-    send(
-        queue,
-        Pending {
-            run: call,
-            abandons: None,
-        },
-    );
-}
-
-/// The user data of a registration that more than one library thread
-/// calls (an event handler, a custom source): each call on its way holds
-/// it, and its release goes to its queue once the registration and every
-/// such call are gone. A release sent when the registration went could
-/// otherwise reach the host before a call that another thread still held
-/// in its outbox.
-pub(crate) struct Registration {
+/// A registration's user data, and the release that gives it back.
+struct Owned {
     user_data: UserData,
     release: mln_user_data_release,
     queue: u64,
+    /// The entry point that took it.
+    call: u64,
+    /// Given back: released, abandoned, or left with the caller.
+    done: AtomicBool,
 }
 
-impl Registration {
-    pub(crate) fn new(
-        user_data: UserData,
+impl Owned {
+    /// Marks it given back, once: whether this was the time.
+    fn settle(&self) -> bool {
+        if self.done.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        if self.queue != 0
+            && let Some(Object::Queue(queue)) = handles::get(self.queue)
+        {
+            queue.untrack(self);
+        }
+        true
+    }
+
+    fn release(&self) {
+        if self.settle() {
+            self.give_back();
+        }
+    }
+
+    /// Calls the release, for the caller that settled it.
+    fn give_back(&self) {
+        if let Some(release) = self.release {
+            // SAFETY: the registration's release, called once.
+            to_host(|| unsafe { release(self.user_data.get()) });
+        }
+    }
+
+    /// Whether the entry point that took it is still running here.
+    fn in_its_call(&self) -> bool {
+        self.call != 0
+            && CALLS
+                .try_with(|c| c.borrow().contains(&self.call))
+                .unwrap_or(false)
+    }
+}
+
+/// A host's callback registration: its callback `F` (a function pointer,
+/// or a few), its user data, and the queue its calls and release go
+/// through. Dropped, it releases its user data after the calls already
+/// on their way.
+pub(crate) struct Registration<F: Copy + Send + Sync + 'static> {
+    callback: F,
+    queue: u64,
+    owned: ManuallyDrop<Arc<Owned>>,
+}
+
+impl<F: Copy + Send + Sync + 'static> Registration<F> {
+    /// `what`'s registration: none when its callback is null, which then
+    /// takes no release or queue.
+    pub(crate) fn optional(
+        callback: Option<F>,
+        user_data: *mut c_void,
+        release: mln_user_data_release,
+        queue: mln_delivery_queue,
+        what: &str,
+    ) -> Result<Option<Self>> {
+        match callback {
+            Some(callback) => Self::make(
+                callback,
+                user_data,
+                release,
+                queue.0,
+                what,
+                release.is_some(),
+            )
+            .map(Some),
+            None if release.is_some() || queue.0 != 0 => Err(Failure::argument(format!(
+                "{what} has no callback but a release or a queue"
+            ))),
+            None => Ok(None),
+        }
+    }
+
+    /// `what`'s registration, whose callback must be set.
+    pub(crate) fn required(
+        callback: Option<F>,
+        user_data: *mut c_void,
+        release: mln_user_data_release,
+        queue: mln_delivery_queue,
+        what: &str,
+    ) -> Result<Self> {
+        if callback.is_none() {
+            return Err(Failure::argument(format!("{what}.callback is null")));
+        }
+        Self::optional(callback, user_data, release, queue, what).map(|r| r.expect("a callback"))
+    }
+
+    /// A registration; one that `owns` its user data, which a release
+    /// through its queue or its last call gives back, has it reported
+    /// abandoned if the queue goes first.
+    fn make(
+        callback: F,
+        user_data: *mut c_void,
         release: mln_user_data_release,
         queue: u64,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            user_data,
+        what: &str,
+        owns: bool,
+    ) -> Result<Self> {
+        let owned = Arc::new(Owned {
+            user_data: UserData(user_data),
             release,
             queue,
+            call: current_call(),
+            done: AtomicBool::new(false),
+        });
+        if queue != 0 {
+            let q = handles::queue(queue)
+                .map_err(|f| Failure::new(f.status, format!("{what}.queue: {}", f.message)))?;
+            if owns {
+                q.track(&owned)?;
+            }
+        }
+        Ok(Self {
+            callback,
+            queue,
+            owned: ManuallyDrop::new(owned),
         })
     }
 
-    pub(crate) fn user_data(&self) -> *mut std::ffi::c_void {
-        self.user_data.get()
+    pub(crate) fn callback(&self) -> F {
+        self.callback
     }
 
-    /// Delivers `call` on the registration's queue; the registration lives
-    /// until the call has run or will never run.
-    pub(crate) fn deliver(self: &Arc<Self>, call: impl FnOnce(&Self) + Send + 'static) {
-        let this = self.clone();
-        deliver(self.queue, Box::new(move || call(&this)));
+    /// Calls the callback with its user data now, on this thread.
+    pub(crate) fn call<R>(&self, f: impl FnOnce(F, *mut c_void) -> R) -> Option<R> {
+        let user_data = self.owned.user_data;
+        to_host(|| f(self.callback, user_data.get()))
     }
-}
 
-impl Drop for Registration {
-    fn drop(&mut self) {
-        release_later(self.queue, self.release, self.user_data);
-    }
-}
-
-/// Calls a registration's `release` with its user data once, on its queue.
-pub(crate) fn release_later(queue: u64, release: mln_user_data_release, user_data: UserData) {
-    if let Some(release) = release {
-        deliver_pending(
-            queue,
+    /// Delivers a call to the callback through the registration's queue.
+    pub(crate) fn deliver(self: &Arc<Self>, f: impl FnOnce(F, *mut c_void) + Send + 'static) {
+        let (callback, user_data) = (self.callback, self.owned.user_data);
+        deliver(
+            self.queue,
             Pending {
                 run: Box::new(move || {
-                    // SAFETY: the registration's release, called once.
-                    crate::base::to_host(|| unsafe { release(user_data.get()) });
+                    to_host(|| f(callback, user_data.get()));
                 }),
-                abandons: Some(user_data),
+                keep: Some(Box::new(self.clone())),
             },
         );
     }
-}
 
-/// Checks that `queue`, when set, names a live delivery queue.
-pub(crate) fn check_queue(queue: u64, what: &str) -> Result {
-    if queue == 0 {
-        return Ok(());
+    /// Runs a call to the callback now, or hands it to its queue, even on a
+    /// library thread: for calls the library makes as it goes (log records).
+    pub(crate) fn deliver_now(&self, f: impl FnOnce(F, *mut c_void) + Send + 'static) {
+        let (callback, user_data) = (self.callback, self.owned.user_data);
+        let run: Call = Box::new(move || {
+            to_host(|| f(callback, user_data.get()));
+        });
+        send(self.queue, Pending { run, keep: None });
     }
-    handles::queue(queue)
-        .map(|_| ())
-        .map_err(|f| Failure::new(f.status, format!("{what}: {}", f.message)))
+
+    /// Delivers the registration's last call, then its release: once the
+    /// call runs, the release follows it whatever becomes of the queue.
+    pub(crate) fn finish(self, f: impl FnOnce(F, *mut c_void) + Send + 'static) {
+        let mut this = ManuallyDrop::new(self);
+        // SAFETY: taken once, and `this` is never dropped.
+        let owned = unsafe { ManuallyDrop::take(&mut this.owned) };
+        let callback = this.callback;
+        let run: Call = Box::new(move || {
+            // Unsettled, its user data went abandoned with its queue.
+            if owned.settle() {
+                to_host(|| f(callback, owned.user_data.get()));
+                owned.give_back();
+            }
+        });
+        deliver(this.queue, Pending { run, keep: None });
+    }
+
+    /// Whether the entry point that took it is still running here: one
+    /// dropped now stays the caller's, as that call fails.
+    pub(crate) fn in_its_call(&self) -> bool {
+        self.owned.in_its_call()
+    }
 }
 
-/// An `mln_wake`.
-#[derive(Clone, Copy, Debug)]
+impl<F: Copy + Send + Sync + 'static> Drop for Registration<F> {
+    fn drop(&mut self) {
+        // SAFETY: taken once, here.
+        let owned = unsafe { ManuallyDrop::take(&mut self.owned) };
+        if owned.in_its_call() {
+            owned.settle();
+        } else if owned.release.is_some() {
+            let run: Call = Box::new(move || owned.release());
+            deliver(self.queue, Pending { run, keep: None });
+        }
+    }
+}
+
+/// An `mln_wake`: a call already waiting in its queue isn't queued again.
 pub(crate) struct Wake {
-    callback: unsafe extern "C" fn(*mut std::ffi::c_void),
-    user_data: UserData,
-    release_user_data: mln_user_data_release,
-    queue: u64,
+    registration: Arc<Registration<unsafe extern "C" fn(*mut c_void)>>,
+    queued: Arc<AtomicBool>,
 }
 
 impl Wake {
-    /// A registration's wake: none when its callback is null, which then
-    /// takes no release either.
+    /// A registration's wake: none when its callback is null.
     pub(crate) fn from_c(wake: &mln_wake, what: &str) -> Result<Option<Self>> {
-        let Some(callback) = wake.callback else {
-            if wake.release_user_data.is_some() || wake.queue.0 != 0 {
-                return Err(Failure::argument(format!(
-                    "{what} has no callback but a release or a queue"
-                )));
-            }
-            return Ok(None);
-        };
-        check_queue(wake.queue.0, &format!("{what}.queue"))?;
-        Ok(Some(Self {
-            callback,
-            user_data: UserData(wake.user_data),
-            release_user_data: wake.release_user_data,
-            queue: wake.queue.0,
+        let registration = Registration::optional(
+            wake.callback,
+            wake.user_data,
+            wake.release_user_data,
+            wake.queue,
+            what,
+        )?;
+        Ok(registration.map(|r| Self {
+            registration: Arc::new(r),
+            queued: Arc::default(),
         }))
     }
 
     pub(crate) fn signal(&self) {
-        let wake = *self;
-        deliver(
-            self.queue,
-            Box::new(move || {
-                // SAFETY: the caller registered this callback and user_data.
-                crate::base::to_host(|| unsafe { (wake.callback)(wake.user_data.get()) });
-            }),
-        );
-    }
-
-    /// Calls the wake now, on this thread, whatever its queue.
-    fn signal_here(&self) {
-        // SAFETY: the caller registered this callback and user_data.
-        crate::base::to_host(|| unsafe { (self.callback)(self.user_data.get()) });
-    }
-
-    pub(crate) fn release(self) {
-        release_later(self.queue, self.release_user_data, self.user_data);
+        if self.registration.queue != 0 && self.queued.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let queued = self.queued.clone();
+        self.registration.deliver(move |callback, user_data| {
+            queued.store(false, Ordering::Release);
+            // SAFETY: the caller registered this callback and user_data.
+            unsafe { callback(user_data) }
+        });
     }
 }
 
@@ -318,32 +427,30 @@ impl Value {
     }
 }
 
-/// An `mln_completion`: runs once, then releases its user data. Dropped
+type CompletionCallback = unsafe extern "C" fn(*mut c_void, *const mln_completion_result);
+
+/// An `mln_completion`: reports once, then releases its user data. Dropped
 /// unsent outside the entry point that took it, it reports
 /// `MLN_STATUS_CANCELLED`, or the panic that dropped it.
-pub(crate) struct Completion(Registered);
-
-#[derive(Clone, Copy)]
-struct Registered {
-    callback: unsafe extern "C" fn(*mut std::ffi::c_void, *const mln_completion_result),
-    user_data: UserData,
-    release_user_data: mln_user_data_release,
-    queue: u64,
-}
+pub(crate) struct Completion(Option<Registration<CompletionCallback>>);
 
 impl Drop for Completion {
     fn drop(&mut self) {
-        if CALLS.try_with(Cell::get).unwrap_or(0) > 0 {
+        let Some(registration) = self.0.take() else {
+            return;
+        };
+        // The entry point that took it is failing: it never reports.
+        if registration.in_its_call() {
             return;
         }
         let panicking = std::thread::panicking();
-        if panicking
-            && CATCHES.try_with(Cell::get).unwrap_or(0) > 0
-            && UNWOUND
-                .try_with(|u| u.try_borrow_mut().map(|mut u| u.push(Self(self.0))))
-                .is_ok_and(|pushed| pushed.is_ok())
-        {
-            return;
+        let mut registration = Some(registration);
+        if panicking && CATCHES.try_with(Cell::get).unwrap_or(0) > 0 {
+            let _ = UNWOUND.try_with(|u| {
+                if let Ok(mut u) = u.try_borrow_mut() {
+                    u.push(Self(registration.take()));
+                }
+            });
         }
         let failure = match panicking {
             true => Failure::native("the work panicked"),
@@ -352,7 +459,9 @@ impl Drop for Completion {
                 "the work was dropped before it finished",
             ),
         };
-        self.0.send(Err(failure), 0, 0);
+        if let Some(registration) = registration {
+            send_result(registration, Err(failure), 0, 0);
+        }
     }
 }
 
@@ -370,13 +479,16 @@ impl Completion {
         let callback = c
             .callback
             .ok_or_else(|| Failure::argument("completion.callback is null"))?;
-        check_queue(c.queue.0, "completion.queue")?;
-        Ok(Some(Self(Registered {
+        // Its callback gives its user data back, release or not.
+        let registration = Registration::make(
             callback,
-            user_data: UserData(c.user_data),
-            release_user_data: c.release_user_data,
-            queue: c.queue.0,
-        })))
+            c.user_data,
+            c.release_user_data,
+            c.queue.0,
+            "completion",
+            true,
+        )?;
+        Ok(Some(Self(Some(registration))))
     }
 
     /// The completion of a query, an operation or a lifecycle call, which
@@ -398,121 +510,124 @@ impl Completion {
     /// Delivers the result of a map command whose change the render update
     /// `render_update` first shows.
     pub(crate) fn complete_update(
-        self,
+        mut self,
         result: Result<Value>,
         generation: u64,
         render_update: u64,
     ) {
-        std::mem::ManuallyDrop::new(self)
-            .0
-            .send(result, generation, render_update);
+        if let Some(registration) = self.0.take() {
+            send_result(registration, result, generation, render_update);
+        }
     }
 }
 
-impl Registered {
-    fn send(self, result: Result<Value>, generation: u64, render_update: u64) {
-        let Registered {
-            callback,
-            user_data,
-            release_user_data,
-            queue,
-        } = self;
-        deliver_pending(
-            queue,
-            Pending {
-                run: Box::new(move || {
-                    let (status, mut message, mut value) = match result {
-                        Ok(value) => (MLN_STATUS_OK, String::new(), value),
-                        Err(failure) => (failure.status, failure.message, Value::None),
+/// Delivers a completion's result, then its release.
+fn send_result(
+    registration: Registration<CompletionCallback>,
+    result: Result<Value>,
+    generation: u64,
+    render_update: u64,
+) {
+    registration.finish(move |callback, user_data| {
+        let (status, mut message, mut value) = match result {
+            Ok(value) => (MLN_STATUS_OK, String::new(), value),
+            Err(failure) => (failure.status, failure.message, Value::None),
+        };
+        let bytes_view;
+        let readback;
+        let diagnostic = crate::base::lend(&mut message);
+        let (value, value_size, value_count): (*const std::ffi::c_void, usize, usize) =
+            match &mut value {
+                Value::None => (std::ptr::null(), 0, 0),
+                Value::Text(text) => {
+                    bytes_view = crate::base::lend(text);
+                    (
+                        std::ptr::from_ref(&bytes_view).cast(),
+                        std::mem::size_of::<mln_buffer_view>(),
+                        1,
+                    )
+                }
+                Value::Readback { pixels, info } => {
+                    readback = mln_texture_readback_result {
+                        data: view(pixels),
+                        info: *info,
                     };
-                    let bytes_view;
-                    let readback;
-                    let diagnostic = crate::base::lend(&mut message);
-                    let (value, value_size, value_count): (*const std::ffi::c_void, usize, usize) =
-                        match &mut value {
-                            Value::None => (std::ptr::null(), 0, 0),
-                            Value::Text(text) => {
-                                bytes_view = crate::base::lend(text);
-                                (
-                                    std::ptr::from_ref(&bytes_view).cast(),
-                                    std::mem::size_of::<mln_buffer_view>(),
-                                    1,
-                                )
-                            }
-                            Value::Readback { pixels, info } => {
-                                readback = mln_texture_readback_result {
-                                    data: view(pixels),
-                                    info: *info,
-                                };
-                                (
-                                    std::ptr::from_ref(&readback).cast(),
-                                    std::mem::size_of::<mln_texture_readback_result>(),
-                                    1,
-                                )
-                            }
-                            Value::Structs {
-                                words, size, count, ..
-                            } => {
-                                if *count == 0 {
-                                    (std::ptr::null(), *size, 0)
-                                } else {
-                                    (words.as_ptr().cast(), *size, *count)
-                                }
-                            }
-                        };
-                    let result = mln_completion_result {
-                        size: std::mem::size_of::<mln_completion_result>() as u32,
-                        status,
-                        value_size: value_size as u32,
-                        generation,
-                        render_update_generation: render_update,
-                        diagnostic,
-                        value,
-                        value_count,
-                    };
-                    // SAFETY: the caller registered this callback and
-                    // user_data; `result` and what it points at live until
-                    // it returns.
-                    crate::base::to_host(|| unsafe { callback(user_data.get(), &result) });
-                    if let Some(release) = release_user_data {
-                        // SAFETY: the registration's release, called once.
-                        crate::base::to_host(|| unsafe { release(user_data.get()) });
+                    (
+                        std::ptr::from_ref(&readback).cast(),
+                        std::mem::size_of::<mln_texture_readback_result>(),
+                        1,
+                    )
+                }
+                Value::Structs {
+                    words, size, count, ..
+                } => {
+                    if *count == 0 {
+                        (std::ptr::null(), *size, 0)
+                    } else {
+                        (words.as_ptr().cast(), *size, *count)
                     }
-                }),
-                abandons: release_user_data.map(|_| user_data),
-            },
-        );
-    }
+                }
+            };
+        let result = mln_completion_result {
+            size: std::mem::size_of::<mln_completion_result>() as u32,
+            status,
+            value_size: value_size as u32,
+            generation,
+            render_update_generation: render_update,
+            diagnostic,
+            value,
+            value_count,
+        };
+        // SAFETY: the caller registered this callback and
+        // user_data; `result` and what it points at live until
+        // it returns.
+        unsafe { callback(user_data, &result) };
+    });
 }
 
 /// An `mln_delivery_queue`.
 pub(crate) struct DeliveryQueue {
-    calls: Mutex<VecDeque<Pending>>,
+    calls: Mutex<VecDeque<Call>>,
     dispatching: Mutex<()>,
-    wake: Option<Wake>,
+    wake: Mutex<Option<Arc<Registration<unsafe extern "C" fn(*mut c_void)>>>>,
     abandon: mln_user_data_release,
+    /// The user data of the registrations whose release goes through the
+    /// queue and hasn't run; `None` once the queue is released.
+    owned: Mutex<Option<Vec<Arc<Owned>>>>,
 }
 
 impl DeliveryQueue {
-    fn push(&self, call: Pending) {
+    fn push(&self, call: Call) {
         let was_empty = {
             let mut calls = lock(&self.calls);
             calls.push_back(call);
             calls.len() == 1
         };
-        if was_empty && let Some(wake) = &self.wake {
-            wake.signal_here();
+        // The wake may release the queue: it runs without the queue's locks.
+        let wake = if was_empty {
+            lock(&self.wake).clone()
+        } else {
+            None
+        };
+        if let Some(wake) = wake {
+            // SAFETY: the caller registered this callback and user_data.
+            wake.call(|callback, user_data| unsafe { callback(user_data) });
         }
     }
 
-    /// Reports the user data of the calls that will never run.
-    fn abandon(&self, calls: VecDeque<Pending>) {
-        for call in calls {
-            if let (Some(abandon), Some(user_data)) = (self.abandon, call.abandons) {
-                // SAFETY: the queue's registration, for user data its call
-                // would have released.
-                crate::base::to_host(|| unsafe { abandon(user_data.get()) });
+    fn track(&self, owned: &Arc<Owned>) -> Result {
+        match &mut *lock(&self.owned) {
+            Some(all) => {
+                all.push(owned.clone());
+                Ok(())
             }
+            None => Err(Failure::state("the delivery queue was released")),
+        }
+    }
+
+    fn untrack(&self, owned: &Owned) {
+        if let Some(all) = &mut *lock(&self.owned) {
+            all.retain(|o| !std::ptr::eq(&**o, owned));
         }
     }
 }
@@ -531,20 +646,28 @@ pub unsafe extern "C" fn mln_delivery_queue_create(
                 (None, None)
             } else {
                 let options = sized(options, "options")?;
-                let wake = Wake::from_c(&options.wake, "options.wake")?;
-                if wake.is_some_and(|w| w.queue != 0) {
+                let w = &options.wake;
+                if w.queue.0 != 0 {
                     return Err(Failure::argument(
                         "a delivery queue's wake can't itself go through a queue",
                     ));
                 }
+                let wake = Registration::optional(
+                    w.callback,
+                    w.user_data,
+                    w.release_user_data,
+                    w.queue,
+                    "options.wake",
+                )?;
                 (wake, options.release_abandoned_user_data)
             };
             crate::base::fresh_out(out_queue, "out_queue")?;
             let queue = DeliveryQueue {
                 calls: Mutex::default(),
                 dispatching: Mutex::default(),
-                wake,
+                wake: Mutex::new(wake.map(Arc::new)),
                 abandon,
+                owned: Mutex::new(Some(Vec::new())),
             };
             let handle = handles::insert(Object::Queue(Arc::new(queue)));
             put(out_queue, mln_delivery_queue(handle), "out_queue")
@@ -552,14 +675,24 @@ pub unsafe extern "C" fn mln_delivery_queue_create(
     }
 }
 
+/// Releases the queue: the calls waiting in it never run, and the user
+/// data of every registration whose release would go through it is
+/// reported abandoned.
 #[unsafe(no_mangle)]
 pub extern "C" fn mln_delivery_queue_release(queue: mln_delivery_queue) {
     if let Some(Object::Queue(queue)) = handles::remove(queue.0) {
-        let calls = std::mem::take(&mut *lock(&queue.calls));
-        queue.abandon(calls);
-        if let Some(wake) = queue.wake {
-            wake.release();
+        drop(std::mem::take(&mut *lock(&queue.calls)));
+        let owned = lock(&queue.owned).take().unwrap_or_default();
+        for owned in owned {
+            if !owned.done.swap(true, Ordering::AcqRel)
+                && let Some(abandon) = queue.abandon
+            {
+                // SAFETY: the queue's registration, for user data a release
+                // through it would have given back.
+                to_host(|| unsafe { abandon(owned.user_data.get()) });
+            }
         }
+        drop(lock(&queue.wake).take());
     }
 }
 
@@ -588,7 +721,7 @@ pub unsafe extern "C" fn mln_delivery_queue_dispatch(
                 let Some(call) = call else {
                     return Ok(());
                 };
-                (call.run)();
+                call();
             }
         })
     }
@@ -727,13 +860,23 @@ mod tests {
 
     #[test]
     fn a_registration_is_released_after_the_calls_other_threads_hold() {
-        let registration = Registration::new(UserData(std::ptr::null_mut()), Some(release), 0);
+        unsafe extern "C" fn callback(_: *mut std::ffi::c_void) {}
+        let registration = Arc::new(
+            Registration::required(
+                Some(callback as unsafe extern "C" fn(*mut std::ffi::c_void)),
+                std::ptr::null_mut(),
+                Some(release),
+                mln_delivery_queue(0),
+                "handler",
+            )
+            .unwrap(),
+        );
         let (queued, wait) = (mpsc::channel(), mpsc::channel::<()>());
         let library = std::thread::spawn({
             let registration = registration.clone();
             move || {
                 start_outbox();
-                registration.deliver(|_| ORDER.lock().unwrap().push("call"));
+                registration.deliver(|_, _| ORDER.lock().unwrap().push("call"));
                 drop(registration);
                 queued.0.send(()).unwrap();
                 wait.1.recv().unwrap();

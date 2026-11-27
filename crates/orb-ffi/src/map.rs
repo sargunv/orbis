@@ -12,7 +12,7 @@ use orb_api::{
     AnimationId, CameraTarget, EaseOptions, Easing, FitOptions, FlyOptions, Geodetic, Phase,
 };
 
-use crate::base::{Failure, Result, UserData, boundary, fresh_out, lock, put, sized, text};
+use crate::base::{Failure, Result, boundary, fresh_out, lock, put, sized, text};
 use crate::delivery::{self, Completion, Value};
 use crate::handles::{self, Object};
 use crate::projection::Screen;
@@ -228,12 +228,12 @@ struct Transition {
 }
 
 impl Transition {
-    fn new(animations: Vec<AnimationId>, animation: &Animation) -> Self {
+    fn new(animations: Vec<AnimationId>, animation: &mut Animation) -> Self {
         Self {
             animations,
             id: (animation.fields & MLN_ANIMATION_OPTION_TRANSITION_ID != 0)
                 .then_some(animation.transition_id),
-            handler: animation.handler,
+            handler: animation.handler.take(),
             outcome: None,
             replaced: false,
         }
@@ -248,48 +248,54 @@ impl Transition {
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct EndHandler {
-    callback: unsafe extern "C" fn(*mut std::ffi::c_void, *const mln_camera_transition_end),
-    user_data: UserData,
-    release_user_data: mln_user_data_release,
-    queue: u64,
-}
+type EndCallback = unsafe extern "C" fn(*mut std::ffi::c_void, *const mln_camera_transition_end);
+
+/// A camera command's end handler: it ends once, with how the transition
+/// ended, or as cancelled when it's dropped unended.
+pub(crate) struct EndHandler(Option<delivery::Registration<EndCallback>>);
 
 impl EndHandler {
     fn from_c(h: &mln_camera_transition_handler) -> Result<Option<Self>> {
-        let Some(callback) = h.callback else {
-            if h.release_user_data.is_some() || h.queue.0 != 0 {
-                return Err(Failure::argument(
-                    "the end handler has no callback but a release or a queue",
-                ));
-            }
-            return Ok(None);
-        };
-        delivery::check_queue(h.queue.0, "end_handler.queue")?;
-        Ok(Some(Self {
-            callback,
-            user_data: UserData(h.user_data),
-            release_user_data: h.release_user_data,
-            queue: h.queue.0,
-        }))
+        let registration = delivery::Registration::optional(
+            h.callback,
+            h.user_data,
+            h.release_user_data,
+            h.queue,
+            "end_handler",
+        )?;
+        Ok(registration.map(|r| Self(Some(r))))
     }
 
-    fn end(self, outcome: mln_camera_transition_outcome, generation: u64) {
-        delivery::deliver(
-            self.queue,
-            Box::new(move || {
-                // SAFETY: plain C data.
-                let mut end: mln_camera_transition_end = unsafe { std::mem::zeroed() };
-                end.size = std::mem::size_of::<mln_camera_transition_end>() as u32;
-                end.outcome = outcome;
-                end.generation = generation;
-                // SAFETY: the caller's registration; `end` lives until it
-                // returns.
-                crate::base::to_host(|| unsafe { (self.callback)(self.user_data.get(), &end) });
-            }),
-        );
-        delivery::release_later(self.queue, self.release_user_data, self.user_data);
+    fn end(mut self, outcome: mln_camera_transition_outcome, generation: u64) {
+        if let Some(registration) = self.0.take() {
+            Self::send(registration, outcome, generation);
+        }
+    }
+
+    fn send(
+        registration: delivery::Registration<EndCallback>,
+        outcome: mln_camera_transition_outcome,
+        generation: u64,
+    ) {
+        registration.finish(move |callback, user_data| {
+            // SAFETY: plain C data.
+            let mut end: mln_camera_transition_end = unsafe { std::mem::zeroed() };
+            end.size = std::mem::size_of::<mln_camera_transition_end>() as u32;
+            end.outcome = outcome;
+            end.generation = generation;
+            // SAFETY: the caller's registration; `end` lives until it returns.
+            unsafe { callback(user_data, &end) };
+        });
+    }
+}
+
+impl Drop for EndHandler {
+    fn drop(&mut self) {
+        if let Some(registration) = self.0.take()
+            && !registration.in_its_call()
+        {
+            Self::send(registration, MLN_CAMERA_TRANSITION_OUTCOME_CANCELLED, 0);
+        }
     }
 }
 
@@ -312,8 +318,11 @@ pub(crate) struct MapEntry {
     projection_mode: mln_projection_mode,
     bounds: mln_camera_bounds,
     prefetch_zoom_delta: u32,
+    /// The URL of the latest style request, empty for a style set as JSON.
     pub(crate) style_url: String,
-    /// The style text as loaded, without later edits.
+    /// Where the latest style request stands.
+    style_load: StyleLoad,
+    /// The text of the style drawn as it loaded, without later edits.
     loaded_style: Option<String>,
     /// The session that draws the map.
     pub(crate) session: Option<crate::session::Link>,
@@ -330,10 +339,6 @@ pub(crate) struct MapEntry {
     pub(crate) held_update: bool,
     /// A style or source change awaits its loads, for LOADING_FINISHED.
     loading: bool,
-    /// The STYLE_LOADED of the current style has been raised.
-    style_loaded: bool,
-    /// Completions of URL style loads, waiting for the style.
-    style_waiters: Vec<Completion>,
     /// Camera commands whose animations run.
     transitions: Vec<Transition>,
     /// Command groups open: while any is, a session draws none of the
@@ -372,6 +377,31 @@ pub(crate) struct MapEntry {
     /// showed everything loaded: Native's render state, for its render
     /// map events.
     pub(crate) rendered: Option<bool>,
+}
+
+/// Where a map's latest style request stands.
+enum StyleLoad {
+    /// The style drawn, if any, is the one asked for last.
+    Settled,
+    /// A style URL loads, with the completions that wait for it; the old
+    /// style draws meanwhile but takes no edits.
+    Url(Vec<Completion>),
+    /// The latest style URL failed: no style is loaded until another
+    /// request replaces it.
+    Failed,
+}
+
+impl StyleLoad {
+    /// Replaces the request, failing the completions of a URL still
+    /// loading as superseded.
+    fn replace(&mut self, next: StyleLoad) {
+        if let StyleLoad::Url(waiters) = std::mem::replace(self, next) {
+            for c in waiters {
+                let replaced = Failure::new(MLN_STATUS_CANCELLED, "a newer style replaced it");
+                c.complete(Err(replaced), 0);
+            }
+        }
+    }
 }
 
 /// The style projection a view draws with, from how much of a globe it
@@ -450,6 +480,11 @@ impl MapEntry {
         self.map.surface().globe_amount(self.map.zoom())
     }
 
+    /// Whether the style asked for last is in and takes edits.
+    pub(crate) fn style_loaded(&self) -> bool {
+        matches!(self.style_load, StyleLoad::Settled) && self.map.style().is_some()
+    }
+
     /// Publishes the snapshot `mln_map_get_snapshot` copies.
     pub(crate) fn publish(&self) {
         let lod = self.map.options().tile_lod;
@@ -457,7 +492,7 @@ impl MapEntry {
             size: std::mem::size_of::<mln_map_snapshot>() as u32,
             debug_flags: self.debug_flags,
             generation: self.generation,
-            fully_loaded: self.style_loaded && !self.loading,
+            fully_loaded: self.style_loaded() && !self.loading,
             rendering_stats_view_enabled: self.stats_view,
             gesture_in_progress: self.map.gesture_motion() != orb_api::GestureMotion::Still,
             // Native's `inTransition`: an animation runs. A jump that took the
@@ -650,17 +685,19 @@ fn take_events(entry: &mut MapEntry) -> Vec<Box<dyn FnOnce()>> {
             use orb_api::MapEvent as E;
             match event {
                 E::StyleLoad => {
-                    if !entry.style_loaded {
-                        entry.style_loaded = true;
-                        out.push((
-                            MLN_RUNTIME_EVENT_MAP_STYLE_LOADED,
-                            Payload::None,
-                            String::new(),
-                        ));
+                    // What the API kept of the old style goes with it.
+                    entry.style.reset();
+                    // A style set as JSON keeps its text as given.
+                    let load = std::mem::replace(&mut entry.style_load, StyleLoad::Settled);
+                    if let StyleLoad::Url(done) = load {
+                        entry.loaded_style = entry.map.style_json();
+                        waiters.extend(done.into_iter().map(|c| (c, Ok(Value::None))));
                     }
-                    entry.loaded_style =
-                        entry.loaded_style.take().or_else(|| entry.map.style_json());
-                    waiters.extend(entry.style_waiters.drain(..).map(|c| (c, Ok(Value::None))));
+                    out.push((
+                        MLN_RUNTIME_EVENT_MAP_STYLE_LOADED,
+                        Payload::None,
+                        String::new(),
+                    ));
                 }
                 E::Load | E::Idle => {
                     if std::mem::take(&mut entry.loading) {
@@ -724,10 +761,9 @@ fn take_events(entry: &mut MapEntry) -> Vec<Box<dyn FnOnce()>> {
                     Payload::StyleImage(name),
                     String::new(),
                 )),
-                // A failure before the style loaded is the style's; later
-                // ones are a source's, a tile's or a sprite's, which
-                // MapLibre Native logs.
-                E::Error { message } if !entry.style_loaded => {
+                // The style URL's failure fails the map's load; a source's,
+                // a tile's or a sprite's MapLibre Native logs.
+                E::Error { message } if entry.map.style_error() == Some(&message) => {
                     let error = match entry.map.style_unparsed() {
                         true => MLN_MAP_LOAD_ERROR_STYLE_PARSE,
                         false => MLN_MAP_LOAD_ERROR_STYLE_LOAD,
@@ -737,14 +773,12 @@ fn take_events(entry: &mut MapEntry) -> Vec<Box<dyn FnOnce()>> {
                         Payload::LoadingFailed(error),
                         message.clone(),
                     ));
-                    waiters.extend(entry.style_waiters.drain(..).map(|c| {
-                        (
-                            c,
-                            Err(Failure::native(format!(
-                                "the style failed to load: {message}"
-                            ))),
-                        )
-                    }));
+                    let load = std::mem::replace(&mut entry.style_load, StyleLoad::Failed);
+                    if let StyleLoad::Url(done) = load {
+                        let failure =
+                            Failure::native(format!("the style failed to load: {message}"));
+                        waiters.extend(done.into_iter().map(|c| (c, Err(failure.clone()))));
+                    }
                 }
                 E::Error { message } => crate::logging::log(MLN_LOG_SEVERITY_ERROR, &message),
                 E::Warning { message } => crate::logging::log(MLN_LOG_SEVERITY_WARNING, &message),
@@ -813,8 +847,9 @@ fn take_events(entry: &mut MapEntry) -> Vec<Box<dyn FnOnce()>> {
                         t.animations.retain(|a| *a != id);
                         t.replaced |= interrupted;
                         if t.animations.is_empty() {
-                            let t = entry.transitions.remove(i);
-                            ended.extend(t.handler.map(|h| (h, t.outcome())));
+                            let mut t = entry.transitions.remove(i);
+                            let outcome = t.outcome();
+                            ended.extend(t.handler.take().map(|h| (h, outcome)));
                         }
                     }
                 }
@@ -824,9 +859,9 @@ fn take_events(entry: &mut MapEntry) -> Vec<Box<dyn FnOnce()>> {
         // Transitions whose animations ended unreported end with the
         // camera at rest.
         if !entry.map.is_moving() {
-            for t in entry.transitions.drain(..) {
+            for mut t in entry.transitions.drain(..) {
                 let outcome = t.outcome();
-                ended.extend(t.handler.map(|h| (h, outcome)));
+                ended.extend(t.handler.take().map(|h| (h, outcome)));
             }
         }
         if !ended.is_empty() || !out.is_empty() {
@@ -1024,6 +1059,7 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                     bounds: default_bounds(),
                     prefetch_zoom_delta: 4,
                     style_url: String::new(),
+                    style_load: StyleLoad::Settled,
                     loaded_style: None,
                     session: None,
                     released: false,
@@ -1031,8 +1067,6 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                     render_update_generation: 0,
                     held_update: false,
                     loading: false,
-                    style_loaded: false,
-                    style_waiters: Vec::new(),
                     transitions: Vec::new(),
                     groups: 0,
                     ended: Vec::new(),
@@ -1135,7 +1169,11 @@ fn release(map: mln_map, completion: Option<Completion>, force: bool) -> Result 
             }
             let queries = entry.queries.drain().map(|(_, q)| q.completion);
             let still = entry.still.take();
-            for c in entry.style_waiters.drain(..).chain(queries).chain(still) {
+            let style = match std::mem::replace(&mut entry.style_load, StyleLoad::Settled) {
+                StyleLoad::Url(waiters) => waiters,
+                _ => Vec::new(),
+            };
+            for c in style.into_iter().chain(queries).chain(still) {
                 c.complete(
                     Err(Failure::new(MLN_STATUS_CANCELLED, "the map was released")),
                     0,
@@ -1702,23 +1740,12 @@ pub unsafe extern "C" fn mln_map_set_style_url(
             // The completion waits for the style.
             handle.operation(None, move |entry| {
                 entry.map.load_style_url(&url);
-                entry.style.reset();
                 entry.style_url = url;
-                entry.style_loaded = false;
-                entry.loaded_style = None;
+                entry
+                    .style_load
+                    .replace(StyleLoad::Url(completion.into_iter().collect()));
                 entry.loading = true;
                 entry.generation += 1;
-                // A load still under way is superseded.
-                for c in entry.style_waiters.drain(..) {
-                    c.complete(
-                        Err(Failure::new(
-                            MLN_STATUS_CANCELLED,
-                            "a newer style replaced it",
-                        )),
-                        0,
-                    );
-                }
-                entry.style_waiters.extend(completion);
                 entry.wake();
                 entry.event(
                     MLN_RUNTIME_EVENT_MAP_LOADING_STARTED,
@@ -1738,26 +1765,18 @@ command!(
         if json.data.is_null() || json.size == 0 {
             return Err(Failure::argument("the style JSON must not be empty"));
         }
-        let json = text(json, "json")?;
+        // Bytes that aren't UTF-8 read as U+FFFD, as Native reads them.
+        let json = String::from_utf8_lossy(crate::base::bytes(json)).into_owned();
         Ok(move |entry: &mut MapEntry| {
-            entry.style_url.clear();
-            entry.style_loaded = false;
-            entry.loading = true;
-            for c in entry.style_waiters.drain(..) {
-                c.complete(
-                    Err(Failure::new(
-                        MLN_STATUS_CANCELLED,
-                        "a newer style replaced it",
-                    )),
-                    0,
-                );
-            }
+            // A document that doesn't parse leaves the style, and a URL
+            // still loading, as they were. One that does is in, and its
+            // StyleLoad with it: the command reports it, as Native's does.
             let result = entry.map.set_style_json(&json);
             if result.is_ok() {
-                entry.style.reset();
-                // The document is in, and its StyleLoad with it: the
-                // command reports it, as Native's does, with no device.
+                entry.style_url.clear();
+                entry.style_load.replace(StyleLoad::Settled);
                 entry.loaded_style = Some(json);
+                entry.loading = true;
             }
             entry.event(
                 MLN_RUNTIME_EVENT_MAP_LOADING_STARTED,
@@ -1771,7 +1790,6 @@ command!(
                     e.message().into(),
                 );
             }
-            // A document that doesn't parse leaves the style as it was.
             result
                 .map(|()| Drawn::New)
                 .map_err(|e| Failure::argument(e.message()))
@@ -1918,7 +1936,6 @@ fn target(entry: &MapEntry, camera: &mln_camera_options) -> Result<CameraTarget>
 }
 
 /// The animation fields Orbis reads, and the end handler.
-#[derive(Clone, Copy)]
 struct Animation {
     fields: mln_animation_option_fields,
     duration_ms: f64,
@@ -1998,7 +2015,7 @@ fn update_camera(
     entry: &mut MapEntry,
     mode: mln_camera_update_mode,
     t: &CameraTarget,
-    animation: &Animation,
+    animation: &mut Animation,
 ) -> Result {
     let duration =
         (animation.fields & MLN_ANIMATION_OPTION_DURATION != 0).then_some(animation.duration_ms);
@@ -2098,12 +2115,13 @@ fn jump(entry: &mut MapEntry, to: impl FnOnce(&mut orb_api::Map)) {
 
 /// Keeps a command's animation for its end handler and its transition
 /// ID; a command that moved at once ends now.
-fn track(entry: &mut MapEntry, animation_id: Option<AnimationId>, animation: &Animation) {
+fn track(entry: &mut MapEntry, animation_id: Option<AnimationId>, animation: &mut Animation) {
     match animation_id {
         Some(a) => entry.transitions.push(Transition::new(vec![a], animation)),
         None => entry.ended.extend(
             animation
                 .handler
+                .take()
                 .map(|h| (h, MLN_CAMERA_TRANSITION_OUTCOME_COMPLETED)),
         ),
     }
@@ -2119,17 +2137,16 @@ command!(
         }
         check_camera(&update.camera)?;
         let (mode, camera) = (update.mode, update.camera);
-        let animation = Animation::from_c(&update.animation)?;
+        let mut animation = Animation::from_c(&update.animation)?;
         Ok(move |entry: &mut MapEntry| {
             let t = target(entry, &camera)?;
-            update_camera(entry, mode, &t, &animation)?;
+            update_camera(entry, mode, &t, &mut animation)?;
             Ok(Drawn::New)
         })
     }
 );
 
 /// An `mln_camera_delta`'s fields.
-#[derive(Clone, Copy)]
 struct Delta {
     fields: mln_camera_delta_fields,
     offset: mln_screen_point,
@@ -2143,7 +2160,7 @@ struct Delta {
 /// A delta on Orbis's camera: the pan moves the map's content by the
 /// offset, then zoom, rotation and tilt turn about the ground under the
 /// anchor (the camera's `around`), or the center.
-fn apply_delta(entry: &mut MapEntry, d: &Delta) -> Result {
+fn apply_delta(entry: &mut MapEntry, d: &mut Delta) -> Result {
     let has = |bit| d.fields & bit != 0;
     let animated = d.animation.fields & MLN_ANIMATION_OPTION_DURATION != 0;
     let screen = entry.screen();
@@ -2182,11 +2199,11 @@ fn apply_delta(entry: &mut MapEntry, d: &Delta) -> Result {
         MLN_CAMERA_UPDATE_MODE_JUMP
     };
     if !has(MLN_CAMERA_DELTA_ANCHOR) {
-        return update_camera(entry, mode, &t, &d.animation);
+        return update_camera(entry, mode, &t, &mut d.animation);
     }
     if pan.center.is_none() {
         t.around = entry.map.unproject(at);
-        return update_camera(entry, mode, &t, &d.animation);
+        return update_camera(entry, mode, &t, &mut d.animation);
     }
     // The pan comes first, at once (an anchor takes an offset only so):
     // the turn keeps what it put under the anchor.
@@ -2198,7 +2215,7 @@ fn apply_delta(entry: &mut MapEntry, d: &Delta) -> Result {
             ..t
         });
     });
-    track(entry, None, &d.animation);
+    track(entry, None, &mut d.animation);
     Ok(())
 }
 
@@ -2251,7 +2268,7 @@ command!(
     |map| {
         let d = *sized(delta, "delta")?;
         check_delta(&d)?;
-        let delta = Delta {
+        let mut delta = Delta {
             fields: d.fields,
             offset: d.offset,
             scale: d.scale,
@@ -2260,7 +2277,7 @@ command!(
             anchor: d.anchor,
             animation: Animation::from_c(&d.animation)?,
         };
-        Ok(job(move |entry| apply_delta(entry, &delta)))
+        Ok(job(move |entry| apply_delta(entry, &mut delta)))
     }
 );
 
@@ -2688,23 +2705,13 @@ unsafe fn fit_update(
 
 fn fit_job(
     b: mln_lat_lng_bounds,
-    (mode, fit, animation): (mln_camera_update_mode, FitOptions, Animation),
+    (mode, fit, mut animation): (mln_camera_update_mode, FitOptions, Animation),
 ) -> impl FnOnce(&mut MapEntry) -> Result<Drawn> + Send + 'static {
+    // A fit that fails leaves the camera, and its handler ends cancelled.
     job(move |entry| {
-        // A fit that fails leaves the camera, and ends its handler.
-        let camera = match camera_for(entry, b, &fit) {
-            Ok(camera) => camera,
-            Err(failure) => {
-                if let Some(handler) = animation.handler {
-                    entry
-                        .ended
-                        .push((handler, MLN_CAMERA_TRANSITION_OUTCOME_CANCELLED));
-                }
-                return Err(failure);
-            }
-        };
+        let camera = camera_for(entry, b, &fit)?;
         let t = target(entry, &camera)?;
-        update_camera(entry, mode, &t, &animation)
+        update_camera(entry, mode, &t, &mut animation)
     })
 }
 

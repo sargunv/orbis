@@ -125,7 +125,8 @@ pub(crate) struct SessionHandle {
     thread: OnceLock<ThreadId>,
     /// A pump is on its way to the thread.
     pumped: AtomicBool,
-    frame_wake: Option<Wake>,
+    /// Taken when the session ends, which releases it.
+    frame_wake: Mutex<Option<Wake>>,
     results: Mutex<Vec<mln_render_frame_result>>,
     /// Whether the frame wake was called since the last drain.
     notified: AtomicBool,
@@ -187,7 +188,7 @@ impl SessionHandle {
     fn push(&self, result: mln_render_frame_result) {
         lock(&self.results).push(result);
         if !self.notified.swap(true, Ordering::AcqRel)
-            && let Some(wake) = &self.frame_wake
+            && let Some(wake) = &*lock(&self.frame_wake)
         {
             wake.signal();
         }
@@ -406,6 +407,8 @@ pub(crate) struct SessionEntry {
     scale: f64,
     demands: VecDeque<mln_frame_demand>,
     redraw_wake: Option<Wake>,
+    /// Never called: the session's own thread does its driver work.
+    _driver_work_wake: Option<Wake>,
     redraw_signaled: bool,
     /// What paces its frames to the display, if anything does.
     pacing: Option<crate::pacer::Pacing>,
@@ -420,14 +423,6 @@ pub(crate) struct SessionEntry {
     generation: u64,
     /// The last still image, which a readback returns.
     still: Option<orb_api::Image>,
-}
-
-impl Drop for SessionEntry {
-    fn drop(&mut self) {
-        if let Some(wake) = self.redraw_wake.take() {
-            wake.release();
-        }
-    }
 }
 
 impl SessionEntry {
@@ -558,7 +553,7 @@ pub(crate) unsafe fn attach(
     unsafe { crate::base::fresh_out(out_session, "out_session")? };
     let frame_wake = Wake::from_c(&options.frame_wake, "options.frame_wake")?;
     let redraw_wake = Wake::from_c(&options.redraw_wake, "options.redraw_wake")?;
-    Wake::from_c(&options.driver_work_wake, "options.driver_work_wake")?;
+    let driver_work_wake = Wake::from_c(&options.driver_work_wake, "options.driver_work_wake")?;
     // SAFETY: as above.
     let completion = unsafe { Completion::required(completion)? };
     // What this build lacks, once every argument checks out.
@@ -602,7 +597,7 @@ pub(crate) unsafe fn attach(
         tx: Mutex::new(Some(tx)),
         thread: OnceLock::new(),
         pumped: AtomicBool::new(false),
-        frame_wake,
+        frame_wake: Mutex::new(frame_wake),
         results: Mutex::default(),
         notified: AtomicBool::new(false),
         tick: AtomicBool::new(false),
@@ -639,6 +634,7 @@ pub(crate) unsafe fn attach(
             device,
             logical,
             redraw_wake,
+            driver_work_wake,
             completion,
         };
         let core = state.core.clone();
@@ -663,6 +659,7 @@ struct Start {
     device: Option<Arc<GpuDevice>>,
     logical: mln_logical_size,
     redraw_wake: Option<Wake>,
+    driver_work_wake: Option<Wake>,
     completion: Completion,
 }
 
@@ -797,6 +794,7 @@ impl Session {
             scale,
             demands: VecDeque::new(),
             redraw_wake: start.redraw_wake,
+            _driver_work_wake: start.driver_work_wake,
             redraw_signaled: false,
             pacing: None,
             frame_generation: 0,
@@ -1043,9 +1041,7 @@ impl Session {
         settle(&self.cell, &mut map);
         drop(map);
         entry.sync_state();
-        if let Some(wake) = entry.handle.frame_wake {
-            wake.release();
-        }
+        drop(lock(&entry.handle.frame_wake).take());
     }
 }
 

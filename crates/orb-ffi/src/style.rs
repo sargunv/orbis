@@ -193,6 +193,14 @@ fn doc(entry: &MapEntry) -> Result<&orb_api::StyleDoc> {
         .ok_or_else(|| Failure::state("the style is not loaded"))
 }
 
+/// The style for an edit, which it takes only once loaded.
+fn loaded(entry: &MapEntry) -> Result<&orb_api::StyleDoc> {
+    match entry.style_loaded() {
+        true => doc(entry),
+        false => Err(Failure::state("the style is not loaded")),
+    }
+}
+
 fn layer<'a>(entry: &'a MapEntry, id: &str) -> Result<&'a Json> {
     doc(entry)?.layer(id).ok_or_else(|| {
         Failure::new(
@@ -217,7 +225,7 @@ fn source_type(source: &Json) -> &str {
 
 /// Applies `ops` as one edit; a failure is the caller's argument.
 fn edit(entry: &mut MapEntry, ops: Vec<Op>) -> Result {
-    doc(entry)?;
+    loaded(entry)?;
     let mut tx = Transaction::new();
     for op in ops {
         tx.push(op);
@@ -277,7 +285,7 @@ command!(
         let name = id(name, "property_name")?;
         let value = json_text(value, "value")?;
         Ok(job(move |entry| {
-            doc(entry)?;
+            loaded(entry)?;
             let json = parse_json(&value, "the global state value")?;
             let value = (!json.is_null()).then(|| orb_expr::Value::from_json(&json));
             edit(entry, vec![Op::SetGlobalState { key: name, value }])
@@ -377,6 +385,7 @@ command!(
     |map| {
         let source_id = id(source_id, "source_id")?;
         Ok(job(move |entry| {
+            loaded(entry)?;
             source(entry, &source_id)?;
             if is_volatile {
                 entry.style.volatile.insert(source_id);
@@ -597,7 +606,7 @@ command!(
         let json = json_text(json, "layer_json")?;
         let before = optional(before, "before_layer_id")?;
         Ok(job(move |entry| {
-            doc(entry)?;
+            loaded(entry)?;
             let layer = parse_json(&json, "the layer")?;
             let layer_id = layer
                 .get("id")
@@ -954,10 +963,26 @@ command!(
                 Slot::Paint => json.get("paint").and_then(|p| p.get(&name)),
                 Slot::Layout => json.get("layout").and_then(|p| p.get(&name)),
             };
-            Ok(value.map_or(Value::None, |v| Value::Text(native(v, color))))
+            Ok(value.map_or(Value::None, |v| Value::Text(folded(v, color))))
         })
     }
 );
+
+/// A property's value as Native reads it back: an expression that folds
+/// to a number, string or boolean, as its parse folds it, reads as that.
+fn folded(json: &Json, color: bool) -> String {
+    let expression = json
+        .as_array()
+        .and_then(|_| orb_expr::Expression::parse(json, None).ok());
+    let mut out = String::new();
+    match expression.as_ref().and_then(|e| e.constant()) {
+        Some(orb_expr::Value::Number(n)) => write_number(&mut out, *n),
+        Some(orb_expr::Value::String(s)) => write_string(&mut out, s),
+        Some(orb_expr::Value::Bool(b)) => out.push_str(if *b { "true" } else { "false" }),
+        _ => write_native(&mut out, json, color),
+    }
+    out
+}
 
 // MARK: - Light and transition
 
@@ -1088,7 +1113,7 @@ command!(
         let value = json_text(value, "value")?;
         Ok(job(move |entry| {
             root_property(&name)?;
-            doc(entry)?;
+            loaded(entry)?;
             let what = format!("style root property \"{name}\"");
             let value = parse_json(&value, &what)?;
             let value = (!value.is_null()).then_some(value);
@@ -1225,7 +1250,7 @@ command!(
                     }],
                 )?;
             } else {
-                doc(entry)?;
+                loaded(entry)?;
             }
             if has(MLN_STYLE_TRANSITION_OPTION_ENABLE_PLACEMENT_TRANSITIONS) {
                 entry.style.placement_transitions = Some(o.enable_placement_transitions);
@@ -1474,7 +1499,7 @@ command!(
             copy.options.stretch_y = std::ptr::null();
         }
         Ok(job(move |entry| {
-            doc(entry)?;
+            loaded(entry)?;
             let image = StyleImage::with_options(
                 copy.width,
                 copy.height,
@@ -1501,7 +1526,7 @@ command!(
     |map| {
         let image_id = id(image_id, "image_id")?;
         Ok(job(move |entry| {
-            doc(entry)?;
+            loaded(entry)?;
             if !entry.map.has_image(&image_id) {
                 return Err(Failure::new(
                     MLN_STATUS_NOT_FOUND,
@@ -2041,9 +2066,9 @@ const GEOMETRY_LAYER: &str = "_geojsonTileLayer";
 /// session's thread and commands on the runtime thread both call them.
 pub(crate) struct CustomSource {
     geometry: bool,
-    fetch: TileCallback,
-    cancel: Option<TileCallback>,
-    registration: std::sync::Arc<crate::delivery::Registration>,
+    /// Its fetch and cancel callbacks.
+    registration:
+        std::sync::Arc<crate::delivery::Registration<(TileCallback, Option<TileCallback>)>>,
     /// The tiles asked for and not cancelled since.
     requested: HashSet<orb_api::TileIndex>,
 }
@@ -2055,7 +2080,7 @@ impl CustomSource {
     /// Asks the host for a tile of source `id` of map `map`.
     pub(crate) fn fetch(&mut self, map: u64, id: &str, tile: orb_api::TileIndex) {
         self.requested.insert(tile);
-        self.call(self.fetch, map, id, tile);
+        self.call(|(fetch, _)| Some(fetch), map, id, tile);
     }
 
     /// Tells the host the map no longer needs the tiles `which` picks.
@@ -2068,15 +2093,26 @@ impl CustomSource {
             .collect();
         for tile in cancelled {
             self.requested.remove(&tile);
-            if let Some(cancel) = self.cancel {
-                self.call(cancel, map, id, tile);
-            }
+            self.call(|(_, cancel)| cancel, map, id, tile);
         }
     }
 
-    fn call(&self, callback: TileCallback, map: u64, id: &str, tile: orb_api::TileIndex) {
+    /// Calls the callback `which` picks, if the source has it.
+    fn call(
+        &self,
+        which: fn((TileCallback, Option<TileCallback>)) -> Option<TileCallback>,
+        map: u64,
+        id: &str,
+        tile: orb_api::TileIndex,
+    ) {
+        if which(self.registration.callback()).is_none() {
+            return;
+        }
         let id = id.to_string();
-        self.registration.deliver(move |registration| {
+        self.registration.deliver(move |callbacks, user_data| {
+            let Some(callback) = which(callbacks) else {
+                return;
+            };
             let mut id = id;
             let view = crate::base::lend(&mut id);
             let tile = mln_canonical_tile_id {
@@ -2086,9 +2122,7 @@ impl CustomSource {
             };
             // SAFETY: the source's registration; the id lives until it
             // returns.
-            crate::base::to_host(|| unsafe {
-                callback(registration.user_data(), mln_map(map), view, tile)
-            });
+            unsafe { callback(user_data, mln_map(map), view, tile) };
         });
     }
 }
@@ -2153,7 +2187,13 @@ pub unsafe extern "C" fn mln_map_add_custom_geometry_source(
             let fetch = o
                 .fetch_tile
                 .ok_or_else(|| Failure::argument("options.fetch_tile is null"))?;
-            crate::delivery::check_queue(o.queue.0, "options.queue")?;
+            let registration = crate::delivery::Registration::required(
+                Some((fetch, o.cancel_tile)),
+                o.user_data,
+                o.release_user_data,
+                o.queue,
+                "options",
+            )?;
             let has = |bit| o.fields & bit != 0;
             let min = has(MLN_CUSTOM_GEOMETRY_SOURCE_OPTION_MIN_ZOOM)
                 .then(|| custom_zoom(o.min_zoom, "min_zoom"))
@@ -2188,14 +2228,8 @@ pub unsafe extern "C" fn mln_map_add_custom_geometry_source(
             let json = custom_json(min, max)?;
             let source = CustomSource {
                 geometry: true,
-                fetch,
-                cancel: o.cancel_tile,
                 requested: HashSet::new(),
-                registration: crate::delivery::Registration::new(
-                    crate::base::UserData(o.user_data),
-                    o.release_user_data,
-                    o.queue.0,
-                ),
+                registration: std::sync::Arc::new(registration),
             };
             post::change(map, completion, move |entry| {
                 add_custom(entry, id, json, source).map(|()| Drawn::New)
@@ -2220,7 +2254,13 @@ pub unsafe extern "C" fn mln_map_add_custom_vector_source(
             let fetch = o
                 .fetch_tile
                 .ok_or_else(|| Failure::argument("options.fetch_tile is null"))?;
-            crate::delivery::check_queue(o.queue.0, "options.queue")?;
+            let registration = crate::delivery::Registration::required(
+                Some((fetch, o.cancel_tile)),
+                o.user_data,
+                o.release_user_data,
+                o.queue,
+                "options",
+            )?;
             let has = |bit| o.fields & bit != 0;
             let min = has(MLN_CUSTOM_VECTOR_SOURCE_OPTION_MIN_ZOOM)
                 .then(|| custom_zoom(o.min_zoom, "min_zoom"))
@@ -2231,14 +2271,8 @@ pub unsafe extern "C" fn mln_map_add_custom_vector_source(
             let json = custom_json(min, max)?;
             let source = CustomSource {
                 geometry: false,
-                fetch,
-                cancel: o.cancel_tile,
                 requested: HashSet::new(),
-                registration: crate::delivery::Registration::new(
-                    crate::base::UserData(o.user_data),
-                    o.release_user_data,
-                    o.queue.0,
-                ),
+                registration: std::sync::Arc::new(registration),
             };
             post::change(map, completion, move |entry| {
                 add_custom(entry, id, json, source).map(|()| Drawn::New)

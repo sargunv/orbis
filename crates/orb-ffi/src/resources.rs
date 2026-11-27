@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use orb_api::{FetchError, NetworkAnswer, NetworkDone, NetworkHook, NetworkRequest, ResourceKind};
 
-use crate::base::{Failure, Result, UserData, boundary, bytes, lock, put, sized, text};
-use crate::delivery::{self, Completion, Value};
+use crate::base::{Failure, Result, boundary, bytes, lock, put, sized, text};
+use crate::delivery::{Completion, Registration, Value};
 use crate::handles::{self, Kind, Object};
 use crate::sys::*;
 
@@ -171,22 +171,15 @@ impl Pattern {
 
 // MARK: - The provider
 
-struct Provider {
-    callback: unsafe extern "C" fn(
-        *mut std::ffi::c_void,
-        *const mln_resource_request_info,
-        mln_resource_request,
-    ),
-    user_data: UserData,
-    release_user_data: mln_user_data_release,
-    queue: u64,
-    routes: Vec<Pattern>,
-}
+type ProviderCallback = unsafe extern "C" fn(
+    *mut std::ffi::c_void,
+    *const mln_resource_request_info,
+    mln_resource_request,
+);
 
-impl Drop for Provider {
-    fn drop(&mut self) {
-        delivery::release_later(self.queue, self.release_user_data, self.user_data);
-    }
+struct Provider {
+    registration: Arc<Registration<ProviderCallback>>,
+    routes: Vec<Pattern>,
 }
 
 impl Provider {
@@ -218,49 +211,43 @@ impl Provider {
             }
         });
         handle.state().listening = Some(listening);
-        let provider = self.clone();
         let unrun = Unrun(id);
-        delivery::deliver(
-            self.queue,
-            Box::new(move || {
-                std::mem::forget(unrun);
-                let mut url = request.url.clone();
-                let mut resolved = request.url.clone();
-                let mut etag = request
-                    .prior
-                    .as_ref()
-                    .and_then(|p| p.etag.clone())
-                    .unwrap_or_default();
-                let prior = request.prior.as_ref();
-                // SAFETY: plain C data.
-                let mut info: mln_resource_request_info = unsafe { std::mem::zeroed() };
-                info.size = std::mem::size_of::<mln_resource_request_info>() as u32;
-                info.requested_url = crate::base::lend(&mut url);
-                info.resolved_url = crate::base::lend(&mut resolved);
-                info.kind = kind_of(request.kind);
-                info.prior_etag = crate::base::lend(&mut etag);
-                if let Some((offset, length)) = request.range {
-                    info.fields |= MLN_RESOURCE_REQUEST_RANGE;
-                    info.range = mln_resource_range {
-                        start: offset,
-                        end: offset + length - 1,
-                    };
-                }
-                if let Some(modified) = prior.and_then(|p| p.modified) {
-                    info.fields |= MLN_RESOURCE_REQUEST_PRIOR_MODIFIED;
-                    info.prior_modified_unix_ms = (modified as i64).saturating_mul(1000);
-                }
-                if let Some(prior) = prior {
-                    info.prior_data = prior.bytes.as_ptr();
-                    info.prior_data_size = prior.bytes.len();
-                }
-                // SAFETY: the provider's registration; `info` lives until it
-                // returns.
-                crate::base::to_host(|| unsafe {
-                    (provider.callback)(provider.user_data.get(), &info, mln_resource_request(id))
-                });
-            }),
-        );
+        self.registration.deliver(move |callback, user_data| {
+            std::mem::forget(unrun);
+            let mut url = request.url.clone();
+            let mut resolved = request.url.clone();
+            let mut etag = request
+                .prior
+                .as_ref()
+                .and_then(|p| p.etag.clone())
+                .unwrap_or_default();
+            let prior = request.prior.as_ref();
+            // SAFETY: plain C data.
+            let mut info: mln_resource_request_info = unsafe { std::mem::zeroed() };
+            info.size = std::mem::size_of::<mln_resource_request_info>() as u32;
+            info.requested_url = crate::base::lend(&mut url);
+            info.resolved_url = crate::base::lend(&mut resolved);
+            info.kind = kind_of(request.kind);
+            info.prior_etag = crate::base::lend(&mut etag);
+            if let Some((offset, length)) = request.range {
+                info.fields |= MLN_RESOURCE_REQUEST_RANGE;
+                info.range = mln_resource_range {
+                    start: offset,
+                    end: offset + length - 1,
+                };
+            }
+            if let Some(modified) = prior.and_then(|p| p.modified) {
+                info.fields |= MLN_RESOURCE_REQUEST_PRIOR_MODIFIED;
+                info.prior_modified_unix_ms = (modified as i64).saturating_mul(1000);
+            }
+            if let Some(prior) = prior {
+                info.prior_data = prior.bytes.as_ptr();
+                info.prior_data_size = prior.bytes.len();
+            }
+            // SAFETY: the provider's registration; `info` lives until it
+            // returns.
+            unsafe { callback(user_data, &info, mln_resource_request(id)) };
+        });
     }
 }
 
@@ -361,20 +348,10 @@ struct RequestState {
     listening: Option<orb_api::Listening>,
 }
 
-/// An `mln_resource_request_cancel_handler`.
-struct CancelHandler {
-    callback: unsafe extern "C" fn(*mut std::ffi::c_void, mln_resource_request),
-    user_data: UserData,
-    release_user_data: mln_user_data_release,
-    queue: u64,
-}
-
-impl CancelHandler {
-    /// Gives its user data back, as a request that ends does.
-    fn release(self) {
-        delivery::release_later(self.queue, self.release_user_data, self.user_data);
-    }
-}
+/// An `mln_resource_request_cancel_handler`: a request that ends without
+/// a cancel drops it, which gives its user data back.
+type CancelHandler =
+    Registration<unsafe extern "C" fn(*mut std::ffi::c_void, mln_resource_request)>;
 
 /// Why a request takes no answer.
 fn ended(cancelled: bool) -> Failure {
@@ -398,9 +375,7 @@ impl ResourceRequest {
         let listening = state.listening.take();
         let parts = state.parts.take().ok_or_else(|| ended(state.cancelled));
         drop(state);
-        if let Some(handler) = handler {
-            handler.release();
-        }
+        drop(handler);
         if let (Ok(parts), Some(listening)) = (&parts, listening) {
             parts.0.abort.forget(listening);
         }
@@ -427,18 +402,10 @@ impl ResourceRequest {
         let handler = state.handler.take();
         drop(state);
         if let Some(handler) = handler {
-            let (callback, user_data) = (handler.callback, handler.user_data);
-            delivery::deliver(
-                handler.queue,
-                Box::new(move || {
-                    // SAFETY: the caller's registration, with the handle it
-                    // borrows.
-                    crate::base::to_host(|| unsafe {
-                        callback(user_data.get(), mln_resource_request(id))
-                    });
-                }),
-            );
-            handler.release();
+            // SAFETY: the caller's registration, with the handle it borrows.
+            handler.finish(move |callback, user_data| unsafe {
+                callback(user_data, mln_resource_request(id))
+            });
         }
     }
 }
@@ -645,10 +612,13 @@ pub unsafe extern "C" fn mln_resource_request_set_cancel_callback(
                 unreachable!()
             };
             let h = sized(handler, "handler")?;
-            let Some(callback) = h.callback else {
-                return Err(Failure::argument("handler.callback is null"));
-            };
-            delivery::check_queue(h.queue.0, "handler.queue")?;
+            let handler = Registration::required(
+                h.callback,
+                h.user_data,
+                h.release_user_data,
+                h.queue,
+                "handler",
+            )?;
             if out_cancelled.is_null() {
                 return Err(Failure::argument("out_cancelled is null"));
             }
@@ -666,12 +636,7 @@ pub unsafe extern "C" fn mln_resource_request_set_cancel_callback(
                 return Err(ended(false));
             }
             state.registered = true;
-            state.handler = Some(CancelHandler {
-                callback,
-                user_data: UserData(h.user_data),
-                release_user_data: h.release_user_data,
-                queue: h.queue.0,
-            });
+            state.handler = Some(handler);
             put(out_cancelled, false, "out_cancelled")
         })
     }
@@ -687,33 +652,16 @@ pub extern "C" fn mln_resource_request_release(handle: mln_resource_request) {
 
 // MARK: - The resource transform
 
+type TransformCallback = unsafe extern "C" fn(
+    *mut std::ffi::c_void,
+    mln_resource_kind,
+    mln_buffer_view,
+    mln_resource_transform_request,
+);
+
 enum Transform {
     Rules(Rules),
-    Callback {
-        callback: unsafe extern "C" fn(
-            *mut std::ffi::c_void,
-            mln_resource_kind,
-            mln_buffer_view,
-            mln_resource_transform_request,
-        ),
-        user_data: UserData,
-        release_user_data: mln_user_data_release,
-        queue: u64,
-    },
-}
-
-impl Drop for Transform {
-    fn drop(&mut self) {
-        if let Transform::Callback {
-            user_data,
-            release_user_data,
-            queue,
-            ..
-        } = self
-        {
-            delivery::release_later(*queue, *release_user_data, *user_data);
-        }
-    }
+    Callback(Arc<Registration<TransformCallback>>),
 }
 
 type Rewritten = Box<dyn FnOnce(std::result::Result<String, FetchError>) + Send>;
@@ -756,8 +704,8 @@ fn with_parameters(url: &str, parameters: &[(String, String)]) -> String {
 }
 
 impl Transform {
-    fn rewrite(self: Arc<Self>, kind: ResourceKind, url: String, then: Rewritten) {
-        match &*self {
+    fn rewrite(&self, kind: ResourceKind, url: String, then: Rewritten) {
+        match self {
             Transform::Rules(rules) => {
                 let rule = rules.iter().find(|(p, _)| p.matches(kind, &url));
                 then(Ok(match rule {
@@ -765,37 +713,27 @@ impl Transform {
                     None => url,
                 }));
             }
-            Transform::Callback {
-                callback,
-                user_data,
-                queue,
-                ..
-            } => {
+            Transform::Callback(registration) => {
                 let pending = Arc::new(TransformRequest {
                     then: Mutex::new(Some(then)),
                 });
                 let id = handles::insert(Object::TransformRequest(pending));
-                let (callback, user_data) = (*callback, *user_data);
-                let (keep, unrun) = (self.clone(), Unrun(id));
-                delivery::deliver(
-                    *queue,
-                    Box::new(move || {
-                        std::mem::forget(unrun);
-                        let _keep = keep;
-                        let mut url = url;
-                        let view = crate::base::lend(&mut url);
-                        // SAFETY: the transform's registration; `url` lives
-                        // until it returns.
-                        crate::base::to_host(|| unsafe {
-                            callback(
-                                user_data.get(),
-                                kind_of(kind),
-                                view,
-                                mln_resource_transform_request(id),
-                            );
-                        });
-                    }),
-                );
+                let unrun = Unrun(id);
+                registration.deliver(move |callback, user_data| {
+                    std::mem::forget(unrun);
+                    let mut url = url;
+                    let view = crate::base::lend(&mut url);
+                    // SAFETY: the transform's registration; `url` lives until
+                    // it returns.
+                    unsafe {
+                        callback(
+                            user_data,
+                            kind_of(kind),
+                            view,
+                            mln_resource_transform_request(id),
+                        );
+                    }
+                });
             }
         }
     }
@@ -940,31 +878,16 @@ fn check_header(name: &str, value: &str) -> Result {
     Ok(())
 }
 
+type HeadersCallback = unsafe extern "C" fn(
+    *mut std::ffi::c_void,
+    mln_resource_kind,
+    mln_buffer_view,
+    *mut mln_http_header_transform_response,
+) -> mln_status;
+
 enum Headers {
     Rules(Rules),
-    Callback {
-        callback: unsafe extern "C" fn(
-            *mut std::ffi::c_void,
-            mln_resource_kind,
-            mln_buffer_view,
-            *mut mln_http_header_transform_response,
-        ) -> mln_status,
-        user_data: UserData,
-        release_user_data: mln_user_data_release,
-    },
-}
-
-impl Drop for Headers {
-    fn drop(&mut self) {
-        if let Headers::Callback {
-            user_data,
-            release_user_data,
-            ..
-        } = self
-        {
-            delivery::release_later(0, *release_user_data, *user_data);
-        }
-    }
+    Callback(Registration<HeadersCallback>),
 }
 
 std::thread_local! {
@@ -984,11 +907,7 @@ impl Headers {
                 .find(|(p, _)| p.matches(kind, url))
                 .map(|(_, h)| h.clone())
                 .unwrap_or_default()),
-            Headers::Callback {
-                callback,
-                user_data,
-                ..
-            } => {
+            Headers::Callback(registration) => {
                 let mut set: Vec<(String, String)> = Vec::new();
                 let context = std::ptr::from_mut(&mut set).cast::<std::ffi::c_void>();
                 let mut response = mln_http_header_transform_response {
@@ -1000,8 +919,8 @@ impl Headers {
                 ACTIVE.with(|a| a.borrow_mut().push(context as usize));
                 // SAFETY: the transform's registration; the response and URL
                 // live until it returns.
-                let status = crate::base::to_host(|| unsafe {
-                    callback(user_data.get(), kind_of(kind), view, &mut response)
+                let status = registration.call(|callback, user_data| unsafe {
+                    callback(user_data, kind_of(kind), view, &mut response)
                 });
                 ACTIVE.with(|a| a.borrow_mut().pop());
                 if status == Some(MLN_STATUS_OK) {
@@ -1157,10 +1076,13 @@ pub unsafe extern "C" fn mln_runtime_set_resource_provider(
         boundary(out_diagnostic, || {
             handles::runtime(runtime.0)?;
             let p = sized(provider, "provider")?;
-            let callback = p
-                .callback
-                .ok_or_else(|| Failure::argument("provider.callback is null"))?;
-            delivery::check_queue(p.queue.0, "provider.queue")?;
+            let registration = Registration::required(
+                p.callback,
+                p.user_data,
+                p.release_user_data,
+                p.queue,
+                "provider",
+            )?;
             Completion::from_c(completion)?;
             let routes = patterns(
                 p.routes,
@@ -1172,10 +1094,7 @@ pub unsafe extern "C" fn mln_runtime_set_resource_provider(
                 },
             )?;
             let provider = Arc::new(Provider {
-                callback,
-                user_data: UserData(p.user_data),
-                release_user_data: p.release_user_data,
-                queue: p.queue.0,
+                registration: Arc::new(registration),
                 routes: routes.into_iter().map(|(p, _)| p).collect(),
             });
             configure(runtime, completion, move |c| c.provider = Some(provider))
@@ -1221,15 +1140,13 @@ pub unsafe extern "C" fn mln_runtime_set_resource_transform(
                         "transform sets neither a callback nor rules",
                     ));
                 }
-                (Some(callback), _) => {
-                    delivery::check_queue(t.queue.0, "transform.queue")?;
-                    Transform::Callback {
-                        callback,
-                        user_data: UserData(t.user_data),
-                        release_user_data: t.release_user_data,
-                        queue: t.queue.0,
-                    }
-                }
+                (Some(callback), _) => Transform::Callback(Arc::new(Registration::required(
+                    Some(callback),
+                    t.user_data,
+                    t.release_user_data,
+                    t.queue,
+                    "transform",
+                )?)),
                 (None, _) => {
                     if !t.user_data.is_null() || t.release_user_data.is_some() || t.queue.0 != 0 {
                         return Err(Failure::argument(
@@ -1306,11 +1223,13 @@ pub unsafe extern "C" fn mln_runtime_set_http_header_transform(
                         "transform sets neither a callback nor rules",
                     ));
                 }
-                (Some(callback), _) => Headers::Callback {
-                    callback,
-                    user_data: UserData(t.user_data),
-                    release_user_data: t.release_user_data,
-                },
+                (Some(callback), _) => Headers::Callback(Registration::required(
+                    Some(callback),
+                    t.user_data,
+                    t.release_user_data,
+                    mln_delivery_queue(0),
+                    "transform",
+                )?),
                 (None, _) => {
                     if t.release_user_data.is_some() {
                         return Err(Failure::argument("transform's rules take no release"));

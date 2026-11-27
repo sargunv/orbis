@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
-use crate::base::{Failure, Result, UserData, boundary, lock, put, sized, text};
+use crate::base::{Failure, Result, boundary, lock, put, sized, text};
 use crate::delivery::{self, Completion, Value};
 use crate::handles::{self, Object};
 use crate::map::MapCell;
@@ -208,15 +208,17 @@ pub(crate) enum Payload {
 /// sessions' threads each send it events, so each batch on its way holds
 /// the registration: replacing the handler releases its user data after
 /// the last batch.
-pub(crate) struct EventHandler {
-    callback: unsafe extern "C" fn(*mut std::ffi::c_void, *const mln_event_batch_view),
-    registration: Arc<delivery::Registration>,
-}
+pub(crate) struct EventHandler(
+    Arc<
+        delivery::Registration<
+            unsafe extern "C" fn(*mut std::ffi::c_void, *const mln_event_batch_view),
+        >,
+    >,
+);
 
 impl EventHandler {
     fn send(&self, events: Vec<Event>) {
-        let callback = self.callback;
-        self.registration.deliver(move |registration| {
+        self.0.deliver(move |callback, user_data| {
             let mut events = events;
             let c: Vec<mln_runtime_event> = events.iter_mut().map(c_event).collect();
             let batch = mln_event_batch_view {
@@ -227,7 +229,7 @@ impl EventHandler {
             };
             // SAFETY: the caller's registration; the batch lives until it
             // returns.
-            crate::base::to_host(|| unsafe { callback(registration.user_data(), &batch) });
+            unsafe { callback(user_data, &batch) };
         });
     }
 }
@@ -580,19 +582,14 @@ pub unsafe extern "C" fn mln_runtime_set_event_handler(
         boundary(out_diagnostic, || {
             let runtime = handles::runtime(runtime.0)?;
             let h = sized(handler, "handler")?;
-            let callback = h
-                .callback
-                .ok_or_else(|| Failure::argument("handler.callback is null"))?;
-            delivery::check_queue(h.queue.0, "handler.queue")?;
+            let handler = EventHandler(Arc::new(delivery::Registration::required(
+                h.callback,
+                h.user_data,
+                h.release_user_data,
+                h.queue,
+                "handler",
+            )?));
             let completion = Completion::from_c(completion)?;
-            let handler = EventHandler {
-                callback,
-                registration: delivery::Registration::new(
-                    UserData(h.user_data),
-                    h.release_user_data,
-                    h.queue.0,
-                ),
-            };
             runtime.post(move |state| {
                 state.core.replace_handler(Some(handler));
                 state.complete(completion, Ok(Value::None), 0);

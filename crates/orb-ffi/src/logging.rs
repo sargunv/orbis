@@ -6,21 +6,20 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use crate::base::{Failure, Result, UserData, boundary, lock, sized};
-use crate::delivery::{deliver, deliver_now};
+use crate::base::{Failure, Result, boundary, lock, sized};
+use crate::delivery::Registration;
 use crate::sys::*;
 
+type LogCallback = unsafe extern "C" fn(
+    *mut std::ffi::c_void,
+    mln_log_severity,
+    mln_log_event,
+    i64,
+    mln_buffer_view,
+);
+
 struct Handler {
-    callback: unsafe extern "C" fn(
-        *mut std::ffi::c_void,
-        mln_log_severity,
-        mln_log_event,
-        i64,
-        mln_buffer_view,
-    ),
-    user_data: UserData,
-    release_user_data: mln_user_data_release,
-    queue: u64,
+    registration: Registration<LogCallback>,
     /// The severities that also go to the platform's log.
     platform: mln_log_severity_flags,
 }
@@ -103,22 +102,9 @@ fn not_reentered() -> Result {
     Ok(())
 }
 
+/// Releases a replaced handler, under the handler's lock.
 fn release(old: Option<Handler>) {
-    if let Some(Handler {
-        user_data,
-        release_user_data: Some(release),
-        queue,
-        ..
-    }) = old
-    {
-        deliver(
-            queue,
-            Box::new(move || {
-                // SAFETY: the registration's release, called once.
-                crate::base::to_host(|| in_callback(|| unsafe { release(user_data.get()) }));
-            }),
-        );
-    }
+    in_callback(|| drop(old));
 }
 
 /// Logs `message`: on this thread, or for the asynchronous severities on
@@ -149,28 +135,21 @@ fn write(severity: mln_log_severity, mut message: String) {
     if h.platform & flag(severity) != 0 {
         eprintln!("orbis: {message}");
     }
-    let (callback, user_data) = (h.callback, h.user_data);
     // A record reaches a callback without a queue at once, under the
     // handler's lock, as Native calls its observer.
-    deliver_now(
-        h.queue,
-        Box::new(move || {
-            // SAFETY: the caller's registration; the message lives until it
-            // returns. Native's records carry no code, which it reports as
-            // -1.
-            crate::base::to_host(|| {
-                in_callback(|| unsafe {
-                    callback(
-                        user_data.get(),
-                        severity,
-                        MLN_LOG_EVENT_GENERAL,
-                        -1,
-                        crate::base::lend(&mut message),
-                    )
-                })
-            });
-        }),
-    );
+    h.registration.deliver_now(move |callback, user_data| {
+        // SAFETY: the caller's registration; the message lives until it
+        // returns. Native's records carry no code, which it reports as -1.
+        in_callback(|| unsafe {
+            callback(
+                user_data,
+                severity,
+                MLN_LOG_EVENT_GENERAL,
+                -1,
+                crate::base::lend(&mut message),
+            )
+        });
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -184,16 +163,16 @@ pub unsafe extern "C" fn mln_log_set_callback(
             crate::base::watch_exit();
             not_reentered()?;
             let h = sized(handler, "handler")?;
-            let callback = h
-                .callback
-                .ok_or_else(|| Failure::argument("handler.callback is null"))?;
-            crate::delivery::check_queue(h.queue.0, "handler.queue")?;
+            let registration = Registration::required(
+                h.callback,
+                h.user_data,
+                h.release_user_data,
+                h.queue,
+                "handler",
+            )?;
             check_severities(h.platform_severities, "handler.platform_severities")?;
             let new = Handler {
-                callback,
-                user_data: UserData(h.user_data),
-                release_user_data: h.release_user_data,
-                queue: h.queue.0,
+                registration,
                 platform: h.platform_severities,
             };
             release(self::handler().replace(new));
