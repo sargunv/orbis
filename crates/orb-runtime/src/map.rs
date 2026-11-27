@@ -39,9 +39,6 @@ pub(crate) const TILE_PX: f64 = 512.0;
 /// them, no edit having been made.
 const RELOAD: u64 = 0;
 
-/// The furthest a map's wake is set out (ms): a day.
-const DAY_MS: f64 = 86_400_000.0;
-
 impl TileJob {
     /// The edit generation the job counts under until it applies
     /// ([`Map::generation`]): `None` for a load.
@@ -109,7 +106,7 @@ pub struct TerrainProbe {
 }
 
 /// What a frame did.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FrameReport {
     pub frame: FrameStats,
     pub scene: SceneStats,
@@ -150,12 +147,15 @@ pub struct FrameReport {
     /// drawn, asked the device for besides the style's pipeline set's: what
     /// the set left out, none for a complete one.
     pub pipelines_late: u32,
-    /// How long until the map wants a frame though nothing else happens:
-    /// the data a tile it draws shows expires then, or a tile or glyph
-    /// range that failed is due to be tried again, and that frame loads
-    /// it. A host that draws only when the map is woken, as an idle map
-    /// is, wakes it then. `None` while nothing waits on the clock.
-    pub wake_in: Option<std::time::Duration>,
+    /// When (ms on the services' clock, [`orb_host::Clock::now`]) the map
+    /// wants a frame though nothing else happens: the data a tile it draws
+    /// shows expires then, or a tile or glyph range that failed is due to
+    /// be tried again, and that frame loads it. A host that draws only
+    /// when the map is woken, as an idle map is, wakes it then. The same
+    /// moment is the same number each frame, so a host sets its timer
+    /// again only when this changes. `None` while nothing waits on the
+    /// clock.
+    pub wake_at: Option<f64>,
     /// The tiles under the view's centre have arrived, for every source
     /// the frame draws: what time-to-centre waits for.
     pub centre_loaded: bool,
@@ -460,7 +460,7 @@ impl NodeState {
 /// When tiles whose labels drew glyphs of a range that failed lay out
 /// again, fetching the range again: one [`Backoff`] for them all, its
 /// retry by a frame the map is woken for when it's due
-/// ([`FrameReport::wake_in`]), or at once when the host asks
+/// ([`FrameReport::wake_at`]), or at once when the host asks
 /// ([`Map::retry_failed_tiles`]).
 #[derive(Debug, Default)]
 pub(crate) struct GlyphRetry(Backoff);
@@ -784,6 +784,8 @@ pub struct Map {
     /// Chunks the last frame's cull left out for want of room.
     pub(crate) candidates_dropped: u32,
     pub(crate) services: Services,
+    /// What converts when tiles' data expires to the services' clock.
+    pub(crate) wall_lead: crate::resident::WallLead,
     pub(crate) videos: crate::video::Videos,
     pub(crate) host_tiles: crate::host_tiles::HostTiles,
     /// Heights the app gives its DEM sources, and their batches going in.
@@ -1031,6 +1033,7 @@ impl Map {
             uploading: None,
             candidates_dropped: 0,
             services,
+            wall_lead: Default::default(),
             videos: Default::default(),
             host_tiles: Default::default(),
             host_heights: Default::default(),
@@ -1211,7 +1214,7 @@ impl Map {
     /// Requests every tile that failed (the network, say) again now, as
     /// when the host learns the network is back, the reloads of expired
     /// tiles included; until then each waits out its backoff
-    /// ([`FrameReport::wake_in`]).
+    /// ([`FrameReport::wake_at`]).
     pub fn retry_failed_tiles(&mut self) {
         let Some(style) = &mut self.style else {
             return;
@@ -2262,14 +2265,10 @@ impl Map {
         // Failed tiles and glyph ranges due for a retry are asked for
         // again; a still map is woken for the next, as for the next
         // expiry.
-        // Woken no later than a day out, which the frame then measures
-        // again: a lifetime past what the clock holds is no wake.
         let now = clock.now();
-        let next = (self.retry_failed(now).into_iter())
+        report.wake_at = (self.retry_failed(now).into_iter())
             .chain(self.reload_expired(now))
             .reduce(f64::min);
-        report.wake_in = next
-            .map(|due| std::time::Duration::from_secs_f64((due - now).clamp(0.0, DAY_MS) / 1000.0));
         // Terrain's DEM and cover first: the sources cover over its
         // elevations, and drape over its tiles.
         let at = clock.now();
@@ -2965,7 +2964,8 @@ impl Map {
     /// that fails is tried again later, waiting longer each time, as a
     /// failed load is. Returns when (ms) the next is due, at `now`.
     fn reload_expired(&mut self, now: f64) -> Option<f64> {
-        let unix = self.services.clock.unix_ms();
+        self.wall_lead.read(now, self.services.clock.unix_ms());
+        let lead = &self.wall_lead;
         let style = self.style.as_mut()?;
         let (mut expired, mut next) = (Vec::new(), None::<f64>);
         for (index, source) in style.sources.iter_mut().enumerate() {
@@ -2973,7 +2973,7 @@ impl Map {
                 continue;
             };
             for (tile, resident) in pyramid.used_mut() {
-                let Some(mut due) = resident.reload_due(now, unix) else {
+                let Some(mut due) = resident.reload_due(lead) else {
                     continue;
                 };
                 // Failed until it answers with a lifetime of its own.

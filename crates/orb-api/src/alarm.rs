@@ -1,14 +1,23 @@
 //! A map's alarm: a wake at the time it last set.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Instant;
+
+use orb_host_native::NativeClock;
 
 /// Wakes a map once at the time it last set: when the data a tile it
 /// draws shows expires or a failed load is due to be tried again
-/// ([`orb_runtime::FrameReport::wake_in`]), so that a host drawing only
+/// ([`orb_runtime::FrameReport::wake_at`]), so that a host drawing only
 /// when woken draws the frame that loads it. Its
 /// thread starts with the first time set and ends with the alarm.
+///
+/// It waits on the monotonic clock, which on macOS and Linux doesn't
+/// count the system's sleep, so an expiry rings that much late on an idle
+/// map; the first frame after a wake (input, a redraw) measures the wall
+/// clock again and brings it forward.
 pub(crate) struct Alarm {
+    /// The map's services' clock, which its times are read on.
+    clock: NativeClock,
     shared: Arc<Shared>,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
@@ -25,29 +34,24 @@ struct State {
     closed: bool,
 }
 
-/// How far a time set may move before the alarm's thread hears of it:
-/// each frame sets the same expiry again, measured anew.
-const SLACK: Duration = Duration::from_millis(10);
-
 impl Alarm {
-    pub(crate) fn new(wake: Arc<dyn Fn() + Send + Sync>) -> Self {
+    pub(crate) fn new(clock: NativeClock, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         Self {
+            clock,
             shared: Arc::default(),
             wake: Some(wake),
         }
     }
 
-    /// Wakes the map `after` from now instead of when set last, or not
-    /// at all with `None`.
-    pub(crate) fn set(&mut self, after: Option<Duration>) {
-        let due = after.map(|after| Instant::now() + after);
+    /// Wakes the map at `at` (ms on its clock) instead of when set last,
+    /// or not at all with `None` or a time past what the clock holds. A
+    /// time already due wakes it at once; one set again as it was, as
+    /// each frame sets the same expiry, changes nothing.
+    pub(crate) fn set(&mut self, at: Option<f64>) {
+        let due = at.and_then(|at| self.clock.instant(at));
         {
             let mut state = lock(&self.shared.state);
-            let near = match (state.due, due) {
-                (Some(old), Some(new)) => old.max(new) - old.min(new) < SLACK,
-                (old, new) => old == new,
-            };
-            if near {
+            if state.due == due {
                 return;
             }
             state.due = due;
@@ -105,27 +109,64 @@ fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+    use std::time::Duration;
+
+    fn alarm() -> (NativeClock, Alarm, mpsc::Receiver<Instant>) {
+        let clock = NativeClock::default();
+        let (rang, rings) = mpsc::channel();
+        let alarm = Alarm::new(
+            clock,
+            Arc::new(move || {
+                let _ = rang.send(Instant::now());
+            }),
+        );
+        (clock, alarm, rings)
+    }
+
+    fn ms(clock: NativeClock) -> f64 {
+        orb_host::Clock::now(&clock)
+    }
 
     #[test]
     fn rings_once_at_the_time_last_set() {
-        let (rang, rings) = mpsc::channel();
-        let mut alarm = Alarm::new(Arc::new(move || {
-            let _ = rang.send(Instant::now());
-        }));
-        let set = Instant::now();
-        alarm.set(Some(Duration::from_secs(600)));
-        alarm.set(Some(Duration::from_millis(20)));
-        // Long before the first time set, long after the last.
-        let at = rings
+        let (clock, mut alarm, rings) = alarm();
+        alarm.set(Some(ms(clock) + 60_000.0));
+        let at = ms(clock) + 20.0;
+        alarm.set(Some(at));
+        let rang = rings.recv_timeout(Duration::from_secs(60)).expect("rang");
+        assert!(rang >= clock.instant(at).unwrap(), "rang early");
+        assert!(
+            rings.recv_timeout(Duration::from_millis(100)).is_err(),
+            "rang twice"
+        );
+    }
+
+    #[test]
+    fn a_time_set_again_as_it_was_stands() {
+        let (clock, mut alarm, rings) = alarm();
+        let at = ms(clock) + 50.0;
+        alarm.set(Some(at));
+        // Each frame till then sets it again.
+        while rings.try_recv().is_err() && ms(clock) < at + 5_000.0 {
+            alarm.set(Some(at));
+        }
+        assert!(ms(clock) >= at, "rang early");
+        // The frame it rang for sets it again, still due: it rings again.
+        alarm.set(Some(at));
+        rings
             .recv_timeout(Duration::from_secs(60))
-            .expect("the alarm rang");
-        assert!(at - set >= Duration::from_millis(20), "rang early");
-        // Unset long before it's due, it rings no more.
-        alarm.set(Some(Duration::from_millis(250)));
+            .expect("rang again");
+    }
+
+    #[test]
+    fn unset_before_it_rings() {
+        let (clock, mut alarm, rings) = alarm();
+        // Unset long before it's due.
+        alarm.set(Some(ms(clock) + 250.0));
         alarm.set(None);
-        assert_eq!(
-            rings.recv_timeout(Duration::from_millis(500)),
-            Err(mpsc::RecvTimeoutError::Timeout),
+        alarm.set(Some(f64::MAX));
+        assert!(
+            rings.recv_timeout(Duration::from_millis(500)).is_err(),
             "rang after it was unset"
         );
     }

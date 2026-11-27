@@ -224,7 +224,9 @@ impl Map {
         let (woken, wake) = wake_setting(&signal, &hook);
         let (device_woken, device_wake) = wake_setting(&signal, &hook);
         runtime.add_wake(&device_wake);
-        let mut map = orb_runtime::Map::new(runtime.services(wake.clone()), options.camera);
+        let clock = orb_host_native::NativeClock::default();
+        let services = runtime.services(clock, wake.clone());
+        let mut map = orb_runtime::Map::new(services, options.camera);
         // Phones and tablets do less a frame than desktops.
         if cfg!(any(target_os = "android", target_os = "ios")) {
             map.set_frame_budget(orb_runtime::Budget::MOBILE);
@@ -240,7 +242,7 @@ impl Map {
             signal,
             offscreen: None,
             hook,
-            alarm: crate::alarm::Alarm::new(wake.clone()),
+            alarm: crate::alarm::Alarm::new(clock, wake.clone()),
             wake,
             events: VecDeque::new(),
             finished: Arc::default(),
@@ -1374,7 +1376,7 @@ impl Map {
             activity: report.activity,
             busy: report.needs_frame(),
         };
-        self.alarm.set(report.wake_in);
+        self.alarm.set(report.wake_at);
         if report.idle() {
             // A failed write costs the next run its warm start, nothing else.
             let _ = self.runtime.save_pipeline_cache();

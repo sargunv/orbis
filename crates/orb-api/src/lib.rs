@@ -658,7 +658,11 @@ impl Runtime {
             .push(Arc::downgrade(wake));
     }
 
-    fn services(&self, wake: Arc<dyn Fn() + Send + Sync>) -> orb_runtime::Services {
+    fn services(
+        &self,
+        clock: orb_host_native::NativeClock,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    ) -> orb_runtime::Services {
         let fetch: Arc<dyn orb_host::Fetch> = match &self.shared.regions {
             Some(regions) => regions.fetch.clone(),
             None => self.shared.fetch.clone(),
@@ -672,7 +676,7 @@ impl Runtime {
         jobs.set_font_files(Arc::new(orb_host_native::FontFileFaces::new()));
         orb_runtime::Services {
             fetch,
-            clock: Arc::new(orb_host_native::NativeClock::default()),
+            clock: Arc::new(clock),
             image_decode: Arc::new(NativeImageDecode),
             images: self.shared.images.clone(),
             jobs,

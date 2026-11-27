@@ -1740,7 +1740,7 @@ fn tiles_whose_data_expires_load_again_while_drawn() {
     let report = map
         .render_until_idle(&mut target, common::DEADLINE)
         .expect("the map idles");
-    assert_eq!(report.wake_in, None);
+    assert_eq!(report.wake_at, None);
     assert_eq!(requests.load(Ordering::SeqCst), 3);
 }
 
@@ -1782,6 +1782,8 @@ fn failed_tiles_wake_an_idle_map_for_their_retry() {
     });
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
     let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    // The map's clock reads 0 no sooner than this.
+    let born = std::time::Instant::now();
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(&format!(
         r##"{{"version": 8, "center": [0, 0], "zoom": 0,
@@ -1807,20 +1809,18 @@ fn failed_tiles_wake_an_idle_map_for_their_retry() {
     assert!(failed >= 1);
     // Idle until the backoff ends: a second after the first failure,
     // doubling with each further one.
-    let wake_in = report.wake_in.expect("a wake for the retry");
+    let wake_at = report.wake_at.expect("a wake for the retry");
+    let due = born + Duration::from_secs_f64(wake_at / 1000.0);
     assert!(
-        wake_in <= Duration::from_secs(1 << (failed - 1)),
-        "{wake_in:?} after {failed} failures"
+        due <= drawn + Duration::from_secs(1 << (failed - 1)),
+        "due {:?} after {failed} failures",
+        due - drawn
     );
     assert!(!map.needs_frame(), "a map waiting for a retry is idle");
     up.store(true, Ordering::SeqCst);
     common::wake(&map);
-    // The alarm's slack aside.
-    assert!(
-        drawn.elapsed() + Duration::from_millis(20) >= wake_in,
-        "woken {:?} early",
-        wake_in - drawn.elapsed()
-    );
+    let woken = std::time::Instant::now();
+    assert!(woken >= due, "woken {:?} early", due - woken);
     assert_eq!(
         requests.load(Ordering::SeqCst),
         failed,
@@ -1832,7 +1832,7 @@ fn failed_tiles_wake_an_idle_map_for_their_retry() {
         .expect("the map idles");
     assert_eq!(centre(&target), [0, 0, 255, 255], "the retried tile");
     assert_eq!(requests.load(Ordering::SeqCst), failed + 1);
-    assert_eq!(report.wake_in, None, "nothing left to retry");
+    assert_eq!(report.wake_at, None, "nothing left to retry");
 }
 
 /// A continuous map draws a tile its HTTP cache holds stale at once and
@@ -2001,7 +2001,7 @@ fn stale_cached_tiles_the_server_confirms_settle() {
     let report = map
         .render_until_idle(&mut target, common::DEADLINE)
         .expect("the map idles");
-    assert_eq!(report.wake_in, None, "a reload is due");
+    assert_eq!(report.wake_at, None, "a reload is due");
     let blue = [0, 0, 255, 255];
     assert_eq!(
         pixel(&target.read_pixels().unwrap(), SIZE / 2, SIZE / 2),

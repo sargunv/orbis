@@ -535,25 +535,31 @@ fn a_reload_its_server_puts_off_waits_as_long_as_it_asks() {
         for _ in 0..200 {
             let report = map.frame();
             if report.idle() {
-                return report.wake_in;
+                return report.wake_at;
             }
             clock.advance(100.0);
         }
         panic!("the map never idled");
     };
     let wake = settle(&mut map).expect("woken for the expiry");
-    assert_eq!(requests().len(), 1);
-    assert!(wake.as_secs_f64() <= 60.0, "woken in {wake:?}");
+    let asked = requests();
+    assert_eq!(asked.len(), 1);
+    // Its minute, from the whole second the server dated it by, and the
+    // second an expiry waits so as never to wake the map before it.
+    let lifetime = wake - asked[0];
+    assert!(
+        (60_000.0..=61_000.0).contains(&lifetime),
+        "woken {lifetime} ms after the load"
+    );
     // Asleep past the tile's minute: the first frame on waking reloads it.
     clock.sleep(3_600_000.0);
     map.frame();
     assert_eq!(requests().len(), 2, "the expired tile drawn on waking");
     // The reload, put off: woken for the server's wait.
-    let wake = settle(&mut map).expect("woken for the retry");
+    let due = settle(&mut map).expect("woken for the retry");
     let asked = requests();
     assert_eq!(asked.len(), 2, "{asked:?}");
     // From when the map heard the answer, a frame or so after the ask.
-    let due = orb_host::Clock::now(&*clock) + wake.as_secs_f64() * 1000.0;
     let wait = due - asked[1];
     assert!(
         (30_000.0..31_000.0).contains(&wait),

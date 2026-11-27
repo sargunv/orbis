@@ -885,17 +885,17 @@ export class Engine {
     this.#loop.request();
   }
 
-  /** Wakes the map `ms` from now instead of when set last, or not at all.
-   * A later time than a timer holds (2^31 ms) wakes it sooner, to set
-   * the alarm again. */
-  #setAlarm(ms: number | undefined): void {
-    const at = ms === undefined ? Infinity : performance.now() + ms;
-    // Each frame sets the same expiry again, measured anew.
-    if (at === this.#alarmAt || Math.abs(at - this.#alarmAt) < 10) return;
+  /** Wakes the map at `at` on `performance.now()` instead of when set
+   * last, or not at all; each frame sets the same time again, which
+   * changes nothing. A later time than a timer holds (2^31 ms out) wakes
+   * it sooner, to set the alarm again. */
+  #setAlarm(at: number | undefined): void {
+    at ??= Infinity;
+    if (at === this.#alarmAt) return;
     clearTimeout(this.#alarm);
     this.#alarmAt = at;
     this.#alarm =
-      ms === undefined
+      at === Infinity
         ? undefined
         : setTimeout(
             () => {
@@ -903,7 +903,7 @@ export class Engine {
               this.#alarmAt = Infinity;
               this.wake();
             },
-            Math.min(ms, 2 ** 31 - 1),
+            Math.min(at - performance.now(), 2 ** 31 - 1),
           );
   }
 
@@ -951,7 +951,7 @@ export class Engine {
     this.#stats = stats;
     // The data a drawn tile shows expires then, or a failed load is due
     // again: a frame loads it.
-    this.#setAlarm(stats.wakeInMs);
+    this.#setAlarm(stats.wakeAt);
     this.#drain();
     // A frame held back while compiles run drew nothing: no `render`, and
     // a map that lost its GPU isn't restored until a frame draws.

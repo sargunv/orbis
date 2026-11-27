@@ -903,8 +903,18 @@ fn encode_url(url: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// A monotonic animation clock, local to a runtime.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct NativeClock(std::time::Instant);
+
+impl NativeClock {
+    /// The instant this clock reads `ms` at, the same each time it's
+    /// asked, or `None` past what an [`Instant`](std::time::Instant)
+    /// holds.
+    pub fn instant(&self, ms: f64) -> Option<std::time::Instant> {
+        let after = std::time::Duration::try_from_secs_f64(ms.max(0.0) / 1000.0).ok()?;
+        self.0.checked_add(after)
+    }
+}
 
 impl Default for NativeClock {
     fn default() -> Self {

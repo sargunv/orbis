@@ -77,12 +77,46 @@ impl ResidentTile {
         self.reloads.succeeded();
     }
 
-    /// When (ms on the monotonic clock, at `now` there and `unix` on the
-    /// wall clock) it loads again if drawn: when a reload is due again,
-    /// while one is under way or failed, else when its data expires,
-    /// measured again each time it's asked.
-    pub(crate) fn reload_due(&self, now: f64, unix: f64) -> Option<f64> {
-        (self.reloads.due()).or(self.expires.map(|expires| now + (expires - unix)))
+    /// When (ms on the monotonic clock) it loads again if drawn: when a
+    /// reload is due again, while one is under way or failed, else when
+    /// its data expires, converted with the wall clock's `lead`.
+    pub(crate) fn reload_due(&self, lead: &WallLead) -> Option<f64> {
+        (self.reloads.due()).or(self.expires.map(|expires| lead.due(expires)))
+    }
+}
+
+/// The wall clock's lead over the services' monotonic one (ms): what
+/// converts when data expires, a moment on the wall clock that HTTP's
+/// lifetimes are measured on, into a due time on the monotonic clock that
+/// frames and the map's wake are measured on. Read each frame, the lead
+/// moves by the reads' jitter (`Date.now()` counts whole milliseconds),
+/// which it keeps out, so that one expiry is the same due time each frame
+/// and a host keeps one timer for it; and by the system's sleeps and
+/// clock changes, which the monotonic clock doesn't count, which it takes.
+#[derive(Debug, Default)]
+pub(crate) struct WallLead(Option<f64>);
+
+impl WallLead {
+    /// How far a reading strays from the lead kept before it's taken
+    /// (ms): past any read's jitter (Firefox's fingerprinting resistance
+    /// rounds its clocks to 100 ms) and what NTP's slewing, at most half a
+    /// millisecond a second, moves in half an hour.
+    const STRAY: f64 = 1000.0;
+
+    /// Reads the clocks at `now` on the monotonic one and `unix` on the
+    /// wall clock.
+    pub(crate) fn read(&mut self, now: f64, unix: f64) {
+        let lead = unix - now;
+        if self.0.is_none_or(|kept| (lead - kept).abs() > Self::STRAY) {
+            self.0 = Some(lead);
+        }
+    }
+
+    /// When (monotonic ms) data expiring at `expires` (Unix ms) is due
+    /// again: never before it expires, the lead kept being off by
+    /// [`STRAY`](Self::STRAY) at most, nor more than twice that after.
+    pub(crate) fn due(&self, expires: f64) -> f64 {
+        expires - self.0.unwrap_or(0.0) + Self::STRAY
     }
 }
 
@@ -620,4 +654,35 @@ pub(crate) fn release_resident(tile: ResidentTile, states: &mut FeatureStates) -
         ramps.append(&mut mesh.ramps);
     }
     ramps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WallLead;
+
+    /// One expiry is one due time while the clocks' reads jitter, never
+    /// before the wall clock passes it; a sleep the monotonic clock
+    /// doesn't count brings it closer at once.
+    #[test]
+    fn an_expiry_keeps_its_due_time_until_the_clocks_part() {
+        const EPOCH: f64 = 1.7e12;
+        let expires = EPOCH + 60_000.0;
+        let mut lead = WallLead::default();
+        let mut dues = Vec::new();
+        for frame in 0..100 {
+            let now = f64::from(frame) * 16.7;
+            // `Date.now()`'s whole milliseconds beside a finer clock.
+            lead.read(now, (EPOCH + now).floor());
+            dues.push(lead.due(expires));
+        }
+        assert!(dues.iter().all(|&due| due == dues[0]), "{dues:?}");
+        assert!(dues[0] >= 60_000.0, "due at {} ms", dues[0]);
+        // An hour asleep: the wall clock ran on.
+        lead.read(2000.0, EPOCH + 2000.0 + 3_600_000.0);
+        assert!(
+            lead.due(expires) < 2000.0,
+            "due at {} ms",
+            lead.due(expires)
+        );
+    }
 }
