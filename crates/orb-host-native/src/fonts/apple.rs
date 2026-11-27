@@ -160,6 +160,9 @@ pub(super) struct Fallbacks {
     cascade: Cascade,
     /// Per CSS family list, the faces found.
     found: HashMap<String, Found>,
+    /// Per font, by PostScript name, its face in the database: finding
+    /// it scans every installed face.
+    resolved: HashMap<String, Option<fontdb::ID>>,
     /// Per `head` table, the face of a font rebuilt from its tables, so
     /// that the weights of a variable font share one copy.
     rebuilt: HashMap<Vec<u8>, Option<fontdb::ID>>,
@@ -195,51 +198,69 @@ impl Fallbacks {
         if let Some(&id) = self.found.get(families).and_then(|found| found.get(&key)) {
             return id;
         }
-        let id = self
-            .cascade
-            .fonts(families, c, weight, italic)
-            .iter()
-            .find_map(|font| self.resolve(db, font).filter(|&id| draws(db, id)));
-        let found = self.found.entry(families.to_string()).or_default();
-        found.insert(key, id);
+        let Self {
+            cascade,
+            found,
+            resolved,
+            rebuilt,
+        } = self;
+        let id = cascade.fonts(families, c, weight, italic).find_map(|font| {
+            let id = match resolved.get(&font.name) {
+                Some(&id) => id,
+                None => {
+                    let id = resolve(rebuilt, db, &font);
+                    resolved.insert(font.name.clone(), id);
+                    id
+                }
+            };
+            id.filter(|&id| draws(db, id))
+        });
+        found
+            .entry(families.to_string())
+            .or_default()
+            .insert(key, id);
         id
     }
+}
 
-    /// `font`'s face in the database: the installed file's, mapped, where
-    /// the process can name it, else its tables rebuilt into a font.
-    fn resolve(&mut self, db: &mut fontdb::Database, font: &Font) -> Option<fontdb::ID> {
-        if let Some(path) = font.path() {
-            let in_file = |face: &&fontdb::FaceInfo| match &face.source {
-                fontdb::Source::File(p) | fontdb::Source::SharedFile(p, _) => *p == path,
-                fontdb::Source::Binary(_) => false,
-            };
-            let faces: Vec<_> = db.faces().filter(in_file).collect();
-            // A variable font's PostScript name changes with the weight
-            // CoreText instanced it at; its file's only face is it.
-            let face = match faces[..] {
-                [face] => Some(face),
-                _ => faces.into_iter().find(|f| f.post_script_name == font.name),
-            };
-            if let Some(face) = face {
-                return Some(face.id);
-            }
+/// `font`'s face in the database: the installed file's, mapped, where
+/// the process can name it, else its tables rebuilt into a font, which
+/// `rebuilt` keeps by its `head` table.
+fn resolve(
+    rebuilt: &mut HashMap<Vec<u8>, Option<fontdb::ID>>,
+    db: &mut fontdb::Database,
+    font: &Font,
+) -> Option<fontdb::ID> {
+    if let Some(path) = font.path() {
+        let in_file = |face: &&fontdb::FaceInfo| match &face.source {
+            fontdb::Source::File(p) | fontdb::Source::SharedFile(p, _) => *p == path,
+            fontdb::Source::Binary(_) => false,
+        };
+        let faces: Vec<_> = db.faces().filter(in_file).collect();
+        // A variable font's PostScript name changes with the weight
+        // CoreText instanced it at; its file's only face is it.
+        let face = match faces[..] {
+            [face] => Some(face),
+            _ => faces.into_iter().find(|f| f.post_script_name == font.name),
+        };
+        if let Some(face) = face {
+            return Some(face.id);
         }
-        let head = font.table(*b"head")?;
-        // SAFETY: the table lives through this call, and nothing mutates
-        // it.
-        let head = unsafe { head.as_bytes_unchecked() }.to_vec();
-        *self.rebuilt.entry(head).or_insert_with(|| {
-            let file = std::sync::Arc::new(font.file());
-            let id = *db.load_font_source(fontdb::Source::Binary(file)).first()?;
-            // Nameless, so that no family query matches it: reached only
-            // from here, a face queried by name doesn't depend on which
-            // fallbacks were rebuilt before.
-            let mut info = db.face(id)?.clone();
-            db.remove_face(id);
-            info.families.clear();
-            Some(db.push_face_info(info))
-        })
     }
+    let head = font.table(*b"head")?;
+    // SAFETY: the table lives through this call, and nothing mutates it.
+    let head = unsafe { head.as_bytes_unchecked() }.to_vec();
+    *rebuilt.entry(head).or_insert_with(|| {
+        let file = std::sync::Arc::new(font.file());
+        let id = *db.load_font_source(fontdb::Source::Binary(file)).first()?;
+        // Nameless, so that no family query matches it: reached only from
+        // here, a face queried by name doesn't depend on which fallbacks
+        // were rebuilt before.
+        let mut info = db.face(id)?.clone();
+        db.remove_face(id);
+        info.families.clear();
+        Some(db.push_face_info(info))
+    })
 }
 
 /// The user's preferred languages, most preferred first, as BCP 47 tags.
@@ -271,20 +292,26 @@ impl Cascade {
     /// The fonts for the CSS family list `families` that have `c`, in the
     /// order Safari tries them, each the member of its family it draws at
     /// CSS weight `weight` and in italic or not.
-    fn fonts(&mut self, families: &str, c: char, weight: u16, italic: bool) -> Vec<Font> {
+    fn fonts(
+        &mut self,
+        families: &str,
+        c: char,
+        weight: u16,
+        italic: bool,
+    ) -> impl Iterator<Item = Font> {
         let languages = self.languages.get_or_insert_with(preferred_languages);
         if !self.lists.contains_key(families) {
             let fonts = list(primary(families), languages);
             self.lists.insert(families.to_string(), fonts);
         }
+        let members = &mut self.families;
         self.lists[families]
             .iter()
-            .filter(|font| font.covers(c))
-            .map(|font| {
-                let members = self
-                    .families
+            .filter(move |font| font.covers(c))
+            .map(move |font| {
+                let members = members
                     .entry(font.family())
-                    .or_insert_with_key(|family| members(family));
+                    .or_insert_with_key(|family| self::members(family));
                 members
                     .iter()
                     .filter(|m| m.font.covers(c))
@@ -292,7 +319,6 @@ impl Cascade {
                     .map_or(font, |m| &m.font)
                     .clone()
             })
-            .collect()
     }
 }
 
