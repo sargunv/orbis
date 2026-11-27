@@ -626,19 +626,20 @@ fn projections_parse_to_globes() {
         (
             Some(orb_crs::Globe {
                 handover: Some([5.0, 7.0]),
-                plane: None,
+                low: orb_crs::LowSurface::Sphere,
             }),
             0
         )
     );
     // style-spec#1865 and #1866: low-zoom planes, and transitions.
-    let equal_earth = orb_crs::Projection::from_descriptor("equal-earth").ok();
+    let equal_earth =
+        orb_crs::LowSurface::Plane(orb_crs::Projection::from_descriptor("equal-earth").unwrap());
     assert_eq!(
         globe(r#"{"type": "dev.sargunv.orbis:equal-earth"}"#),
         (
             Some(orb_crs::Globe {
                 handover: Some([6.0, 7.0]),
-                plane: equal_earth,
+                low: equal_earth,
             }),
             0
         )
@@ -650,7 +651,7 @@ fn projections_parse_to_globes() {
         (
             Some(orb_crs::Globe {
                 handover: None,
-                plane: equal_earth,
+                low: equal_earth,
             }),
             0
         )
@@ -660,7 +661,7 @@ fn projections_parse_to_globes() {
         (
             Some(orb_crs::Globe {
                 handover: Some([4.0, 5.0]),
-                plane: None,
+                low: orb_crs::LowSurface::Sphere,
             }),
             0
         )
@@ -840,7 +841,7 @@ fn world_planes_adapt_to_mercator() {
         adaptive.globe,
         Some(orb_crs::Globe {
             handover: Some([6.0, 7.0]),
-            plane: Some(equal_earth),
+            low: orb_crs::LowSurface::Plane(equal_earth),
         })
     );
     let utm = style(r#"{"type": "EPSG:32633", "dev.sargunv.orbis:transition": [8, 9]}"#);

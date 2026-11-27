@@ -1960,7 +1960,7 @@ impl Map {
         };
 
         // Tiles' patches are on the low-zoom surface the style draws on.
-        let plane = self.surface.globe().and_then(|g| g.plane);
+        let plane = self.surface.globe().and_then(|g| g.plane());
         let surface = *self.surface.projection();
         self.globe_warps.set_planes(renderer, surface, plane);
         // Views need the full projection on a low-zoom surface, and for
@@ -2728,9 +2728,9 @@ impl Map {
             && globe.handover.is_none_or(|[_, end]| zoom < end)
         {
             let grid = self.globe_warps.grid(&endpoint.tms, tile);
-            let poles = match globe.plane {
-                Some(_) => [false; 2],
-                None => orb_crs::sphere::poles(&endpoint.tms, tile),
+            let poles = match globe.low {
+                orb_crs::LowSurface::Plane(_) => [false; 2],
+                orb_crs::LowSurface::Sphere => orb_crs::sphere::poles(&endpoint.tms, tile),
             };
             if grid.iter().any(|&c| c > 1) || poles.contains(&true) {
                 let cells = bend.map_or(grid, |b| [0, 1].map(|i| b.cells[i].max(grid[i])));

@@ -50,8 +50,21 @@ pub struct Globe {
     /// second; `None` keeps it at every zoom (v8 `vertical-perspective`, or
     /// `transition: false`).
     pub handover: Option<[f64; 2]>,
-    /// The low-zoom plane; `None` for the sphere.
-    pub plane: Option<Projection>,
+    /// What the low-zoom surface is.
+    pub low: LowSurface,
+}
+
+/// A [`Globe`]'s low-zoom surface.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the size of the Option<Projection> it stands for; kept Copy like Projection"
+)]
+pub enum LowSurface {
+    /// The sphere the plane's tiles wrap around ([`sphere`](crate::sphere)).
+    Sphere,
+    /// Another plane the tiles are drawn on.
+    Plane(Projection),
 }
 
 impl Globe {
@@ -59,18 +72,31 @@ impl Globe {
     /// as GL JS hands over (`projection_factory.ts`).
     pub const V8: Self = Self {
         handover: Some([11.0, 12.0]),
-        plane: None,
+        low: LowSurface::Sphere,
     };
 
     /// The sphere at every zoom (v8 `vertical-perspective`).
     pub const SPHERE: Self = Self {
         handover: None,
-        plane: None,
+        low: LowSurface::Sphere,
     };
 
     /// The zooms a low-zoom plane hands over to Web Mercator between by
     /// default: style-spec#1865's Equal Earth, `[6, 7]`.
     pub const PLANE_HANDOVER: [f64; 2] = [6.0, 7.0];
+
+    /// Whether the low-zoom surface is the sphere.
+    pub fn is_sphere(&self) -> bool {
+        matches!(self.low, LowSurface::Sphere)
+    }
+
+    /// The low-zoom plane, unless the low-zoom surface is the sphere.
+    pub fn plane(&self) -> Option<Projection> {
+        match self.low {
+            LowSurface::Sphere => None,
+            LowSurface::Plane(plane) => Some(plane),
+        }
+    }
 
     /// How much of a globe a view at `zoom` is.
     pub fn amount(&self, zoom: f64) -> f64 {

@@ -1091,7 +1091,7 @@ impl DrapeSphere {
     /// The sphere of `surface`, for slots drawn at style zoom `zoom`
     /// ([`drape_zoom`]) with the camera over `target`.
     pub(crate) fn of(surface: &orb_crs::Surface, target: Geodetic, zoom: f64) -> Option<Self> {
-        let globe = surface.globe.filter(|g| g.plane.is_none())?;
+        let globe = surface.globe.filter(orb_crs::Globe::is_sphere)?;
         let amount = globe.amount(zoom);
         if amount == 0.0 || !surface.projection.is_web_mercator() {
             return None;

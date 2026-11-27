@@ -26,7 +26,8 @@ const CACHED: usize = 2048;
 #[derive(Debug)]
 pub(crate) struct GlobeWarps {
     surface: Projection,
-    /// The low-zoom plane, or `None` for the sphere.
+    /// The plane the surface hands over to at low zoom, if any (`None`
+    /// for the sphere or with no globe).
     plane: Option<Projection>,
     /// By set id, each set's warp onto the surface's plane (`[0]`) or the
     /// low-zoom one (`[1]`). Keyed by set first, so a lookup borrows its
@@ -63,8 +64,8 @@ impl GlobeWarps {
         }
     }
 
-    /// Puts the tiles on the surface's plane `surface` and its low-zoom
-    /// plane, or on the sphere (`None`), freeing those of others.
+    /// Puts the tiles on the surface's plane `surface` and the plane it
+    /// hands over to at low zoom, if any, freeing those of others.
     pub(crate) fn set_planes(
         &mut self,
         renderer: &mut Renderer,

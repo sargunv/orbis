@@ -491,7 +491,7 @@ fn parse_surface(
         }
         _ => None,
     });
-    let (low, handover) = if let Some(name) = from_state.as_deref().or(ty.as_str()) {
+    let globe = if let Some(name) = from_state.as_deref().or(ty.as_str()) {
         if name == "mercator" {
             return (None, None);
         }
@@ -505,7 +505,7 @@ fn parse_surface(
         }
         descriptor.kind = kind.to_string();
         match low_surface(&descriptor) {
-            Some(Ok(surface)) => surface,
+            Some(Ok(globe)) => globe,
             Some(Err(e)) => return unsupported(cx, &e.to_string()),
             None => {
                 // A coordinate reference system: the plane, or with a
@@ -516,7 +516,7 @@ fn parse_surface(
                             None,
                             Some(orb_crs::Globe {
                                 handover: Some(handover),
-                                plane: Some(plane),
+                                low: orb_crs::LowSurface::Plane(plane),
                             }),
                         ),
                         _ => (Some(plane), None),
@@ -557,35 +557,36 @@ fn parse_surface(
                 true,
                 true,
                 Some(from),
-                Some((low, _)),
+                Some(low),
                 Some(to),
                 Some("mercator"),
-            ) if items.len() == 7 && from < to => (low, Some([from, to])),
+            ) if items.len() == 7 && from < to => orb_crs::Globe {
+                handover: Some([from, to]),
+                ..low
+            },
             _ => return unsupported(cx, SUPPORTED),
         }
     };
     let globe = orb_crs::Globe {
-        handover: transition.unwrap_or(handover),
-        plane: low,
+        handover: transition.unwrap_or(globe.handover),
+        ..globe
     };
     (None, Some(globe))
 }
 
-/// A low-zoom surface: the sphere (`None`) or a plane, and the zooms it
-/// hands over to Mercator between.
-type LowSurface = (Option<orb_crs::Projection>, Option<[f64; 2]>);
-
-/// The low-zoom surface v8 names, with its default handover; `None` for
-/// other names.
+/// The low-zoom surface v8 names, with its default handover to Mercator;
+/// `None` for other names.
 fn low_surface(
     descriptor: &orb_crs::Descriptor,
-) -> Option<Result<LowSurface, orb_crs::UnknownProjection>> {
+) -> Option<Result<orb_crs::Globe, orb_crs::UnknownProjection>> {
     match descriptor.kind.as_str() {
-        "globe" => Some(Ok((None, orb_crs::Globe::V8.handover))),
-        "vertical-perspective" => Some(Ok((None, None))),
+        "globe" => Some(Ok(orb_crs::Globe::V8)),
+        "vertical-perspective" => Some(Ok(orb_crs::Globe::SPHERE)),
         "equal-earth" | "natural-earth" | "equirectangular" => Some(
-            orb_crs::Projection::new(descriptor)
-                .map(|plane| (Some(plane), Some(orb_crs::Globe::PLANE_HANDOVER))),
+            orb_crs::Projection::new(descriptor).map(|plane| orb_crs::Globe {
+                handover: Some(orb_crs::Globe::PLANE_HANDOVER),
+                low: orb_crs::LowSurface::Plane(plane),
+            }),
         ),
         _ => None,
     }

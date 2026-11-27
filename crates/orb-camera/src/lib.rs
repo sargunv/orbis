@@ -385,7 +385,7 @@ impl View {
         // over the sphere, so the two meet through the handover and the
         // ground reaches no farther past it. That horizon is the lowest
         // ground's: ground below sea level runs on past the sea's.
-        if surface.globe.is_some_and(|g| g.plane.is_none()) {
+        if surface.globe.is_some_and(|g| g.is_sphere()) {
             let r = sphere::RADIUS + floor;
             let ahead = ((r + above).powi(2) - r * r).sqrt() * px_per_m;
             let limb = ahead * pitch_sin + above_px * pitch_cos;
@@ -449,7 +449,7 @@ impl View {
         }
 
         let amount = surface.globe_amount(camera.zoom(projection));
-        let low_plane = surface.globe.and_then(|g| g.plane);
+        let low_plane = surface.globe.and_then(|g| g.plane());
         let globe = (amount > 0.0).then(|| {
             if let Some(plane) = low_plane {
                 let low = Self::on_ground(camera, viewport, &Surface::plane(plane), lowest);
@@ -1637,7 +1637,7 @@ mod tests {
     }
 
     use super::*;
-    use orb_crs::Globe;
+    use orb_crs::{Globe, LowSurface};
 
     fn mercator() -> Projection {
         *TileMatrixSet::web_mercator().projection()
@@ -2175,7 +2175,7 @@ mod tests {
             projection: mercator(),
             globe: Some(Globe {
                 handover: Some([6.0, 7.0]),
-                plane: Some(equal_earth),
+                low: LowSurface::Plane(equal_earth),
             }),
         };
         let chicago = Geodetic::new(-87.6357, 41.88155);

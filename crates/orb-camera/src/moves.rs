@@ -114,7 +114,7 @@ impl CameraState {
     /// radius on screen is its own over the ground resolution while the
     /// style zoom also moves with the target's latitude.
     pub(crate) fn on_sphere(&self, surface: &Surface) -> bool {
-        surface.globe.is_some_and(|g| g.plane.is_none())
+        surface.globe.is_some_and(|g| g.is_sphere())
             && surface.globe_amount(self.zoom(&surface.projection)) > 0.0
     }
 
@@ -1040,7 +1040,9 @@ mod tests {
     fn low_zoom_drags_hold_the_grabbed_ground() {
         let equal_earth = orb_crs::Globe {
             handover: Some([6.0, 7.0]),
-            plane: Some(orb_crs::Projection::from_descriptor("equal-earth").unwrap()),
+            low: orb_crs::LowSurface::Plane(
+                orb_crs::Projection::from_descriptor("equal-earth").unwrap(),
+            ),
         };
         for (globe, cameras) in [
             (
@@ -1079,7 +1081,7 @@ mod tests {
                     let p = view.project(mercator().forward(ground)).unwrap();
                     assert!(p.distance(to) < 0.05, "{lon},{lat} z{zoom}: {p} for {to}");
                     // The sphere keeps its size, a plane its zoom.
-                    if globe.plane.is_none() {
+                    if globe.is_sphere() {
                         assert_eq!(moved.resolution, camera.resolution);
                     } else {
                         assert!((moved.zoom(&mercator()) - zoom).abs() < 1e-9);

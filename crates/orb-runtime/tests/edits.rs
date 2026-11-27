@@ -887,7 +887,7 @@ fn image_tiles_regrid_for_a_globe_after_leaving_a_plane() {
     .unwrap();
     map.map.set_previews(orb_style::Previews::ALL);
     settle(&mut map);
-    assert!(map.map.surface().globe.is_some_and(|g| g.plane.is_some()));
+    assert!(map.map.surface().globe.is_some_and(|g| !g.is_sphere()));
     map.map
         .load_style_url(&format!("file://{}", flat.display()));
     let started = Instant::now();
