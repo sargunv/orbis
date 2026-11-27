@@ -40,17 +40,28 @@ sprites once served.
   the European Union and ESA), swisstopo's swissALTI3D (open government
   data) and Austria's BEV ALS-DGM (CC BY 4.0); every source and licence is
   in [Mapterhorn's attribution list](https://mapterhorn.com/attribution).
-- `globe.json`: the Globe entry's restyle (its palette, sea depths,
-  hillshade, buildings and light), written for this repository; the entry,
-  the web demo's default, commits no basemap. Both demos load Protomaps
-  Light live from `api.protomaps.com` and restyle it with this file
-  (`globeStyle` in `../styles.js`, `globe` in orb-demo's `scenes.rs`), so it
-  keeps tracking Protomaps' upstream layers. It draws Mapterhorn's terrain
-  (as above) and [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/)
+- `globe.json`: the Globe entry's style, the web demo's default, which
+  `cargo xtask demo-data styles` bakes, offline, from `protomaps-light.json`
+  and `globe-restyle.json`, the Globe's design written for this repository:
+  its palette, sea depths, hillshade, buildings, light, globe and sky. Both
+  demos load the baked file, so the Globe moves with Protomaps' upstream
+  only when it is pinned again; `cargo test -p xtask` fails while it is
+  stale. Its tiles are
+  Protomaps' (© OpenStreetMap contributors, fetched at run time), over
+  Mapterhorn's terrain (as above) and
+  [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/)
   for the seafloor, fetched at run time: Mapzen's Terrarium PNGs, offshore
   from ETOPO1 and GEBCO; every source is in
   [their attribution list](https://github.com/tilezen/joerd/blob/master/docs/attribution.md).
   Old `?style=terrain` links open it.
+- `protomaps-light.json`: [Protomaps](https://github.com/protomaps/basemaps)'
+  Light style in English (`style@5.7.2`) as `api.protomaps.com` serves it,
+  a source or layer per line; `cargo xtask demo-data protomaps` pins it
+  again from upstream and rebakes `globe.json`. No entry loads it.
+- `earthquake.json`: the Earthquake entry's style, baked by the same task
+  from `alps.json`, its Mapterhorn sources made one `raster-dem` source the
+  app feeds heights to (`orbis-host:`), with a marker on the Matterhorn;
+  `cargo test -p xtask` fails while it is stale.
 - `osm-carto.json`: OpenStreetMap's standard raster tiles from
   `tile.openstreetmap.org`, under its [tile usage policy](https://operations.osmfoundation.org/policies/tiles/):
   attributed, fetched only as the map shows them, with the browser's
@@ -70,8 +81,10 @@ sprites once served.
 Reproduce from the repository root:
 
 ```sh
-cargo xtask demo-data   # HTTP ranges → both archives and manifest; Liberty's labels, sprite and glyph subsets
-cargo test -p xtask     # the MLT archive decodes to the same columns as the MVT one
+cargo xtask demo-data   # HTTP ranges → both archives and manifest; Liberty's labels, sprite and glyph subsets; the baked styles
+cargo xtask demo-data styles   # the baked styles alone, offline
+cargo xtask demo-data protomaps   # pin Protomaps Light as it is served now, then bake
+cargo test -p xtask     # the MLT archive decodes to the same columns as the MVT one; the baked styles are fresh
 cargo run --release -p orb-cli -- render web/demo/data/tokyo-mvt.json -o /tmp/tokyo-mvt.png --at 139.74,35.685,15
 cargo run --release -p orb-cli -- render web/demo/data/tokyo-mlt.json -o /tmp/tokyo-mlt.png --at 139.74,35.685,15
 cargo xtask web

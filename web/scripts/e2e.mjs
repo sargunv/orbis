@@ -48,8 +48,8 @@
 //   camera, with the app's images and constraints, taking input; a WebGL 2
 //   context never restored stopping the map, saying why; and a GPU lost
 //   four times in a row restored three times, then stopping the map.
-// - `options`: the Globe's map options, offline (the Tokyo extract's style
-//   standing in for Protomaps Light): by default it loads with every
+// - `options`: the Globe's map options, offline (every request off the
+//   demo server failing): by default it loads with every
 //   Orbis-only preview off and none of their keys in its style, the URL's
 //   choices (its preview on) apply as it loads, clicks and keys edit the
 //   live style without a reload and keep the URL, options that need
@@ -133,9 +133,9 @@
 // - `android`: the map app in Chrome on this worktree's Android emulator
 //   (`scripts/android-serial`, booted on demand; `--android=physical` the
 //   phone assigned to it): the Tokyo extract, the Alps terrain style and
-//   the Globe, offline, on WebGPU and WebGL 2, each reaching idle with no
-//   call GL rejected (the emulator's Chrome logs them), or failing with
-//   what the map was doing.
+//   the Globe, offline (the latter two without tiles), on WebGPU and
+//   WebGL 2, each reaching idle with no call GL rejected (the emulator's
+//   Chrome logs them), or failing with what the map was doing.
 //
 //   pnpm e2e [--browsers=chromium,firefox,webkit] [--only=scenario,webgl2,edits,playground,switching,light,terrain,failing,recovery,options,resize,ratio,flicker,compare,gestures,readback,boot,split,regions,android,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
@@ -2238,31 +2238,13 @@ async function recovery(browser, server) {
 }
 
 /**
- * The Globe entry offline: Protomaps Light stood in for by the Tokyo
- * extract's style, with a buildings layer to extrude.
+ * The Globe entry offline: its style from the demo server, every request
+ * off it (tiles, DEM tiles, glyphs and sprites) failing.
  */
 async function offlineGlobe(page, server) {
-  const tokyo = await tokyoStyle(server);
-  const style = {
-    ...tokyo,
-    layers: [
-      ...tokyo.layers,
-      {
-        id: "buildings",
-        type: "fill",
-        source: "openmaptiles",
-        "source-layer": "buildings",
-        paint: { "fill-color": "#ccc" },
-      },
-    ],
-  };
   await page.route(
     (u) => !u.href.startsWith(server.url),
-    (route) => {
-      if (route.request().url().includes("api.protomaps.com/styles/"))
-        route.fulfill({ json: style });
-      else route.abort("internetdisconnected");
-    },
+    (route) => route.abort("internetdisconnected"),
   );
 }
 
@@ -3152,8 +3134,8 @@ async function quadDrawn(page) {
 
 async function split(browser, server) {
   // The feature modules each entry's style may declare: the extract is a
-  // PMTiles archive, and the Globe's style adds terrain and hillshade, the
-  // globe and GeoJSON to the extract. MLT tiles and an MBTiles archive
+  // PMTiles archive, and the Globe's style declares terrain and hillshade,
+  // the globe and GeoJSON. MLT tiles and an MBTiles archive
   // draw too, as their modules hand core.wasm the read-only data the
   // build moved into them (xtask's `data.rs`).
   const entries = [
@@ -3161,7 +3143,7 @@ async function split(browser, server) {
     [
       "globe",
       (page) => offlineGlobe(page, server),
-      ["archive", "dem", "geojson", "globe"],
+      ["dem", "geojson", "globe"],
     ],
     [
       "tokyo-mlt",
@@ -4381,10 +4363,12 @@ async function firefoxAttributeZero(server) {
  * The map app on Android, in Chrome on this worktree's emulator (or with
  * `--android=physical` the phone assigned to it, `devices-cli assign`):
  * the Tokyo extract, the Alps terrain style and the Globe (offline, as
- * `options` stands it in), on the backend the map picks and on WebGL 2,
+ * `options` loads it), on the backend the map picks and on WebGL 2,
  * each reaching idle. The demo once sat on "Loading Globe…" on phones
  * while every desktop browser drew it; a map that stops or doesn't idle
- * says what it was doing.
+ * says what it was doing. Offline, the Alps and the Globe get no tiles:
+ * they check the style's load, its pipelines, the globe and the sky, and
+ * only the extract decodes, lays out and draws tiles.
  */
 async function android(_browser, server) {
   for (const backend of ["auto", "webgl2"]) {

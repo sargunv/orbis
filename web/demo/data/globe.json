@@ -1,829 +1,100 @@
 {
-  "$comment": [
-    "The Globe entry's restyle of Protomaps Light, which web/demo/styles.js and orb-demo's scenes.rs both apply (styles.js says how).",
-    "The palette is the Globe's own: warm, calm limestone land; vegetation in muted sage that tints the globe by biome from orbit and gives way to parks close in; a sea that deepens from a pale lagoon over the shelves to slate blue over the abyss, with a faint seafloor relief from orbit; white roads with honey motorways on Protomaps' quiet hierarchy; slate-plum labels on soft halos, each text colour at least 4.5:1 against its halo (3:1 for the large ocean, country and region names).",
-    "The land's hillshade shades the fills beneath it, with the relief option, by multiplying them (style-spec#1661's `dev.sargunv.orbis:hillshade-layer-blend`), so that forests and parks keep their saturation in shade rather than greying: a near-neutral slate shadow, which darkens each colour in proportion, a warm white highlight, which tints sunlit slopes without lifting them (multiply can only darken), and a little more exaggeration than drawn normally to make up for the highlights' contrast; without the option it takes the colours its `metadata[\"demo:unblended\"]` keeps, made for it composited normally, plum shadows and white highlights. The seafloor's relief stays normal: multiplied, it looks the same over the depth ramp's blues, whose paleness over the ridges is the ramp's, and would cost a second blended layer.",
-    "Orbis's one preview here, the blended relief, is a map option, off by default, so the Globe opens as GL JS and MapLibre Native could draw it.",
-    "`terrain` stands the land on Mapterhorn's DEM at 1.3 times its height, which keeps the sea at sea level, so the seafloor's relief is only shaded; it is part of the style as designed, and the map options' switch takes it out.",
-    "`light` stands the sun 60° from overhead, turning with the view, at the spec's intensity: the buildings' faces turned to it are lit, the rest take half its light.",
-    "`paint` is set over each Protomaps layer's own by id; `hillshade` goes over the lakes' `water`; `buildings` is the extrusion put under the labels, on the flat buildings' source.",
-    "The sea hands over at zoom 6, where Protomaps' landuse starts to fade in: OpenStreetMap's national parks, nature reserves and military areas reach out to sea (Cinque Terre's, the Wadden Sea's), and only an ocean drawn over them hides them. Below it, `sea` goes over the background (the ocean, its shore colour) and under `earth`, so neither its depths nor its seafloor relief shows on land however low it lies; the relief fades out by zoom 6, since nothing keeps a hillshade off the land but the land drawn over it. From zoom 6, `ocean` goes over the landuse, before the lakes' `water`: Protomaps' ocean polygons, opaque in the shore colour, and the same depth ramp over them, transparent from 30 m deep up; then `lowland` puts the land colour back where Mapterhorn, which holds the sea at 0 m, puts the ground 20 m or more below sea level, so that the bathymetry doesn't tint Death Valley, Qattara, Turpan or the Dead Sea's shores as sea (they lose their landuse fills there instead), while polders and coastal flats, shallower, keep theirs, untinted. Mapterhorn's coastal values run a few metres below 0 in places (San Francisco, the Scheldt, the Wadden), well above the mask.",
-    "The Caspian Sea is filled as the lake it is: OpenStreetMap maps its shore as coastline, so it is among Protomaps' ocean polygons, and the bathymetry there shows its surface, 28 m below sea level, in blocks. Below zoom 6, `caspian`, the last of `sea`, is a box around it under the land, which takes the shore's shape; from zoom 6, `caspian_near` draws Protomaps' ocean polygons again in the lake colour, from a copy of the water layer's source bounded to that box (a source here with no `type` is such a copy, with its own keys over the water layer's), whose tiles hold no other sea from zoom 5 on.",
-    "The bathymetry stops at zoom 10, and closer views draw its zoom-10 tiles enlarged: from zoom 11 Terrain Tiles lay land-only elevation models over much of the coast and hold 0 m over the sea there (Puget Sound, Tokyo Bay, New York harbour, Miami and Marseille offshore), so the depths would vanish from zoom 9.5, where a map starts using zoom-11 tiles."
-  ],
-  "paint": {
-    "background": {
-      "background-color": "#c3e6ea"
-    },
-    "earth": {
-      "fill-color": "#efebe4"
-    },
-    "landcover": {
-      "fill-color": [
-        "match",
-        [
-          "get",
-          "kind"
-        ],
-        "grassland",
-        "#e2e8d2",
-        "barren",
-        "#f1e8d4",
-        "urban_area",
-        "#e7e3dc",
-        "farmland",
-        "#e9ebda",
-        "glacier",
-        "#f8fafb",
-        "scrub",
-        "#e6e8d3",
-        "#d3e2c8"
-      ]
-    },
-    "landuse_park": {
-      "fill-color": [
-        "case",
-        [
-          "in",
-          [
-            "get",
-            "kind"
-          ],
-          [
-            "literal",
-            [
-              "national_park",
-              "park",
-              "cemetery",
-              "protected_area",
-              "nature_reserve",
-              "forest",
-              "golf_course"
-            ]
-          ]
-        ],
-        "#cee3c4",
-        [
-          "==",
-          [
-            "get",
-            "kind"
-          ],
-          "wood"
-        ],
-        "#c6deba",
-        [
-          "in",
-          [
-            "get",
-            "kind"
-          ],
-          [
-            "literal",
-            [
-              "scrub",
-              "grassland",
-              "grass"
-            ]
-          ]
-        ],
-        "#d6e7cb",
-        [
-          "==",
-          [
-            "get",
-            "kind"
-          ],
-          "glacier"
-        ],
-        "#f8fafb",
-        [
-          "==",
-          [
-            "get",
-            "kind"
-          ],
-          "sand"
-        ],
-        "#f1e8d4",
-        [
-          "in",
-          [
-            "get",
-            "kind"
-          ],
-          [
-            "literal",
-            [
-              "military",
-              "naval_base",
-              "airfield"
-            ]
-          ]
-        ],
-        "#e4e2e7",
-        "#efebe4"
-      ]
-    },
-    "landuse_urban_green": {
-      "fill-color": "#d5e7c9",
-      "fill-opacity": 0.8
-    },
-    "landuse_hospital": {
-      "fill-color": "#f2e2e1"
-    },
-    "landuse_industrial": {
-      "fill-color": "#e6e4ea"
-    },
-    "landuse_school": {
-      "fill-color": "#efe6d8"
-    },
-    "landuse_beach": {
-      "fill-color": "#f4eacf"
-    },
-    "landuse_zoo": {
-      "fill-color": "#d8e7cf"
-    },
-    "landuse_aerodrome": {
-      "fill-color": "#e6e6eb"
-    },
-    "landuse_runway": {
-      "fill-color": "#d9d8e0"
-    },
-    "roads_runway": {
-      "line-color": "#d9d8e0"
-    },
-    "roads_taxiway": {
-      "line-color": "#d9d8e0"
-    },
-    "water": {
-      "fill-color": "#b0dbe7"
-    },
-    "water_stream": {
-      "line-color": "#b0dbe7"
-    },
-    "water_river": {
-      "line-color": "#b0dbe7"
-    },
-    "landuse_pedestrian": {
-      "fill-color": "#ece8e0"
-    },
-    "landuse_pier": {
-      "fill-color": "#e6e2db"
-    },
-    "roads_tunnels_other_casing": {
-      "line-color": "#e2ddd5"
-    },
-    "roads_tunnels_minor_casing": {
-      "line-color": "#e2ddd5"
-    },
-    "roads_tunnels_link_casing": {
-      "line-color": "#e2ddd5"
-    },
-    "roads_tunnels_major_casing": {
-      "line-color": "#e2ddd5"
-    },
-    "roads_tunnels_highway_casing": {
-      "line-color": "#e8d9b8"
-    },
-    "roads_tunnels_other": {
-      "line-color": "#f3f0eb"
-    },
-    "roads_tunnels_minor": {
-      "line-color": "#f3f0eb"
-    },
-    "roads_tunnels_link": {
-      "line-color": "#f6ecd3"
-    },
-    "roads_tunnels_major": {
-      "line-color": "#f3f0eb"
-    },
-    "roads_tunnels_highway": {
-      "line-color": "#f6ecd3"
-    },
-    "buildings": {
-      "fill-color": "#e2ddd5",
-      "fill-opacity": 0.9
-    },
-    "roads_pier": {
-      "line-color": "#e6e2db"
-    },
-    "roads_minor_service_casing": {
-      "line-color": "#e2ddd5"
-    },
-    "roads_minor_casing": {
-      "line-color": "#e2ddd5"
-    },
-    "roads_link_casing": {
-      "line-color": "#e3c588"
-    },
-    "roads_major_casing_late": {
-      "line-color": "#dcd6cc"
-    },
-    "roads_highway_casing_late": {
-      "line-color": "#e3c588"
-    },
-    "roads_other": {
-      "line-color": "#f7f5f1"
-    },
-    "roads_link": {
-      "line-color": "#fbe4a6"
-    },
-    "roads_minor_service": {
-      "line-color": "#f7f5f1"
-    },
-    "roads_minor": {
-      "line-color": [
-        "interpolate",
-        [
-          "exponential",
-          1.6
-        ],
-        [
-          "zoom"
-        ],
-        11,
-        "#f7f5f1",
-        16,
-        "#ffffff"
-      ]
-    },
-    "roads_major_casing_early": {
-      "line-color": "#dcd6cc"
-    },
-    "roads_major": {
-      "line-color": "#ffffff"
-    },
-    "roads_highway_casing_early": {
-      "line-color": "#e3c588"
-    },
-    "roads_highway": {
-      "line-color": "#fbe4a6"
-    },
-    "roads_rail": {
-      "line-color": "#a9a4b1",
-      "line-opacity": 0.6
-    },
-    "boundaries_country": {
-      "line-color": "#b4a7bf"
-    },
-    "boundaries": {
-      "line-color": "#cbc2ce"
-    },
-    "roads_bridges_other_casing": {
-      "line-color": "#dcd6cc"
-    },
-    "roads_bridges_link_casing": {
-      "line-color": "#e3c588"
-    },
-    "roads_bridges_minor_casing": {
-      "line-color": "#dcd6cc"
-    },
-    "roads_bridges_major_casing": {
-      "line-color": "#dcd6cc"
-    },
-    "roads_bridges_other": {
-      "line-color": "#f7f5f1"
-    },
-    "roads_bridges_minor": {
-      "line-color": "#ffffff"
-    },
-    "roads_bridges_link": {
-      "line-color": "#fbe4a6"
-    },
-    "roads_bridges_major": {
-      "line-color": "#ffffff"
-    },
-    "roads_bridges_highway_casing": {
-      "line-color": "#e3c588"
-    },
-    "roads_bridges_highway": {
-      "line-color": "#fbe4a6"
-    },
-    "address_label": {
-      "text-color": "#736b79",
-      "text-halo-color": "#fbfaf7"
-    },
-    "water_waterway_label": {
-      "text-color": "#234d76",
-      "text-halo-color": "#b0dbe7"
-    },
-    "roads_labels_minor": {
-      "text-color": "#736b79",
-      "text-halo-color": "#ffffff"
-    },
-    "water_label_ocean": {
-      "text-color": "#234d76",
-      "text-halo-color": "rgba(214, 238, 242, 0.6)"
-    },
-    "earth_label_islands": {
-      "text-color": "#736b79",
-      "text-halo-color": "#efebe4"
-    },
-    "water_label_lakes": {
-      "text-color": "#234d76",
-      "text-halo-color": "#b0dbe7"
-    },
-    "roads_shields": {
-      "text-color": "#6c6570"
-    },
-    "roads_labels_major": {
-      "text-color": "#6c6570",
-      "text-halo-color": "#ffffff"
-    },
-    "pois": {
-      "text-color": [
-        "case",
-        [
-          "in",
-          [
-            "get",
-            "kind"
-          ],
-          [
-            "literal",
-            [
-              "beach",
-              "forest",
-              "marina",
-              "park",
-              "peak",
-              "zoo",
-              "garden",
-              "bench"
-            ]
-          ]
-        ],
-        "#3b7550",
-        [
-          "in",
-          [
-            "get",
-            "kind"
-          ],
-          [
-            "literal",
-            [
-              "aerodrome",
-              "station",
-              "bus_stop",
-              "ferry_terminal"
-            ]
-          ]
-        ],
-        "#3a64ad",
-        [
-          "in",
-          [
-            "get",
-            "kind"
-          ],
-          [
-            "literal",
-            [
-              "stadium",
-              "university",
-              "library",
-              "school",
-              "animal",
-              "toilets",
-              "drinking_water",
-              "post_office",
-              "building",
-              "townhall"
-            ]
-          ]
-        ],
-        "#685a8c",
-        [
-          "in",
-          [
-            "get",
-            "kind"
-          ],
-          [
-            "literal",
-            [
-              "supermarket",
-              "convenience",
-              "books",
-              "beauty",
-              "electronics",
-              "clothes"
-            ]
-          ]
-        ],
-        "#2c7593",
-        [
-          "in",
-          [
-            "get",
-            "kind"
-          ],
-          [
-            "literal",
-            [
-              "restaurant",
-              "fast_food",
-              "cafe",
-              "bar"
-            ]
-          ]
-        ],
-        "#a85c1c",
-        [
-          "in",
-          [
-            "get",
-            "kind"
-          ],
-          [
-            "literal",
-            [
-              "attraction",
-              "museum",
-              "theatre",
-              "artwork"
-            ]
-          ]
-        ],
-        "#ad4683",
-        "#736b79"
-      ],
-      "text-halo-color": "#fbfaf7"
-    },
-    "places_subplace": {
-      "text-color": "#736b79",
-      "text-halo-color": "#fbfaf7"
-    },
-    "places_region": {
-      "text-color": "#8a8090",
-      "text-halo-color": "#fbfaf7"
-    },
-    "places_locality": {
-      "text-color": "#3f3a45",
-      "text-halo-color": "#fbfaf7",
-      "text-halo-width": 1.25
-    },
-    "places_country": {
-      "text-color": "#776b82",
-      "text-halo-color": "#fbfaf7"
-    }
-  },
-  "sea": [
-    {
-      "id": "sea_depth",
-      "type": "color-relief",
-      "source": "bathymetry",
-      "paint": {
-        "color-relief-color": [
-          "interpolate",
-          [
-            "linear"
-          ],
-          [
-            "elevation"
-          ],
-          -8000,
-          "#5a84b8",
-          -5000,
-          "#6896c8",
-          -3000,
-          "#74a6d2",
-          -1000,
-          "#86badb",
-          -200,
-          "#98cbe1",
-          -60,
-          "#acd9e5",
-          -30,
-          "rgba(172, 217, 229, 0)"
-        ]
-      },
-      "maxzoom": 6
-    },
-    {
-      "id": "seafloor_hillshade",
-      "type": "hillshade",
-      "source": "bathymetry",
-      "paint": {
-        "hillshade-illumination-anchor": "viewport",
-        "hillshade-exaggeration": [
-          "interpolate",
-          [
-            "linear"
-          ],
-          [
-            "zoom"
-          ],
-          0,
-          0.45,
-          5,
-          0.36,
-          6,
-          0
-        ],
-        "hillshade-shadow-color": "rgba(28, 58, 102, 0.45)",
-        "hillshade-highlight-color": "rgba(236, 248, 252, 0.35)",
-        "hillshade-accent-color": "rgba(28, 58, 102, 0.2)"
-      },
-      "maxzoom": 6
-    },
-    {
-      "id": "caspian",
-      "type": "fill",
-      "source": "caspian",
-      "paint": {
-        "fill-color": "#b0dbe7"
-      },
-      "maxzoom": 6
-    }
-  ],
-  "ocean": [
-    {
-      "id": "ocean",
-      "type": "fill",
-      "source-layer": "water",
-      "minzoom": 6,
-      "filter": [
-        "==",
-        [
-          "get",
-          "kind"
-        ],
-        "ocean"
-      ],
-      "paint": {
-        "fill-color": "#c3e6ea"
-      }
-    },
-    {
-      "id": "sea_depth_near",
-      "type": "color-relief",
-      "source": "bathymetry",
-      "minzoom": 6,
-      "paint": {
-        "color-relief-color": [
-          "interpolate",
-          [
-            "linear"
-          ],
-          [
-            "elevation"
-          ],
-          -8000,
-          "#5a84b8",
-          -5000,
-          "#6896c8",
-          -3000,
-          "#74a6d2",
-          -1000,
-          "#86badb",
-          -200,
-          "#98cbe1",
-          -60,
-          "#acd9e5",
-          -30,
-          "rgba(172, 217, 229, 0)"
-        ]
-      }
-    },
-    {
-      "id": "lowland",
-      "type": "color-relief",
-      "source": "hillshade",
-      "minzoom": 6,
-      "paint": {
-        "color-relief-color": [
-          "interpolate",
-          [
-            "linear"
-          ],
-          [
-            "elevation"
-          ],
-          -20,
-          "#efebe4",
-          -15,
-          "rgba(239, 235, 228, 0)"
-        ]
-      }
-    },
-    {
-      "id": "caspian_near",
-      "type": "fill",
-      "source": "caspian_water",
-      "source-layer": "water",
-      "minzoom": 6,
-      "filter": [
-        "==",
-        [
-          "get",
-          "kind"
-        ],
-        "ocean"
-      ],
-      "paint": {
-        "fill-color": "#b0dbe7"
-      }
-    }
-  ],
-  "hillshade": {
-    "id": "hillshade",
-    "type": "hillshade",
-    "source": "hillshade",
-    "paint": {
-      "hillshade-illumination-anchor": "viewport",
-      "hillshade-exaggeration": [
-        "interpolate",
-        [
-          "linear"
-        ],
-        [
-          "zoom"
-        ],
-        3,
-        0.7,
-        12,
-        0.42
-      ],
-      "hillshade-shadow-color": "#72707f",
-      "hillshade-highlight-color": "#fffaf0",
-      "hillshade-accent-color": "#8c8799",
-      "dev.sargunv.orbis:hillshade-layer-blend": "multiply"
-    },
-    "metadata": {
-      "demo:unblended": {
-        "hillshade-exaggeration": [
-          "interpolate",
-          [
-            "linear"
-          ],
-          [
-            "zoom"
-          ],
-          3,
-          0.6,
-          12,
-          0.35
-        ],
-        "hillshade-shadow-color": "#776f82",
-        "hillshade-highlight-color": "#fffdf8",
-        "hillshade-accent-color": "#948d9b"
-      }
-    }
-  },
-  "buildings": {
-    "id": "buildings_3d",
-    "type": "fill-extrusion",
-    "source-layer": "buildings",
-    "minzoom": 14,
-    "filter": [
-      "==",
-      [
-        "geometry-type"
-      ],
-      "Polygon"
-    ],
-    "layout": {
-      "fill-extrusion-rounded-corner-distance": 2
-    },
-    "paint": {
-      "fill-extrusion-color": "#f2eee7",
-      "fill-extrusion-height": [
-        "interpolate",
-        [
-          "linear"
-        ],
-        [
-          "zoom"
-        ],
-        14,
-        0,
-        15,
-        [
-          "coalesce",
-          [
-            "get",
-            "height"
-          ],
-          5
-        ]
-      ],
-      "fill-extrusion-base": [
-        "interpolate",
-        [
-          "linear"
-        ],
-        [
-          "zoom"
-        ],
-        14,
-        0,
-        15,
-        [
-          "min",
-          [
-            "coalesce",
-            [
-              "get",
-              "min_height"
-            ],
-            0
-          ],
-          [
-            "coalesce",
-            [
-              "get",
-              "height"
-            ],
-            5
-          ]
-        ]
-      ],
-      "fill-extrusion-opacity": 0.9
-    }
-  },
+  "version": 8,
+  "name": "style@5.7.2 flavor@light lang@en",
+  "glyphs": "https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf",
+  "sprite": "https://protomaps.github.io/basemaps-assets/sprites/v4/light",
+  "projection": {"type":"globe"},
+  "sky": {"atmosphere-blend":["interpolate",["linear"],["zoom"],0,0.2,2,0.16,4,0.1,8,0],"fog-color":"#efebe4","fog-ground-blend":0.6,"horizon-color":"#eef2f1","horizon-fog-blend":0.6,"sky-color":"#9cc9ea","sky-horizon-blend":0.6},
+  "light": {"anchor":"viewport","intensity":0.5,"position":[1.15,210,60]},
+  "terrain": {"exaggeration":1.3,"source":"terrain"},
   "sources": {
-    "terrain": {
-      "type": "raster-dem",
-      "tiles": [
-        "https://tiles.mapterhorn.com/{z}/{x}/{y}.webp"
-      ],
-      "encoding": "terrarium",
-      "tileSize": 512,
-      "maxzoom": 17,
-      "attribution": "<a href=\"https://mapterhorn.com/attribution\">© Mapterhorn</a>"
-    },
-    "hillshade": {
-      "type": "raster-dem",
-      "tiles": [
-        "https://tiles.mapterhorn.com/{z}/{x}/{y}.webp"
-      ],
-      "encoding": "terrarium",
-      "tileSize": 512,
-      "maxzoom": 17
-    },
-    "bathymetry": {
-      "type": "raster-dem",
-      "tiles": [
-        "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
-      ],
-      "encoding": "terrarium",
-      "tileSize": 256,
-      "maxzoom": 10,
-      "attribution": "<a href=\"https://github.com/tilezen/joerd/blob/master/docs/attribution.md\">Terrain Tiles: ETOPO1, GEBCO, NOAA, USGS and others</a>"
-    },
-    "caspian": {
-      "type": "geojson",
-      "data": {
-        "type": "Polygon",
-        "coordinates": [
-          [
-            [
-              45,
-              35.5
-            ],
-            [
-              56,
-              35.5
-            ],
-            [
-              56,
-              48
-            ],
-            [
-              45,
-              48
-            ],
-            [
-              45,
-              35.5
-            ]
-          ]
-        ]
-      }
-    },
-    "caspian_water": {
-      "bounds": [
-        45,
-        35.5,
-        56,
-        48
-      ]
-    }
+    "bathymetry": {"attribution":"<a href=\"https://github.com/tilezen/joerd/blob/master/docs/attribution.md\">Terrain Tiles: ETOPO1, GEBCO, NOAA, USGS and others</a>","encoding":"terrarium","maxzoom":10,"tileSize":256,"tiles":["https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"],"type":"raster-dem"},
+    "caspian": {"data":{"coordinates":[[[45,35.5],[56,35.5],[56,48],[45,48],[45,35.5]]],"type":"Polygon"},"type":"geojson"},
+    "caspian_water": {"attribution":"<a href=\"https://github.com/protomaps/basemaps\">Protomaps</a> © <a href=\"https://openstreetmap.org\">OpenStreetMap</a>","bounds":[45,35.5,56,48],"maxzoom":15,"tiles":["https://api.protomaps.com/tiles/v4/{z}/{x}/{y}.mvt?key=73c45a97eddd43fb"],"type":"vector"},
+    "hillshade": {"encoding":"terrarium","maxzoom":17,"tileSize":512,"tiles":["https://tiles.mapterhorn.com/{z}/{x}/{y}.webp"],"type":"raster-dem"},
+    "protomaps": {"attribution":"<a href=\"https://github.com/protomaps/basemaps\">Protomaps</a> © <a href=\"https://openstreetmap.org\">OpenStreetMap</a>","maxzoom":15,"tiles":["https://api.protomaps.com/tiles/v4/{z}/{x}/{y}.mvt?key=73c45a97eddd43fb"],"type":"vector"},
+    "terrain": {"attribution":"<a href=\"https://mapterhorn.com/attribution\">© Mapterhorn</a>","encoding":"terrarium","maxzoom":17,"tileSize":512,"tiles":["https://tiles.mapterhorn.com/{z}/{x}/{y}.webp"],"type":"raster-dem"}
   },
-  "terrain": {
-    "source": "terrain",
-    "exaggeration": 1.3
-  },
-  "light": {
-    "anchor": "viewport",
-    "position": [
-      1.15,
-      210,
-      60
-    ],
-    "intensity": 0.5
-  }
+  "layers": [
+    {"id":"background","type":"background","paint":{"background-color":"#c3e6ea"}},
+    {"id":"sea_depth","type":"color-relief","source":"bathymetry","maxzoom":6,"paint":{"color-relief-color":["interpolate",["linear"],["elevation"],-8000,"#5a84b8",-5000,"#6896c8",-3000,"#74a6d2",-1000,"#86badb",-200,"#98cbe1",-60,"#acd9e5",-30,"rgba(172, 217, 229, 0)"]}},
+    {"id":"seafloor_hillshade","type":"hillshade","source":"bathymetry","maxzoom":6,"paint":{"hillshade-accent-color":"rgba(28, 58, 102, 0.2)","hillshade-exaggeration":["interpolate",["linear"],["zoom"],0,0.45,5,0.36,6,0],"hillshade-highlight-color":"rgba(236, 248, 252, 0.35)","hillshade-illumination-anchor":"viewport","hillshade-shadow-color":"rgba(28, 58, 102, 0.45)"}},
+    {"id":"caspian","type":"fill","source":"caspian","maxzoom":6,"paint":{"fill-color":"#b0dbe7"}},
+    {"id":"earth","type":"fill","source":"protomaps","source-layer":"earth","filter":["==","$type","Polygon"],"paint":{"fill-color":"#efebe4"}},
+    {"id":"landcover","type":"fill","source":"protomaps","source-layer":"landcover","paint":{"fill-color":["match",["get","kind"],"grassland","#e2e8d2","barren","#f1e8d4","urban_area","#e7e3dc","farmland","#e9ebda","glacier","#f8fafb","scrub","#e6e8d3","#d3e2c8"],"fill-opacity":["interpolate",["linear"],["zoom"],5,1,7,0]}},
+    {"id":"landuse_park","type":"fill","source":"protomaps","source-layer":"landuse","filter":["in","kind","national_park","park","cemetery","protected_area","nature_reserve","forest","golf_course","wood","scrub","grassland","grass","glacier","sand","military","naval_base","airfield"],"paint":{"fill-color":["case",["in",["get","kind"],["literal",["national_park","park","cemetery","protected_area","nature_reserve","forest","golf_course"]]],"#cee3c4",["==",["get","kind"],"wood"],"#c6deba",["in",["get","kind"],["literal",["scrub","grassland","grass"]]],"#d6e7cb",["==",["get","kind"],"glacier"],"#f8fafb",["==",["get","kind"],"sand"],"#f1e8d4",["in",["get","kind"],["literal",["military","naval_base","airfield"]]],"#e4e2e7","#efebe4"],"fill-opacity":["interpolate",["linear"],["zoom"],6,0,11,1]}},
+    {"id":"landuse_urban_green","type":"fill","source":"protomaps","source-layer":"landuse","filter":["in","kind","allotments","village_green","playground"],"paint":{"fill-color":"#d5e7c9","fill-opacity":0.8}},
+    {"id":"landuse_hospital","type":"fill","source":"protomaps","source-layer":"landuse","filter":["==","kind","hospital"],"paint":{"fill-color":"#f2e2e1"}},
+    {"id":"landuse_industrial","type":"fill","source":"protomaps","source-layer":"landuse","filter":["==","kind","industrial"],"paint":{"fill-color":"#e6e4ea"}},
+    {"id":"landuse_school","type":"fill","source":"protomaps","source-layer":"landuse","filter":["in","kind","school","university","college"],"paint":{"fill-color":"#efe6d8"}},
+    {"id":"landuse_beach","type":"fill","source":"protomaps","source-layer":"landuse","filter":["in","kind","beach"],"paint":{"fill-color":"#f4eacf"}},
+    {"id":"landuse_zoo","type":"fill","source":"protomaps","source-layer":"landuse","filter":["in","kind","zoo"],"paint":{"fill-color":"#d8e7cf"}},
+    {"id":"landuse_aerodrome","type":"fill","source":"protomaps","source-layer":"landuse","filter":["in","kind","aerodrome"],"paint":{"fill-color":"#e6e6eb"}},
+    {"id":"roads_runway","type":"line","source":"protomaps","source-layer":"roads","filter":["==","kind_detail","runway"],"paint":{"line-color":"#d9d8e0","line-width":["interpolate",["exponential",1.6],["zoom"],10,0,12,4,18,30]}},
+    {"id":"roads_taxiway","type":"line","source":"protomaps","source-layer":"roads","minzoom":13,"filter":["==","kind_detail","taxiway"],"paint":{"line-color":"#d9d8e0","line-width":["interpolate",["exponential",1.6],["zoom"],13,0,13.5,1,15,6]}},
+    {"id":"landuse_runway","type":"fill","source":"protomaps","source-layer":"landuse","filter":["any",["in","kind","runway","taxiway"]],"paint":{"fill-color":"#d9d8e0"}},
+    {"id":"ocean","type":"fill","source":"protomaps","source-layer":"water","minzoom":6,"filter":["==",["get","kind"],"ocean"],"paint":{"fill-color":"#c3e6ea"}},
+    {"id":"sea_depth_near","type":"color-relief","source":"bathymetry","minzoom":6,"paint":{"color-relief-color":["interpolate",["linear"],["elevation"],-8000,"#5a84b8",-5000,"#6896c8",-3000,"#74a6d2",-1000,"#86badb",-200,"#98cbe1",-60,"#acd9e5",-30,"rgba(172, 217, 229, 0)"]}},
+    {"id":"lowland","type":"color-relief","source":"hillshade","minzoom":6,"paint":{"color-relief-color":["interpolate",["linear"],["elevation"],-20,"#efebe4",-15,"rgba(239, 235, 228, 0)"]}},
+    {"id":"caspian_near","type":"fill","source":"caspian_water","source-layer":"water","minzoom":6,"filter":["==",["get","kind"],"ocean"],"paint":{"fill-color":"#b0dbe7"}},
+    {"id":"water","type":"fill","source":"protomaps","source-layer":"water","filter":["all",["==","$type","Polygon"],["!=","kind","ocean"]],"paint":{"fill-color":"#b0dbe7"}},
+    {"id":"hillshade","type":"hillshade","source":"hillshade","paint":{"dev.sargunv.orbis:hillshade-layer-blend":"multiply","hillshade-accent-color":"#8c8799","hillshade-exaggeration":["interpolate",["linear"],["zoom"],3,0.7,12,0.42],"hillshade-highlight-color":"#fffaf0","hillshade-illumination-anchor":"viewport","hillshade-shadow-color":"#72707f"},"metadata":{"demo:unblended":{"hillshade-accent-color":"#948d9b","hillshade-exaggeration":["interpolate",["linear"],["zoom"],3,0.6,12,0.35],"hillshade-highlight-color":"#fffdf8","hillshade-shadow-color":"#776f82"}}},
+    {"id":"water_stream","type":"line","source":"protomaps","source-layer":"water","minzoom":14,"filter":["in","kind","stream"],"paint":{"line-color":"#b0dbe7","line-width":0.5}},
+    {"id":"water_river","type":"line","source":"protomaps","source-layer":"water","minzoom":9,"filter":["in","kind","river"],"paint":{"line-color":"#b0dbe7","line-width":["interpolate",["exponential",1.6],["zoom"],9,0,9.5,1,18,12]}},
+    {"id":"landuse_pedestrian","type":"fill","source":"protomaps","source-layer":"landuse","filter":["in","kind","pedestrian","dam"],"paint":{"fill-color":"#ece8e0"}},
+    {"id":"landuse_pier","type":"fill","source":"protomaps","source-layer":"landuse","filter":["==","kind","pier"],"paint":{"fill-color":"#e6e2db"}},
+    {"id":"roads_tunnels_other_casing","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["has","is_tunnel"],["in","kind","other","path"]],"paint":{"line-color":"#e2ddd5","line-gap-width":["interpolate",["exponential",1.6],["zoom"],14,0,20,7]}},
+    {"id":"roads_tunnels_minor_casing","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["has","is_tunnel"],["==","kind","minor_road"]],"paint":{"line-color":"#e2ddd5","line-dasharray":[3,2],"line-gap-width":["interpolate",["exponential",1.6],["zoom"],11,0,12.5,0.5,15,2,18,11],"line-width":["interpolate",["exponential",1.6],["zoom"],12,0,12.5,1]}},
+    {"id":"roads_tunnels_link_casing","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["has","is_tunnel"],["has","is_link"]],"paint":{"line-color":"#e2ddd5","line-dasharray":[3,2],"line-gap-width":["interpolate",["exponential",1.6],["zoom"],13,0,13.5,1,18,11],"line-width":["interpolate",["exponential",1.6],["zoom"],12,0,12.5,1]}},
+    {"id":"roads_tunnels_major_casing","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["has","is_tunnel"],["!has","is_bridge"],["==","kind","major_road"]],"paint":{"line-color":"#e2ddd5","line-dasharray":[3,2],"line-gap-width":["interpolate",["exponential",1.6],["zoom"],7,0,7.5,0.5,18,13],"line-width":["interpolate",["exponential",1.6],["zoom"],9,0,9.5,1]}},
+    {"id":"roads_tunnels_highway_casing","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["has","is_tunnel"],["!has","is_bridge"],["==","kind","highway"],["!has","is_link"]],"paint":{"line-color":"#e8d9b8","line-dasharray":[6,0.5],"line-gap-width":["interpolate",["exponential",1.6],["zoom"],3,0,3.5,0.5,18,15],"line-width":["interpolate",["exponential",1.6],["zoom"],7,0,7.5,1,20,15]}},
+    {"id":"roads_tunnels_other","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["has","is_tunnel"],["in","kind","other","path"]],"paint":{"line-color":"#f3f0eb","line-dasharray":[4.5,0.5],"line-width":["interpolate",["exponential",1.6],["zoom"],14,0,20,7]}},
+    {"id":"roads_tunnels_minor","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["has","is_tunnel"],["==","kind","minor_road"]],"paint":{"line-color":"#f3f0eb","line-width":["interpolate",["exponential",1.6],["zoom"],11,0,12.5,0.5,15,2,18,11]}},
+    {"id":"roads_tunnels_link","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["has","is_tunnel"],["has","is_link"]],"paint":{"line-color":"#f6ecd3","line-width":["interpolate",["exponential",1.6],["zoom"],13,0,13.5,1,18,11]}},
+    {"id":"roads_tunnels_major","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["has","is_tunnel"],["==","kind","major_road"]],"paint":{"line-color":"#f3f0eb","line-width":["interpolate",["exponential",1.6],["zoom"],6,0,12,1.6,15,3,18,13]}},
+    {"id":"roads_tunnels_highway","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["has","is_tunnel"],["==",["get","kind"],"highway"],["!",["has","is_link"]]],"paint":{"line-color":"#f6ecd3","line-width":["interpolate",["exponential",1.6],["zoom"],3,0,6,1.1,12,1.6,15,5,18,15]}},
+    {"id":"buildings","type":"fill","source":"protomaps","source-layer":"buildings","filter":["in","kind","building","building_part"],"paint":{"fill-color":"#e2ddd5","fill-opacity":0.9}},
+    {"id":"roads_pier","type":"line","source":"protomaps","source-layer":"roads","filter":["==","kind_detail","pier"],"paint":{"line-color":"#e6e2db","line-width":["interpolate",["exponential",1.6],["zoom"],12,0,12.5,0.5,20,16]}},
+    {"id":"roads_minor_service_casing","type":"line","source":"protomaps","source-layer":"roads","minzoom":13,"filter":["all",["!has","is_tunnel"],["!has","is_bridge"],["==","kind","minor_road"],["==","kind_detail","service"]],"paint":{"line-color":"#e2ddd5","line-gap-width":["interpolate",["exponential",1.6],["zoom"],13,0,18,8],"line-width":["interpolate",["exponential",1.6],["zoom"],13,0,13.5,0.8]}},
+    {"id":"roads_minor_casing","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["!has","is_tunnel"],["!has","is_bridge"],["==","kind","minor_road"],["!=","kind_detail","service"]],"paint":{"line-color":"#e2ddd5","line-gap-width":["interpolate",["exponential",1.6],["zoom"],11,0,12.5,0.5,15,2,18,11],"line-width":["interpolate",["exponential",1.6],["zoom"],12,0,12.5,1]}},
+    {"id":"roads_link_casing","type":"line","source":"protomaps","source-layer":"roads","minzoom":13,"filter":["has","is_link"],"paint":{"line-color":"#e3c588","line-gap-width":["interpolate",["exponential",1.6],["zoom"],13,0,13.5,1,18,11],"line-width":["interpolate",["exponential",1.6],["zoom"],13,0,13.5,1.5]}},
+    {"id":"roads_major_casing_late","type":"line","source":"protomaps","source-layer":"roads","minzoom":12,"filter":["all",["!has","is_tunnel"],["!has","is_bridge"],["==","kind","major_road"]],"paint":{"line-color":"#dcd6cc","line-gap-width":["interpolate",["exponential",1.6],["zoom"],6,0,12,1.6,15,3,18,13],"line-width":["interpolate",["exponential",1.6],["zoom"],9,0,9.5,1]}},
+    {"id":"roads_highway_casing_late","type":"line","source":"protomaps","source-layer":"roads","minzoom":12,"filter":["all",["!has","is_tunnel"],["!has","is_bridge"],["==","kind","highway"],["!has","is_link"]],"paint":{"line-color":"#e3c588","line-gap-width":["interpolate",["exponential",1.6],["zoom"],3,0,3.5,0.5,18,15],"line-width":["interpolate",["exponential",1.6],["zoom"],7,0,7.5,1,20,15]}},
+    {"id":"roads_other","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["!has","is_tunnel"],["!has","is_bridge"],["in","kind","other","path"],["!=","kind_detail","pier"]],"paint":{"line-color":"#f7f5f1","line-width":["interpolate",["exponential",1.6],["zoom"],14,0.5,20,12]}},
+    {"id":"roads_link","type":"line","source":"protomaps","source-layer":"roads","filter":["has","is_link"],"paint":{"line-color":"#fbe4a6","line-width":["interpolate",["exponential",1.6],["zoom"],13,0,13.5,1,18,11]}},
+    {"id":"roads_minor_service","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["!has","is_tunnel"],["!has","is_bridge"],["==","kind","minor_road"],["==","kind_detail","service"]],"paint":{"line-color":"#f7f5f1","line-width":["interpolate",["exponential",1.6],["zoom"],13,0,18,8]}},
+    {"id":"roads_minor","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["!has","is_tunnel"],["!has","is_bridge"],["==","kind","minor_road"],["!=","kind_detail","service"]],"paint":{"line-color":["interpolate",["exponential",1.6],["zoom"],11,"#f7f5f1",16,"#ffffff"],"line-width":["interpolate",["exponential",1.6],["zoom"],11,0,12.5,0.5,15,2,18,11]}},
+    {"id":"roads_major_casing_early","type":"line","source":"protomaps","source-layer":"roads","maxzoom":12,"filter":["all",["!has","is_tunnel"],["!has","is_bridge"],["==","kind","major_road"]],"paint":{"line-color":"#dcd6cc","line-gap-width":["interpolate",["exponential",1.6],["zoom"],7,0,7.5,0.5,18,13],"line-width":["interpolate",["exponential",1.6],["zoom"],9,0,9.5,1]}},
+    {"id":"roads_major","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["!has","is_tunnel"],["!has","is_bridge"],["==","kind","major_road"]],"paint":{"line-color":"#ffffff","line-width":["interpolate",["exponential",1.6],["zoom"],6,0,12,1.6,15,3,18,13]}},
+    {"id":"roads_highway_casing_early","type":"line","source":"protomaps","source-layer":"roads","maxzoom":12,"filter":["all",["!has","is_tunnel"],["!has","is_bridge"],["==","kind","highway"],["!has","is_link"]],"paint":{"line-color":"#e3c588","line-gap-width":["interpolate",["exponential",1.6],["zoom"],3,0,3.5,0.5,18,15],"line-width":["interpolate",["exponential",1.6],["zoom"],7,0,7.5,1]}},
+    {"id":"roads_highway","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["!has","is_tunnel"],["!has","is_bridge"],["==","kind","highway"],["!has","is_link"]],"paint":{"line-color":"#fbe4a6","line-width":["interpolate",["exponential",1.6],["zoom"],3,0,6,1.1,12,1.6,15,5,18,15]}},
+    {"id":"roads_rail","type":"line","source":"protomaps","source-layer":"roads","filter":["==","kind","rail"],"paint":{"line-color":"#a9a4b1","line-dasharray":[0.3,0.75],"line-opacity":0.6,"line-width":["interpolate",["exponential",1.6],["zoom"],3,0,6,0.15,18,9]}},
+    {"id":"boundaries_country","type":"line","source":"protomaps","source-layer":"boundaries","filter":["<=","kind_detail",2],"paint":{"line-color":"#b4a7bf","line-dasharray":["step",["zoom"],["literal",[2,0]],4,["literal",[2,1]]],"line-width":0.7}},
+    {"id":"boundaries","type":"line","source":"protomaps","source-layer":"boundaries","filter":[">","kind_detail",2],"paint":{"line-color":"#cbc2ce","line-dasharray":["step",["zoom"],["literal",[2,0]],4,["literal",[2,1]]],"line-width":0.4}},
+    {"id":"roads_bridges_other_casing","type":"line","source":"protomaps","source-layer":"roads","minzoom":12,"filter":["all",["has","is_bridge"],["in","kind","other","path"]],"paint":{"line-color":"#dcd6cc","line-gap-width":["interpolate",["exponential",1.6],["zoom"],14,0,20,7]}},
+    {"id":"roads_bridges_link_casing","type":"line","source":"protomaps","source-layer":"roads","minzoom":12,"filter":["all",["has","is_bridge"],["has","is_link"]],"paint":{"line-color":"#e3c588","line-gap-width":["interpolate",["exponential",1.6],["zoom"],13,0,13.5,1,18,11],"line-width":["interpolate",["exponential",1.6],["zoom"],12,0,12.5,1.5]}},
+    {"id":"roads_bridges_minor_casing","type":"line","source":"protomaps","source-layer":"roads","minzoom":12,"filter":["all",["has","is_bridge"],["==","kind","minor_road"]],"paint":{"line-color":"#dcd6cc","line-gap-width":["interpolate",["exponential",1.6],["zoom"],11,0,12.5,0.5,15,2,18,11],"line-width":["interpolate",["exponential",1.6],["zoom"],13,0,13.5,0.8]}},
+    {"id":"roads_bridges_major_casing","type":"line","source":"protomaps","source-layer":"roads","minzoom":12,"filter":["all",["has","is_bridge"],["==","kind","major_road"]],"paint":{"line-color":"#dcd6cc","line-gap-width":["interpolate",["exponential",1.6],["zoom"],7,0,7.5,0.5,18,10],"line-width":["interpolate",["exponential",1.6],["zoom"],9,0,9.5,1.5]}},
+    {"id":"roads_bridges_other","type":"line","source":"protomaps","source-layer":"roads","minzoom":12,"filter":["all",["has","is_bridge"],["in","kind","other","path"]],"paint":{"line-color":"#f7f5f1","line-dasharray":[2,1],"line-width":["interpolate",["exponential",1.6],["zoom"],14,0,20,7]}},
+    {"id":"roads_bridges_minor","type":"line","source":"protomaps","source-layer":"roads","minzoom":12,"filter":["all",["has","is_bridge"],["==","kind","minor_road"]],"paint":{"line-color":"#ffffff","line-width":["interpolate",["exponential",1.6],["zoom"],11,0,12.5,0.5,15,2,18,11]}},
+    {"id":"roads_bridges_link","type":"line","source":"protomaps","source-layer":"roads","minzoom":12,"filter":["all",["has","is_bridge"],["has","is_link"]],"paint":{"line-color":"#fbe4a6","line-width":["interpolate",["exponential",1.6],["zoom"],13,0,13.5,1,18,11]}},
+    {"id":"roads_bridges_major","type":"line","source":"protomaps","source-layer":"roads","minzoom":12,"filter":["all",["has","is_bridge"],["==","kind","major_road"]],"paint":{"line-color":"#ffffff","line-width":["interpolate",["exponential",1.6],["zoom"],6,0,12,1.6,15,3,18,13]}},
+    {"id":"roads_bridges_highway_casing","type":"line","source":"protomaps","source-layer":"roads","minzoom":12,"filter":["all",["has","is_bridge"],["==","kind","highway"],["!has","is_link"]],"paint":{"line-color":"#e3c588","line-gap-width":["interpolate",["exponential",1.6],["zoom"],3,0,3.5,0.5,18,15],"line-width":["interpolate",["exponential",1.6],["zoom"],7,0,7.5,1,20,15]}},
+    {"id":"roads_bridges_highway","type":"line","source":"protomaps","source-layer":"roads","filter":["all",["has","is_bridge"],["==","kind","highway"],["!has","is_link"]],"paint":{"line-color":"#fbe4a6","line-width":["interpolate",["exponential",1.6],["zoom"],3,0,6,1.1,12,1.6,15,5,18,15]}},
+    {"id":"buildings_3d","type":"fill-extrusion","source":"protomaps","source-layer":"buildings","minzoom":14,"filter":["==",["geometry-type"],"Polygon"],"layout":{"fill-extrusion-rounded-corner-distance":2},"paint":{"fill-extrusion-base":["interpolate",["linear"],["zoom"],14,0,15,["min",["coalesce",["get","min_height"],0],["coalesce",["get","height"],5]]],"fill-extrusion-color":"#f2eee7","fill-extrusion-height":["interpolate",["linear"],["zoom"],14,0,15,["coalesce",["get","height"],5]],"fill-extrusion-opacity":0.9}},
+    {"id":"address_label","type":"symbol","source":"protomaps","source-layer":"buildings","minzoom":18,"filter":["==","kind","address"],"layout":{"symbol-placement":"point","text-field":["get","addr_housenumber"],"text-font":["Noto Sans Italic"],"text-size":12},"paint":{"text-color":"#736b79","text-halo-color":"#fbfaf7","text-halo-width":1}},
+    {"id":"water_waterway_label","type":"symbol","source":"protomaps","source-layer":"water","minzoom":13,"filter":["in","kind","river","stream"],"layout":{"symbol-placement":"line","text-field":["case",["all",["any",["has","name"],["has","pgf:name"]],["!",["any",["has","name2"],["has","pgf:name2"]]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["has","script"],["case",["any",["is-supported-script",["get","name"]],["has","pgf:name"]],["format",["coalesce",["get","name:en"],["get","name:en"]],{},"\n",{},["case",["all",["!",["has","name:en"]],["has","name:en"],["!",["has","script"]]],"",["coalesce",["get","pgf:name"],["get","name"]]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["get","name:en"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{}]],["all",["any",["has","name"],["has","pgf:name"]],["any",["has","name2"],["has","pgf:name2"]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["all",["has","script"],["has","script2"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["has","script2"],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]],["case",["all",["has","script"],["has","script2"],["has","script3"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["!",["has","script"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["!",["has","script2"]],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name3"],["get","name3"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]]],"text-font":["Noto Sans Italic"],"text-letter-spacing":0.2,"text-size":12},"paint":{"text-color":"#234d76","text-halo-color":"#b0dbe7","text-halo-width":1}},
+    {"id":"roads_oneway","type":"symbol","source":"protomaps","source-layer":"roads","minzoom":16,"filter":["==",["get","oneway"],"yes"],"layout":{"icon-image":"arrow","icon-rotate":90,"symbol-placement":"line","symbol-spacing":100}},
+    {"id":"roads_labels_minor","type":"symbol","source":"protomaps","source-layer":"roads","minzoom":15,"filter":["in","kind","minor_road","other","path"],"layout":{"symbol-placement":"line","symbol-sort-key":["get","min_zoom"],"text-field":["case",["all",["any",["has","name"],["has","pgf:name"]],["!",["any",["has","name2"],["has","pgf:name2"]]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["has","script"],["case",["any",["is-supported-script",["get","name"]],["has","pgf:name"]],["format",["coalesce",["get","name:en"],["get","name:en"]],{},"\n",{},["case",["all",["!",["has","name:en"]],["has","name:en"],["!",["has","script"]]],"",["coalesce",["get","pgf:name"],["get","name"]]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["get","name:en"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{}]],["all",["any",["has","name"],["has","pgf:name"]],["any",["has","name2"],["has","pgf:name2"]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["all",["has","script"],["has","script2"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["has","script2"],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]],["case",["all",["has","script"],["has","script2"],["has","script3"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["!",["has","script"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["!",["has","script2"]],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name3"],["get","name3"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]]],"text-font":["Noto Sans Regular"],"text-size":12},"paint":{"text-color":"#736b79","text-halo-color":"#ffffff","text-halo-width":1}},
+    {"id":"water_label_ocean","type":"symbol","source":"protomaps","source-layer":"water","filter":["in","kind","sea","ocean","bay","strait","fjord"],"layout":{"text-field":["case",["all",["any",["has","name"],["has","pgf:name"]],["!",["any",["has","name2"],["has","pgf:name2"]]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["has","script"],["case",["any",["is-supported-script",["get","name"]],["has","pgf:name"]],["format",["coalesce",["get","name:en"],["get","name:en"]],{},"\n",{},["case",["all",["!",["has","name:en"]],["has","name:en"],["!",["has","script"]]],"",["coalesce",["get","pgf:name"],["get","name"]]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["get","name:en"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{}]],["all",["any",["has","name"],["has","pgf:name"]],["any",["has","name2"],["has","pgf:name2"]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["all",["has","script"],["has","script2"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["has","script2"],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]],["case",["all",["has","script"],["has","script2"],["has","script3"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["!",["has","script"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["!",["has","script2"]],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name3"],["get","name3"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]]],"text-font":["Noto Sans Italic"],"text-letter-spacing":0.1,"text-max-width":9,"text-size":["interpolate",["linear"],["zoom"],3,10,10,12],"text-transform":"uppercase"},"paint":{"text-color":"#234d76","text-halo-color":"rgba(214, 238, 242, 0.6)","text-halo-width":1}},
+    {"id":"earth_label_islands","type":"symbol","source":"protomaps","source-layer":"earth","filter":["in","kind","island"],"layout":{"text-field":["case",["all",["any",["has","name"],["has","pgf:name"]],["!",["any",["has","name2"],["has","pgf:name2"]]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["has","script"],["case",["any",["is-supported-script",["get","name"]],["has","pgf:name"]],["format",["coalesce",["get","name:en"],["get","name:en"]],{},"\n",{},["case",["all",["!",["has","name:en"]],["has","name:en"],["!",["has","script"]]],"",["coalesce",["get","pgf:name"],["get","name"]]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["get","name:en"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{}]],["all",["any",["has","name"],["has","pgf:name"]],["any",["has","name2"],["has","pgf:name2"]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["all",["has","script"],["has","script2"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["has","script2"],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]],["case",["all",["has","script"],["has","script2"],["has","script3"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["!",["has","script"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["!",["has","script2"]],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name3"],["get","name3"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]]],"text-font":["Noto Sans Italic"],"text-letter-spacing":0.1,"text-max-width":8,"text-size":10},"paint":{"text-color":"#736b79","text-halo-color":"#efebe4","text-halo-width":1}},
+    {"id":"water_label_lakes","type":"symbol","source":"protomaps","source-layer":"water","filter":["in","kind","lake","water"],"layout":{"text-field":["case",["all",["any",["has","name"],["has","pgf:name"]],["!",["any",["has","name2"],["has","pgf:name2"]]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["has","script"],["case",["any",["is-supported-script",["get","name"]],["has","pgf:name"]],["format",["coalesce",["get","name:en"],["get","name:en"]],{},"\n",{},["case",["all",["!",["has","name:en"]],["has","name:en"],["!",["has","script"]]],"",["coalesce",["get","pgf:name"],["get","name"]]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["get","name:en"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{}]],["all",["any",["has","name"],["has","pgf:name"]],["any",["has","name2"],["has","pgf:name2"]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["all",["has","script"],["has","script2"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["has","script2"],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]],["case",["all",["has","script"],["has","script2"],["has","script3"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["!",["has","script"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["!",["has","script2"]],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name3"],["get","name3"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]]],"text-font":["Noto Sans Italic"],"text-letter-spacing":0.1,"text-max-width":9,"text-size":["interpolate",["linear"],["zoom"],3,10,6,12,10,12]},"paint":{"text-color":"#234d76","text-halo-color":"#b0dbe7","text-halo-width":1}},
+    {"id":"roads_shields","type":"symbol","source":"protomaps","source-layer":"roads","filter":["all",["in",["get","kind"],["literal",["highway","major_road"]]],["has","shield_text"],["<=",["length",["get","shield_text"]],5]],"layout":{"icon-image":["match",["get","network"],"US:I",["concat","US:I-",["length",["get","shield_text"]],"char"],"NL:S-road",["concat","NL:S-road-",["length",["get","shield_text"]],"char"],["concat","generic_shield-",["length",["get","shield_text"]],"char"]],"icon-rotation-alignment":"viewport","icon-size":0.8,"symbol-placement":"line","text-field":["get","shield_text"],"text-font":["Noto Sans Medium"],"text-rotation-alignment":"viewport","text-size":8},"paint":{"text-color":"#6c6570"}},
+    {"id":"roads_labels_major","type":"symbol","source":"protomaps","source-layer":"roads","minzoom":11,"filter":["in","kind","highway","major_road"],"layout":{"symbol-placement":"line","symbol-sort-key":["get","min_zoom"],"text-field":["case",["all",["any",["has","name"],["has","pgf:name"]],["!",["any",["has","name2"],["has","pgf:name2"]]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["has","script"],["case",["any",["is-supported-script",["get","name"]],["has","pgf:name"]],["format",["coalesce",["get","name:en"],["get","name:en"]],{},"\n",{},["case",["all",["!",["has","name:en"]],["has","name:en"],["!",["has","script"]]],"",["coalesce",["get","pgf:name"],["get","name"]]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["get","name:en"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{}]],["all",["any",["has","name"],["has","pgf:name"]],["any",["has","name2"],["has","pgf:name2"]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["all",["has","script"],["has","script2"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["has","script2"],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]],["case",["all",["has","script"],["has","script2"],["has","script3"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["!",["has","script"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["!",["has","script2"]],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name3"],["get","name3"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]]],"text-font":["Noto Sans Regular"],"text-size":12},"paint":{"text-color":"#6c6570","text-halo-color":"#ffffff","text-halo-width":1}},
+    {"id":"pois","type":"symbol","source":"protomaps","source-layer":"pois","filter":["all",["in",["get","kind"],["literal",["beach","forest","marina","park","peak","zoo","garden","bench","aerodrome","station","bus_stop","ferry_terminal","stadium","university","library","school","animal","toilets","drinking_water","post_office","building","townhall","restaurant","fast_food","cafe","bar","supermarket","convenience","books","beauty","electronics","clothes","attraction","museum","theatre","artwork"]]],[">=",["zoom"],["+",["get","min_zoom"],0]]],"layout":{"icon-image":["match",["get","kind"],"station","train_station",["get","kind"]],"text-field":["case",["all",["any",["has","name"],["has","pgf:name"]],["!",["any",["has","name2"],["has","pgf:name2"]]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["has","script"],["case",["any",["is-supported-script",["get","name"]],["has","pgf:name"]],["format",["coalesce",["get","name:en"],["get","name:en"]],{},"\n",{},["case",["all",["!",["has","name:en"]],["has","name:en"],["!",["has","script"]]],"",["coalesce",["get","pgf:name"],["get","name"]]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["get","name:en"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{}]],["all",["any",["has","name"],["has","pgf:name"]],["any",["has","name2"],["has","pgf:name2"]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["all",["has","script"],["has","script2"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["has","script2"],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]],["case",["all",["has","script"],["has","script2"],["has","script3"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["!",["has","script"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["!",["has","script2"]],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name3"],["get","name3"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]]],"text-font":["Noto Sans Regular"],"text-justify":"auto","text-max-width":8,"text-offset":[1.1,0],"text-size":["interpolate",["linear"],["zoom"],17,10,19,16],"text-variable-anchor":["left","right"]},"paint":{"text-color":["case",["in",["get","kind"],["literal",["beach","forest","marina","park","peak","zoo","garden","bench"]]],"#3b7550",["in",["get","kind"],["literal",["aerodrome","station","bus_stop","ferry_terminal"]]],"#3a64ad",["in",["get","kind"],["literal",["stadium","university","library","school","animal","toilets","drinking_water","post_office","building","townhall"]]],"#685a8c",["in",["get","kind"],["literal",["supermarket","convenience","books","beauty","electronics","clothes"]]],"#2c7593",["in",["get","kind"],["literal",["restaurant","fast_food","cafe","bar"]]],"#a85c1c",["in",["get","kind"],["literal",["attraction","museum","theatre","artwork"]]],"#ad4683","#736b79"],"text-halo-color":"#fbfaf7","text-halo-width":1}},
+    {"id":"places_subplace","type":"symbol","source":"protomaps","source-layer":"places","filter":["in","kind","neighbourhood","macrohood"],"layout":{"symbol-sort-key":["case",["has","sort_key"],["get","sort_key"],["get","min_zoom"]],"text-field":["case",["all",["any",["has","name"],["has","pgf:name"]],["!",["any",["has","name2"],["has","pgf:name2"]]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["has","script"],["case",["any",["is-supported-script",["get","name"]],["has","pgf:name"]],["format",["coalesce",["get","name:en"],["get","name:en"]],{},"\n",{},["case",["all",["!",["has","name:en"]],["has","name:en"],["!",["has","script"]]],"",["coalesce",["get","pgf:name"],["get","name"]]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["get","name:en"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{}]],["all",["any",["has","name"],["has","pgf:name"]],["any",["has","name2"],["has","pgf:name2"]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["all",["has","script"],["has","script2"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["has","script2"],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]],["case",["all",["has","script"],["has","script2"],["has","script3"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["!",["has","script"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["!",["has","script2"]],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name3"],["get","name3"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]]],"text-font":["Noto Sans Regular"],"text-letter-spacing":0.1,"text-max-width":7,"text-padding":["interpolate",["linear"],["zoom"],5,2,8,4,12,18,15,20],"text-size":["interpolate",["exponential",1.2],["zoom"],11,8,14,14,18,24],"text-transform":"uppercase"},"paint":{"text-color":"#736b79","text-halo-color":"#fbfaf7","text-halo-width":1}},
+    {"id":"places_region","type":"symbol","source":"protomaps","source-layer":"places","filter":["==","kind","region"],"layout":{"symbol-sort-key":["get","sort_key"],"text-anchor":"center","text-field":["step",["zoom"],["coalesce",["get","ref:en"],["get","ref"]],6,["case",["all",["any",["has","name"],["has","pgf:name"]],["!",["any",["has","name2"],["has","pgf:name2"]]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["has","script"],["case",["any",["is-supported-script",["get","name"]],["has","pgf:name"]],["format",["coalesce",["get","name:en"],["get","name:en"]],{},"\n",{},["case",["all",["!",["has","name:en"]],["has","name:en"],["!",["has","script"]]],"",["coalesce",["get","pgf:name"],["get","name"]]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["get","name:en"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{}]],["all",["any",["has","name"],["has","pgf:name"]],["any",["has","name2"],["has","pgf:name2"]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["all",["has","script"],["has","script2"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["has","script2"],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]],["case",["all",["has","script"],["has","script2"],["has","script3"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["!",["has","script"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["!",["has","script2"]],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name3"],["get","name3"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]]]],"text-font":["Noto Sans Regular"],"text-radial-offset":0.2,"text-size":["interpolate",["linear"],["zoom"],3,11,7,16],"text-transform":"uppercase"},"paint":{"text-color":"#8a8090","text-halo-color":"#fbfaf7","text-halo-width":1}},
+    {"id":"places_locality","type":"symbol","source":"protomaps","source-layer":"places","filter":["==","kind","locality"],"layout":{"icon-image":["step",["zoom"],["case",["==",["get","capital"],"yes"],"capital","townspot"],8,""],"icon-padding":["interpolate",["linear"],["zoom"],0,0,8,4,10,8,12,6,22,2],"icon-size":0.7,"symbol-sort-key":["case",["has","sort_key"],["get","sort_key"],["get","min_zoom"]],"text-field":["case",["all",["any",["has","name"],["has","pgf:name"]],["!",["any",["has","name2"],["has","pgf:name2"]]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["has","script"],["case",["any",["is-supported-script",["get","name"]],["has","pgf:name"]],["format",["coalesce",["get","name:en"],["get","name:en"]],{},"\n",{},["case",["all",["!",["has","name:en"]],["has","name:en"],["!",["has","script"]]],"",["coalesce",["get","pgf:name"],["get","name"]]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["get","name:en"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{}]],["all",["any",["has","name"],["has","pgf:name"]],["any",["has","name2"],["has","pgf:name2"]],["!",["any",["has","name3"],["has","pgf:name3"]]]],["case",["all",["has","script"],["has","script2"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["has","script2"],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]],["case",["all",["has","script"],["has","script2"],["has","script3"]],["format",["get","name:en"],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["case",["!",["has","script"]],["format",["coalesce",["get","name:en"],["get","pgf:name"],["get","name"]],{},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["!",["has","script2"]],["format",["coalesce",["get","name:en"],["get","pgf:name2"],["get","name2"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name3"],["get","name3"]],{"text-font":["case",["==",["get","script3"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}],["format",["coalesce",["get","name:en"],["get","pgf:name3"],["get","name3"]],{},"\n",{},["coalesce",["get","pgf:name"],["get","name"]],{"text-font":["case",["==",["get","script"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]},"\n",{},["coalesce",["get","pgf:name2"],["get","name2"]],{"text-font":["case",["==",["get","script2"],"Devanagari"],["literal",["Noto Sans Devanagari Regular v1"]],["literal",["Noto Sans Regular"]]]}]]]],"text-font":["case",["<=",["get","min_zoom"],5],["literal",["Noto Sans Medium"]],["literal",["Noto Sans Regular"]]],"text-justify":"auto","text-padding":["interpolate",["linear"],["zoom"],5,3,8,7,12,11],"text-radial-offset":0.3,"text-size":["interpolate",["linear"],["zoom"],2,["case",["<",["get","population_rank"],13],8,[">=",["get","population_rank"],13],13,0],4,["case",["<",["get","population_rank"],13],10,[">=",["get","population_rank"],13],15,0],6,["case",["<",["get","population_rank"],12],11,[">=",["get","population_rank"],12],17,0],8,["case",["<",["get","population_rank"],11],11,[">=",["get","population_rank"],11],18,0],10,["case",["<",["get","population_rank"],9],12,[">=",["get","population_rank"],9],20,0],15,["case",["<",["get","population_rank"],8],12,[">=",["get","population_rank"],8],22,0]],"text-variable-anchor":["step",["zoom"],["literal",["bottom","left","right","top"]],8,["literal",["center"]]]},"paint":{"text-color":"#3f3a45","text-halo-color":"#fbfaf7","text-halo-width":1.25}},
+    {"id":"places_country","type":"symbol","source":"protomaps","source-layer":"places","filter":["==","kind","country"],"layout":{"icon-padding":["interpolate",["linear"],["zoom"],0,2,14,2,16,20,17,2,22,2],"symbol-sort-key":["case",["has","sort_key"],["get","sort_key"],["get","min_zoom"]],"text-field":["format",["coalesce",["get","name:en"],["get","name:en"]],{}],"text-font":["Noto Sans Medium"],"text-size":["interpolate",["linear"],["zoom"],2,["case",["<",["get","population_rank"],10],8,[">=",["get","population_rank"],10],12,0],6,["case",["<",["get","population_rank"],8],10,[">=",["get","population_rank"],8],18,0],8,["case",["<",["get","population_rank"],7],11,[">=",["get","population_rank"],7],20,0]],"text-transform":"uppercase"},"paint":{"text-color":"#776b82","text-halo-color":"#fbfaf7","text-halo-width":1}}
+  ]
 }

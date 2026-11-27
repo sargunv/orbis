@@ -1,9 +1,9 @@
 import { opening } from "./app/options.js";
-import { quakeStyle } from "./app/quake.js";
 import alpsFlight from "./data/alps-flight.json";
 import alps from "./data/alps.json?url";
 import arctic from "./data/crs/arctic.json?url";
-import globe from "./data/globe.json";
+import earthquake from "./data/earthquake.json?url";
+import globe from "./data/globe.json?url";
 import neon from "./data/neon.json?url";
 import osmCarto from "./data/osm-carto.json?url";
 import papercraft from "./data/papercraft.json?url";
@@ -50,10 +50,10 @@ const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
  * view in range (the globe no smaller than at zoom 0), on both maps of a
  * comparison, and clamp it on a switch. `projection` is a v8 projection the
  * map switches to once the style loads, and `sky` a v8 sky it puts in
- * place of the style's then too. `restyle` turns the fetched style into the
- * entry's (sources, layers, terrain, light), so a live style keeps tracking
- * its upstream; the map then loads that style, with the projection and sky
- * in it, whole (`sceneStyle`). `light` offers the map options' choice
+ * place of the style's then too. `own` marks the demo's own style, a file
+ * in data/ whose URLs are all absolute (`fetchStyle` throws on one that
+ * isn't): the page fetches it and the map loads it with the projection,
+ * the sky and the map options in it, whole (`sceneStyle`). `light` offers the map options' choice
  * between a map- and a viewport-anchored light, and `terrain` their
  * switch for the style's own terrain, on by default (app/options.js,
  * which offers the rest by what the style draws); `off` names those of
@@ -71,8 +71,7 @@ const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
  *   swatch: [string, string, string], dark?: boolean, orbisOnly?: boolean, basemap?: boolean, camera?: object,
  *   constraints?: object, flight?: object[], formats?: Record<string, string>,
  *   light?: boolean, terrain?: boolean, off?: string[], projection?: object, sky?: object,
- *   quake?: { epicentre: [number, number] }, marker?: { view: object },
- *   restyle?: (style: object) => object,
+ *   quake?: { epicentre: [number, number] }, marker?: { view: object }, own?: boolean,
  *   unsupported?: { gljs?: string, native?: string } }} Scene
  */
 
@@ -103,109 +102,13 @@ const GLOBE_SKY = {
   ],
 };
 
-/** Whether a filter is in v8's legacy syntax rather than an expression. */
-function isLegacyFilter(filter) {
-  if (!Array.isArray(filter)) return false;
-  const [op, ...args] = filter;
-  if (["all", "any", "none"].includes(op)) return args.every(isLegacyFilter);
-  return (
-    ["==", "!=", "<", ">", "<=", ">=", "in", "!in", "has", "!has"].includes(
-      op,
-    ) && typeof args[0] === "string"
-  );
-}
-
-/**
- * Protomaps' layers and tiles as the Globe draws them (data/globe.json,
- * which orb-demo applies too): its own palette set over each layer's paint
- * by id, keeping Protomaps' widths, filters and layout, so the road
- * hierarchy and label placement follow upstream; the sea's depth from AWS
- * Terrain Tiles (ETOPO1 and GEBCO offshore), drawn two ways: below zoom 6
- * over the background, the ocean once the water fill leaves out Protomaps'
- * ocean polygons, and under the land, with the seafloor's relief, so
- * neither shows on land however low it lies; from zoom 6, where Protomaps'
- * landuse fades in, over Protomaps' ocean polygons drawn over the landuse,
- * so that parks and military areas reaching out to sea stay under it, with
- * Mapterhorn's land below sea level and the Caspian Sea put back over it;
- * the land standing on Mapterhorn's DEM as terrain (which keeps the sea at
- * sea level), on by default, and a hillshade over the land and lakes,
- * under the roads and labels; the buildings extruded under the labels, lit
- * by a sun 60° from overhead. One preview is designed in, for the map
- * options to switch on, off by default (app/options.js) so that the Globe
- * opens as GL JS and MapLibre Native could draw it: the land's hillshade
- * multiplied into the fills beneath it
- * (`dev.sargunv.orbis:hillshade-layer-blend`), in colours made for it,
- * which its metadata holds the unblended ones of. Each addition is placed
- * by the layers it finds, so a style with other ids still draws.
- */
-function globeStyle(style) {
-  const layers = style.layers.map((layer) => {
-    const paint = globe.paint[layer.id];
-    const recoloured = paint
-      ? { ...layer, paint: { ...layer.paint, ...paint } }
-      : layer;
-    if (layer.id !== "water") return recoloured;
-    // In the filter's own syntax: Protomaps' is legacy.
-    const legacy = !layer.filter || isLegacyFilter(layer.filter);
-    const ocean = ["!=", legacy ? "kind" : ["get", "kind"], "ocean"];
-    return {
-      ...recoloured,
-      filter: layer.filter ? ["all", layer.filter, ocean] : ocean,
-    };
-  });
-  const labels = () => {
-    const i = layers.findIndex((l) => l.type === "symbol");
-    return i < 0 ? layers.length : i;
-  };
-  const earth = layers.findIndex((l) => l.id === "earth");
-  layers.splice(earth < 0 ? 1 : earth, 0, ...globe.sea);
-  // The ocean polygons, from z6 over the landuse, and the sources the
-  // Globe derives from the water layer's: those with no `type` of their own.
-  const water = layers.findIndex((l) => l.id === "water");
-  const vector = layers[water]?.source;
-  const sources = { ...style.sources };
-  for (const [id, source] of Object.entries(globe.sources)) {
-    if (source.type) sources[id] = source;
-    else if (vector) sources[id] = { ...style.sources[vector], ...source };
-  }
-  if (vector) {
-    const ocean = globe.ocean.map((l) =>
-      l.source ? l : { ...l, source: vector },
-    );
-    layers.splice(water, 0, ...ocean);
-  }
-  const lakes = layers.findIndex((l) => l.id === "water");
-  layers.splice(lakes < 0 ? labels() : lakes + 1, 0, globe.hillshade);
-  const at = layers.findIndex(
-    (l) => l["source-layer"] === "buildings" && l.type === "fill",
-  );
-  const buildings = layers[at];
-  if (buildings) {
-    // Protomaps carries `height` on only some footprints (about half in
-    // Tokyo and Manhattan, a tenth in central Paris) and no level counts:
-    // the rest stand at OpenMapTiles' default `render_height`, 5 m, as
-    // Liberty's do where OpenStreetMap has neither.
-    layers.splice(labels(), 0, {
-      ...globe.buildings,
-      source: buildings.source,
-    });
-  }
-  return {
-    ...style,
-    sources,
-    terrain: globe.terrain,
-    light: globe.light,
-    layers,
-  };
-}
-
-/** What a catalogue entry's `restyle` names. */
-const RESTYLES = { globe: globeStyle, quake: quakeStyle };
 /** The catalogue's local files, as the build emits them. */
 const LOCAL = {
   "alps.json": alps,
   "alps-flight.json": alpsFlight,
   "crs/arctic.json": arctic,
+  "earthquake.json": earthquake,
+  "globe.json": globe,
   "neon.json": neon,
   "osm-carto.json": osmCarto,
   "papercraft.json": papercraft,
@@ -214,13 +117,16 @@ const LOCAL = {
   "watercolor.json": watercolor,
 };
 
+/** Whether a catalogue URL names its scheme, rather than a file in data/. */
+const isAbsolute = (url) => /^[a-z][a-z\d+.-]*:/i.test(url);
+
 /**
  * A catalogue URL as the page fetches it: a local file as the build emits
  * it, which it emits only where LOCAL imports it, so one missing from
  * LOCAL throws here rather than going unfetched on the deployed site.
  */
 function local(url) {
-  if (/^[a-z][a-z\d+.-]*:/i.test(url)) return url;
+  if (isAbsolute(url)) return url;
   const emitted = LOCAL[url];
   if (!emitted)
     throw new Error(`data/scenes.json: add ${url} to LOCAL in styles.js`);
@@ -229,7 +135,7 @@ function local(url) {
 
 /**
  * The picker's catalogue, from data/scenes.json, which orb-demo shows
- * too: local URLs and flights resolved, restyles named by function.
+ * too: local URLs and flights resolved, the local styles marked `own`.
  *
  * @type {{ name: string, scenes: Scene[] }[]}
  */
@@ -238,8 +144,8 @@ export const GROUPS = catalogue.groups.map((group) => ({
   scenes: group.scenes.map((scene) => ({
     ...scene,
     url: local(scene.url),
+    own: !isAbsolute(scene.url),
     ...(scene.flight && { flight: LOCAL[scene.flight].legs }),
-    ...(scene.restyle && { restyle: RESTYLES[scene.restyle] }),
   })),
 }));
 for (const group of GROUPS)
@@ -301,10 +207,7 @@ export function sceneFor(params) {
   const url = new URL(style, location.href).href;
   const known = Object.values(SCENES).find(
     (s) =>
-      !s.projection &&
-      !s.sky &&
-      !s.restyle &&
-      new URL(s.url, location.href).href === url,
+      !s.projection && !s.sky && new URL(s.url, location.href).href === url,
   );
   if (known) return { scene: known };
   return {
@@ -326,29 +229,58 @@ export function sceneUrl(scene, format) {
   return new URL(url, location.href).href;
 }
 
-/** `style` as `scene` draws it: restyled, with its projection and sky. */
+/** `style` as `scene` draws it, with its projection and sky. */
 function withScene(scene, style) {
-  const restyled = scene.restyle ? scene.restyle(style) : style;
   return {
-    ...restyled,
+    ...style,
     ...(scene.projection && { projection: scene.projection }),
     ...(scene.sky && { sky: scene.sky }),
   };
 }
 
 /**
- * A scene's style: its URL, or for a scene that restyles, the style
- * fetched and restyled as the entry designs it, which the map options turn
+ * A scene's style: its URL, or for the demo's own (`own`), the style
+ * fetched with the entry's projection and sky, which the map options turn
  * into what the map loads (app/options.js's `opening`), so that the map
  * builds its tiles once rather than again for an edit.
  */
 export async function sceneStyle(scene, format) {
   const url = sceneUrl(scene, format);
-  if (!scene.restyle) return url;
+  if (!scene.own) return url;
+  return withScene(scene, await fetchStyle(url));
+}
+
+/**
+ * The style at `url`, to load as an object, whose URLs then resolve
+ * against the page rather than the file: a style naming one (glyphs,
+ * sprite, a source's TileJSON, tiles or data) that the two resolve
+ * differently throws rather than loading the wrong thing.
+ */
+async function fetchStyle(url) {
   const response = await fetch(url);
   if (!response.ok)
     throw new Error(`The style failed to load: HTTP ${response.status}`);
-  return withScene(scene, await response.json());
+  const style = await response.json();
+  const sprites = Array.isArray(style.sprite)
+    ? style.sprite.map((s) => s.url)
+    : [style.sprite];
+  const sources = Object.values(style.sources ?? {}).flatMap((s) => [
+    s.url,
+    ...(s.tiles ?? []),
+    ...(s.urls ?? []),
+    s.data,
+  ]);
+  const file = new URL(url, location.href);
+  const relative = [style.glyphs, ...sprites, ...sources].find(
+    (u) =>
+      typeof u === "string" &&
+      new URL(u, file).href !== new URL(u, location.href).href,
+  );
+  if (relative !== undefined)
+    throw new Error(
+      `${url} names ${relative}, which resolves against the page here, not the file: make it absolute`,
+    );
+  return style;
 }
 
 /**
@@ -364,9 +296,9 @@ export function demoStyle(params, fallback = "live") {
 }
 
 /**
- * As `demoStyle`, with the scene's projection, sky and restyle put in the
- * style itself, fetched, so that every engine loads them with it, and a
- * restyle's map options as the app opens them: its defaults, which draw
+ * As `demoStyle`, with the scene's projection and sky put in the style
+ * itself, fetched, so that every engine loads them with it, and the demo's
+ * own style with its map options as the app opens them: its defaults, which draw
  * nothing GL JS and Native can't, or those `params` names (`&blend=1`,
  * `&terrain=0`); `globe` in `params` puts
  * Liberty-on-the-globe's projection and sky (GLOBE_SKY) in any style.
@@ -379,8 +311,8 @@ export async function demoStyleWithScene(params, fallback = "live") {
     : params.get("style")
       ? sceneFor(params).scene
       : {};
-  if (!scene.projection && !scene.sky && !scene.restyle) return url;
-  const style = withScene(scene, await (await fetch(url)).json());
-  if (!scene.restyle) return style;
+  if (!scene.projection && !scene.sky && !scene.own) return url;
+  const style = withScene(scene, await fetchStyle(url));
+  if (!scene.own) return style;
   return opening(style, { scene, terrain: style.terrain ?? null }, params);
 }

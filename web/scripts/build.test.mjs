@@ -24,7 +24,7 @@ test("built styles pin their archives, and archive changes propagate to entry JS
       recursive: true,
     });
     await cp(join(config.root, "styles.js"), join(root, "styles.js"));
-    // The map options, which open a restyle as the app does.
+    // The map options, which open the demo's own styles as the app does.
     await cp(join(config.root, "app"), join(root, "app"), { recursive: true });
     await writeFile(
       join(root, "index.html"),

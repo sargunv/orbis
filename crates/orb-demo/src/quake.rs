@@ -13,9 +13,9 @@ use std::time::Instant;
 
 use orb_api::{Geodetic, TileIndex};
 use orb_host::Fetch;
-use serde_json::{Value, json};
 
-/// The source the restyled style feeds its terrain and hillshade from.
+/// The source `web/demo/data/earthquake.json` feeds its terrain and
+/// hillshade from.
 pub(crate) const SOURCE: &str = "quake";
 /// Heights a tile side: Mapterhorn's 512-texel tiles averaged 2×2.
 pub(crate) const SIDE: u32 = 256;
@@ -37,69 +37,6 @@ const PERIOD: f64 = 12.0;
 const BIN: f64 = 40.0;
 const REACH: f64 = 400_000.0;
 const BINS: usize = (REACH / BIN) as usize + 2;
-
-/// The Matterhorn, which the quake starts under, as `web/demo/app/quake.js`
-/// has it: the marker on it flies back to it (`crate::scenes::Marker`).
-const MATTERHORN: [f64; 2] = [7.6586, 45.9763];
-
-/// The Alps style with its Mapterhorn sources made one the app feeds, and
-/// a marker on the Matterhorn to click back to, as `quakeStyle` in
-/// `web/demo/app/quake.js` makes it.
-pub(crate) fn style(style: &Value) -> Value {
-    let mut style = style.clone();
-    let dem: Vec<String> = (style["sources"].as_object().into_iter().flatten())
-        .filter(|(_, s)| s["type"] == "raster-dem")
-        .map(|(id, _)| id.clone())
-        .collect();
-    if let Some(sources) = style["sources"].as_object_mut() {
-        sources.retain(|id, _| !dem.contains(id));
-        sources.insert(
-            SOURCE.into(),
-            json!({
-                "type": "raster-dem",
-                "tiles": ["orbis-host:"],
-                "encoding": "terrarium",
-                "tileSize": 512,
-                "maxzoom": 11,
-                "attribution": "<a href=\"https://mapterhorn.com/attribution\">© Mapterhorn</a>",
-            }),
-        );
-        sources.insert(
-            "marker".into(),
-            json!({
-                "type": "geojson",
-                "data": {"type": "Feature", "properties": {},
-                         "geometry": {"type": "Point", "coordinates": MATTERHORN}},
-            }),
-        );
-    }
-    for layer in style["layers"].as_array_mut().into_iter().flatten() {
-        if layer["source"]
-            .as_str()
-            .is_some_and(|s| dem.iter().any(|d| d == s))
-        {
-            layer["source"] = SOURCE.into();
-        }
-    }
-    if let Some(layers) = style["layers"].as_array_mut() {
-        layers.extend([
-            json!({
-                "id": "marker", "type": "circle", "source": "marker",
-                "paint": {"circle-radius": 7, "circle-color": "#d7263d",
-                          "circle-stroke-color": "#ffffff", "circle-stroke-width": 2.5},
-            }),
-            json!({
-                "id": "marker-label", "type": "symbol", "source": "marker",
-                "layout": {"text-field": "Matterhorn", "text-font": ["Noto Sans Bold"],
-                           "text-size": 13, "text-anchor": "bottom", "text-offset": [0, -0.9]},
-                "paint": {"text-color": "#7a1020", "text-halo-color": "#ffffff",
-                          "text-halo-width": 1.5},
-            }),
-        ]);
-    }
-    style["terrain"] = json!({"source": SOURCE, "exaggeration": 1.6});
-    style
-}
 
 enum Command {
     Tile(TileIndex),

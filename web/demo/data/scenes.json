@@ -12,32 +12,7 @@
           "key": "globe",
           "name": "Globe",
           "detail": "Protomaps on a 3D globe: sea depths, hillshade, buildings and terrain",
-          "url": "https://api.protomaps.com/styles/v5/light/en.json?key=73c45a97eddd43fb",
-          "projection": {
-            "type": "globe"
-          },
-          "sky": {
-            "sky-color": "#9cc9ea",
-            "horizon-color": "#eef2f1",
-            "fog-color": "#efebe4",
-            "sky-horizon-blend": 0.6,
-            "horizon-fog-blend": 0.6,
-            "fog-ground-blend": 0.6,
-            "atmosphere-blend": [
-              "interpolate",
-              ["linear"],
-              ["zoom"],
-              0,
-              0.2,
-              2,
-              0.16,
-              4,
-              0.1,
-              8,
-              0
-            ]
-          },
-          "restyle": "globe",
+          "url": "globe.json",
           "terrain": true,
           "camera": {
             "center": [10, 30],
@@ -55,8 +30,7 @@
           "key": "earthquake",
           "name": "Earthquake",
           "detail": "The Alps rippling from a shock, heights fed live. Click to move it",
-          "url": "alps.json",
-          "restyle": "quake",
+          "url": "earthquake.json",
           "quake": {
             "epicentre": [7.6586, 45.9763]
           },

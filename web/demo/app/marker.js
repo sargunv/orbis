@@ -1,5 +1,5 @@
 // Scenes' markers: a landmark a scene's style marks in its layers `marker`
-// and `marker-label` (and the Earthquake's restyle, app/quake.js); a click
+// and `marker-label` (the Earthquake's, data/earthquake.json, too); a click
 // on it flies to the scene's `marker.view`, flyTo options, so a viewer who
 // wandered off finds the way back.
 

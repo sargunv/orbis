@@ -95,9 +95,9 @@ const SCENES = {
 // The map app itself, as the site opens it (its default entry, the Globe)
 // and on the Tokyo extract: its panels and options call into the map
 // beyond what load.html does. `app-offline` is the Globe with every
-// request off the demo server failing (the Tokyo extract's style standing
-// in for Protomaps Light), as `pnpm e2e`'s offline checks load it: what a
-// map runs when its tiles, DEM tiles, glyphs and sprites fail.
+// request off the demo server failing, as `pnpm e2e`'s offline checks
+// load it: what a map runs when its tiles, DEM tiles, glyphs and sprites
+// fail.
 SCENES.app = { app: "" };
 SCENES["app-tokyo"] = { app: "tokyo" };
 SCENES["app-offline"] = { app: "globe", offline: true };
@@ -384,21 +384,12 @@ async function gestures(page) {
   await page.waitForTimeout(1000);
 }
 
-/** Fails every request of `page`'s off `server`, but Protomaps Light's
- * style, which the Tokyo extract's stands in for (as e2e.mjs's
+/** Fails every request of `page`'s off `server` (as e2e.mjs's
  * `offlineGlobe`). */
 async function failOffServer(page, server) {
-  const tokyo = JSON.parse(
-    readFileSync(join(root, "web/demo/data/tokyo-mvt.json"), "utf8")
-      .replaceAll('"./', `"${server.url}demo-data/`)
-      .replaceAll("pmtiles://./", `pmtiles://${server.url}demo-data/`),
-  );
   await page.route(
     (u) => !u.href.startsWith(server.url),
-    (route) =>
-      route.request().url().includes("api.protomaps.com/styles/")
-        ? route.fulfill({ json: tokyo })
-        : route.abort("internetdisconnected"),
+    (route) => route.abort("internetdisconnected"),
   );
 }
 

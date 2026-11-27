@@ -249,7 +249,7 @@ function draft(style) {
 }
 
 /**
- * `designed`, a style the demo builds for `scene` (a restyle), with the
+ * `designed`, the demo's own style for `scene` (styles.js's `own`), with the
  * options `query` asks for and the entry's defaults for the rest: what the
  * map loads, so that it opens as it draws, without an Orbis-only preview
  * switched on and then off. `terrain` is the terrain its switch puts in.

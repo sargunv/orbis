@@ -17,7 +17,7 @@ mlt-core = { version = "=0.22.1", default-features = false, features = [
   "__private",
 ] }
 brotli.workspace = true
-serde_json = { workspace = true, features = ["raw_value"] }
+serde_json = { workspace = true, features = ["float_roundtrip", "raw_value"] }
 ureq = { workspace = true, features = ["rustls"] }
 rusqlite.workspace = true
 flate2.workspace = true

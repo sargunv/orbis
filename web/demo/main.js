@@ -269,8 +269,8 @@ const options = mapOptions({
   },
 });
 /**
- * What the map loads for `next`: its URL, or for an entry the demo builds
- * (a restyle), that style with the URL's map options and the entry's
+ * What the map loads for `next`: its URL, or for the demo's own style
+ * (`own`), that style with the URL's map options and the entry's
  * defaults in it, which then keeps the style as designed in `design` for
  * the options to read.
  */
@@ -449,8 +449,7 @@ function go(next, { camera, history: mode = "push" } = {}) {
   if (
     sceneUrl(previous.scene, previous.format) ===
       sceneUrl(next.scene, next.format) &&
-    !previous.scene.restyle &&
-    !next.scene.restyle
+    !next.scene.own
   ) {
     // The same style on another surface or under another sky: one edit,
     // and nothing loads again.
@@ -485,7 +484,7 @@ function go(next, { camera, history: mode = "push" } = {}) {
   app.dataset.map = "loading";
   watchLoad();
   // The style's `styleload` applies the entry's projection and sky, unless
-  // it restyles, which puts them in the style. The style's own camera is a
+  // it's the demo's own, which loads with them in. The style's own camera is a
   // fresh page's (load), never a switch's.
   styleFor(next).then(
     (style) => {
@@ -617,14 +616,14 @@ async function load(next, { camera }) {
       say(message, { error: true });
   });
   // Each style, the first and those switched to: the entry's projection and
-  // sky (unless it restyles, which put them in the style), then the options,
+  // sky (unless it's the demo's own, which loaded with them), then the options,
   // attribution and comparison read it.
   map.on("styleload", async () => {
     const { scene } = current;
     styleLoading = false;
     const loaded = await map.getStyle();
     styleSky = loaded.sky ?? null;
-    if (!scene.restyle && (scene.projection || scene.sky)) {
+    if (!scene.own && (scene.projection || scene.sky)) {
       await map.edit((tx) => {
         if (scene.projection) tx.setProjection(scene.projection);
         if (scene.sky) tx.setSky(scene.sky);

@@ -470,18 +470,9 @@ mod tests {
     #[test]
     fn globe_opens_spec_only() {
         let scene = Catalogue::read().scene_for("globe");
-        let protomaps = json!({
-            "version": 8,
-            "sources": { "protomaps": { "type": "vector", "url": "x" } },
-            "layers": [
-                { "id": "background", "type": "background" },
-                { "id": "earth", "type": "fill", "source": "protomaps", "source-layer": "earth" },
-                { "id": "water", "type": "fill", "source": "protomaps", "source-layer": "water" },
-                { "id": "buildings", "type": "fill", "source": "protomaps", "source-layer": "buildings" },
-                { "id": "address_label", "type": "symbol", "source": "protomaps", "source-layer": "buildings" },
-            ],
-        });
-        let designed = scene.designed(&protomaps);
+        let globe: Value =
+            serde_json::from_str(include_str!("../../../web/demo/data/globe.json")).unwrap();
+        let designed = scene.designed(&globe);
         assert!(!orbis_keys(&designed).is_empty(), "{designed}");
         let mut style = designed.clone();
         let mut panel = Panel::default();

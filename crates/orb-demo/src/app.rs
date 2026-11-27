@@ -149,11 +149,8 @@ impl Demo {
     /// where they must. The same style with another projection or sky is
     /// edited in place; another style loads.
     fn go(&mut self, scene: Scene) {
-        let same = scene.style_url() == self.scene.style_url()
-            && scene.restyle.is_none()
-            && self.scene.restyle.is_none()
-            && !self.loading
-            && self.loaded.is_some();
+        let same =
+            scene.style_url() == self.scene.style_url() && !self.loading && self.loaded.is_some();
         self.map.stop();
         self.map.set_constraints(scene.constraints());
         if same {
@@ -177,8 +174,8 @@ impl Demo {
         self.scene = scene;
     }
 
-    /// The scene's style is in: puts in what it designs (restyle,
-    /// projection, sky), then the options' defaults, as one edit.
+    /// The scene's style is in: puts in what it designs (projection,
+    /// sky), then the options' defaults, as one edit.
     fn install(&mut self) {
         let Some(loaded) = &self.loaded else {
             return;

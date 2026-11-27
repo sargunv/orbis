@@ -7,6 +7,7 @@ mod android;
 mod boundaries;
 mod compare;
 mod data;
+mod demo_styles;
 mod dxc;
 mod expression_fixtures;
 mod fixtures;
@@ -102,8 +103,13 @@ cargo xtask <task>
                committed), or one of them; with
                `expressions`, bundle the pinned style-spec expression
                fixtures into orb-expr
-  demo-data    reproduce the committed Tokyo MVT/MLT PMTiles extracts, then
-               add Liberty's labels, sprite and glyph subsets to their styles
+  demo-data [styles|protomaps]  reproduce the committed Tokyo MVT/MLT
+               PMTiles extracts, then add Liberty's labels, sprite and glyph
+               subsets to their styles, then bake the styles the demos
+               restyle, offline (the Globe's from the pinned Protomaps Light,
+               the Earthquake's from alps.json); `styles` bakes those alone;
+               `protomaps` pins Protomaps Light as it is served now, then
+               bakes
   unicode      regenerate orb-text's character tables from the UCD
   fuzz <style|mvt|mlt|glyphs|font|geojson|dem|packed|sqlite> [--seconds n]  run one of
                orb-fuzz's targets under cargo-fuzz (default 600 s), seeded
@@ -148,7 +154,14 @@ fn main() -> ExitCode {
                 .and_then(|()| mln_ffi::ensure()),
             Some(other) => Err(format!("fixtures: unknown mirror `{other}`")),
         },
-        Some("demo-data") => pmtiles::extract().and_then(|()| labels::generate()),
+        Some("demo-data") => match args.get(1).map(String::as_str) {
+            Some("styles") => demo_styles::generate(),
+            Some("protomaps") => demo_styles::pin_protomaps(),
+            None => pmtiles::extract()
+                .and_then(|()| labels::generate())
+                .and_then(|()| demo_styles::generate()),
+            Some(other) => Err(format!("demo-data: unknown step `{other}`")),
+        },
         Some("unicode") => unicode::generate(),
         Some("help") | None => {
             print!("{HELP}");
