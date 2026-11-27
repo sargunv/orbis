@@ -76,7 +76,7 @@ fn simplification_preserves_endpoints_and_maxzoom_detail() {
         [45.0, 20.0],
         [90.0, 0.0],
     ]]));
-    let mut i = Index::new(
+    let i = Index::new(
         vec![f],
         Options {
             max_zoom: 2,
@@ -161,7 +161,7 @@ fn buffer_keeps_neighbors_and_clips_at_buffer_edge() {
 #[test]
 fn wraps_dateline_and_tile_x() {
     let make = || vec![feature(Geometry::Points(vec![[-179.0, 40.0]]))];
-    let mut i = Index::new(
+    let i = Index::new(
         make(),
         Options {
             buffer: 128.0,
@@ -373,4 +373,62 @@ fn polar_caps_tile_as_discs_on_polar_planes() {
             "{id}: area {area} vs {disc}"
         );
     }
+}
+
+/// Tiles cut on many threads at once, each asking in its own order, hold
+/// what tiles cut one at a time do.
+#[test]
+fn concurrent_requests_cut_the_tiles_sequential_ones_do() {
+    let mut seed = 7u64;
+    let mut next = move || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let features: Vec<_> = (0..400)
+        .map(|_| {
+            let (lon, lat) = (next() * 40.0 - 20.0, next() * 40.0 - 20.0);
+            feature(Geometry::Lines(vec![vec![
+                [lon, lat],
+                [lon + next() * 8.0, lat + next() * 8.0],
+                [lon - next() * 8.0, lat + next() * 8.0],
+            ]]))
+        })
+        .collect();
+    let options = Options {
+        max_zoom: 6,
+        index_max_zoom: 1,
+        index_max_points: 0,
+        ..Options::default()
+    };
+    let tiles: Vec<(u8, i32, u32)> = (2..=6u8)
+        .flat_map(|z| {
+            let middle = 1i32 << (z - 1);
+            (middle - 2..middle + 2)
+                .flat_map(move |x| (middle as u32 - 2..middle as u32 + 2).map(move |y| (z, x, y)))
+        })
+        .collect();
+    let sequential = Index::new(features.clone(), options.clone()).unwrap();
+    let expected: Vec<_> = tiles
+        .iter()
+        .map(|&(z, x, y)| sequential.tile(z, x, y))
+        .collect();
+    let concurrent = Index::new(features, options).unwrap();
+    std::thread::scope(|s| {
+        for thread in 0..8 {
+            let (concurrent, tiles, expected) = (&concurrent, &tiles, &expected);
+            s.spawn(move || {
+                // Deepest first on half the threads, so they cut down
+                // through the tiles the others ask for.
+                let order: Vec<usize> = if thread % 2 == 0 {
+                    (0..tiles.len()).collect()
+                } else {
+                    (0..tiles.len()).rev().collect()
+                };
+                for i in order {
+                    let (z, x, y) = tiles[i];
+                    assert_eq!(concurrent.tile(z, x, y), expected[i], "{z}/{x}/{y}");
+                }
+            });
+        }
+    });
 }

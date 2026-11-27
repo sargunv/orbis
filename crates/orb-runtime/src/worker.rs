@@ -7,7 +7,7 @@
 
 use rustc_hash::FxHashMap as HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_expr::json::Json;
@@ -26,7 +26,10 @@ const FRAME_BUDGET: usize = 64 << 20;
 /// One source's data in a worker, shared by its style revisions.
 #[derive(Debug, Default)]
 struct SourceData {
-    geojson: Mutex<Option<Result<crate::geojson::Index, String>>>,
+    /// A GeoJSON source's index, built once by the first request that
+    /// needs it; its tiles are cut from it on any number of job threads at
+    /// once.
+    geojson: OnceLock<Result<crate::geojson::Index, String>>,
 }
 
 /// A cached frame's key: its source, the style revision its source data
@@ -721,12 +724,7 @@ impl TileWorker {
         }
         drop(frames);
         self.geojson_source(request.source).is_some_and(|s| {
-            matches!(s.data, GeoJsonData::Inline(_))
-                || data
-                    .geojson
-                    .lock()
-                    .expect("GeoJSON index poisoned")
-                    .is_some()
+            matches!(s.data, GeoJsonData::Inline(_)) || data.geojson.get().is_some()
         })
     }
 
@@ -862,9 +860,8 @@ impl TileWorker {
             .geojson_source(source)
             .ok_or("the source isn't a GeoJSON source")?;
         let (_, data) = self.data(source)?;
-        let mut cached = data.geojson.lock().expect("GeoJSON index poisoned");
-        cached
-            .get_or_insert_with(|| self.geojson_index(bytes, geojson))
+        data.geojson
+            .get_or_init(|| self.geojson_index(bytes, geojson))
             .as_ref()
             .map_err(Clone::clone)?
             .answer(&request.query)
@@ -977,9 +974,12 @@ impl TileWorker {
     ) -> Result<Arc<TileFrame>, String> {
         let depth = tile.z - data_zoom;
         let frame = if let SourceKind::GeoJson(geojson) = &self.plan.source_def(index).kind {
-            let mut cached = data.geojson.lock().expect("GeoJSON index poisoned");
-            let fresh = cached.is_none();
-            match cached.get_or_insert_with(|| self.geojson_index(bytes, geojson)) {
+            let mut fresh = false;
+            let index = data.geojson.get_or_init(|| {
+                fresh = true;
+                self.geojson_index(bytes, geojson)
+            });
+            match index {
                 Ok(index) => index
                     .tile(data_zoom, (tile.col >> depth) as i32, tile.row >> depth)
                     .unwrap_or_default(),

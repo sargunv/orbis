@@ -68,7 +68,7 @@ impl Index {
     }
 
     /// Tile `z/x/y`, x wrapping; `None` past the source's `maxzoom`.
-    pub(crate) fn tile(&mut self, z: u8, x: i32, y: u32) -> Option<Arc<TileFrame>> {
+    pub(crate) fn tile(&self, z: u8, x: i32, y: u32) -> Option<Arc<TileFrame>> {
         match self {
             Self::Tiles(index) => index.tile(z, x, y),
             Self::Clusters { clusters, max_zoom } => {
@@ -300,7 +300,7 @@ mod tests {
         let orb_style::GeoJsonData::Inline(features) = s.data.clone() else {
             panic!()
         };
-        let mut index = Index::new(features, &s, None).unwrap();
+        let index = Index::new(features, &s, None).unwrap();
         let world = index.tile(0, 0, 0).unwrap();
         let layer = &world.layers[0];
         assert_eq!(layer.len(), 1);

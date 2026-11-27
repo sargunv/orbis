@@ -15,7 +15,7 @@ libfuzzer_sys::fuzz_target!(|text: &str| {
         generate_id: true,
         ..Options::default()
     };
-    if let Ok(mut index) = Index::new(features, options) {
+    if let Ok(index) = Index::new(features, options) {
         for z in [0, 1, 5, 14] {
             let _ = index.tile(z, 0, 0);
         }

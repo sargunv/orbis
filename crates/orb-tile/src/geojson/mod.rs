@@ -15,7 +15,7 @@ mod tile;
 pub use cluster::{Aggregate, ClusterOptions, Clusters, Member, Properties};
 
 use rustc_hash::FxHashMap as HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::{TileFrame, Value};
 
@@ -157,18 +157,29 @@ impl Projected {
 
 type Key = (u8, u32, u32);
 
+/// The tile one zoom out.
+fn parent((z, x, y): Key) -> Key {
+    (z - 1, x >> 1, y >> 1)
+}
+
 #[derive(Debug)]
 struct Tile {
-    source: Option<Vec<Projected>>,
     frame: Arc<TileFrame>,
+    /// The features its children are cut from, until they are. A request
+    /// below takes them, holding the lock while it cuts, so requests for
+    /// that subtree wait for its children and requests elsewhere don't.
+    source: Mutex<Option<Vec<Projected>>>,
 }
 
 /// A reusable spatial index. Initial tiling stops at `index_max_zoom` or
-/// `index_max_points`; requests drill down from retained parent geometry.
+/// `index_max_points`; requests drill down from retained parent geometry,
+/// a zoom at a time, from any number of threads at once. Each tile is cut
+/// from its parent's features alone, so what it holds doesn't depend on
+/// the order tiles are asked for.
 #[derive(Debug)]
 pub struct Index {
     options: Options,
-    tiles: HashMap<Key, Tile>,
+    tiles: RwLock<HashMap<Key, Arc<Tile>>>,
 }
 
 impl Index {
@@ -192,93 +203,130 @@ impl Index {
         }
         let features = convert::convert(features, &options);
         let features = clip::wrap(features, &options);
-        let mut index = Self {
+        let index = Self {
             options,
-            tiles: HashMap::default(),
+            tiles: RwLock::default(),
         };
-        if !features.is_empty() {
-            index.split(features, (0, 0, 0), None);
+        let mut tiles = HashMap::default();
+        let mut stack = vec![((0, 0, 0), features)];
+        while let Some((key, features)) = stack.pop() {
+            let count: usize = features.iter().map(Projected::count).sum();
+            let tile = index.made(key, features);
+            let deeper =
+                key.0 < index.options.index_max_zoom && count > index.options.index_max_points;
+            if deeper && let Some(features) = lock(&tile.source).take() {
+                stack.extend(index.cut(&features, key));
+            }
+            tiles.insert(key, Arc::new(tile));
         }
+        *write(&index.tiles) = tiles;
         Ok(index)
     }
 
     /// Returns a tile, wrapping x around the world. Missing tiles are empty.
     /// Requests above `max_zoom` are absent; the runtime overzooms the parent.
-    pub fn tile(&mut self, z: u8, x: i32, y: u32) -> Option<Arc<TileFrame>> {
+    pub fn tile(&self, z: u8, x: i32, y: u32) -> Option<Arc<TileFrame>> {
         if z > self.options.max_zoom || y >= 1u32 << z {
             return None;
         }
-        let x = x.rem_euclid(1i32 << z) as u32;
-        let key = (z, x, y);
-        if !self.tiles.contains_key(&key) {
-            let mut parent = key;
-            while parent.0 > 0 {
-                parent = (parent.0 - 1, parent.1 >> 1, parent.2 >> 1);
-                if let Some(tile) = self.tiles.get_mut(&parent) {
-                    let features = tile.source.take()?;
-                    self.split(features, parent, Some(key));
-                    break;
+        let key = (z, x.rem_euclid(1i32 << z) as u32, y);
+        loop {
+            // The tile, or the nearest ancestor there is.
+            let (at, tile) = {
+                let tiles = read(&self.tiles);
+                let mut at = key;
+                loop {
+                    if let Some(tile) = tiles.get(&at) {
+                        break (at, Arc::clone(tile));
+                    }
+                    if at.0 == 0 {
+                        return None;
+                    }
+                    at = parent(at);
                 }
+            };
+            if at == key {
+                return Some(Arc::clone(&tile.frame));
             }
+            let mut source = lock(&tile.source);
+            let Some(features) = source.as_deref() else {
+                // Another request cut its children while this one waited,
+                // or it has none: it is empty, and so is all below it.
+                drop(source);
+                let mut child = key;
+                while child.0 > at.0 + 1 {
+                    child = parent(child);
+                }
+                if read(&self.tiles).contains_key(&child) {
+                    continue;
+                }
+                return None;
+            };
+            let children = self
+                .cut(features, at)
+                .map(|(key, features)| (key, Arc::new(self.made(key, features))));
+            // In before the source's lock goes, for the requests it holds,
+            // and the features go only once the children are in, so a cut
+            // that panics leaves them for the next request to cut again.
+            write(&self.tiles).extend(children);
+            *source = None;
         }
-        self.tiles.get(&key).map(|tile| Arc::clone(&tile.frame))
     }
 
-    fn split(&mut self, features: Vec<Projected>, key: Key, target: Option<Key>) {
-        let mut stack = vec![(features, key)];
-        while let Some((features, key @ (z, x, y))) = stack.pop() {
-            let count: usize = features.iter().map(Projected::count).sum();
-            self.tiles.entry(key).or_insert_with(|| Tile {
-                frame: Arc::new(tile::create(&features, key, &self.options)),
-                source: None,
-            });
-            let stop = z == self.options.max_zoom
-                || match target {
-                    None => {
-                        z >= self.options.index_max_zoom || count <= self.options.index_max_points
-                    }
-                    Some((tz, tx, ty)) => z == tz || x != tx >> (tz - z) || y != ty >> (tz - z),
-                };
-            if stop {
-                self.tiles.get_mut(&key).expect("inserted").source = Some(features);
-                continue;
-            }
-            if features.is_empty() {
-                continue;
-            }
-            let scale = f64::from(1u32 << z);
-            let k = 0.5 * self.options.buffer / f64::from(self.options.extent);
-            let x = f64::from(x);
-            let y = f64::from(y);
-            let left = clip::clip(
-                &features,
-                (x - k) / scale,
-                (x + 0.5 + k) / scale,
-                0,
-                &self.options,
-            );
-            let right = clip::clip(
-                &features,
-                (x + 0.5 - k) / scale,
-                (x + 1.0 + k) / scale,
-                0,
-                &self.options,
-            );
-            for (side, col) in [(left, key.1 * 2), (right, key.1 * 2 + 1)] {
-                for row in 0..2 {
-                    let offset = f64::from(row) * 0.5;
-                    let child = clip::clip(
-                        &side,
-                        (y + offset - k) / scale,
-                        (y + offset + 0.5 + k) / scale,
-                        1,
-                        &self.options,
-                    );
-                    stack.push((child, (z + 1, col, key.2 * 2 + row)));
-                }
-            }
+    /// A tile of `features`, keeping them for its children where it has
+    /// any to cut.
+    fn made(&self, key: Key, features: Vec<Projected>) -> Tile {
+        let frame = Arc::new(tile::create(&features, key, &self.options));
+        let keep = key.0 < self.options.max_zoom && !features.is_empty();
+        Tile {
+            frame,
+            source: Mutex::new(keep.then_some(features)),
         }
     }
+
+    /// The features of each of tile `key`'s children.
+    fn cut(&self, features: &[Projected], key @ (z, x, y): Key) -> [(Key, Vec<Projected>); 4] {
+        let scale = f64::from(1u32 << z);
+        let k = 0.5 * self.options.buffer / f64::from(self.options.extent);
+        let (left, top) = (f64::from(x), f64::from(y));
+        let side = |from: f64, to: f64| {
+            clip::clip(
+                features,
+                (left + from - k) / scale,
+                (left + to + k) / scale,
+                0,
+                &self.options,
+            )
+        };
+        let sides = [side(0.0, 0.5), side(0.5, 1.0)];
+        std::array::from_fn(|i| {
+            let (col, row) = ((i / 2) as u32, (i % 2) as u32);
+            let offset = f64::from(row) * 0.5;
+            let child = clip::clip(
+                &sides[col as usize],
+                (top + offset - k) / scale,
+                (top + offset + 0.5 + k) / scale,
+                1,
+                &self.options,
+            );
+            ((z + 1, key.1 * 2 + col, key.2 * 2 + row), child)
+        })
+    }
+}
+
+/// The lock's data, whether or not a cut that held it panicked: a cut
+/// adds its children and only then drops its features, so a tile a panic
+/// left behind still holds them and the next request cuts again.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(PoisonError::into_inner)
 }
 
 #[cfg(test)]
