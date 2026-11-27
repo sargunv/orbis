@@ -2408,14 +2408,26 @@ fn w3c_composite(mode: Blend, s: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     out
 }
 
+/// [`blended_fills`]' colours: each a value 8 bits hold exactly, so a
+/// layer's target stores it unrounded. A colour on a half step (0.9 is
+/// 229.5 of 255) rounds either way by platform: D3D12 rounds 0.9 to 230,
+/// and its blend works at 8 bits, rounding the source before adding the
+/// backdrop, which together put the result past the test's two steps.
+const BLENDED_FILLS: [[f32; 4]; 3] = {
+    const fn unorm(r: u8, g: u8, b: u8) -> [f32; 4] {
+        [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
+    }
+    [
+        unorm(51, 153, 102),
+        unorm(230, 77, 128),
+        unorm(26, 102, 204),
+    ]
+};
+
 /// Three fills of the left half: an opaque base, then two layers that
 /// composite once in `modes`, the second over the first's result.
 fn blended_fills(modes: [Blend; 2]) -> Vec<u8> {
-    let colors = [
-        [0.2, 0.6, 0.4, 1.0],
-        [0.9, 0.3, 0.5, 1.0],
-        [0.1, 0.4, 0.8, 1.0],
-    ];
+    let colors = BLENDED_FILLS;
     let mut h = Harness::new();
     h.renderer.set_nodes(&mut h.gpu, &[Family::Fill; 3]);
     let tile = h.tile();
@@ -2465,12 +2477,12 @@ fn layer_blends_follow_w3c_compositing() {
         Blend::Luminosity,
         Blend::PlusLighter,
     ];
-    let base = [0.2, 0.6, 0.4, 1.0];
+    let [base, under, over] = BLENDED_FILLS;
     let layer = |c: [f32; 4]| c.map(|v| v * 0.75);
     for (first, second) in modes.into_iter().zip(modes.into_iter().rev()) {
         let pixels = blended_fills([first, second]);
-        let once = w3c_composite(first, layer([0.9, 0.3, 0.5, 1.0]), base);
-        let expected = w3c_composite(second, layer([0.1, 0.4, 0.8, 1.0]), once);
+        let once = w3c_composite(first, layer(under), base);
+        let expected = w3c_composite(second, layer(over), once);
         let actual = pixel(&pixels, 8, 32);
         for (a, e) in actual.into_iter().zip(expected) {
             assert!(

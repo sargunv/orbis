@@ -279,7 +279,11 @@ fn operations_move_cut_colour_and_grow() {
         draw(&runtime, &mut target, &style, at.0, at.1)
     };
     let plain = draw("");
-    let red = |p: &[u8]| p[..3] == [0xd0, 0x20, 0x60];
+    // The fill's colour, to the step an 8-bit blend can leave where the
+    // antialiasing outline draws over the fill: D3D12 blends at 8 bits,
+    // rounding the outline's colour and the fill's share apart, so 208 at a
+    // partial coverage over 208 can make 207 or 209 (Adreno and WARP alike).
+    let red = |p: &[u8]| largest_difference(&p[..3], &[0xd0, 0x20, 0x60]) <= 1;
     let pixel = |image: &[u8], x: u32, y: u32| -> [u8; 4] {
         let i = ((y * WIDTH + x) * 4) as usize;
         image[i..i + 4].try_into().unwrap()
