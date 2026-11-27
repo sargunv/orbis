@@ -249,6 +249,40 @@ fn a_lost_workers_rasters_go_again() {
     assert_eq!(bitmaps.lock().unwrap().take(), Some(Ok(vec![])));
 }
 
+/// A lost worker's queries fail, for the map to retry, while its loads go
+/// again; a reply to a request no longer in flight is an error.
+#[test]
+fn a_lost_workers_queries_fail() {
+    let (jobs, posted) = jobs(1);
+    let location = TileLocation::Url("test://tile.mvt".into());
+    let tile_request = TileRequest::whole(1, 1, tile(0), location, orb_style::Encoding::Mvt);
+    let result = Arc::new(Mutex::new(None));
+    let into = result.clone();
+    let request = orb_runtime::ClusterRequest {
+        tile: tile_request,
+        query: orb_runtime::ClusterQuery::ExpansionZoom(1),
+    };
+    jobs.cluster(request, Box::new(move |r| *into.lock().unwrap() = Some(r)));
+    let [(0, JobRequest::Cluster { id, .. })] = posted.take()[..] else {
+        panic!("one cluster query")
+    };
+    let a = load(&jobs, tile(1));
+    posted.take();
+    jobs.lost(0, "trapped", Some(None));
+    let failed = result.lock().unwrap().take();
+    assert_eq!(failed, Some(Err("job worker 0 lost: trapped".into())));
+    let [(0, sent, _)] = posted.loads()[..] else {
+        panic!("the load sent again")
+    };
+    let late = JobReply::Answer {
+        id,
+        json: "1".into(),
+    };
+    assert!(jobs.complete(late, |_| unreachable!()).is_err());
+    answer(&jobs, sent);
+    assert!(answered(&a));
+}
+
 /// A GeoJSON source's tiles all go to one worker, which parses and
 /// indexes its document once; a vector source's spread over them.
 #[test]

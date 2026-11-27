@@ -30,8 +30,9 @@ use std::sync::{Arc, Mutex, Weak};
 use orb_crs::TileIndex;
 use orb_host::Fetch;
 use orb_runtime::{
-    FetchCounts, GlyphRaster, JobReply, JobRequest, Jobs, RasterDone, SpriteIcons, StyleUpdate,
-    TileDone, TileOutcome, TileRequest, TileResult, TileWorker, Turn, Turns,
+    FeaturesDone, FetchCounts, GlyphRaster, JobReply, JobRequest, Jobs, QueryDone, RasterDone,
+    SpriteIcons, StyleUpdate, TileDone, TileOutcome, TileRequest, TileResult, TileWorker, Turn,
+    Turns,
 };
 use orb_wire as wire;
 
@@ -65,22 +66,12 @@ impl std::fmt::Debug for WorkerJobs {
 #[derive(Default)]
 struct State {
     next_id: u32,
-    pending: HashMap<u32, TileDone>,
-    rasters: HashMap<u32, RasterDone>,
-    /// Each raster's request, to send again if its worker is lost.
-    raster_requests: HashMap<u32, GlyphRaster>,
-    features: HashMap<u32, orb_runtime::FeaturesDone>,
-    answers: HashMap<u32, orb_runtime::QueryDone>,
-    /// The worker each request went to, until it answers, and a load's
-    /// request, to send again if the worker is lost.
-    sent_to: HashMap<u32, (u32, Option<TileRequest>)>,
-    /// The turns of loads sent whose fetch hasn't ended.
-    turns: HashMap<u32, Turn>,
+    /// Each request sent, by id, until its worker answers or is lost.
+    in_flight: HashMap<u32, Sent>,
     /// Tiles whose loads were lost with a worker, by how many times: one
     /// is a suspect, two quarantine it.
     lost_loads: HashMap<LoadKey, u8>,
-    /// The suspect's load in flight, and the loads of those waiting.
-    suspect: Option<u32>,
+    /// The loads of suspects waiting for the one in flight.
     suspects: VecDeque<(TileRequest, TileDone)>,
     /// The PMTiles archive heads the map read, for a replacement worker.
     heads: Vec<(String, Arc<Vec<u8>>)>,
@@ -96,8 +87,37 @@ struct State {
     /// and indexes it once, its home in `whole_homes` once it has one.
     whole: HashSet<u32>,
     whole_homes: HashMap<u32, u32>,
-    /// Replies received.
+    /// Loads answered, those failed without a reply included.
     done: u32,
+}
+
+/// A request sent to job worker `worker`, until it answers.
+struct Sent {
+    worker: u32,
+    job: InFlight,
+}
+
+/// What a request in flight answers, and what's needed to send it again
+/// or fail it if its worker is lost.
+enum InFlight {
+    /// A tile's load, sent again if its worker is lost, holding its `turn`
+    /// until the worker's fetch ends. A `suspect`'s tile was lost with a
+    /// worker before: no other suspect is in flight beside it.
+    Load {
+        request: TileRequest,
+        done: TileDone,
+        turn: Option<Turn>,
+        suspect: bool,
+    },
+    /// A glyph unit's raster, sent again if its worker is lost.
+    Raster {
+        request: GlyphRaster,
+        done: RasterDone,
+    },
+    /// A tile's features, failed if its worker is lost (the map retries).
+    Features(FeaturesDone),
+    /// A cluster's answer, failed if its worker is lost.
+    Cluster(QueryDone),
 }
 
 /// A job's style, source and tile.
@@ -136,7 +156,7 @@ impl WorkerJobs {
         })
     }
 
-    /// Replies to loads received so far.
+    /// Loads answered so far, those failed without a reply included.
     pub(crate) fn done(&self) -> u32 {
         self.state.lock().expect("jobs poisoned").done
     }
@@ -152,46 +172,30 @@ impl WorkerJobs {
         why: &str,
         replacement: Option<Option<(u64, StyleUpdate, SpriteIcons)>>,
     ) {
-        let (failed, loads, rasters, heads, turns) = {
+        let (jobs, heads, turns) = {
             let mut state = self.state.lock().expect("jobs poisoned");
             let Some(lost) = state.lost.get_mut(worker as usize) else {
                 return;
             };
             *lost = replacement.is_none();
-            let ids: Vec<u32> = state
-                .sent_to
-                .iter()
-                .filter(|&(_, &(w, _))| w == worker)
-                .map(|(&id, _)| id)
+            let State {
+                in_flight,
+                lost_loads,
+                ..
+            } = &mut *state;
+            let mut jobs: Vec<(u32, InFlight)> = (in_flight.extract_if(|_, s| s.worker == worker))
+                .map(|(id, sent)| (id, sent.job))
                 .collect();
-            let (mut failed, mut loads, mut rasters) = (Vec::new(), Vec::new(), Vec::new());
             // Their turns pass on: the loads go again, in turns of their own.
             let mut turns = Vec::new();
-            for id in ids {
-                let Some((_, request)) = state.sent_to.remove(&id) else {
-                    continue;
-                };
-                turns.extend(state.turns.remove(&id));
-                if state.suspect == Some(id) {
-                    state.suspect = None;
-                }
-                if let Some(raster) = state.raster_requests.remove(&id) {
-                    if let Some(done) = state.rasters.remove(&id) {
-                        rasters.push((raster, done));
-                    }
-                    continue;
-                }
-                let Some(request) = request else {
-                    failed.push(id);
-                    continue;
-                };
-                let n = state.lost_loads.entry(tile_key(&request)).or_default();
-                *n = n.saturating_add(1);
-                if let Some(done) = state.pending.remove(&id) {
-                    loads.push((request, done));
+            for (_, job) in &mut jobs {
+                if let InFlight::Load { request, turn, .. } = job {
+                    let n = lost_loads.entry(tile_key(request)).or_default();
+                    *n = n.saturating_add(1);
+                    turns.extend(turn.take());
                 }
             }
-            (failed, loads, rasters, state.heads.clone(), turns)
+            (jobs, state.heads.clone(), turns)
         };
         if let Some(style) = replacement {
             if let Some((style, update, icons)) = style {
@@ -207,20 +211,19 @@ impl WorkerJobs {
         // Their turns pass on once a replacement has the style.
         drop(turns);
         let message = format!("job worker {worker} lost: {why}");
-        for id in failed {
-            self.fail(id, message.clone());
-        }
-        for (request, done) in rasters {
-            self.raster(request, done);
-        }
-        for (request, done) in loads {
-            if self.quarantined(tile_key(&request)) {
-                done(Ok(quarantine(format!(
-                    "tile {} is left out from now on: {message} loading it a second time",
-                    request.tile
-                ))));
-            } else {
-                self.load(request, done);
+        for (id, job) in jobs {
+            match job {
+                InFlight::Load { request, done, .. } if self.quarantined(tile_key(&request)) => {
+                    done(Ok(quarantine(format!(
+                        "tile {} is left out from now on: {message} loading it a second time",
+                        request.tile
+                    ))));
+                }
+                InFlight::Load { request, done, .. } => self.load(request, done),
+                InFlight::Raster { request, done } => self.raster(request, done),
+                job @ (InFlight::Features(_) | InFlight::Cluster(_)) => {
+                    self.fail(id, job, message.clone());
+                }
             }
         }
         self.next_suspect();
@@ -238,7 +241,7 @@ impl WorkerJobs {
     fn next_suspect(&self) {
         let next = {
             let mut state = self.state.lock().expect("jobs poisoned");
-            if state.suspect.is_some() {
+            if state.suspect_in_flight() {
                 return;
             }
             state.suspects.pop_front()
@@ -258,105 +261,117 @@ impl WorkerJobs {
     ) -> Result<(), String> {
         let id = message.id();
         let mut state = self.state.lock().expect("jobs poisoned");
-        // Dropped once the state is let go: the next load's turn sends it.
-        let turn = state.turns.remove(&id);
         if let JobReply::Fetched { .. } = message {
+            // A load's fetch ended: its turn, dropped once the state is
+            // let go, sends the next load.
+            let turn = match state.in_flight.get_mut(&id) {
+                Some(Sent {
+                    job: InFlight::Load { turn, .. },
+                    ..
+                }) => turn.take(),
+                _ => None,
+            };
             drop(state);
             drop(turn);
             return Ok(());
         }
-        let sent = state.sent_to.remove(&id);
-        if let Some(done) = state.features.remove(&id) {
-            drop(state);
-            done(match message {
-                JobReply::Features { features, .. } => Ok(features),
-                JobReply::Error { message, .. } => Err(message),
-                _ => Err("malformed features reply".into()),
-            });
-            return Ok(());
-        }
-        if let Some(done) = state.answers.remove(&id) {
-            drop(state);
-            done(match message {
-                JobReply::Answer { json, .. } => Ok(json),
-                JobReply::Error { message, .. } => Err(message),
-                _ => Err("malformed cluster reply".into()),
-            });
-            return Ok(());
-        }
-        if let Some(done) = state.rasters.remove(&id) {
-            state.raster_requests.remove(&id);
-            drop(state);
-            done(match message {
-                JobReply::Glyphs { bitmaps, .. } => Ok(bitmaps),
-                JobReply::Error { message, .. } => Err(message),
-                _ => Err("malformed raster reply".into()),
-            });
-            return Ok(());
-        }
-        state.done += 1;
-        let pending = state.pending.remove(&id);
-        drop(state);
-        drop(turn);
-        let done = pending.ok_or_else(|| format!("reply to unknown job {id}"))?;
-        let mut state = self.state.lock().expect("jobs poisoned");
+        let sent =
+            (state.in_flight.remove(&id)).ok_or_else(|| format!("reply to unknown job {id}"))?;
         // A suspect answered: it didn't take its worker down.
-        let answered = state.suspect == Some(id);
-        if answered {
-            state.suspect = None;
-            if let Some((_, Some(request))) = &sent {
-                state.lost_loads.remove(&tile_key(request));
-            }
+        if let InFlight::Load {
+            request,
+            suspect: true,
+            ..
+        } = &sent.job
+        {
+            state.lost_loads.remove(&tile_key(request));
         }
         drop(state);
-        done(match message {
-            JobReply::Missing { .. } => Ok(TileOutcome::Missing {
-                warnings: Vec::new(),
-            }),
-            JobReply::Cancelled { .. } => Ok(TileOutcome::Cancelled),
-            JobReply::RetryAfter { error, wait_ms, .. } => {
-                Ok(TileOutcome::RetryAfter { error, wait_ms })
-            }
-            JobReply::Error { message, .. } => Err(message),
-            JobReply::Tile { .. } | JobReply::Image { .. } | JobReply::Dem { .. } => {
-                payload(message).map(TileOutcome::Built)
-            }
-            _ => Err("malformed job reply".into()),
-        });
-        if answered {
-            self.next_suspect();
-        }
+        self.answer(sent.job, message, payload);
         Ok(())
     }
 
-    /// Fails request `id` with `message`.
-    fn fail(&self, id: u32, message: String) {
-        let _ = self.complete(JobReply::Error { id, message }, |_| {
+    /// Answers `job` with `message`, a load's data through `payload`.
+    fn answer(
+        &self,
+        job: InFlight,
+        message: JobReply,
+        payload: impl FnOnce(JobReply) -> Result<TileResult, String>,
+    ) {
+        let malformed = |what: &str| format!("malformed {what} reply");
+        match job {
+            InFlight::Features(done) => done(match message {
+                JobReply::Features { features, .. } => Ok(features),
+                JobReply::Error { message, .. } => Err(message),
+                _ => Err(malformed("features")),
+            }),
+            InFlight::Cluster(done) => done(match message {
+                JobReply::Answer { json, .. } => Ok(json),
+                JobReply::Error { message, .. } => Err(message),
+                _ => Err(malformed("cluster")),
+            }),
+            InFlight::Raster { done, .. } => done(match message {
+                JobReply::Glyphs { bitmaps, .. } => Ok(bitmaps),
+                JobReply::Error { message, .. } => Err(message),
+                _ => Err(malformed("raster")),
+            }),
+            InFlight::Load {
+                done,
+                turn,
+                suspect,
+                ..
+            } => {
+                // The next load's turn sends it, the state let go.
+                drop(turn);
+                self.state.lock().expect("jobs poisoned").done += 1;
+                done(match message {
+                    JobReply::Missing { .. } => Ok(TileOutcome::Missing {
+                        warnings: Vec::new(),
+                    }),
+                    JobReply::Cancelled { .. } => Ok(TileOutcome::Cancelled),
+                    JobReply::RetryAfter { error, wait_ms, .. } => {
+                        Ok(TileOutcome::RetryAfter { error, wait_ms })
+                    }
+                    JobReply::Error { message, .. } => Err(message),
+                    JobReply::Tile { .. } | JobReply::Image { .. } | JobReply::Dem { .. } => {
+                        payload(message).map(TileOutcome::Built)
+                    }
+                    _ => Err(malformed("job")),
+                });
+                if suspect {
+                    self.next_suspect();
+                }
+            }
+        }
+    }
+
+    /// Fails request `id`'s `job` with `message`.
+    fn fail(&self, id: u32, job: InFlight, message: String) {
+        self.answer(job, JobReply::Error { id, message }, |_| {
             Err("malformed job reply".into())
         });
     }
 
     /// Sends the request `make` builds with its id to the worker
-    /// `preferred` picks (or the next one on, while it's lost), its done
-    /// kept by `keep`. With every worker lost, the request fails at once.
+    /// `preferred` picks (or the next one on, while it's lost), keeping
+    /// `job` until it answers. With every worker lost, the request fails
+    /// at once.
     fn send(
         &self,
         preferred: impl FnOnce(&mut State) -> u32,
-        load: Option<TileRequest>,
-        keep: impl FnOnce(&mut State, u32),
+        job: InFlight,
         make: impl FnOnce(u32) -> JobRequest,
     ) {
         let mut state = self.state.lock().expect("jobs poisoned");
         let preferred = preferred(&mut state);
         let id = state.next_id;
         state.next_id = id.wrapping_add(1);
-        keep(&mut state, id);
         let Some(worker) = route(&state.lost, preferred) else {
             drop(state);
-            self.fail(id, "every job worker was lost".into());
+            self.fail(id, job, "every job worker was lost".into());
             return;
         };
-        state.sent_to.insert(id, (worker, load));
+        state.in_flight.insert(id, Sent { worker, job });
         drop(state);
         self.post(worker, &make(id));
     }
@@ -400,8 +415,8 @@ impl State {
             return worker;
         }
         let mut busy = vec![0usize; self.lost.len()];
-        for &(worker, _) in self.sent_to.values() {
-            busy[worker as usize] += 1;
+        for sent in self.in_flight.values() {
+            busy[sent.worker as usize] += 1;
         }
         let worker = (0..self.lost.len())
             .filter(|&w| !self.lost[w])
@@ -420,6 +435,11 @@ impl State {
         self.home_order.push_back((source, tile));
         worker
     }
+
+    /// Whether a suspect's load is in flight.
+    fn suspect_in_flight(&self) -> bool {
+        (self.in_flight.values()).any(|s| matches!(s.job, InFlight::Load { suspect: true, .. }))
+    }
 }
 
 impl WorkerJobs {
@@ -436,18 +456,15 @@ impl WorkerJobs {
         request.rank = turn.as_ref().map_or(request.rank, Turn::rank);
         let (source, tile) = (request.source, request.data_tile());
         let abort = (request.load_key()).zip(turn.as_ref().map(|t| t.abort().clone()));
+        let job = InFlight::Load {
+            request: request.clone(),
+            done,
+            turn,
+            suspect,
+        };
         self.send(
             |state| state.home(source, tile),
-            Some(request.clone()),
-            |state, id| {
-                state.pending.insert(id, done);
-                if let Some(turn) = turn {
-                    state.turns.insert(id, turn);
-                }
-                if suspect {
-                    state.suspect = Some(id);
-                }
-            },
+            job,
             |id| JobRequest::Load { id, request },
         );
         // A turn taken back (a load beside the view yielding to one of
@@ -466,8 +483,11 @@ impl WorkerJobs {
     fn stop_sent(&self, key: LoadKey) {
         let worker = {
             let state = self.state.lock().expect("jobs poisoned");
-            (state.sent_to.values()).find_map(|(worker, request)| {
-                (request.as_ref()?.load_key() == Some(key)).then_some(*worker)
+            (state.in_flight.values()).find_map(|sent| match &sent.job {
+                InFlight::Load { request, .. } if request.load_key() == Some(key) => {
+                    Some(sent.worker)
+                }
+                _ => None,
             })
         };
         if let Some(worker) = worker {
@@ -564,16 +584,11 @@ impl Jobs for WorkerJobs {
     fn raster(&self, request: GlyphRaster, done: RasterDone) {
         // A unit's owner worker rasterizes it.
         let owner = request.owner(self.workers);
-        let kept = request.clone();
-        self.send(
-            |_| owner,
-            None,
-            |state, id| {
-                state.rasters.insert(id, done);
-                state.raster_requests.insert(id, kept);
-            },
-            |id| JobRequest::Raster { id, request },
-        );
+        let job = InFlight::Raster {
+            request: request.clone(),
+            done,
+        };
+        self.send(|_| owner, job, |id| JobRequest::Raster { id, request });
     }
 
     fn load(&self, request: TileRequest, done: TileDone) {
@@ -584,7 +599,7 @@ impl Jobs for WorkerJobs {
                     drop(state);
                     return done(Ok(quarantine(String::new())));
                 }
-                Some(_) if state.suspect.is_some() => {
+                Some(_) if state.suspect_in_flight() => {
                     state.suspects.push_back((request, done));
                     return;
                 }
@@ -625,22 +640,20 @@ impl Jobs for WorkerJobs {
         self.turns.reorder(rank);
     }
 
-    fn features(&self, request: orb_runtime::FeatureRequest, done: orb_runtime::FeaturesDone) {
+    fn features(&self, request: orb_runtime::FeatureRequest, done: FeaturesDone) {
         let (source, tile) = (request.tile.source, request.tile.data_tile());
         self.send(
             |state| state.home(source, tile),
-            None,
-            |state, id| drop(state.features.insert(id, done)),
+            InFlight::Features(done),
             |id| JobRequest::Features { id, request },
         );
     }
 
-    fn cluster(&self, request: orb_runtime::ClusterRequest, done: orb_runtime::QueryDone) {
+    fn cluster(&self, request: orb_runtime::ClusterRequest, done: QueryDone) {
         let (source, tile) = (request.tile.source, request.tile.data_tile());
         self.send(
             |state| state.home(source, tile),
-            None,
-            |state, id| drop(state.answers.insert(id, done)),
+            InFlight::Cluster(done),
             |id| JobRequest::Cluster { id, request },
         );
     }
