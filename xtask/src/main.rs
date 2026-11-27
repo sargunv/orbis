@@ -55,7 +55,8 @@ cargo xtask <task>
                build core.wasm and core-gl.wasm (WebGL 2) into web/pkg,
                each split into what plain vector maps run and a module per
                feature a style declares, and the API's (xtask/src/split.rs),
-               and report sizes;
+               then shaper.wasm (font-faces shaping, fetched once a style
+               declares a font file), and report sizes;
                --names also writes core.wasm whole, with its function
                names, to target/web/core-names.wasm (for `pnpm -C web coverage`);
                --panics builds both to say on the console why they panic,

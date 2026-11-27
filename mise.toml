@@ -68,7 +68,7 @@ auto = true
 dir = "web"
 
 [tasks."demo:desktop"]
-description = "The map app in a native window: [scene|style URL] [--at lon,lat,z[,bearing,pitch]] [--flight]"
+description = "The map app in a native window: [scene|style URL] [--at lon,lat,z[,bearing,pitch]] [--flight] [--cache dir]"
 run = "cargo run --release -p orb-demo --"
 
 [tasks."demo:web"]
