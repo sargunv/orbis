@@ -7,19 +7,8 @@ mod common;
 
 use common::{Geodetic, Offscreen, Options, differing_pixels};
 
-/// Frames until the map is idle twice in a row.
 fn settle(offscreen: &mut Offscreen) {
-    let started = std::time::Instant::now();
-    let mut was_idle = false;
-    loop {
-        let idle = offscreen.frame().idle();
-        if idle && was_idle {
-            return;
-        }
-        was_idle = idle;
-        assert!(started.elapsed().as_secs() < 60, "timed out settling");
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    offscreen.settle().unwrap();
 }
 
 fn culled_and_kept(at: (f64, f64, f64), edit: Option<&str>) {

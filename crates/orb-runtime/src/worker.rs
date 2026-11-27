@@ -1177,15 +1177,25 @@ pub enum TileJob {
     /// drawn renew it alone ([`TileResult::renewed`](crate::TileResult::renewed),
     /// [`TileWorker::renew`]).
     Revalidate,
-    /// Loads a drawn tile again whole for edit generation `edit`: the
-    /// app's data for it changed.
-    Reload { edit: u64 },
-    /// Lays out `nodes` (by key) of a drawn tile again for edit
-    /// generation `edit`, from the frame they were laid out from.
-    Relayout { edit: u64, nodes: Vec<u32> },
+    /// Loads a drawn tile again whole: the app's data for it changed.
+    Reload { cause: Cause },
+    /// Lays out `nodes` (by key) of a drawn tile again, from the frame
+    /// they were laid out from.
+    Relayout { cause: Cause, nodes: Vec<u32> },
     /// Evaluates the property rows of `nodes` (by key) of a drawn tile
-    /// again for edit generation `edit`.
-    Columns { edit: u64, nodes: Vec<u32> },
+    /// again.
+    Columns { cause: Cause, nodes: Vec<u32> },
+}
+
+/// Why a drawn tile's job runs: the map waits for every job, but
+/// [`Map::generation`](crate::Map::generation) only for edits'.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, orb_wire::Wire)]
+pub enum Cause {
+    /// The style edit of this generation.
+    Edit(u64),
+    /// Work that isn't an edit: labels that waited for glyphs, glyph
+    /// retries, the app's data reloaded, expired tiles revalidated.
+    Upkeep,
 }
 
 /// GL JS's unpack vector of a DEM encoding: metres are
@@ -1368,7 +1378,7 @@ pub(crate) mod tests {
                 Encoding::Mvt,
                 &TileRequest {
                     job: TileJob::Columns {
-                        edit: 1,
+                        cause: Cause::Edit(1),
                         nodes: vec![crate::style::node_key(1, 0)],
                     },
                     ..request(tile)
@@ -1850,7 +1860,7 @@ pub(crate) mod tests {
         assert!(tile.labels_later.iter().all(|k| !tile.nodes.contains(k)));
         let relayout = TileRequest {
             job: TileJob::Relayout {
-                edit: 1,
+                cause: Cause::Edit(1),
                 nodes: tile.labels_later.clone(),
             },
             ..symbol_request()
@@ -2032,7 +2042,12 @@ pub(crate) mod tests {
         let tile = TileIndex::new(14, 0, 0);
         for (name, job) in [
             ("load", TileJob::Load),
-            ("reload", TileJob::Reload { edit: 1 }),
+            (
+                "reload",
+                TileJob::Reload {
+                    cause: Cause::Edit(1),
+                },
+            ),
         ] {
             let tx = tx.clone();
             let request = TileRequest {
@@ -2149,7 +2164,7 @@ pub(crate) mod tests {
         assert_eq!(sibling.fresh_until, Some(200), "from the cache, as fetched");
         let relayout = TileRequest {
             job: TileJob::Relayout {
-                edit: 1,
+                cause: Cause::Edit(1),
                 nodes: vec![circles],
             },
             ..whole(250)

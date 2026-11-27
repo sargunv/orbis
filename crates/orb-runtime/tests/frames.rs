@@ -107,22 +107,11 @@ mod tests {
         crate::common::move_camera(map, |c| c.pan(&surface, viewport, from, to));
     }
 
-    /// Renders until two frames in a row are idle: the second draws what
-    /// the first's messages installed, as the fixture runner's last frame
-    /// does.
+    /// Renders until a frame is idle, warning of nothing.
     fn settle(offscreen: &mut crate::common::Offscreen) -> orb_runtime::FrameReport {
-        let started = std::time::Instant::now();
-        let mut was_idle = false;
-        loop {
-            let report = offscreen.frame();
-            if report.idle() && was_idle {
-                assert!(crate::common::take_warnings(&mut offscreen.map).is_empty());
-                return report;
-            }
-            was_idle = report.idle();
-            assert!(started.elapsed().as_secs() < 60, "tiles did not settle");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        let (report, _, warnings) = offscreen.settle().unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        report
     }
 
     /// A fling past zoom 0 lands a hair below it; the map must still draw
@@ -168,15 +157,13 @@ mod tests {
         let mut pieces = crate::common::Offscreen::new(&tokyo(14.0), capacity).unwrap();
         pieces.map.set_frame_budget(tight);
         let started = std::time::Instant::now();
-        let (mut most, mut was_idle) = (0, false);
+        let mut most = 0;
         loop {
             let report = pieces.frame();
-
             most = most.max(report.tile_bytes);
-            if report.idle() && was_idle {
+            if report.idle() {
                 break;
             }
-            was_idle = report.idle();
             assert!(started.elapsed().as_secs() < 60, "did not settle");
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
@@ -776,14 +763,12 @@ mod tests {
         crate::common::load_style(&mut offscreen.map, &tokyo(15.0)).unwrap();
         let started = std::time::Instant::now();
         let mut events = Vec::new();
-        let mut was_idle = false;
         loop {
             let report = offscreen.frame();
             events.extend(offscreen.map.take_events());
-            if report.idle() && was_idle {
+            if report.idle() {
                 break;
             }
-            was_idle = report.idle();
             assert!(started.elapsed().as_secs() < 60, "tiles did not settle");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -1197,107 +1182,6 @@ mod tests {
         );
     }
 
-    /// Between frames, `prepare` applies what arrives and sends what comes
-    /// next: here the tile, then the placement it asks for, so the one
-    /// frame after draws the label and is idle.
-    #[test]
-    fn prepare_applies_arrivals_between_frames() {
-        let mut offscreen = null_island(
-            r#"{"version":8,
-            "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
-            "layers":[{"id":"label","type":"symbol","source":"s","layout":{"text-field":"Null Island"}}]}"#,
-        );
-        assert!(!offscreen.frame().idle());
-        // Until prepare has the label shown, not for a fixed time, which
-        // a loaded machine can overrun.
-        let started = std::time::Instant::now();
-        let shown = |map: &orb_runtime::Map| map.shown_labels().get("Null Island").copied();
-        while shown(&offscreen.map) != Some(1.0)
-            && started.elapsed() < std::time::Duration::from_secs(30)
-        {
-            let (map, gpu) = (&mut offscreen.map, &mut offscreen.gpu);
-            let renderer = offscreen.renderer.as_mut().expect("made by the frame");
-            map.prepare(gpu, renderer, offscreen.viewport, 1.0);
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        let report = offscreen.frame();
-        let shown = offscreen.map.shown_labels().get("Null Island").copied();
-        assert_eq!((report.idle(), shown), (true, Some(1.0)));
-    }
-
-    /// Before the first frame, `prepare` takes the style in and asks for
-    /// what it shows, so the first frame draws it all, labels placed.
-    #[test]
-    fn prepare_before_the_first_frame_asks_for_the_view() {
-        // The map's clock starts after this, so its readings trail ours.
-        let origin = std::time::Instant::now();
-        let mut offscreen = null_island(
-            r#"{"version":8,
-            "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
-            "layers":[{"id":"label","type":"symbol","source":"s","layout":{"text-field":"Null Island"}}]}"#,
-        );
-        // Until prepare has the label shown, not for a fixed time, which
-        // a loaded machine can overrun.
-        let started = std::time::Instant::now();
-        let shown = |map: &orb_runtime::Map| map.shown_labels().get("Null Island").copied();
-        while shown(&offscreen.map) != Some(1.0)
-            && started.elapsed() < std::time::Duration::from_secs(30)
-        {
-            let (map, gpu, format) = (&mut offscreen.map, &mut offscreen.gpu, offscreen.format);
-            let renderer = offscreen
-                .renderer
-                .get_or_insert_with(|| map.create_renderer(gpu, format));
-            map.prepare(gpu, renderer, offscreen.viewport, 1.0);
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        // The first frame comes after prepare's on prepare's clock, as a
-        // host's does: from the offscreen's own time, which starts at 0,
-        // it would come before them whenever setting up the GPU took a
-        // frame's time (the frame then wasn't idle).
-        offscreen.time = origin.elapsed().as_secs_f64() * 1000.0;
-        let report = offscreen.frame();
-        let shown = offscreen.map.shown_labels().get("Null Island").copied();
-        assert_eq!((report.idle(), shown), (true, Some(1.0)));
-    }
-
-    /// A canvas's (or video's) tile that `prepare` asks for before any
-    /// frame waits for the host's frame, as a frame's request does: the
-    /// source has no URL to fetch (#175).
-    #[test]
-    fn prepare_before_the_first_frame_waits_for_a_canvas_frame() {
-        let mut offscreen = null_island(
-            r##"{"version":8,
-            "sources":{"c":{"type":"canvas","canvas":"drawing",
-                "coordinates":[[-120,70],[120,70],[120,-70],[-120,-70]]}},
-            "layers":[{"id":"c","type":"raster","source":"c","paint":{"raster-fade-duration":0}}]}"##,
-        );
-        for _ in 0..3 {
-            let (map, gpu, format) = (&mut offscreen.map, &mut offscreen.gpu, offscreen.format);
-            let renderer = offscreen
-                .renderer
-                .get_or_insert_with(|| map.create_renderer(gpu, format));
-            map.prepare(gpu, renderer, offscreen.viewport, 1.0);
-        }
-        let rgba = [0, 255, 0, 255];
-        let frame = orb_runtime::TileImage {
-            width: 4,
-            height: 4,
-            pixels: orb_runtime::ImagePixels::Core(rgba.repeat(16)),
-        };
-        offscreen.map.source_frame("c", frame).unwrap();
-        settle(&mut offscreen);
-        let pixels = offscreen.pixels();
-        let (w, h) = (
-            offscreen.viewport.width as usize,
-            offscreen.viewport.height as usize,
-        );
-        let center = (h / 2 * w + w / 2) * 4;
-        assert_eq!(pixels[center..center + 4], rgba);
-        // Nor does a reload fetch it: only the app's sources reload.
-        assert!(offscreen.map.reload_host_tiles("c").is_err());
-        settle(&mut offscreen);
-    }
-
     /// A source with symbol layers loads its tiles while the sprites load:
     /// only their layout waits for the icons.
     #[test]
@@ -1428,6 +1312,30 @@ mod tests {
                 .unwrap();
         offscreen.map.set_style_json(style).unwrap();
         offscreen
+    }
+
+    /// Tiles applied between frames count in the next frame's report.
+    #[test]
+    fn arrivals_between_frames_count_in_the_next_report() {
+        let mut offscreen = null_island(
+            r#"{"version":8,
+            "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
+            "layers":[{"id":"c","type":"circle","source":"s"}]}"#,
+        );
+        assert_eq!(offscreen.frame().tiles_arrived, 0);
+        let renderer = offscreen.renderer.as_mut().expect("made by the frame");
+        let started = std::time::Instant::now();
+        while offscreen.map.job_counts().meshes_uploaded == 0 {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(30),
+                "the tile never arrived"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            offscreen
+                .map
+                .apply_arrivals(&mut offscreen.gpu, renderer, 1.0);
+        }
+        assert!(offscreen.frame().tiles_arrived > 0);
     }
 
     #[test]
@@ -1679,16 +1587,14 @@ mod tests {
             (report, events)
         }
 
-        /// Frames until two in a row are idle; the last's report.
+        /// Frames until one is idle: its report.
         fn settle(&mut self, ground: &dyn Fn(f64, f64) -> f32) -> orb_runtime::FrameReport {
             let started = std::time::Instant::now();
-            let mut was_idle = false;
             loop {
                 let (report, _) = self.frame(ground);
-                if report.idle() && was_idle {
+                if report.idle() {
                     return report;
                 }
-                was_idle = report.idle();
                 assert!(started.elapsed().as_secs() < 120, "did not settle");
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }

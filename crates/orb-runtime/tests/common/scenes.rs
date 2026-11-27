@@ -273,13 +273,14 @@ pub(crate) fn settle<G: orb_hal::Gpu>(gpu: &mut G, scene: &Scene) {
         map.render(gpu, &mut renderer, target, viewport, 1.0, time)
     };
     let started = std::time::Instant::now();
-    let mut idle = 0;
-    while idle < 3 {
+    loop {
         let report = frame(&mut map, gpu);
         for warning in super::take_warnings(&mut map) {
             eprintln!("{url}: {warning}");
         }
-        idle = if report.idle() { idle + 1 } else { 0 };
+        if report.idle() {
+            break;
+        }
         assert!(
             started.elapsed().as_secs() < 60,
             "{url}: timed out settling"

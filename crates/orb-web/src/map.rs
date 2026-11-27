@@ -242,11 +242,9 @@ pub struct FrameGpu {
 }
 
 impl FrameGpu {
-    /// A frame's counts, its pool moves those of the frame and of any
-    /// preparations before it.
+    /// A frame's counts.
     fn of(report: &orb_runtime::FrameReport) -> Self {
-        let mut resized = report.resized;
-        resized += report.prepared_resized;
+        let resized = report.resized;
         Self {
             pool_moves: resized.moves,
             pool_bytes_allocated: resized.bytes_allocated as f64,

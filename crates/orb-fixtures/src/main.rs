@@ -662,11 +662,22 @@ fn render_native(
     // transition's where its waits left it; the rest after one more settle.
     let still = fades || map.transitioning();
     let last = if still { Next::Continue } else { Next::Idle };
-    if settled
-        && settle(map, last, still, reasons, diagnostics, &mut frames).is_some()
-        // Draw the state installed by the last frame's messages.
-        && let Some(report) = settle(map, Next::Continue, still, reasons, diagnostics, &mut frames)
-    {
+    let mut report = settled
+        .then(|| settle(map, last, still, reasons, diagnostics, &mut frames))
+        .flatten();
+    // An idle frame draws all it applied; a frame still moving may not
+    // have, and one more at its time does.
+    if still && report.is_some() {
+        report = settle(
+            map,
+            Next::Continue,
+            still,
+            reasons,
+            diagnostics,
+            &mut frames,
+        );
+    }
+    if let Some(report) = report {
         tiles_drawn = report.tiles_drawn;
     }
     let pixels = match target.read_pixels() {

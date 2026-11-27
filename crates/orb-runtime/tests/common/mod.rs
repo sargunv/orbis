@@ -240,28 +240,27 @@ impl Offscreen {
         capacity: SceneCapacity,
     ) -> Result<(Self, orb_runtime::FrameReport, u32), String> {
         let mut this = Self::new(options, capacity)?;
-        let (report, frames) = this.settle()?;
+        let (report, frames, warnings) = this.settle()?;
+        for warning in warnings {
+            eprintln!("{warning}");
+        }
         Ok((this, report, frames))
     }
 
-    /// Draws frames until two in a row are idle (the second draws what
-    /// the first's messages installed): the last report, and how many.
-    pub(crate) fn settle(&mut self) -> Result<(orb_runtime::FrameReport, u32), String> {
+    /// Draws frames until one is idle: its report, how many frames and
+    /// the warnings and errors they raised.
+    pub(crate) fn settle(
+        &mut self,
+    ) -> Result<(orb_runtime::FrameReport, u32, Vec<String>), String> {
         let started = Instant::now();
-        let mut frames = 0;
-        let mut was_idle = false;
+        let (mut frames, mut warnings) = (0, Vec::new());
         loop {
             let report = self.frame();
             frames += 1;
-            for event in self.map.take_events() {
-                if let MapEvent::Warning { message } | MapEvent::Error { message } = event {
-                    eprintln!("{message}");
-                }
+            warnings.extend(take_warnings(&mut self.map));
+            if report.idle() {
+                return Ok((report, frames, warnings));
             }
-            if report.idle() && was_idle {
-                return Ok((report, frames));
-            }
-            was_idle = report.idle();
             if started.elapsed().as_secs() > 60 {
                 return Err("timed out waiting for tiles".into());
             }

@@ -967,11 +967,11 @@ fn set_terrain(map: &mut Map, terrain: &str) {
 
 /// Draws `map`'s frames from time `t` (milliseconds), 1/60 s apart
 /// however long each takes to draw, until it is idle, and returns them,
-/// with last the one at rest as a fresh map is (two idle frames in a
-/// row). A frame whose tiles are still arriving is drawn again at its
-/// time once they have, so that what the frames show doesn't depend on
-/// how fast this machine loads them: as terrain rises the view reaches
-/// ground the start never loaded.
+/// with last the first idle one, at rest as a fresh map is. A frame whose
+/// tiles are still arriving is drawn again at its time once they have, so
+/// that what the frames show doesn't depend on how fast this machine
+/// loads them: as terrain rises the view reaches ground the start never
+/// loaded.
 fn frames_until_idle(map: &mut Map, target: &mut Target, mut t: f64, name: &str) -> Vec<Vec<u8>> {
     let mut frames = Vec::new();
     let started = std::time::Instant::now();
@@ -988,12 +988,9 @@ fn frames_until_idle(map: &mut Map, target: &mut Target, mut t: f64, name: &str)
         t += 1000.0 / 60.0;
         frames.push(target.read_pixels().unwrap());
         if report.idle() {
-            break;
+            return frames;
         }
     }
-    common::settle(map, target);
-    frames.push(target.read_pixels().unwrap());
-    frames
 }
 
 /// Turning terrain on raises it from flat over the style's transition,

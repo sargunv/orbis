@@ -15,19 +15,21 @@ use orb_style::CameraInputs;
 use crate::map::LoadedStyle;
 use crate::paint::{Crossfade, PaintAt, camera_plan, drawn_at, layer_composite, node_paint};
 
-/// What a set was made for: the renderer, the plan (its style's address)
-/// and the renderer's nodes (`LoadedStyle::drawn`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SetKey(u64, usize, Vec<u32>);
+/// What a set was made for: the renderer, the plan's style and the
+/// renderer's nodes (`LoadedStyle::drawn`).
+#[derive(Clone, Debug)]
+pub(crate) struct SetKey(u64, Arc<orb_style::Style>, Vec<u32>);
 
 impl SetKey {
     pub(crate) fn of(renderer: &Renderer, style: &LoadedStyle) -> Self {
         let plan = style.worker.plan();
-        Self(
-            renderer.id(),
-            Arc::as_ptr(&plan.style) as usize,
-            style.drawn.clone(),
-        )
+        Self(renderer.id(), Arc::clone(&plan.style), style.drawn.clone())
+    }
+}
+
+impl PartialEq for SetKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0 && Arc::ptr_eq(&self.1, &other.1) && self.2 == other.2
     }
 }
 

@@ -40,7 +40,7 @@ impl Map {
         let clock = Arc::clone(&self.services.clock);
         while let Ok(message) = self.receiver.try_recv() {
             match message {
-                Message::Tile { ref job, .. } => match job.edit() {
+                Message::Tile { ref job, .. } => match job.cause() {
                     Some(_) => self.inbox.edits.push_back(message),
                     None => self.inbox.loads.push(message),
                 },
@@ -448,14 +448,14 @@ impl Map {
             Ok(TileOutcome::Built(build)) => Some(HostData::of(build)),
             _ => None,
         };
-        if let Some(edit) = job.edit() {
-            self.finish_job(edit);
-        }
         let mut kept = false;
         if generation == self.tile_generation {
+            if let Some(cause) = job.cause() {
+                self.finish_job(cause);
+            }
             // Loads given up, missing or failed brought nothing.
             self.tiles_arrived +=
-                u32::from(job.edit().is_none() && matches!(result, Ok(TileOutcome::Built(_))));
+                u32::from(job.cause().is_none() && matches!(result, Ok(TileOutcome::Built(_))));
             match job {
                 // A DEM tile's texels go up whole, against the frame's bytes.
                 TileJob::Dem(_) => {
@@ -672,12 +672,17 @@ impl Map {
         ]
     }
 
-    pub(crate) fn finish_job(&mut self, edit: u64) {
-        if let Some(count) = self.pending.get_mut(&edit) {
-            *count -= 1;
-            if *count == 0 {
-                self.pending.remove(&edit);
+    pub(crate) fn finish_job(&mut self, cause: crate::worker::Cause) {
+        match cause {
+            crate::worker::Cause::Edit(edit) => {
+                if let Some(count) = self.pending.get_mut(&edit) {
+                    *count -= 1;
+                    if *count == 0 {
+                        self.pending.remove(&edit);
+                    }
+                }
             }
+            crate::worker::Cause::Upkeep => self.upkeep -= 1,
         }
     }
 
@@ -1091,12 +1096,12 @@ impl Map {
                 .extend(remove_resident(renderer, unwanted, &mut style.states));
         }
         if !stale.is_empty() {
-            let edit = self.version;
-            self.send_edit_job(
-                source,
-                tile,
-                crate::TileJob::Relayout { edit, nodes: stale },
-            );
+            let cause = crate::worker::Cause::Upkeep;
+            let job = crate::TileJob::Relayout {
+                cause,
+                nodes: stale,
+            };
+            self.send_edit_job(source, tile, job);
         }
         Applied::Done
     }

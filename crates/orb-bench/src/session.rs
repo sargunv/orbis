@@ -945,7 +945,6 @@ impl SessionReport {
                 let mut resized = orb_api::Resized::default();
                 for f in r.frames.iter().filter(keep) {
                     resized += f.report.resized;
-                    resized += f.report.prepared_resized;
                 }
                 let peak = (r.frames.iter().filter(keep))
                     .map(|f| f.report.gpu.uploaded_bytes())
@@ -1014,7 +1013,7 @@ impl SessionReport {
              the graphics API (on the web, into the browser), and the most one frame encoded \
              (peak frame commands); \
              peak frame: the most one frame \
-             uploaded, with what was prepared before it; of tiles: the most of tiles' and edits' \
+             uploaded; of tiles: the most of tiles' and edits' \
              results one frame uploaded, which its budget's bytes bound; layout: the render's \
              cull stage (the candidates laid out again, and tile placement rows written) in \
              frames that took tiles; chunks left out: the most one frame's cull lists had no \
@@ -1118,18 +1117,18 @@ impl SessionReport {
             writeln!(out)?;
             writeln!(
                 out,
-                "| at ms | interval | CPU | GPU | passes | stages | between frames | \
+                "| at ms | interval | CPU | GPU | passes | stages | \
                  pipelines made | MiB made | KiB uploaded | upload calls | render commands | \
                  tiles arrived | drape slots |"
             )?;
-            writeln!(out, "|{}", "---|".repeat(14))?;
+            writeln!(out, "|{}", "---|".repeat(13))?;
             let mut worst = r.intervals();
             worst.sort_by(|a, b| b.1.total_cmp(&a.1));
             for &(i, gap) in worst.iter().take(WORST) {
                 let f = &r.frames[i];
                 writeln!(
                     out,
-                    "| {:.0} | {gap:.1} | {} | {} | {} | {} | {} | {} | {} | {:.0} | {} | {} | {} | {} |",
+                    "| {:.0} | {gap:.1} | {} | {} | {} | {} | {} | {} | {:.0} | {} | {} | {} | {} |",
                     f.t,
                     ms(f.cpu),
                     f.gpu.map_or("—".into(), ms),
@@ -1138,7 +1137,6 @@ impl SessionReport {
                         .collect::<Vec<_>>()
                         .join(", "),
                     top_stages(&f.report.times),
-                    top_stages(&f.report.prepared),
                     f.report.gpu.pipelines_compiled,
                     mib(f.report.gpu.bytes_allocated),
                     f.report.gpu.uploaded_bytes() as f64 / 1024.0,

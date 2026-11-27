@@ -133,8 +133,7 @@ impl Videos {
 
     /// Whether `plan`'s source `index` is a video's or a canvas's; then its
     /// tile waits for a frame. The plan says, not what the last sync
-    /// opened: a `prepare` between frames asks for the tiles of a style
-    /// no frame has synced yet, and such a source has no URL to fetch.
+    /// opened: such a source has no URL to fetch.
     pub(crate) fn want(
         &mut self,
         plan: &StylePlan,

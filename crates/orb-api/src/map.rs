@@ -1245,8 +1245,8 @@ impl Map {
         }
     }
 
-    /// Renders until two frames in a row are idle, the second drawing what
-    /// the first's messages brought, waiting for data between frames.
+    /// Renders until a frame rests ([`orb_runtime::settled`]), waiting for
+    /// data between frames.
     fn settle(
         &mut self,
         target: &mut Target,
@@ -1260,22 +1260,12 @@ impl Map {
         }
     }
 
-    /// Renders until two frames in a row are idle, and returns the second
-    /// one's report, or `None` at the first frame that leaves work to wait
-    /// for.
+    /// Renders a frame, and returns its report if it rests.
     fn settle_step(&mut self, target: &mut Target) -> Result<Option<FrameReport>, Error> {
-        let mut settle = orb_runtime::Settle::default();
-        loop {
-            let report = self.frame(target, self.now())?;
-            let settled = settle
-                .frame(&self.map, report.as_ref())
-                .map_err(Error::InvalidArgument)?;
-            match report {
-                Some(report) if settled => return Ok(Some(report)),
-                Some(report) if report.rests() => {}
-                _ => return Ok(None),
-            }
-        }
+        let report = self.frame(target, self.now())?;
+        let settled =
+            orb_runtime::settled(&self.map, report.as_ref()).map_err(Error::InvalidArgument)?;
+        Ok(report.filter(|_| settled))
     }
 
     /// Why the latest style request failed, if it did: the message of its

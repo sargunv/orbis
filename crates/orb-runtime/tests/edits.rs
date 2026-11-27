@@ -23,23 +23,9 @@ fn tokyo() -> Offscreen {
 
 /// Renders until idle. Returns the frames drawn and the last report.
 fn settle(offscreen: &mut Offscreen) -> (u32, FrameReport) {
-    let started = Instant::now();
-    let mut frames = 0;
-    // Two idle frames in a row: the second draws what the first's messages
-    // installed.
-    let mut was_idle = false;
-    loop {
-        let report = offscreen.frame();
-        frames += 1;
-        let warnings = crate::common::take_warnings(&mut offscreen.map);
-        assert!(warnings.is_empty(), "{warnings:?}");
-        if report.idle() && was_idle {
-            return (frames, report);
-        }
-        was_idle = report.idle();
-        assert!(started.elapsed().as_secs() < 60, "edit did not settle");
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    let (report, frames, warnings) = offscreen.settle().unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    (frames, report)
 }
 
 fn edit(offscreen: &mut Offscreen, commands: &str) -> u64 {

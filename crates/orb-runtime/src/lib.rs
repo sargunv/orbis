@@ -98,7 +98,7 @@ pub use placement::{InlinePlacement, PlaceDone, PlacementLane};
 pub use queries::QueryDone;
 pub use query::Hit;
 pub use schedule::Budget;
-pub use settle::Settle;
+pub use settle::settled;
 pub use style::ImageKind;
 pub use style_image::StyleImage;
 pub use symbol::SpriteIcons;

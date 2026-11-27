@@ -32,7 +32,7 @@ use crate::resident::{
     SourceSlot, SourceState, record_maxima, remove_resident, resolve_rows, upload_mesh,
 };
 use crate::style::StylePlan;
-use crate::worker::{StyleUpdate, TileJob};
+use crate::worker::{Cause, StyleUpdate, TileJob};
 
 /// The class a paint change costs this renderer for one node:
 /// `orb-style`'s, raised where property rows hold more than the property
@@ -276,7 +276,7 @@ impl Map {
             nodes.dedup();
             for tile in self.resident_tiles(source, None) {
                 let job = TileJob::Relayout {
-                    edit: version,
+                    cause: Cause::Edit(version),
                     nodes: nodes.clone(),
                 };
                 self.send_edit_job(source, tile, job);
@@ -287,7 +287,7 @@ impl Map {
             nodes.dedup();
             for tile in self.resident_tiles(source, Some(&nodes)) {
                 let job = TileJob::Columns {
-                    edit: version,
+                    cause: Cause::Edit(version),
                     nodes: nodes.clone(),
                 };
                 self.send_edit_job(source, tile, job);
@@ -333,7 +333,7 @@ impl Map {
         for (source, nodes) in relayout {
             for tile in self.resident_tiles(source, None) {
                 let job = TileJob::Relayout {
-                    edit: version,
+                    cause: Cause::Edit(version),
                     nodes: nodes.clone(),
                 };
                 self.send_edit_job(source, tile, job);
@@ -616,13 +616,20 @@ impl Map {
         let later: Vec<u32> = (build.labels_later.iter().copied())
             .filter(|&key| plan.node(key).is_some())
             .collect();
-        let edit = self.version;
         if !later.is_empty() {
-            self.send_edit_job(index, tile, TileJob::Relayout { edit, nodes: later });
+            let cause = Cause::Upkeep;
+            self.send_edit_job(
+                index,
+                tile,
+                TileJob::Relayout {
+                    cause,
+                    nodes: later,
+                },
+            );
         }
         if !stale_rows.is_empty() {
             let job = TileJob::Columns {
-                edit,
+                cause: Cause::Edit(self.version),
                 nodes: stale_rows,
             };
             self.send_edit_job(index, tile, job);

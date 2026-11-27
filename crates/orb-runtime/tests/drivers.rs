@@ -108,12 +108,10 @@ impl Checked {
         report.idle()
     }
 
-    /// Frames until the map is idle three times in a row, each compared.
+    /// Frames until the map is idle, each compared.
     fn settle(&mut self, what: &str) {
         let started = std::time::Instant::now();
-        let mut idle = 0;
-        while idle < 3 {
-            idle = if self.frame(what) { idle + 1 } else { 0 };
+        while !self.frame(what) {
             assert!(
                 started.elapsed().as_secs() < 90,
                 "{what}: timed out settling"

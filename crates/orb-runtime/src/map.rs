@@ -27,28 +27,22 @@ use crate::resident::*;
 use crate::state::FeatureStates;
 use crate::style::StylePlan;
 use crate::turns::FetchCounts;
-use crate::worker::{StyleUpdate, TileJob, TileRequest, TileWorker};
+use crate::worker::{Cause, StyleUpdate, TileJob, TileRequest, TileWorker};
 use orb_source::Backoff;
 use orb_source::endpoint::{TileEndpoint, TileLocation};
 
 /// Logical pixel size of vector/background tiles and pattern origins.
 pub(crate) const TILE_PX: f64 = 512.0;
 
-/// The edit generation reloads of expired tiles go under: before any
-/// edit's, so the map waits for them but [`Map::generation`] passes over
-/// them, no edit having been made.
-const RELOAD: u64 = 0;
-
 impl TileJob {
-    /// The edit generation the job counts under until it applies
-    /// ([`Map::generation`]): `None` for a load.
-    pub(crate) fn edit(&self) -> Option<u64> {
+    /// Why a drawn tile's job runs: `None` for a load.
+    pub(crate) fn cause(&self) -> Option<Cause> {
         match self {
             TileJob::Load | TileJob::Dem(_) => None,
-            TileJob::Revalidate => Some(RELOAD),
-            TileJob::Reload { edit }
-            | TileJob::Relayout { edit, .. }
-            | TileJob::Columns { edit, .. } => Some(*edit),
+            TileJob::Revalidate => Some(Cause::Upkeep),
+            TileJob::Reload { cause }
+            | TileJob::Relayout { cause, .. }
+            | TileJob::Columns { cause, .. } => Some(*cause),
         }
     }
 }
@@ -127,25 +121,24 @@ pub struct FrameReport {
     pub loaded: bool,
     /// GPU memory by pool, and the tile cache.
     pub memory: Memory,
-    /// Where the frame's CPU time went.
+    /// Where the CPU time went since the last report: the frame's, with
+    /// uploads and label commits [`Map::apply_arrivals`] made before it,
+    /// which `total`, the frame's alone, leaves out.
     pub times: FrameTimes,
-    /// What [`Map::prepare`] spent since the last frame drawn, summed.
-    pub prepared: FrameTimes,
     /// Tiles whose data arrived (vector, raster and DEM; not loads given
-    /// up, missing or failed) since the last frame drawn, in its
-    /// preparations or in it.
+    /// up, missing or failed) since the last report.
     pub tiles_arrived: u32,
     /// Tile fetches the map's jobs started, aborted once started and
-    /// completed since the last frame drawn.
+    /// completed since the last report.
     pub fetches: FetchCounts,
     /// Bytes of tiles' and edits' results and label commits the frame
     /// uploaded: within its [`Budget`](crate::Budget)'s, but for a first one that
     /// can't go up in pieces (an image tile's texels, an edit's, a
     /// commit).
     pub tile_bytes: u64,
-    /// Pipelines the frame, and the frames prepared since the last one
-    /// drawn, asked the device for besides the style's pipeline set's: what
-    /// the set left out, none for a complete one.
+    /// Pipelines asked of the device since the last report besides the
+    /// style's pipeline set's: what the set left out, none for a complete
+    /// one.
     pub pipelines_late: u32,
     /// When (ms on the services' clock, [`orb_host::Clock::now`]) the map
     /// wants a frame though nothing else happens: the data a tile it draws
@@ -165,23 +158,18 @@ pub struct FrameReport {
     /// Input holds the camera: a drag, a pinch or wheel zooming is under
     /// way. What the device did meanwhile (`gpu`) happened mid-gesture.
     pub input: bool,
-    /// Label placements asked of the placement lane in this frame and
-    /// the preparations since the last drawn: one at a time, the next
-    /// once the last has committed.
+    /// Label placements asked of the placement lane since the last
+    /// report: one at a time, the next once the last has committed.
     pub placements: u32,
-    /// What the device did since the last frame drawn, in its
-    /// preparations and in it: pipelines asked for, memory made, bytes
-    /// and calls uploaded. The device's counts, which other maps on it
-    /// add to.
+    /// What the device did since the last report: pipelines asked for,
+    /// memory made, bytes and calls uploaded. The device's counts, which
+    /// other maps on it add to.
     pub gpu: GpuCounters,
-    /// What this map's pools, tables, tile pages and drape atlas did in
-    /// this frame moving into memory of another size, and its blocks being
-    /// made (part of `gpu`): a block copies nothing, the property rows
-    /// and pages copy what they keep.
+    /// What this map's pools, tables, tile pages and drape atlas did since
+    /// the last report moving into memory of another size, and its blocks
+    /// being made (part of `gpu`): a block copies nothing, the property
+    /// rows and pages copy what they keep.
     pub resized: orb_render::Resized,
-    /// What they did in [`Map::prepare`]'s frames since the last frame
-    /// drawn (part of `gpu` too).
-    pub prepared_resized: orb_render::Resized,
 }
 
 impl FrameReport {
@@ -245,7 +233,8 @@ pub enum Activity {
 /// the rest of `total`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameTimes {
-    /// The whole frame.
+    /// The whole frame, without the uploads and label commits made
+    /// between frames that `upload` and `placement` count.
     pub total: u32,
     /// Applying what arrived (tile results, edits, styles, sprites), but
     /// for uploads and label commits.
@@ -269,32 +258,6 @@ pub struct FrameTimes {
     /// The renderer's share: the cull's layout, bundles, drape passes and
     /// encoding.
     pub render: orb_render::RenderTimes,
-}
-
-impl FrameTimes {
-    /// Adds a prepared frame's times, which draw nothing.
-    fn add_prepared(&mut self, t: &FrameTimes) {
-        self.total += t.total;
-        self.arrivals += t.arrivals;
-        self.upload += t.upload;
-        self.terrain += t.terrain;
-        self.plan += t.plan;
-        self.drape += t.drape;
-        self.place += t.place;
-        self.placement += t.placement;
-    }
-}
-
-/// What the frames [`Map::prepare`] ran since the last frame drawn did,
-/// for that frame's report.
-#[derive(Debug, Default)]
-struct Prepared {
-    times: FrameTimes,
-    tiles_arrived: u32,
-    resized: orb_render::Resized,
-    /// Pipelines they asked for that the style's set left out
-    /// ([`FrameReport::pipelines_late`]).
-    pipelines_late: u32,
 }
 
 /// What a frame's drape drew: whether it redrew slots, whether it left
@@ -784,18 +747,19 @@ pub struct Map {
     pub(crate) label_epoch: u64,
     /// The last frame's picking state; queries project from it.
     pub(crate) picking: std::cell::RefCell<crate::query::Picking>,
-    /// This frame's placement and upload times so far, in milliseconds,
-    /// and the tiles that arrived.
+    /// Placement and upload times since the last report, in
+    /// milliseconds, and the tiles that arrived.
     pub(crate) placement_ms: f64,
     pub(crate) upload_ms: f64,
     pub(crate) tiles_arrived: u32,
-    /// The jobs' fetch counts at the last frame drawn.
+    /// The jobs' fetch counts at the last report.
     fetches_seen: FetchCounts,
-    /// What the frames prepared since the last one drawn did.
-    prepared: Prepared,
-    /// The device's counts at the last frame drawn.
+    /// The device's counts at the last report.
     counted: GpuCounters,
-    /// The labels' placements asked for by the last frame drawn.
+    /// Pipelines this map asked the device for between frames since the
+    /// last report.
+    asked_between: u32,
+    /// The labels' placements asked for by the last report.
     placements_counted: u64,
     /// Arrived tiles wait for the next beat: this one spent its budget.
     pub(crate) tiles_deferred: bool,
@@ -907,8 +871,10 @@ pub struct Map {
     pub(crate) style_id: u64,
     /// Counts style revisions: every new style and every edit.
     pub(crate) version: u64,
-    /// Outstanding relayout and column jobs, per edit generation.
+    /// Outstanding jobs of drawn tiles of this tile generation, per edit
+    /// generation, and those of upkeep ([`Cause`]).
     pub(crate) pending: BTreeMap<u64, u32>,
+    pub(crate) upkeep: u32,
     pub(crate) counts: JobCounts,
     pub(crate) sender: Sender<Message>,
     pub(crate) receiver: Receiver<Message>,
@@ -1059,8 +1025,8 @@ impl Map {
             upload_ms: 0.0,
             tiles_arrived: 0,
             fetches_seen: FetchCounts::default(),
-            prepared: Default::default(),
             counted: GpuCounters::default(),
+            asked_between: 0,
             placements_counted: 0,
             tiles_deferred: false,
             beat: Default::default(),
@@ -1114,6 +1080,7 @@ impl Map {
             style_id: 0,
             version: 0,
             pending: BTreeMap::new(),
+            upkeep: 0,
             counts: JobCounts::default(),
             sender,
             receiver,
@@ -1328,16 +1295,9 @@ impl Map {
             return;
         }
         self.services.jobs.retry_glyphs();
-        let version = self.version;
         for (index, tile, nodes) in relayout {
-            self.send_edit_job(
-                index,
-                tile,
-                TileJob::Relayout {
-                    edit: version,
-                    nodes,
-                },
-            );
+            let cause = Cause::Upkeep;
+            self.send_edit_job(index, tile, TileJob::Relayout { cause, nodes });
         }
     }
 
@@ -1471,7 +1431,7 @@ impl Map {
     /// The style generation in full view: every edit up to it has its jobs
     /// applied.
     pub fn generation(&self) -> u64 {
-        match self.pending.range(RELOAD + 1..).next().map(|(k, _)| k) {
+        match self.pending.keys().next() {
             Some(&first) => first - 1,
             None => self.version,
         }
@@ -1729,7 +1689,6 @@ impl Map {
             // the heights the app gave it.
             self.host_heights.clear();
         }
-        self.pending.clear();
         match previous {
             Some((id, _)) => self.style_id = id,
             None => self.style_id += 1,
@@ -1919,7 +1878,9 @@ impl Map {
     /// begins with it.
     pub fn apply_arrivals(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer, pixel_ratio: f32) {
         let deadline = self.open_beat(self.services.clock.now());
+        let asked = gpu.counters().pipelines_requested;
         self.apply_arrivals_until(gpu, renderer, pixel_ratio, deadline);
+        self.asked_between += gpu.counters().pipelines_requested.saturating_sub(asked);
     }
 
     /// As [`apply_arrivals`](Self::apply_arrivals), new tiles until
@@ -1976,49 +1937,11 @@ impl Map {
     ) -> FrameReport {
         self.frame_time = frame_time;
         self.born.get_or_insert(frame_time);
-        self.frame(gpu, renderer, Some(target), viewport, pixel_ratio)
-    }
-
-    /// Applies what has arrived and asks for what the view needs next
-    /// (tiles, glyphs, a placement), as a frame would, without moving the
-    /// camera or drawing, for a host that draws only when there's
-    /// something new. The frames after it draw as they would without it.
-    /// Before the first [`render`](Self::render), it takes in the style
-    /// and asks for its first tiles, at the services' clock's time (which
-    /// should be the host's frame clock). Nothing with another renderer
-    /// than the frames' (after a device loss, the next frame takes the new
-    /// one).
-    pub fn prepare(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        renderer: &mut Renderer,
-        viewport: Viewport,
-        pixel_ratio: f32,
-    ) {
-        if self.renderer.is_some_and(|id| id != renderer.id()) {
-            return;
-        }
-        if self.born.is_none() {
-            self.frame_time = self.services.clock.now();
-        }
-        self.frame(gpu, renderer, None, viewport, pixel_ratio);
-    }
-
-    /// A frame at `self.frame_time`, drawn into `target`, or only
-    /// prepared without one.
-    fn frame(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        renderer: &mut Renderer,
-        target: Option<TextureId>,
-        viewport: Viewport,
-        pixel_ratio: f32,
-    ) -> FrameReport {
-        let frame_time = self.frame_time;
         let clock = Arc::clone(&self.services.clock);
         let started = clock.now();
         let asked = gpu.counters().pipelines_requested;
-        (self.placement_ms, self.upload_ms, self.tiles_arrived) = (0.0, 0.0, 0);
+        // Uploads and label commits between frames count in this report.
+        let before = self.upload_ms + self.placement_ms;
         let began = self
             .arrivals_began
             .take()
@@ -2026,26 +1949,22 @@ impl Map {
         let deadline = self.open_beat(began);
         self.size_pages(renderer, viewport);
         self.take_arrivals(gpu, renderer, pixel_ratio, deadline);
+        let in_frame = self.upload_ms + self.placement_ms - before;
         let mut times = FrameTimes {
             // Uploads and label commits are stages of their own.
-            arrivals: micros(started + self.upload_ms + self.placement_ms, clock.now()),
+            arrivals: micros(started + in_frame, clock.now()),
             ..FrameTimes::default()
         };
         // The camera moves for this frame on what has arrived.
-        let moving = match target {
-            Some(_) => {
-                self.apply_videos(gpu, renderer);
-                match self.mode {
-                    // Tile mode draws from a camera of its own and leaves
-                    // the map's, its animations and events, as they are.
-                    RenderMode::Tile { .. } => {
-                        self.stand_tile_on_terrain(viewport);
-                        false
-                    }
-                    _ => self.advance_camera(viewport, frame_time),
-                }
+        self.apply_videos(gpu, renderer);
+        let moving = match self.mode {
+            // Tile mode draws from a camera of its own and leaves the
+            // map's, its animations and events, as they are.
+            RenderMode::Tile { .. } => {
+                self.stand_tile_on_terrain(viewport);
+                false
             }
-            None => false,
+            _ => self.advance_camera(viewport, frame_time),
         };
 
         // Tiles' patches are on the low-zoom surface the style draws on.
@@ -2071,19 +1990,19 @@ impl Map {
         // page's own frames behind that present, on a device that compiles
         // on the thread that presents (Firefox's,
         // `Caps::compiles_hold_presents`): there the frame draws nothing,
-        // as a prepared one, and the compile that ends last wakes the host
-        // for the frame that does. Nor does it draw before the style it
-        // loads has asked for its pipelines: the map shows once its first
-        // view draws, and input never meets a map compiling.
-        let compiling = target.is_some() && gpu.presents_wait();
+        // leaving paint, the terrain and the drape to the frame that does,
+        // which the compile that ends last wakes the host for. Nor does it
+        // draw before the style it loads has asked for its pipelines: the
+        // map shows once its first view draws, and input never meets a map
+        // compiling.
+        let compiling = gpu.presents_wait();
         let held_back = compiling
-            || target.is_some()
-                && gpu.caps().compiles_hold_presents
+            || gpu.caps().compiles_hold_presents
                 && match &self.style {
                     Some(style) => style.pipelines.is_none(),
                     None => matches!(self.style_load, StyleLoad::Fetching { .. }),
                 };
-        let target = target.filter(|_| !held_back);
+        let target = (!held_back).then_some(target);
         let view = self.view(viewport);
         // What this frame draws, for picking.
         let mut drawn = Vec::new();
@@ -2100,8 +2019,6 @@ impl Map {
 
         let now = frame_time;
         let time = self.shader_time();
-        // A prepared frame leaves paint to the frame that draws: it asks
-        // for tiles sooner.
         let fading = target.is_some() && self.paint_frame(gpu, renderer, zoom, (now, time));
         if let Some(style) = &mut self.style {
             style.symbol_tiles.clear();
@@ -2118,8 +2035,6 @@ impl Map {
                 self.services.jobs.prefetch_glyphs(style.id, urls);
             }
         }
-        // A prepared frame leaves the terrain's cover and drape, whose
-        // redraws are the drawn frame's, to the next one.
         let drawing = target.map(|_| pixel_ratio);
         // Slots redrawn: the next frame drops their drape placements.
         let (frame_terrain, redrew) = match self.style.is_some() {
@@ -2135,30 +2050,17 @@ impl Map {
             && !self.tiles_deferred
             && self.waiting.is_empty()
             && self.uploading.is_none()
-            && self.pending.is_empty();
+            && self.pending.is_empty()
+            && self.upkeep == 0;
         let labels_settled = self.place_labels(gpu, renderer, &view, now, data_loaded);
-        times.placement = micros(0.0, self.placement_ms);
-        times.upload = micros(0.0, self.upload_ms);
         let Some(target) = target else {
-            let late = self.asked_late(gpu, renderer, asked);
             self.globe_warps.end_frame();
-            times.total = micros(started, clock.now());
-            let prepared = &mut self.prepared;
-            prepared.pipelines_late += late;
-            prepared.times.add_prepared(&times);
-            prepared.tiles_arrived += self.tiles_arrived;
-            prepared.resized += renderer.take_resized();
             if compiling {
                 report.activity = Activity::Compiling;
             }
+            self.take_counts(gpu, renderer, &mut report, times, (started, asked));
             return report;
         };
-        let prepared = std::mem::take(&mut self.prepared);
-        report.prepared = prepared.times;
-        report.prepared_resized = prepared.resized;
-        report.tiles_arrived = self.tiles_arrived + prepared.tiles_arrived;
-        let fetches = self.services.jobs.fetch_counts();
-        report.fetches = fetches - std::mem::replace(&mut self.fetches_seen, fetches);
         report.tile_bytes = self.beat.bytes();
 
         if !self.retired.ramps.is_empty() {
@@ -2230,9 +2132,6 @@ impl Map {
             self.trim_drape(gpu, renderer);
         }
         report.frame = renderer.render(gpu, &frame, target, clear, &|| clock.now());
-        // Whatever this frame, and the prepared ones since the last,
-        // asked for besides the set.
-        report.pipelines_late = prepared.pipelines_late + self.asked_late(gpu, renderer, asked);
         times.render = report.frame.times;
         // A frame that left something out for a compiling pipeline isn't
         // complete. Only a compile still pending wakes the host when it
@@ -2255,19 +2154,42 @@ impl Map {
         } else {
             Activity::Idle
         };
-        report.resized = renderer.take_resized();
         self.settle_report(renderer, &mut report, viewport, moving);
         report.centre_loaded = self.centre_loaded();
+        self.take_counts(gpu, renderer, &mut report, times, (started, asked));
+        report
+    }
+
+    /// Fills `report` with what was done since the last report, `times`
+    /// those of the frame that began at `started`, when the device had
+    /// been asked for `asked` pipelines.
+    fn take_counts(
+        &mut self,
+        gpu: &dyn Gpu,
+        renderer: &mut Renderer,
+        report: &mut FrameReport,
+        mut times: FrameTimes,
+        (started, asked): (f64, u32),
+    ) {
+        let fetches = self.services.jobs.fetch_counts();
+        report.fetches = fetches - std::mem::replace(&mut self.fetches_seen, fetches);
+        report.tiles_arrived = std::mem::take(&mut self.tiles_arrived);
+        report.resized = renderer.take_resized();
         let counted = gpu.counters();
         report.gpu = counted.since(&self.counted);
+        // This map's asks alone: other maps share the device.
+        let asked = std::mem::take(&mut self.asked_between)
+            + counted.pipelines_requested.saturating_sub(asked);
+        report.pipelines_late = asked.saturating_sub(renderer.take_set_asked());
         self.counted = counted;
         // Labels made again (a lost device) count from nothing.
         let placements = self.labels.requests();
         report.placements = placements.saturating_sub(self.placements_counted) as u32;
         self.placements_counted = placements;
-        times.total = micros(started, clock.now());
+        times.placement = micros(0.0, std::mem::take(&mut self.placement_ms));
+        times.upload = micros(0.0, std::mem::take(&mut self.upload_ms));
+        times.total = micros(started, self.services.clock.now());
         report.times = times;
-        report
     }
 
     /// Takes in what arrived, new tiles until `deadline`, and the device's
@@ -2318,9 +2240,8 @@ impl Map {
     /// Brings the style's terrain, sources and drape to the view, with the
     /// frame's eased `root` values, and places their tiles, timing each
     /// stage into `times`, the tiles drawn for picking into `drawn`; with
-    /// `drawing`, a frame drawn and not only prepared, on a target of that
-    /// pixel ratio. Returns the frame's
-    /// terrain and whether drape slots were redrawn.
+    /// `drawing`, a frame not held back, on a target of that pixel ratio.
+    /// Returns the frame's terrain and whether drape slots were redrawn.
     fn update_scene(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -2545,12 +2466,6 @@ impl Map {
         set.shaded = shades_on_terrain(style, self.surface.tms());
         renderer.set_pipelines(gpu, set);
         style.pipelines = Some(key);
-    }
-
-    /// The pipelines asked for since the frame began (the device's count
-    /// was `asked` then) that the style's set didn't ask for.
-    fn asked_late(&self, gpu: &dyn Gpu, renderer: &mut Renderer, asked: u32) -> u32 {
-        (gpu.counters().pipelines_requested - asked).saturating_sub(renderer.take_set_asked())
     }
 
     /// Makes the renderer's nodes the plan's: removes the meshes of nodes
@@ -2878,8 +2793,10 @@ impl Map {
             }
             TileJob::Columns { .. } => self.counts.columns += 1,
         }
-        if let Some(edit) = job.edit() {
-            *self.pending.entry(edit).or_default() += 1;
+        match job.cause() {
+            Some(Cause::Edit(edit)) => *self.pending.entry(edit).or_default() += 1,
+            Some(Cause::Upkeep) => self.upkeep += 1,
+            None => {}
         }
         request.job = job;
         // A tile of a source the app feeds goes with the app's answer.
@@ -3046,10 +2963,10 @@ impl Map {
         }
         // The resident tiles load again, as an edit's relayouts: each
         // replaces its tile's layers when it arrives.
-        let edit = self.version;
         for tile in self.resident_tiles(index, None) {
             if picks(tile) {
-                self.send_edit_job(index, tile, TileJob::Reload { edit });
+                let cause = Cause::Upkeep;
+                self.send_edit_job(index, tile, TileJob::Reload { cause });
             }
         }
         self.events.wake();
@@ -3743,9 +3660,7 @@ impl Map {
     }
 
     /// A `sourcedata` event for each source with data since the last
-    /// drawn frame. Arrivals between frames (`prepare`) add to the set
-    /// before an edit or a new style can change the sources: one an edit
-    /// removed reports nothing.
+    /// drawn frame: one an edit removed meanwhile reports nothing.
     fn source_events(&mut self) {
         let Some(style) = &self.style else { return };
         let plan = style.worker.plan();
@@ -3792,6 +3707,8 @@ impl Map {
         // In-flight tiles belong to the old scene: none lands to be
         // dropped as stale.
         self.tile_generation += 1;
+        self.pending.clear();
+        self.upkeep = 0;
         (self.parked).drop_where(|_, _| true, &mut self.released_host);
         if let Some(up) = self.uploading.take() {
             self.released_host.push(HostData::of(&up.build));
@@ -4317,13 +4234,10 @@ mod gpu_tests {
             ..crate::CameraTarget::default()
         };
         let settle = |map: &mut Map, gpu: &mut WgpuGpu, renderer: &mut Renderer| {
-            let mut was_idle = false;
             for _ in 0..200 {
-                let idle = map.render(gpu, renderer, target, viewport, 1.0, 0.0).idle();
-                if idle && was_idle {
+                if map.render(gpu, renderer, target, viewport, 1.0, 0.0).idle() {
                     return pollster::block_on(gpu.read_texture(target)).expect("a readback");
                 }
-                was_idle = idle;
             }
             panic!("the map didn't settle");
         };
