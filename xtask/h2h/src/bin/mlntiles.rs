@@ -6,14 +6,12 @@
 
 use std::time::Instant;
 
-use mln_rs::mln_actor::RunLoop;
-use mln_rs::mln_headless::HeadlessFrontend;
-use mln_rs::mln_map::{Map, MapMode, MapOptions};
+use mln_rs::mln_map::MapMode;
 use mln_rs::mln_util::size::Size;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    mln_h2h::backend(&args);
+    let device = mln_h2h::device(&args);
     let style = args.first().expect("a style URL");
     let list = mln_h2h::flag(&args, "--list", "");
     let tiles: Vec<(String, u8, u32, u32)> = std::fs::read_to_string(&list)
@@ -35,28 +33,17 @@ fn main() {
     let px: u32 = mln_h2h::flag(&args, "--size", "512")
         .parse()
         .expect("--size px");
-    let still = args.iter().any(|a| a == "--still");
-    let size = Size::new(px, px);
-    let _run_loop = RunLoop::new();
-    let mut frontend = HeadlessFrontend::new(size, 1.0);
-    let mode = if still {
+    let mode = if args.iter().any(|a| a == "--still") {
         MapMode::Static
     } else {
         MapMode::Tile
     };
-    let mut map = Map::new(
-        MapOptions::new()
-            .with_map_mode(mode)
-            .with_size(size)
-            .with_pixel_ratio(1.0),
-    )
-    .expect("a map");
-    map.style_mut().load_url(style);
+    let map = mln_h2h::Still::new(device, mode, Size::new(px, px), 1.0, style);
     let started = Instant::now();
     for (name, z, x, y) in &tiles {
-        map.jump_to(&mln_h2h::tile_camera(*z, *x, *y, px));
+        map.jump(mln_h2h::tile_camera(*z, *x, *y, px));
         let (wall, cpu) = (Instant::now(), mln_h2h::cpu());
-        mln_h2h::render(&mut frontend, &mut map);
+        map.render();
         let (wall, cpu) = (wall.elapsed(), mln_h2h::cpu() - cpu);
         println!(
             "tile {name} {z} {x} {y} {:.2} {:.2}",

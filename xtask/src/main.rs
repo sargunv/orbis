@@ -78,7 +78,7 @@ cargo xtask <task>
                extract's tiles through decode, layout and pack), stutter
                (paths that bring many tiles in, by stage) or session
                (pnpm session's native twin); --views <file> takes
-               mln-rs's views.txt cameras;
+               cameras as xtask/h2h/views.txt lists them;
                --compare <rev> [--runs N] builds <rev> in target/compare
                and runs both builds N times (default 3),
                interleaved, reporting each number as <rev> → this tree

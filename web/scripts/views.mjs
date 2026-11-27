@@ -20,7 +20,7 @@ import { inflateSync } from "node:zlib";
 
 /** Cameras as lon,lat,zoom,bearing,pitch. */
 export const VIEWS = {
-  // mln-rs's liberty-compare cameras.
+  // Cameras of xtask/h2h/views.txt.
   liberty: {
     ams13: "4.89,52.37,13,0,0",
     paris14p60: "2.35,48.857,14,90,60",

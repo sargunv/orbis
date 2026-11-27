@@ -5,48 +5,25 @@
 
 use std::time::Instant;
 
-use mln_rs::mln_actor::RunLoop;
-use mln_rs::mln_headless::HeadlessFrontend;
-use mln_rs::mln_map::{CameraOptions, Map, MapMode, MapOptions};
-use mln_rs::mln_util::geo::LatLng;
-use mln_rs::mln_util::size::Size;
+use mln_rs::mln_map::MapMode;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    mln_h2h::backend(&args);
+    let device = mln_h2h::device(&args);
     let style = args.first().expect("a style URL");
     let out = mln_h2h::flag(&args, "-o", "out.png");
     let at: Vec<f64> = mln_h2h::flag(&args, "--at", "0,0,0")
         .split(',')
         .map(|s| s.parse().expect("--at lon,lat,z[,bearing,pitch]"))
         .collect();
-    let wh: Vec<u32> = mln_h2h::flag(&args, "--size", "512x512")
-        .split('x')
-        .map(|s| s.parse().expect("--size WxH"))
-        .collect();
+    let size = mln_h2h::size(&args, "512x512");
     let ratio: f32 = mln_h2h::flag(&args, "--ratio", "1")
         .parse()
         .expect("--ratio r");
-    let size = Size::new(wh[0], wh[1]);
-    let _run_loop = RunLoop::new();
-    let mut frontend = HeadlessFrontend::new(size, ratio);
     let started = Instant::now();
-    let mut map = Map::new(
-        MapOptions::new()
-            .with_map_mode(MapMode::Static)
-            .with_size(size)
-            .with_pixel_ratio(ratio),
-    )
-    .expect("a map");
-    map.style_mut().load_url(style);
-    map.jump_to(
-        &CameraOptions::default()
-            .with_center(Some(LatLng::new(at[1], at[0]).expect("a latitude")))
-            .with_zoom(Some(at[2]))
-            .with_bearing(at.get(3).copied())
-            .with_pitch(at.get(4).copied()),
-    );
-    let image = mln_h2h::render(&mut frontend, &mut map);
+    let map = mln_h2h::Still::new(device, MapMode::Static, size, ratio, style);
+    map.jump(mln_h2h::camera(&at));
+    let image = map.render();
     let took = started.elapsed();
     std::fs::write(&out, mln_rs::mln_image::encode_png(&image)).expect("writing the PNG");
     eprintln!("mlnstill: {out} in {:.0} ms", mln_h2h::ms(took));

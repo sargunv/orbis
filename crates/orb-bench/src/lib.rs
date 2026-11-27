@@ -384,9 +384,9 @@ fn view_camera(view: &View, center: Geodetic, nudge: f64) -> CameraState {
     }
 }
 
-/// The views of a file in mln-rs's `tools/liberty-compare/views.txt`
-/// format, `style name lon lat zoom bearing pitch ratio width height` a
-/// line (`#` comments), whose style column is `style`.
+/// The views of a file in `xtask/h2h/views.txt`'s format, `style name lon
+/// lat zoom bearing pitch ratio width height` a line (`#` comments), whose
+/// style column is `style`.
 pub fn read_views(path: &str, style: &str) -> Result<Vec<View>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
     parse_views(&text, path, style)

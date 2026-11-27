@@ -1,0 +1,72 @@
+# The cameras `cargo xtask h2h stills` and `frames` draw: OpenFreeMap views,
+# from mln-rs's tools/liberty-compare/views.txt at louwers/mln-rs@4f6dcede,
+# which mln-rs deleted with that tool (maplibre/mln-rs#195). One view a line:
+#   style  name  lon  lat  zoom  bearing  pitch  pixel-ratio  width  height
+# `style` is an OpenFreeMap style name (https://tiles.openfreemap.org/styles/<style>).
+liberty world2       10        30       1.5   0   0   1  512  512
+liberty europe5      10        50       4.5   0   0   1  512  512
+liberty alps9        10.5      46.5     9   -20  45   1  512  512
+liberty ams10        4.89      52.37    10    0   0   1  512  512
+liberty ams13        4.89      52.37    13    0   0   1  512  512
+liberty ams15        4.895     52.372   15.5  0   0   1  512  512
+liberty ams17        4.8952    52.3702  17.2  0   0   1  512  512
+liberty nyc14       -73.98     40.75    14    0   0   1  512  512
+liberty nyc12pitch  -73.98     40.75    12   30  60   1  512  512
+liberty tokyo13      139.76    35.68    13    0   0   1  512  512
+liberty tokyo16      139.70    35.69    16    0   0   1  512  512
+liberty cairo12      31.24     30.05    12    0   0   1  512  512
+liberty paris16r2    2.35      48.857   16    0   0   2  256  256
+liberty telaviv14    34.78     32.08    14    0   0   1  512  512
+liberty bangkok13    100.5     13.75    13    0   0   1  512  512
+liberty delhi13      77.21     28.63    13    0   0   1  512  512
+liberty seoul13      126.98    37.57    13    0   0   1  512  512
+liberty athens14     23.73     37.98    14    0   0   1  512  512
+liberty berlin14r2   13.40     52.52    14    0   0   2  512  512
+liberty london16b45 -0.1276    51.5072  16   45   0   1  512  512
+liberty sf15p50     -122.42    37.78    15  -30  50   1  512  512
+liberty moscow11     37.62     55.75    11    0   0   1  512  512
+bright   ams13       4.89      52.37    13    0   0   1  512  512
+bright   nyc14      -73.98     40.75    14    0   0   1  512  512
+bright   europe5     10        50       4.5   0   0   1  512  512
+bright   tokyo15p    139.70    35.69    15   20  45   1  512  512
+bright   paris16r2   2.35      48.857   16    0   0   2  256  256
+positron ams13       4.89      52.37    13    0   0   1  512  512
+positron nyc14      -73.98     40.75    14    0   0   1  512  512
+positron europe5     10        50       4.5   0   0   1  512  512
+positron tokyo15p    139.70    35.69    15   20  45   1  512  512
+positron paris16r2   2.35      48.857   16    0   0   2  256  256
+dark     ams13       4.89      52.37    13    0   0   1  512  512
+dark     nyc14      -73.98     40.75    14    0   0   1  512  512
+dark     europe5     10        50       4.5   0   0   1  512  512
+dark     tokyo15p    139.70    35.69    15   20  45   1  512  512
+dark     paris16r2   2.35      48.857   16    0   0   2  256  256
+fiord    ams13       4.89      52.37    13    0   0   1  512  512
+fiord    nyc14      -73.98     40.75    14    0   0   1  512  512
+fiord    europe5     10        50       4.5   0   0   1  512  512
+fiord    tokyo15p    139.70    35.69    15   20  45   1  512  512
+fiord    paris16r2   2.35      48.857   16    0   0   2  256  256
+liberty paris14p60   2.35      48.857   14   90  60   1  512  512
+liberty rome18       12.4823   41.8955  18    0   0   1  512  512
+liberty nyc15p45r2  -73.985    40.758   15  -60  45   2  384  384
+liberty istanbul12   28.98     41.01    12  170   0   1  512  512
+# Sweep: more places and zooms (z0-z19), one pitched.
+liberty sw-rio3      -43.2     -22.9    3     0   0  1 512 512
+liberty sw-rio7      -43.2     -22.9    7     0   0  1 512 512
+liberty sw-rio12     -43.2     -22.9    12    0   0  1 512 512
+liberty sw-syd6      151.21    -33.87   6     0   0  1 512 512
+liberty sw-syd11     151.21    -33.87   11    0   0  1 512 512
+liberty sw-syd17     151.2100  -33.8600 17    0   0  1 512 512
+liberty sw-cpt8      18.42     -33.92   8     0   0  1 512 512
+liberty sw-mumbai14  72.83     18.94    14    0   0  1 512 512
+liberty sw-beijing2  116.4     39.9     2     0   0  1 512 512
+liberty sw-beijing10 116.4     39.9     10    0   0  1 512 512
+liberty sw-beijing15 116.397   39.908   15    0   0  1 512 512
+liberty sw-rey9      -21.94    64.14    9     0   0  1 512 512
+liberty sw-mex13     -99.13    19.43    13    0   0  1 512 512
+liberty sw-dubai16   55.27     25.2     16    0   0  1 512 512
+liberty sw-antimer4  179.9     -17      4     0   0  1 512 512
+liberty sw-world0    0         0        0     0   0  1 512 512
+liberty sw-ams19     4.8952    52.3702  19    0   0  1 512 512
+liberty sw-ams8      4.89      52.37    8     0   0  1 512 512
+liberty sw-cairo6p   31.24     30.05    6     0  55  1 512 512
+liberty sw-jerus16   35.2137   31.7683  16    0   0  1 512 512

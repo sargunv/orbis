@@ -4,8 +4,8 @@
 //! platform's own API (Metal on macOS, Vulkan on Linux), each an engine.
 //!
 //! - `stills`: one process per still (`orbis render`, `mlnstill`) per view
-//!   of mln-rs's `tools/liberty-compare/views.txt`: wall time, CPU,
-//!   peak RSS, instructions retired (macOS; Linux with `perf`) and requests.
+//!   of `xtask/h2h/views.txt`: wall time, CPU, peak RSS, instructions
+//!   retired (macOS; Linux with `perf`) and requests.
 //!   Each Orbis build keeps a state directory across its runs, as an app
 //!   would: its pipeline cache, on D3D12 and Vulkan.
 //! - `tiles`: one process per pass over `xtask/h2h/tiles.txt`'s 4×4 tile
@@ -53,14 +53,14 @@ mod pixelmatch;
 
 const UPSTREAM: &str = "https://tiles.openfreemap.org";
 /// The mln-rs commit `xtask/h2h/Cargo.toml` pins.
-const MLN_RS: &str = "louwers/mln-rs@4f6dcede";
+const MLN_RS: &str = "maplibre/mln-rs@074aebcc";
 
 const HELP: &str = "\
 cargo xtask h2h <stills|tiles|frames|size|all|web|mirror> [options]
 
   --runs N             timed runs per engine (default 5; 3 for frames)
   --filter <s>         views (stills, frames) whose name contains <s>
-  --views <file>       cameras in mln-rs's views.txt format (default: its own)
+  --views <file>       cameras in xtask/h2h/views.txt's format (default: it)
   --style <name>       the OpenFreeMap style the views name (default liberty)
   --network warm|cold|rtt=<ms>  the local mirror (default), the live server,
                        or the mirror with every answer delayed
@@ -308,8 +308,8 @@ enum Engine {
         name: String,
         orbis: PathBuf,
     },
-    /// `mln-rs` on its default, WebGPU through wgpu; `mln-rs-<backend>` on
-    /// another (`MLN_RENDER_BACKEND`): `metal` or `vulkan`.
+    /// `mln-rs` on WebGPU through wgpu; `mln-rs-<backend>` on another
+    /// device (the binaries' `--backend`): `metal` or `vulkan`.
     Mln {
         name: String,
         backend: &'static str,
@@ -414,19 +414,20 @@ impl H2h {
                 "orb-bench",
             ])?;
         }
-        // mln-rs builds even when it isn't an engine: its checkout has the
-        // views.
-        crate::run(
-            Command::new(env!("CARGO"))
-                .args(["build", "--profile", profile, "--manifest-path"])
-                .arg(&manifest)
-                .env("CARGO_TARGET_DIR", &target),
-        )
-        .map_err(|e| format!("h2h: building mln-rs's harness: {e}"))?;
-        let views = match &options.views {
-            Some(views) => views.clone(),
-            None => mln_checkout(&manifest)?.join("tools/liberty-compare/views.txt"),
-        };
+        if engines.iter().any(|e| matches!(e, Engine::Mln { .. })) {
+            crate::run(
+                Command::new(env!("CARGO"))
+                    .args(["build", "--profile", profile, "--manifest-path"])
+                    .arg(&manifest)
+                    .arg("--target-dir")
+                    .arg(&target)
+                    // mln-rs's checkout has a mise.toml, which mise won't let
+                    // rustc (sccache, through mise) run under until trusted.
+                    .env("MISE_IGNORED_CONFIG_PATHS", mise_ignored()?),
+            )
+            .map_err(|e| format!("h2h: building mln-rs's harness: {e}"))?;
+        }
+        let views = (options.views.clone()).unwrap_or_else(|| root.join("xtask/h2h/views.txt"));
         if !cfg!(windows) && !Path::new(TIME).exists() {
             eprintln!("h2h: no {TIME} here, so runs' CPU, memory and instructions go unmeasured");
         }
@@ -1150,25 +1151,20 @@ fn web(options: &Options, mirror: &Mirror) -> Result<(), String> {
     Ok(())
 }
 
-/// mln-rs's checkout, where Cargo keeps the pinned commit.
-fn mln_checkout(manifest: &Path) -> Result<PathBuf, String> {
-    let out = Command::new(env!("CARGO"))
-        .args(["metadata", "--format-version", "1", "--manifest-path"])
-        .arg(manifest)
-        .output()
-        .map_err(|e| format!("cargo metadata: {e}"))?;
-    let metadata: serde_json::Value =
-        serde_json::from_slice(&out.stdout).map_err(|e| format!("cargo metadata: {e}"))?;
-    let package = (metadata["packages"].as_array().into_iter().flatten())
-        .find(|p| p["name"] == "mln-rs")
-        .ok_or("h2h: cargo metadata lists no mln-rs")?;
-    let manifest = package["manifest_path"]
-        .as_str()
-        .ok_or("h2h: mln-rs has no manifest")?;
-    Ok(Path::new(manifest)
-        .parent()
-        .expect("a directory")
-        .to_path_buf())
+/// `MISE_IGNORED_CONFIG_PATHS` with Cargo's git checkouts, where
+/// mln-rs's checkout is, added.
+fn mise_ignored() -> Result<std::ffi::OsString, String> {
+    let cargo_home = match std::env::var_os("CARGO_HOME") {
+        Some(home) => PathBuf::from(home),
+        None => std::env::home_dir()
+            .ok_or("h2h: no home directory; set CARGO_HOME")?
+            .join(".cargo"),
+    };
+    let ignored = std::env::var_os("MISE_IGNORED_CONFIG_PATHS").unwrap_or_default();
+    let paths = (std::env::split_paths(&ignored))
+        .filter(|p| !p.as_os_str().is_empty())
+        .chain([cargo_home.join("git/checkouts")]);
+    std::env::join_paths(paths).map_err(|e| format!("MISE_IGNORED_CONFIG_PATHS: {e}"))
 }
 
 /// A Markdown table, built a row at a time.

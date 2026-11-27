@@ -10,7 +10,10 @@ license = "BSD-3-Clause"
 publish = false
 
 [dependencies]
-mln-rs = { git = "https://github.com/louwers/mln-rs", rev = "4f6dcedecbda15aafb783dbccc3582b11eaaab52" }
+# Its native backends (the defaults) and WebGPU, on wgpu as Orbis is.
+mln-rs = { git = "https://github.com/maplibre/mln-rs", rev = "074aebcca678418b126ba25e5519ff12a2ed33db", features = [
+  "webgpu",
+] }
 
 # Process CPU time: `clock_gettime` on Unix, `GetProcessTimes` on Windows.
 [target.'cfg(unix)'.dependencies]

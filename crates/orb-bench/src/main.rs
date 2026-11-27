@@ -11,11 +11,12 @@
 //! a style URL (say, `cargo xtask h2h mirror`'s) stands in. `session` is
 //! `--experiment session` at 1440×900, `pnpm session`'s native twin, on
 //! the styles `web/scripts/sessions.json` names, a style URL standing in
-//! for live Liberty there too. `--views` reads cameras in mln-rs's
-//! `views.txt` format, keeping those whose style column is the style URL's
-//! last path segment (`liberty` for `…/styles/liberty`). `--capture N` asks
-//! the graphics debugger the bench runs under (Xcode, RenderDoc) to capture
-//! the runtime's frame N, from 1. Prints the Markdown report.
+//! for live Liberty there too. `--views` reads cameras in
+//! `xtask/h2h/views.txt`'s format, keeping those whose style column is the
+//! style URL's last path segment (`liberty` for `…/styles/liberty`).
+//! `--capture N` asks the graphics debugger the bench runs under (Xcode,
+//! RenderDoc) to capture the runtime's frame N, from 1. Prints the Markdown
+//! report.
 
 #![forbid(unsafe_code)]
 
