@@ -24,6 +24,12 @@ mod mesh;
 pub mod point;
 mod round_corners;
 
+/// Units per tile side that lines and extrusions are laid out in,
+/// whatever the source's extent: GL JS's bucket `EXTENT`, in which its
+/// sharp corners, line distances and integer snapping round. Fills and
+/// points keep the source's units.
+pub const EXTENT: u32 = 8192;
+
 pub use family::{Family, ImageKey, ImageMetadata, pack_color};
 pub use mesh::{
     CHUNK_INDICES, Chunk, MAX_CHUNK_INSTANCES, MAX_CHUNK_TRIANGLES, Mesh, MeshBuilder, Owner,

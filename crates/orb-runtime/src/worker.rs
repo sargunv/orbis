@@ -532,14 +532,14 @@ impl TileWorker {
             .collect()
     }
 
-    /// Layout grid units (8192 a tile side) per ground metre at a tile's
+    /// Layout grid units ([`orb_layout::EXTENT`] a tile side) per ground metre at a tile's
     /// centre, in its source's tile matrix set: GL JS's
     /// `getTileUnitsForMeters`.
     fn units_per_metre(&self, source: usize, tile: TileIndex) -> f64 {
         let tms = self.surface.source_tms(&self.plan.style.sources[source].id);
         let projection = tms.projection();
         let center = projection.inverse(tms.tile_bounds(tile).center());
-        8192.0 * projection.scale_factor(center) / tms.tile_span(tile.z)
+        f64::from(orb_layout::EXTENT) * projection.scale_factor(center) / tms.tile_span(tile.z)
     }
 
     /// Where `within` and `distance` find a tile of `source`: the tile

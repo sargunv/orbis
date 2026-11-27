@@ -12,28 +12,20 @@
 //! and walls; walls clip original segments independently, so clipping never
 //! introduces a wall across the tile square.
 use crate::round_corners::{rounded_layer, wall_normals};
-use crate::{Mesh, MeshBuilder, Owner, clip::clip_segment, fill};
+use crate::{EXTENT, Mesh, MeshBuilder, Owner, clip::clip_segment, fill};
 use orb_tile::{GeometryType, Layer};
 
 pub const STRIDE: usize = 4;
 
-pub fn layout(layer: &Layer, features: &[u32]) -> Mesh {
-    layout_in_extent(layer, features, layer.extent(), 0.0, None)
-}
-
-/// Layout in a normalized tile grid. The pinned bucket uses 8192 units,
-/// including for edge-distance resets and integer vertex snapping.
-/// `rounding` rounds polygon corners by that many grid units
+/// Lays out the polygons among `features` (indices into `layer`) in
+/// [`EXTENT`] units whatever the source's extent, as the pinned bucket
+/// does, edge distances and integer vertex snapping included. Each
+/// feature's slot is its position in `features`. `rounding` rounds
+/// polygon corners by that many grid units
 /// (`fill-extrusion-rounded-corner-distance`), 0 for none. Roofs are cut
 /// along `bend`'s grid for a curved surface, as fills are (walls follow
 /// the source geometry, which the jobs cut along it too).
-pub fn layout_in_extent(
-    layer: &Layer,
-    features: &[u32],
-    output_extent: u32,
-    rounding: f64,
-    bend: Option<fill::Bend>,
-) -> Mesh {
+pub fn layout(layer: &Layer, features: &[u32], rounding: f64, bend: Option<fill::Bend>) -> Mesh {
     // Roofs don't reach the poles: caps are the ground's.
     let bend = bend.map(|b| fill::Bend {
         poles: [false; 2],
@@ -44,15 +36,15 @@ pub fn layout_in_extent(
     let whole = whole(layer, features, bend.is_some());
     let owners: Vec<Owner> = (features.iter().zip(whole))
         .map(|(&f, whole)| match whole {
-            true => Owner::of_whole(centroid(layer, f, output_extent), output_extent),
+            true => Owner::of_whole(centroid(layer, f), EXTENT),
             false => Owner::Every,
         })
         .collect();
-    if output_extent == layer.extent() && !rounded {
+    if layer.extent() == EXTENT && !rounded {
         return layout_normalized(layer, features, &owners, false, bend);
     }
     layout_normalized(
-        &rounded_layer(layer, features, output_extent, rounding),
+        &rounded_layer(layer, features, EXTENT, rounding),
         &(0..features.len() as u32).collect::<Vec<_>>(),
         &owners,
         rounded,
@@ -60,11 +52,10 @@ pub fn layout_in_extent(
     )
 }
 
-/// A feature's centroid in a tile grid of `output_extent` units: the mean
-/// of its rings' vertices, each closed ring's repeated last vertex left
-/// out, floored, as GL JS's `accumulatePointsToCentroid` takes it per
-/// polygon. Terrain raises extrusions by the ground under it.
-pub fn centroid(layer: &Layer, feature: u32, output_extent: u32) -> [i16; 2] {
+/// A feature's centroid in [`EXTENT`] units: the mean of its rings'
+/// vertices, each closed ring's repeated last vertex left out, floored,
+/// as GL JS's `accumulatePointsToCentroid` takes it per polygon. Terrain raises extrusions by the ground under it.
+pub fn centroid(layer: &Layer, feature: u32) -> [i16; 2] {
     let (mut x, mut y, mut n) = (0i64, 0i64, 0i64);
     for part in layer.geometry(feature as usize).parts() {
         for ring in part.rings() {
@@ -82,7 +73,7 @@ pub fn centroid(layer: &Layer, feature: u32, output_extent: u32) -> [i16; 2] {
     if n == 0 {
         return [0; 2];
     }
-    let scale = f64::from(output_extent) / f64::from(layer.extent());
+    let scale = f64::from(EXTENT) / f64::from(layer.extent());
     let mean = |s: i64| ((s as f64 / n as f64) * scale).floor();
     let clamp = |v: f64| v.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
     [clamp(mean(x)), clamp(mean(y))]
@@ -235,7 +226,7 @@ mod tests {
             for p in [[0, 0], [1, 0], [1, 1], [0, 1]] {
                 b.push_vertex(p.map(|v| v * extent as i32 / 2));
             }
-            layout_in_extent(&b.finish(), &[0], 8192, 0.0, None)
+            layout(&b.finish(), &[0], 0.0, None)
         };
         let a = make(4096);
         let b = make(8192);
@@ -255,8 +246,9 @@ mod tests {
         }
         let layer = b.finish();
         assert!(layer.is_whole(0, layer.clip_buffer()));
-        let mesh = layout(&layer, &[0]);
-        // Two roof triangles and four whole walls, reaching x = −10.
+        let mesh = layout(&layer, &[0], 0.0, None);
+        // Two roof triangles and four whole walls, reaching x = −10 of
+        // 100, −819 of EXTENT.
         assert_eq!(mesh.vertex_indices().count(), 6 + 4 * 6);
         let min_x = mesh
             .vertices
@@ -265,7 +257,7 @@ mod tests {
             .iter()
             .map(|v| v[0] as i16)
             .min();
-        assert_eq!(min_x, Some(-10));
+        assert_eq!(min_x, Some(-819));
     }
 
     #[test]
@@ -290,7 +282,7 @@ mod tests {
         }
         square(&mut b, 60, 60);
         let layer = b.finish();
-        let mesh = layout(&layer, &[0, 1, 2, 3]);
+        let mesh = layout(&layer, &[0, 1, 2, 3], 0.0, None);
         let owners: Vec<Owner> = mesh.chunks.iter().map(|c| c.owner).collect();
         // Roofs, then walls, each the square's, the cut's, the west's.
         let order = [Owner::Square, Owner::Every, Owner::Neighbour(3)];
@@ -329,11 +321,11 @@ mod tests {
             !layer.is_whole(0, layer.clip_buffer()),
             "cut along the buffer at x = −10"
         );
-        let mesh = layout(&layer, &[0]);
+        let mesh = layout(&layer, &[0], 0.0, None);
         // Two roof triangles, three walls; no wall on x = 0.
         assert_eq!(mesh.vertex_indices().count(), 6 + 3 * 6);
         for v in mesh.vertices.as_chunks::<4>().0 {
-            assert!((0..=100).contains(&(v[0] as i16)));
+            assert!((0..=EXTENT as i16).contains(&(v[0] as i16)));
         }
     }
     #[test]
@@ -345,7 +337,7 @@ mod tests {
         for p in [[0, 20], [50, 20], [50, 80], [0, 80]] {
             b.push_vertex(p);
         }
-        let mesh = layout(&b.finish(), &[0]);
+        let mesh = layout(&b.finish(), &[0], 0.0, None);
         assert_eq!(mesh.vertex_indices().count(), 6 + 4 * 6);
     }
     #[test]
@@ -359,7 +351,7 @@ mod tests {
         for p in [[i32::MIN, 20], [50, 20], [50, 80], [i32::MIN, 80]] {
             b.push_vertex(p);
         }
-        let mesh = layout(&b.finish(), &[0]);
+        let mesh = layout(&b.finish(), &[0], 0.0, None);
         assert!(mesh.vertex_indices().count() > 0);
     }
 
@@ -372,7 +364,7 @@ mod tests {
         for p in [[-10, -10], [110, -10], [110, 110], [-10, 110]] {
             b.push_vertex(p);
         }
-        let mesh = layout(&b.finish(), &[0]);
+        let mesh = layout(&b.finish(), &[0], 0.0, None);
         assert_eq!(mesh.vertex_indices().count(), 6);
     }
 }

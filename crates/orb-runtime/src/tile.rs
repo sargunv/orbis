@@ -348,7 +348,8 @@ enum Shape<'f> {
         bend: Option<orb_layout::fill::Bend>,
     },
     FillOutline,
-    /// `rounding` rounds corners by that many units of an 8192 grid
+    /// `rounding` rounds corners by that many units of the layout grid
+    /// ([`orb_layout::EXTENT`] a tile side)
     /// (`fill-extrusion-rounded-corner-distance`), 0 for none.
     Extrusion {
         rounding: f64,
@@ -441,10 +442,10 @@ impl<'f> Shape<'f> {
     /// The geometry of `features` of `layer` in this shape.
     fn layout(&self, layer: &Layer, features: &[u32]) -> Mesh {
         match self {
-            Self::Fill { bend } => fill::layout_subdivided(layer, features, *bend),
+            Self::Fill { bend } => fill::layout(layer, features, *bend),
             Self::FillOutline => fill::outline(layer, features),
             Self::Extrusion { rounding, bend } => {
-                extrusion::layout_in_extent(layer, features, 8192, *rounding, *bend)
+                extrusion::layout(layer, features, *rounding, *bend)
             }
             Self::Circle(keys) => point::layout_sorted(layer, features, |slot| keys[slot]),
             Self::Heatmap => point::layout(layer, features),
@@ -468,7 +469,7 @@ impl<'f> Shape<'f> {
                             *metrics,
                         )
                     }
-                    None => line::layout_in_extent(layer, features, params, 8192, *metrics),
+                    None => line::layout(layer, features, params, *metrics),
                 }
             }
         }
@@ -954,13 +955,10 @@ pub(crate) fn build(
             build.meshes.push(NodeMesh {
                 hits,
                 node: node.key,
-                extent: if matches!(
-                    node.family,
-                    Family::Line | Family::FillExtrusion | Family::SymbolIcon | Family::SymbolText
-                ) {
-                    8192
-                } else {
-                    layer.extent()
+                extent: match node.family {
+                    Family::Line | Family::FillExtrusion => orb_layout::EXTENT,
+                    Family::SymbolIcon | Family::SymbolText => orb_symbol::EXTENT as u32,
+                    _ => layer.extent(),
                 },
                 mesh,
                 props,
@@ -1082,7 +1080,7 @@ impl NodeLayout<'_> {
                 let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
                 for (i, &feature) in features.iter().enumerate() {
                     let f = feature as usize;
-                    let [x, y] = orb_layout::extrusion::centroid(layer, feature, 8192);
+                    let [x, y] = orb_layout::extrusion::centroid(layer, feature);
                     rows[i * row_words + layout::EXTRUSION_ROW_CENTROID] =
                         u32::from(x as u16) | u32::from(y as u16) << 16;
                     let mut flags = u32::from(whole[i]);

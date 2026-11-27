@@ -27,23 +27,18 @@ pub struct Bend {
     pub poles: [bool; 2],
 }
 
-/// Lays out the polygons among `features` (indices into `layer`); other
-/// geometry types are skipped. Each feature's slot is its position in
-/// `features`.
-pub fn layout(layer: &Layer, features: &[u32]) -> Mesh {
-    layout_subdivided(layer, features, None)
-}
-
-/// [`layout`], with triangles cut along a grid of `bend`'s cells over the
-/// tile, for a tile drawn through a curved warp onto another plane: edges
-/// then follow the curve (earcut drops the collinear vertices that cut the
-/// rings), and the vertices on the tile's edges are its neighbours'. Edges
-/// on a pole's side extend to it.
-pub fn layout_subdivided(layer: &Layer, features: &[u32], bend: Option<Bend>) -> Mesh {
+/// Lays out the polygons among `features` (indices into `layer`) in the
+/// source's units; other geometry types are skipped. Each feature's slot
+/// is its position in `features`. With `bend`, triangles are cut along a
+/// grid of its cells over the tile, for a tile drawn through a curved warp
+/// onto another plane: edges then follow the curve (earcut drops the
+/// collinear vertices that cut the rings), and the vertices on the tile's
+/// edges are its neighbours'. Edges on a pole's side extend to it.
+pub fn layout(layer: &Layer, features: &[u32], bend: Option<Bend>) -> Mesh {
     layout_clipped(layer, features, bend, &|_| true)
 }
 
-/// [`layout_subdivided`], clipping to the tile square only the features
+/// [`layout`], clipping to the tile square only the features
 /// (by slot) `clip` says: the rest keep the source's buffer around it.
 pub(crate) fn layout_clipped(
     layer: &Layer,
@@ -346,7 +341,7 @@ mod tests {
             ],
         );
         let layer = b.finish();
-        let mesh = layout(&layer, &[0]);
+        let mesh = layout(&layer, &[0], None);
         assert_eq!(area(&mesh), 100.0 * 100.0 - 50.0 * 50.0);
         assert_eq!(mesh.chunks.len(), 1);
     }
@@ -395,7 +390,7 @@ mod tests {
             &[&[[-100, -100], [5000, -100], [5000, 5000], [-100, 5000]]],
         );
         let layer = b.finish();
-        let mesh = layout(&layer, &[1]);
+        let mesh = layout(&layer, &[1], None);
         assert_eq!(area(&mesh), 4096.0 * 4096.0);
         let bounds = mesh.chunks[0].bounds;
         assert_eq!((bounds.min, bounds.max), ([0, 0], [4096, 4096]));

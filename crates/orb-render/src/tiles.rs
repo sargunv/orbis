@@ -1425,7 +1425,7 @@ mod tests {
         for v in [[0, 0], [4096, 0], [4096, 4096], [0, 4096]] {
             square.push_vertex(v);
         }
-        let mesh = orb_layout::fill::layout(&square.finish(), &[0]);
+        let mesh = orb_layout::fill::layout(&square.finish(), &[0], None);
         let tile = |renderer: &mut Renderer, gpu: &mut orb_hal_wgpu::WgpuGpu, row| {
             let key = TileKey {
                 source: 0,
@@ -1490,7 +1490,7 @@ mod tests {
         for v in [[0, 0], [4096, 0], [4096, 4096], [0, 4096]] {
             square.push_vertex(v);
         }
-        let mesh = orb_layout::fill::layout(&square.finish(), &[0]);
+        let mesh = orb_layout::fill::layout(&square.finish(), &[0], None);
         let mut tile = |renderer: &mut Renderer, source, row| {
             let key = TileKey {
                 source,

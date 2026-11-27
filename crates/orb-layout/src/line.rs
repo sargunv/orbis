@@ -40,7 +40,7 @@ use orb_tile::{Ancestor, GeometryType, Layer};
 
 use crate::clip::{ClippedLine, clip_polyline, length};
 use crate::fill::pack_position;
-use crate::{Mesh, MeshBuilder};
+use crate::{EXTENT, Mesh, MeshBuilder};
 
 /// Words per line vertex.
 pub const STRIDE: usize = 4;
@@ -56,6 +56,9 @@ const EXTRUDE_SCALE: f64 = 63.0;
 /// cull's margin for a line is this many outsets.
 pub const MAX_EXTRUDE: f32 = i8::MAX as f32 / EXTRUDE_SCALE as f32;
 const COS_HALF_SHARP_CORNER: f64 = 0.7933533402912352; // cos(75° / 2)
+/// How far either side of a sharp corner GL JS adds a vertex: 15 px of
+/// MapLibre's 512-pixel tile, in [`EXTENT`] units.
+const SHARP_CORNER_OFFSET: f64 = 15.0 * EXTENT as f64 / 512.0;
 // Offset normals use the same signed bytes as extrusion. Near hairpins,
 // ease away from the bisector so offsets do not run past neighbouring points.
 const MAX_OFFSET_MITER_LENGTH: f64 = 2.0;
@@ -86,37 +89,22 @@ pub enum LineCap {
 }
 
 /// Lays out line strings and every polygon ring among `features` (indices
-/// into `layer`), skipping points. Each feature's slot is its position in
+/// into `layer`), skipping points, in [`EXTENT`] units whatever the
+/// source's extent, as GL JS's buckets do: sharp-corner subdivisions and
+/// line distances round there. Each feature's slot is its position in
 /// `features`. Polygon rings are closed and have no caps. `parameters` is
-/// called with the slot of each non-point feature.
-///
-/// # Panics
-/// Panics if the extent plus clipping margin cannot fit signed i16 positions.
+/// called with the slot of each non-point feature. With `metrics`,
+/// vertices carry their progress ([`METRICS_STRIDE`]).
 pub fn layout(
     layer: &Layer,
     features: &[u32],
     parameters: impl FnMut(usize) -> LineLayout,
-) -> Mesh {
-    layout_in_extent(layer, features, parameters, layer.extent(), false)
-}
-
-/// Rescales source positions before rounding sharp-corner subdivisions and
-/// line distances. GL JS buckets use extent 8192 regardless of source extent.
-/// The returned positions and chunk bounds use `output_extent`. With
-/// `metrics`, vertices carry their progress ([`METRICS_STRIDE`]).
-pub fn layout_in_extent(
-    layer: &Layer,
-    features: &[u32],
-    parameters: impl FnMut(usize) -> LineLayout,
-    output_extent: u32,
     metrics: bool,
 ) -> Mesh {
-    let extent = i32::try_from(output_extent).expect("extent fits i32");
-    let scale = f64::from(output_extent) / f64::from(layer.extent());
+    let scale = f64::from(EXTENT) / f64::from(layer.extent());
     let place = |p: &[i32; 2]| p.map(|v| js_round(f64::from(v) * scale) as i64);
     let frame = Frame {
-        extent,
-        sharp_corner_offset: 15.0 * f64::from(extent) / 512.0,
+        sharp_corner_offset: SHARP_CORNER_OFFSET,
         overscale: 1.0,
         step: None,
         metrics,
@@ -126,7 +114,7 @@ pub fn layout_in_extent(
 
 /// Lays out an overzoom slice's lines, as GL JS lays out the data tile it
 /// overscales: `features` of the data tile's `layer` (one per slot),
-/// along their whole lines there, in the slice's units (extent 8192) at
+/// along their whole lines there, in the slice's units ([`EXTENT`]) at
 /// `ancestor`, its place in that tile. Line distance runs on from the
 /// data tile's line starts, reset where GL JS resets it in the data tile,
 /// and `lineMetrics` progress runs along its whole lines, so neither
@@ -143,8 +131,8 @@ pub fn layout_overscaled(
     metrics: bool,
 ) -> Mesh {
     let overscale = f64::from(ancestor.scale);
-    let grid = 8192.0 / f64::from(layer.extent());
-    let offset = ancestor.cell.map(|c| i64::from(c) * 8192);
+    let grid = f64::from(EXTENT) / f64::from(layer.extent());
+    let offset = ancestor.cell.map(|c| i64::from(c) * i64::from(EXTENT));
     let scale = i64::from(ancestor.scale);
     // GL JS's bucket rounds the data tile's vertices to its grid first.
     let place = |p: &[i32; 2]| {
@@ -152,17 +140,16 @@ pub fn layout_overscaled(
         [p[0] - offset[0], p[1] - offset[1]]
     };
     let frame = Frame {
-        extent: 8192,
         // GL JS's sharp corners at its overscaling, in slice units.
         sharp_corner_offset: if overscale <= 16.0 {
-            15.0 * 8192.0 / 512.0
+            SHARP_CORNER_OFFSET
         } else {
             0.0
         },
         overscale,
         step: cells
             .filter(|c| c.iter().any(|&c| c > 1))
-            .map(|c| c.map(|c| 8192.0 / f64::from(c))),
+            .map(|c| c.map(|c| f64::from(EXTENT) / f64::from(c))),
         metrics,
     };
     lay_out(layer, features, parameters, place, &frame)
@@ -170,8 +157,6 @@ pub fn layout_overscaled(
 
 /// The units a layout's lines land in.
 struct Frame {
-    /// Units per tile side.
-    extent: i32,
     sharp_corner_offset: f64,
     /// Units per unit of the tile the lines were laid out in by GL JS,
     /// whose units its distance resets count: an overzoom slice's scale in
@@ -190,12 +175,14 @@ fn lay_out(
     place: impl Fn(&[i32; 2]) -> [i64; 2],
     frame: &Frame,
 ) -> Mesh {
-    let extent = frame.extent;
+    let extent = EXTENT as i32;
     let margin = extent;
-    assert!(
-        extent <= i32::from(i16::MAX) - margin,
-        "extent {extent} plus margin exceeds i16 positions"
-    );
+    const {
+        assert!(
+            2 * EXTENT <= i16::MAX as u32,
+            "extent plus margin exceeds i16 positions"
+        )
+    };
     let stride = if frame.metrics {
         METRICS_STRIDE
     } else {
@@ -211,7 +198,6 @@ fn lay_out(
         min: [-near; 2],
         max: [far; 2],
     });
-    let distance_scale = 8192.0 / f64::from(extent);
     let (mut scaled, mut lines) = (Vec::new(), Vec::new());
     for (slot, &feature) in features.iter().enumerate() {
         let feature = feature as usize;
@@ -222,7 +208,7 @@ fn lay_out(
         let params = parameters(slot);
         let clips = feature_clips(layer, feature);
         // GL JS resets distance past half its 15 bits, without metrics.
-        let reset = (clips.is_none()).then_some(16384.0 / distance_scale * frame.overscale);
+        let reset = (clips.is_none()).then_some(16384.0 * frame.overscale);
         for part in layer.geometry(feature).parts() {
             for ring in part.rings() {
                 let ring = match kind {
@@ -256,7 +242,6 @@ fn lay_out(
                         builder: &mut builder,
                         slot: slot as u32,
                         edges: [None; 2],
-                        distance_scale,
                         overscale: frame.overscale,
                         reset,
                         distance: start,
@@ -459,7 +444,6 @@ struct Extrusion<'a> {
     slot: u32,
     // Last vertex on each side of the strip (GL JS's e1/e2).
     edges: [Option<u32>; 2],
-    distance_scale: f64,
     /// GL JS's units per unit of the tile it lays the line out in, for
     /// `lineMetrics` progress packed as a distance there ([`Frame`]).
     overscale: f64,
@@ -735,10 +719,9 @@ impl Extrusion<'_> {
     }
 
     fn scaled_distance(&self) -> f64 {
-        self.clips
-            .map_or(self.distance * self.distance_scale, |[start, end]| {
-                (start + (end - start) * self.progress()) * 32767.0 * self.overscale
-            })
+        self.clips.map_or(self.distance, |[start, end]| {
+            (start + (end - start) * self.progress()) * 32767.0 * self.overscale
+        })
     }
 
     fn add_half_vertex(&mut self, p: Point, extrude: Point, offset: Point, round: bool, up: bool) {
@@ -798,9 +781,9 @@ mod tests {
     }
 
     fn line(points: &[[i32; 2]], params: &LineLayout) -> Mesh {
-        let mut b = LayerBuilder::new("roads", 4096);
+        let mut b = LayerBuilder::new("roads", EXTENT);
         feature(&mut b, GeometryType::LineString, &[points]);
-        layout(&b.finish(), &[0], |_| *params)
+        layout(&b.finish(), &[0], |_| *params, false)
     }
 
     fn positions(mesh: &Mesh) -> Vec<[i16; 2]> {
@@ -842,6 +825,27 @@ mod tests {
             .iter()
             .map(|v| [(v[1] >> 16) as u8 as i8, (v[1] >> 24) as u8 as i8])
             .collect()
+    }
+
+    #[test]
+    fn normalized_source_extents_have_identical_meshes() {
+        let make = |extent: u32| {
+            let mut b = LayerBuilder::new("roads", extent);
+            let points = [[100, 100], [1500, 300], [900, 2000], [3000, 3800]]
+                .map(|p| p.map(|v| v * extent as i32 / 4096));
+            feature(&mut b, GeometryType::LineString, &[&points]);
+            layout(
+                &b.finish(),
+                &[0],
+                |_| params(LineJoin::Round, LineCap::Round),
+                true,
+            )
+        };
+        let a = make(4096);
+        let b = make(EXTENT);
+        assert!(!a.vertices.is_empty());
+        assert_eq!(a.vertices, b.vertices);
+        assert_eq!(a.indices, b.indices);
     }
 
     #[test]
@@ -906,22 +910,27 @@ mod tests {
 
     #[test]
     fn parameters_and_vertices_follow_selection_slots() {
-        let mut b = LayerBuilder::new("roads", 4096);
+        let mut b = LayerBuilder::new("roads", EXTENT);
         for y in [10, 20] {
             feature(&mut b, GeometryType::LineString, &[&[[10, y], [20, y]]]);
         }
         let mut evaluated = Vec::new();
-        let mesh = layout(&b.finish(), &[1, 0], |slot| {
-            evaluated.push(slot);
-            params(
-                LineJoin::Miter,
-                if slot == 0 {
-                    LineCap::Round
-                } else {
-                    LineCap::Butt
-                },
-            )
-        });
+        let mesh = layout(
+            &b.finish(),
+            &[1, 0],
+            |slot| {
+                evaluated.push(slot);
+                params(
+                    LineJoin::Miter,
+                    if slot == 0 {
+                        LineCap::Round
+                    } else {
+                        LineCap::Butt
+                    },
+                )
+            },
+            false,
+        );
         assert_eq!(evaluated, [0, 1]);
         counts(&mesh, 12, 8);
         let vertices = mesh.vertices.as_chunks::<STRIDE>().0;
@@ -1119,8 +1128,8 @@ mod tests {
 
     #[test]
     fn sharp_corners_insert_points_fifteen_pixels_away() {
-        // 4096/512 * 15 = 120 tile units. GL JS inserts a pair 120
-        // before and after a 90° corner if each segment exceeds 240.
+        // 8192/512 * 15 = 240 tile units. GL JS inserts a pair 240
+        // before and after a 90° corner if each segment exceeds 480.
         let mesh = line(
             &[[0, 0], [1000, 0], [1000, 1000]],
             &params(LineJoin::Miter, LineCap::Butt),
@@ -1131,12 +1140,12 @@ mod tests {
             [
                 [0, 0],
                 [0, 0],
-                [880, 0],
-                [880, 0],
+                [760, 0],
+                [760, 0],
                 [1000, 0],
                 [1000, 0],
-                [1000, 120],
-                [1000, 120],
+                [1000, 240],
+                [1000, 240],
                 [1000, 1000],
                 [1000, 1000]
             ]
@@ -1158,10 +1167,15 @@ mod tests {
     fn polygon_rings_close_without_caps_including_holes() {
         let outer = [[10, 10], [20, 10], [20, 20], [10, 20]];
         let hole = [[12, 12], [12, 18], [18, 18], [18, 12]];
-        let mut b = LayerBuilder::new("boundaries", 4096);
+        let mut b = LayerBuilder::new("boundaries", EXTENT);
         feature(&mut b, GeometryType::Polygon, &[&outer, &hole]);
         let layer = b.finish();
-        let mesh = layout(&layer, &[0], |_| params(LineJoin::Miter, LineCap::Round));
+        let mesh = layout(
+            &layer,
+            &[0],
+            |_| params(LineJoin::Miter, LineCap::Round),
+            false,
+        );
         counts(&mesh, 20, 16);
         let positions = positions(&mesh);
         assert_eq!(&positions[0..2], &positions[8..10]);
@@ -1171,14 +1185,19 @@ mod tests {
         assert!(mesh.vertex_indices().skip(24).all(|i| i >= 10));
         assert_eq!(
             mesh,
-            layout(&layer, &[0], |_| params(LineJoin::Miter, LineCap::Square))
+            layout(
+                &layer,
+                &[0],
+                |_| params(LineJoin::Miter, LineCap::Square),
+                false
+            )
         );
     }
 
     #[test]
     fn clipping_uses_margin_and_suppresses_only_synthetic_caps() {
         let mesh = line(
-            &[[-5000, 50], [1000, 50], [9000, 50]],
+            &[[-10000, 50], [1000, 50], [18000, 50]],
             &params(LineJoin::Miter, LineCap::Round),
         );
         // GL JS resets the distance at the last vertex, past the clip, so
@@ -1187,17 +1206,17 @@ mod tests {
         assert_eq!(
             positions(&mesh),
             [
-                [-4096, 50],
-                [-4096, 50],
+                [-8192, 50],
+                [-8192, 50],
                 [1000, 50],
                 [1000, 50],
-                [8192, 50],
-                [8192, 50],
+                [16384, 50],
+                [16384, 50],
             ]
         );
         assert!(data(&mesh).iter().all(|v| v[2] & 1 == 0));
         let one_end = line(
-            &[[-5000, 50], [1000, 50]],
+            &[[-10000, 50], [1000, 50]],
             &params(LineJoin::Miter, LineCap::Round),
         );
         counts(&one_end, 6, 4);
@@ -1208,14 +1227,14 @@ mod tests {
     #[test]
     fn what_lies_well_past_the_square_chunks_apart() {
         // Along y = 50 from far west of the tile into it: the segments
-        // west of x = −256 (a sixteenth of 4096) stand apart.
+        // west of x = −512 (a sixteenth of 8192) stand apart.
         let mesh = line(
             &[
+                [-8000, 50],
+                [-6000, 50],
                 [-4000, 50],
-                [-3000, 50],
                 [-2000, 50],
-                [-1000, 50],
-                [1000, 50],
+                [2000, 50],
             ],
             &params(LineJoin::Miter, LineCap::Butt),
         );
@@ -1226,27 +1245,30 @@ mod tests {
             .collect();
         assert_eq!(
             bounds,
-            [([-4000, 50], [-1000, 50]), ([-1000, 50], [1000, 50])]
+            [([-8000, 50], [-2000, 50]), ([-2000, 50], [2000, 50])]
         );
     }
 
     #[test]
     fn clipped_polygon_is_open_and_does_not_follow_clip_edges() {
-        let mut b = LayerBuilder::new("boundaries", 4096);
+        let mut b = LayerBuilder::new("boundaries", EXTENT);
         feature(
             &mut b,
             GeometryType::Polygon,
-            &[&[[-5000, 10], [10, 10], [10, 20], [-5000, 20]]],
+            &[&[[-10000, 10], [10, 10], [10, 20], [-10000, 20]]],
         );
-        let mesh = layout(&b.finish(), &[0], |_| {
-            params(LineJoin::Miter, LineCap::Round)
-        });
+        let mesh = layout(
+            &b.finish(),
+            &[0],
+            |_| params(LineJoin::Miter, LineCap::Round),
+            false,
+        );
         // Four positions and two sharp-corner insertions; GL JS resets the
         // distance at the last vertex, past the clip.
         counts(&mesh, 12, 10);
         let positions = positions(&mesh);
-        assert_eq!(positions.first(), Some(&[-4096, 10]));
-        assert_eq!(positions.last(), Some(&[-4096, 20]));
+        assert_eq!(positions.first(), Some(&[-8192, 10]));
+        assert_eq!(positions.last(), Some(&[-8192, 20]));
         // There is no artificial vertical edge joining the two clipped ends.
         assert!(
             mesh.vertex_indices()
@@ -1256,7 +1278,7 @@ mod tests {
                 .iter()
                 .all(|t| {
                     let p = t.map(|i| positions[i as usize]);
-                    !(p.iter().all(|q| q[0] == -4096) && p.iter().any(|q| q[1] != p[0][1]))
+                    !(p.iter().all(|q| q[0] == -8192) && p.iter().any(|q| q[1] != p[0][1]))
                 })
         );
         assert!(data(&mesh).iter().all(|v| v[2] & 1 == 0));
@@ -1264,7 +1286,7 @@ mod tests {
 
     #[test]
     fn feature_slots_duplicates_and_degenerate_geometry() {
-        let mut b = LayerBuilder::new("roads", 4096);
+        let mut b = LayerBuilder::new("roads", EXTENT);
         feature(&mut b, GeometryType::LineString, &[&[[1, 1], [2, 1]]]);
         feature(&mut b, GeometryType::Point, &[&[[5, 5]]]);
         feature(
@@ -1277,9 +1299,12 @@ mod tests {
             GeometryType::LineString,
             &[&[], &[[1, 1]], &[[1, 1], [1, 1]]],
         );
-        let mesh = layout(&b.finish(), &[1, 3, 2, 0], |_| {
-            params(LineJoin::Miter, LineCap::Butt)
-        });
+        let mesh = layout(
+            &b.finish(),
+            &[1, 3, 2, 0],
+            |_| params(LineJoin::Miter, LineCap::Butt),
+            false,
+        );
         counts(&mesh, 10, 6);
         assert!(
             mesh.vertices[..6 * STRIDE]
@@ -1327,7 +1352,7 @@ mod tests {
 
     #[test]
     fn metrics_preserve_local_precision_and_global_packed_progress() {
-        let mut b = LayerBuilder::new("roads", 8192);
+        let mut b = LayerBuilder::new("roads", EXTENT);
         feature(
             &mut b,
             GeometryType::LineString,
@@ -1337,7 +1362,7 @@ mod tests {
         b.set_property("geojsonvt_clip_end", orb_tile::Value::F64(0.75));
         let layer = b.finish();
         let butt = |_| params(LineJoin::Miter, LineCap::Butt);
-        let mesh = layout_in_extent(&layer, &[0], butt, 8192, true);
+        let mesh = layout(&layer, &[0], butt, true);
         let vertices = mesh.vertices.as_chunks::<METRICS_STRIDE>().0;
         let first = vertices.first().unwrap();
         let last = vertices.last().unwrap();
@@ -1352,7 +1377,7 @@ mod tests {
         assert_eq!(f32::from_bits(corner[4]), 0.5);
         assert_eq!(corner[2] >> 2, (0.5 * 32767.0 / 2.0) as u32);
         // Without metrics, vertices end at the feature slot.
-        let mesh = layout(&layer, &[0], butt);
+        let mesh = layout(&layer, &[0], butt, false);
         assert_eq!(mesh.vertices.len() / STRIDE, vertices.len());
     }
 
@@ -1367,7 +1392,7 @@ mod tests {
         b.set_property("geojsonvt_clip_start", orb_tile::Value::F64(0.0));
         b.set_property("geojsonvt_clip_end", orb_tile::Value::F64(1.0));
         let butt = |_| params(LineJoin::Miter, LineCap::Butt);
-        let mesh = layout_in_extent(&b.finish(), &[0], butt, 8192, true);
+        let mesh = layout(&b.finish(), &[0], butt, true);
         let first = &mesh.vertices[..METRICS_STRIDE];
         assert_eq!(f32::from_bits(first[4]), 904.0 / 6000.0);
         assert_eq!(first[2] >> 2, (904.0 / 6000.0 * 32767.0 / 2.0) as u32);
@@ -1408,7 +1433,7 @@ mod tests {
             (GeometryType::Polygon, &gon, false, 4),
         ];
         for (kind, ring, metrics, scale) in cases {
-            let mut b = LayerBuilder::new("roads", 8192);
+            let mut b = LayerBuilder::new("roads", EXTENT);
             feature(&mut b, kind, &[ring]);
             if metrics {
                 b.set_property("geojsonvt_clip_start", orb_tile::Value::F64(0.0));
@@ -1416,7 +1441,7 @@ mod tests {
             }
             let layer = b.finish();
             let butt = params(LineJoin::Miter, LineCap::Butt);
-            let whole = distances(&layout_in_extent(&layer, &[0], |_| butt, 8192, true));
+            let whole = distances(&layout(&layer, &[0], |_| butt, true));
             // Without metrics, the whole line's distance resets once.
             let resets = whole.iter().filter(|&&(_, d, _)| d == 0).count();
             assert_eq!(

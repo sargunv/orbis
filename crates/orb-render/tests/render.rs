@@ -2,11 +2,11 @@
 
 use orb_hal::{Gpu, TextureDesc, TextureFormat, TextureId, TextureUsages};
 use orb_hal_wgpu::WgpuGpu;
-use orb_layout::fill;
+use orb_layout::{EXTENT as LAYOUT_EXTENT, fill};
 use orb_render::{
     Blend, ClipRect, Curve, DemRef, ExtrusionPaint, Family, FillPaint, FrameBlock, FrameLight,
-    FrameStats, MeshData, NodePaint, PlacementTarget, Renderer, SceneCapacity, TargetFormat,
-    TileRow, Words,
+    FrameStats, IMAGE_EXTENT, MeshData, NodePaint, PlacementTarget, Renderer, SceneCapacity,
+    TargetFormat, TileRow, Words,
 };
 use orb_tile::{GeometryType, LayerBuilder};
 
@@ -14,7 +14,7 @@ const SIZE: u32 = 64;
 const WORLD_PER_PX: f64 = 2.0 / SIZE as f64;
 const RED: [u8; 4] = [255, 0, 0, 255];
 /// The layer extent the tests' meshes and placements are in.
-const EXTENT: u32 = 4096;
+const SOURCE_EXTENT: u32 = 4096;
 const CLEAR: [u8; 4] = [0, 0, 255, 255];
 
 struct Harness {
@@ -177,19 +177,23 @@ fn pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
     pixels[i..i + 4].try_into().unwrap()
 }
 
-const WHOLE_TILE: ClipRect = ClipRect::new([0, 0], [4096, 4096]);
-
 fn full_view_tile(offset_x: f32) -> TileRow {
+    full_view_tile_in(SOURCE_EXTENT, offset_x)
+}
+
+/// [`full_view_tile`] for meshes of layer extent `extent`.
+fn full_view_tile_in(extent: u32, offset_x: f32) -> TileRow {
+    let side = i16::try_from(extent).unwrap();
     TileRow {
         pattern_origin: [0; 2],
-        extent: 4096.0,
+        extent: extent as f32,
         wrap: 0,
         origin: [f64::from(-1.0 + offset_x), 1.0],
-        scale: 2.0 / 4096.0,
+        scale: 2.0 / extent as f32,
         zoom: 0.0,
         bound: ClipRect::EVERYWHERE,
         clips: [
-            WHOLE_TILE,
+            ClipRect::new([0, 0], [side, side]),
             ClipRect::EMPTY,
             ClipRect::EMPTY,
             ClipRect::EMPTY,
@@ -219,7 +223,7 @@ fn half_square(x: i32) -> orb_layout::Mesh {
     for v in [[x, 0], [x + 2048, 0], [x + 2048, 4096], [x, 4096]] {
         b.push_vertex(v);
     }
-    fill::layout(&b.finish(), &[0])
+    fill::layout(&b.finish(), &[0], None)
 }
 
 /// A table outside any tile (the feature-state table) grows the property
@@ -256,12 +260,18 @@ fn a_full_block_adds_another_copying_nothing() {
     red_fill(&mut h);
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     let add = |h: &mut Harness, mesh: &orb_layout::Mesh| {
         let data = MeshData::new(mesh, &[], 0);
         (h.renderer)
-            .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data, &Default::default())
+            .add_mesh(
+                &mut h.gpu,
+                tile,
+                (0, SOURCE_EXTENT),
+                &data,
+                &Default::default(),
+            )
             .unwrap()
     };
     add(&mut h, &left);
@@ -307,12 +317,18 @@ fn blocks_left_half_empty_move_into_one_at_rest() {
     red_fill(&mut h);
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     let add = |h: &mut Harness, mesh: &orb_layout::Mesh| {
         let data = MeshData::new(mesh, &[], 0);
         (h.renderer)
-            .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data, &Default::default())
+            .add_mesh(
+                &mut h.gpu,
+                tile,
+                (0, SOURCE_EXTENT),
+                &data,
+                &Default::default(),
+            )
             .unwrap()
     };
     // Three blocks of a left and a right half each; then half of each
@@ -383,13 +399,19 @@ fn candidate_lists_grow_as_layouts_need() {
     red_fill(&mut h);
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     for x in [0, 2048] {
         let mesh = half_square(x);
         let data = MeshData::new(&mesh, &[], 0);
         (h.renderer)
-            .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data, &Default::default())
+            .add_mesh(
+                &mut h.gpu,
+                tile,
+                (0, SOURCE_EXTENT),
+                &data,
+                &Default::default(),
+            )
             .unwrap();
     }
     h.renderer.take_resized();
@@ -736,7 +758,7 @@ fn shared_geometry_lives_until_its_last_mesh() {
     let (v, i) = (square.vertices.len() as u32, square.indices.len() as u32);
     let build = |spans, chunks, shares| orb_render::MeshBuild {
         node: 0,
-        extent: EXTENT,
+        extent: SOURCE_EXTENT,
         spans,
         row_words: 0,
         chunks,
@@ -760,7 +782,7 @@ fn shared_geometry_lives_until_its_last_mesh() {
     };
     let (tile, ids) = h.renderer.upload_tile(&mut h.gpu, &tile_build).unwrap();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     let used = |h: &Harness| {
         let m = h.renderer.memory();
@@ -823,13 +845,13 @@ fn node_tables_grow_for_more_nodes() {
     );
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
         .add_mesh(
             &mut h.gpu,
             tile,
-            (last, EXTENT),
+            (last, SOURCE_EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
             &Default::default(),
         )
@@ -844,13 +866,13 @@ fn nodes_wait_for_their_pipelines_without_blocking_the_frame() {
     red_fill(&mut h);
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
             &Default::default(),
         )
@@ -906,13 +928,13 @@ fn bundles_record_again_only_for_what_they_waited_for() {
     h.renderer.set_visible(1, false);
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
             &Default::default(),
         )
@@ -956,13 +978,13 @@ fn draws_a_fill() {
     red_fill(&mut h);
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
             &Default::default(),
         )
@@ -987,7 +1009,7 @@ fn draws_a_fill_whose_chunk_spans_more_vertices_than_u16_indices_reach() {
     red_fill(&mut h);
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     let mut b = orb_layout::MeshBuilder::new(orb_layout::fill::STRIDE);
     let mut vertex = |[x, y]: [i16; 2]| {
@@ -1007,7 +1029,7 @@ fn draws_a_fill_whose_chunk_spans_more_vertices_than_u16_indices_reach() {
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&mesh, &[], 0),
             &Default::default(),
         )
@@ -1025,14 +1047,14 @@ fn camera_moves_and_mesh_removal_take_effect() {
     red_fill(&mut h);
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     let mesh = h
         .renderer
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
             &Default::default(),
         )
@@ -1042,7 +1064,7 @@ fn camera_moves_and_mesh_removal_take_effect() {
     // Shift the tile right by half the view: the fill now covers the
     // middle.
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(1.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(1.0)])
         .unwrap();
     let pixels = h.render();
     assert_eq!(pixel(&pixels, 4, 32), CLEAR);
@@ -1050,12 +1072,12 @@ fn camera_moves_and_mesh_removal_take_effect() {
 
     // Entirely off screen: culled.
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(4.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(4.0)])
         .unwrap();
     assert!(h.render().as_chunks::<4>().0.iter().all(|p| *p == CLEAR));
 
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer.remove_mesh(tile, mesh);
     assert!(h.render().as_chunks::<4>().0.iter().all(|p| *p == CLEAR));
@@ -1082,7 +1104,7 @@ fn adjacent_clip_regions_do_not_double_blend_their_shared_edge() {
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
             &Default::default(),
         )
@@ -1090,13 +1112,15 @@ fn adjacent_clip_regions_do_not_double_blend_their_shared_edge() {
     // Put x=1024 exactly on a pixel centre, so both inclusive clips would
     // shade that column and blend the translucent fill twice.
     let whole = full_view_tile(1.0 / SIZE as f32);
-    h.renderer.place(tile, EXTENT, &[whole]).unwrap();
+    h.renderer.place(tile, SOURCE_EXTENT, &[whole]).unwrap();
     let reference = h.render();
     let mut left = whole;
     left.clips[0] = ClipRect::new([0, 0], [1024, 4096]);
     let mut right = whole;
     right.clips[0] = ClipRect::new([1024, 0], [4096, 4096]);
-    h.renderer.place(tile, EXTENT, &[left, right]).unwrap();
+    h.renderer
+        .place(tile, SOURCE_EXTENT, &[left, right])
+        .unwrap();
     assert_eq!(h.render(), reference);
 }
 
@@ -1109,7 +1133,7 @@ fn placements_repeat_and_clip_a_tile() {
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
             &Default::default(),
         )
@@ -1117,7 +1141,11 @@ fn placements_repeat_and_clip_a_tile() {
 
     // Two copies three quarters of a view apart: 0..32 and 48..64 are red.
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0), full_view_tile(1.5)])
+        .place(
+            tile,
+            SOURCE_EXTENT,
+            &[full_view_tile(0.0), full_view_tile(1.5)],
+        )
         .unwrap();
     let pixels = h.render();
     assert_eq!(pixel(&pixels, 4, 32), RED);
@@ -1127,7 +1155,7 @@ fn placements_repeat_and_clip_a_tile() {
     // One copy clipped to its top-left quadrant.
     let mut row = full_view_tile(0.0);
     row.clips[0] = ClipRect::new([0, 0], [2048, 2048]);
-    h.renderer.place(tile, EXTENT, &[row]).unwrap();
+    h.renderer.place(tile, SOURCE_EXTENT, &[row]).unwrap();
     let pixels = h.render();
     assert_eq!(pixel(&pixels, 4, 4), RED);
     assert_eq!(pixel(&pixels, 4, 60), CLEAR);
@@ -1162,10 +1190,16 @@ fn uploads_streams_from_host_bytes() {
     };
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
-        .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data, &Default::default())
+        .add_mesh(
+            &mut h.gpu,
+            tile,
+            (0, SOURCE_EXTENT),
+            &data,
+            &Default::default(),
+        )
         .unwrap();
     h.gpu.release_host_bytes(host);
 
@@ -1196,13 +1230,13 @@ fn translates_fills_and_clips_where_they_land() {
     );
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
             &Default::default(),
         )
@@ -1223,13 +1257,13 @@ fn margins_and_visibility_change_without_laying_candidates_out() {
     red_fill(&mut h);
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
             &Default::default(),
         )
@@ -1277,7 +1311,7 @@ fn compacted_slots_follow_the_view_without_recording() {
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
             &Default::default(),
         )
@@ -1288,7 +1322,7 @@ fn compacted_slots_follow_the_view_without_recording() {
     h.renderer
         .place(
             tile,
-            EXTENT,
+            SOURCE_EXTENT,
             &[full_view_tile(0.0), clipped, full_view_tile(4.0)],
         )
         .unwrap();
@@ -1324,7 +1358,7 @@ fn compacted_slots_follow_the_view_without_recording() {
     h.renderer
         .place(
             tile,
-            EXTENT,
+            SOURCE_EXTENT,
             &[full_view_tile(4.0), clipped, full_view_tile(0.0)],
         )
         .unwrap();
@@ -1349,7 +1383,7 @@ fn keeping_every_candidate_draws_the_same_pixels() {
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
             &Default::default(),
         )
@@ -1359,7 +1393,7 @@ fn keeping_every_candidate_draws_the_same_pixels() {
     h.renderer
         .place(
             tile,
-            EXTENT,
+            SOURCE_EXTENT,
             &[full_view_tile(0.0), clipped, full_view_tile(4.0)],
         )
         .unwrap();
@@ -1425,13 +1459,15 @@ fn circles_clip_anchors_once_but_keep_their_whole_footprint() {
     left.clips[0] = ClipRect::new([0, 0], [2048, 4096]);
     let mut right = full_view_tile(0.0);
     right.clips[0] = ClipRect::new([2048, 0], [4096, 4096]);
-    h.renderer.place(tile, EXTENT, &[left, right]).unwrap();
+    h.renderer
+        .place(tile, SOURCE_EXTENT, &[left, right])
+        .unwrap();
     let mesh = orb_layout::point::layout(&point_at([2048, 2048]), &[0]);
     h.renderer
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&mesh, &[], 0),
             &Default::default(),
         )
@@ -1466,7 +1502,7 @@ fn circle_sort_keys_merge_across_tiles() {
     for (key, color) in [(2.0, [0.0, 1.0, 0.0, 1.0]), (1.0, [1.0, 0.0, 0.0, 1.0])] {
         let tile = h.tile();
         h.renderer
-            .place(tile, EXTENT, &[full_view_tile(0.0)])
+            .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
             .unwrap();
         let mesh = orb_layout::point::layout_sorted(&point_at([2048, 2048]), &[0], |_| Some(key));
         let mut props = [0; orb_shaders::layout::CIRCLE_ROW_WORDS];
@@ -1476,7 +1512,7 @@ fn circle_sort_keys_merge_across_tiles() {
             .add_mesh(
                 &mut h.gpu,
                 tile,
-                (0, EXTENT),
+                (0, SOURCE_EXTENT),
                 &MeshData::new(&mesh, &props, orb_shaders::layout::CIRCLE_ROW_WORDS as u32),
                 &Default::default(),
             )
@@ -1518,14 +1554,20 @@ fn overlapping_tiles_draw_in_tile_order_whatever_block_they_landed_in() {
             };
             let tile = h.renderer.add_tile(&mut h.gpu, key, None).unwrap();
             h.renderer
-                .place(tile, EXTENT, &[full_view_tile(0.0)])
+                .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
                 .unwrap();
             let mut props = [0; orb_shaders::layout::CIRCLE_ROW_WORDS];
             props[0] = orb_render::pack_color(colors[i]);
             props[1] = props[0];
             let data = MeshData::new(&mesh, &props, orb_shaders::layout::CIRCLE_ROW_WORDS as u32);
             h.renderer
-                .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data, &Default::default())
+                .add_mesh(
+                    &mut h.gpu,
+                    tile,
+                    (0, SOURCE_EXTENT),
+                    &data,
+                    &Default::default(),
+                )
                 .unwrap();
             tiles[i] = Some(tile);
         }
@@ -1550,7 +1592,7 @@ fn overlapping_fills_draw_in_tile_order_whatever_block_they_landed_in() {
     for v in [[0, 0], [4096, 0], [4096, 4096], [0, 4096]] {
         b.push_vertex(v);
     }
-    let mesh = fill::layout(&b.finish(), &[0]);
+    let mesh = fill::layout(&b.finish(), &[0], None);
     let colors = [
         [0.0, 1.0, 0.0, 1.0],
         [0.0, 0.0, 1.0, 1.0],
@@ -1584,14 +1626,20 @@ fn overlapping_fills_draw_in_tile_order_whatever_block_they_landed_in() {
             };
             let tile = h.renderer.add_tile(&mut h.gpu, key, None).unwrap();
             h.renderer
-                .place(tile, EXTENT, &[full_view_tile(0.0)])
+                .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
                 .unwrap();
             let mut props = [0; orb_shaders::layout::FILL_ROW_WORDS];
             props[0] = orb_render::pack_color(colors[i]);
             props[1] = props[0];
             let data = MeshData::new(&mesh, &props, orb_shaders::layout::FILL_ROW_WORDS as u32);
             h.renderer
-                .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data, &Default::default())
+                .add_mesh(
+                    &mut h.gpu,
+                    tile,
+                    (0, SOURCE_EXTENT),
+                    &data,
+                    &Default::default(),
+                )
                 .unwrap();
             tiles[i] = Some(tile);
         }
@@ -1627,8 +1675,9 @@ fn coinciding_buildings_draw_in_tile_order_whatever_block_they_landed_in() {
         b.push_vertex(v);
     }
     let layer = b.finish();
-    let mesh = orb_layout::extrusion::layout(&layer, &[0]);
-    let [x, y] = orb_layout::extrusion::centroid(&layer, 0, EXTENT);
+    // Laid out in the normalized extent, as every extrusion is.
+    let mesh = orb_layout::extrusion::layout(&layer, &[0], 0.0, None);
+    let [x, y] = orb_layout::extrusion::centroid(&layer, 0);
     let colors = [
         [0.0, 1.0, 0.0, 1.0],
         [0.0, 0.0, 1.0, 1.0],
@@ -1668,7 +1717,11 @@ fn coinciding_buildings_draw_in_tile_order_whatever_block_they_landed_in() {
             };
             let tile = h.renderer.add_tile(&mut h.gpu, key, None).unwrap();
             h.renderer
-                .place(tile, EXTENT, &[full_view_tile(0.0)])
+                .place(
+                    tile,
+                    LAYOUT_EXTENT,
+                    &[full_view_tile_in(LAYOUT_EXTENT, 0.0)],
+                )
                 .unwrap();
             let mut props = [0; EXTRUSION_ROW_WORDS];
             props[0] = orb_render::pack_color(colors[i]);
@@ -1677,7 +1730,13 @@ fn coinciding_buildings_draw_in_tile_order_whatever_block_they_landed_in() {
             props[EXTRUSION_ROW_WHOLE] = 1;
             let data = MeshData::new(&mesh, &props, EXTRUSION_ROW_WORDS as u32);
             h.renderer
-                .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data, &Default::default())
+                .add_mesh(
+                    &mut h.gpu,
+                    tile,
+                    (0, LAYOUT_EXTENT),
+                    &data,
+                    &Default::default(),
+                )
                 .unwrap();
             tiles[i] = Some(tile);
         }
@@ -1731,18 +1790,7 @@ fn overlapping_image_tiles_draw_in_tile_order_whatever_order_they_arrived_in() {
                 fade_duration: 0.0,
             }),
         );
-        let row = TileRow {
-            extent: 8192.0,
-            scale: 2.0 / 8192.0,
-            bound: ClipRect::EVERYWHERE,
-            clips: [
-                ClipRect::new([0, 0], [8192, 8192]),
-                ClipRect::EMPTY,
-                ClipRect::EMPTY,
-                ClipRect::EMPTY,
-            ],
-            ..full_view_tile(0.0)
-        };
+        let row = full_view_tile_in(IMAGE_EXTENT, 0.0);
         let mut tiles = [None; 2];
         for i in arrivals {
             let pixels = colors[i].repeat(4);
@@ -1761,7 +1809,7 @@ fn overlapping_image_tiles_draw_in_tile_order_whatever_order_they_arrived_in() {
                 area: None,
             };
             let tile = h.renderer.upload_image(&mut h.gpu, &build, true).unwrap();
-            h.renderer.place(tile, 8192, &[row]).unwrap();
+            h.renderer.place(tile, IMAGE_EXTENT, &[row]).unwrap();
             tiles[i] = Some(tile);
         }
         // Tile 0, then tile 1: the red one on top.
@@ -1807,14 +1855,14 @@ fn heatmap_composites_in_layer_order_and_hides_without_recording() {
     );
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     let mesh = orb_layout::point::layout(&point_at([2048, 2048]), &[0]);
     h.renderer
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&mesh, &[], 0),
             &Default::default(),
         )
@@ -1823,7 +1871,7 @@ fn heatmap_composites_in_layer_order_and_hides_without_recording() {
         .add_mesh(
             &mut h.gpu,
             tile,
-            (1, EXTENT),
+            (1, SOURCE_EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
             &Default::default(),
         )
@@ -1873,14 +1921,14 @@ fn glyph_pages_grow_by_chunks() {
     h.renderer.set_heatmap_ramp(&mut h.gpu, 0, &[green; 256]);
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     let mesh = orb_layout::point::layout(&point_at([2048, 2048]), &[0]);
     h.renderer
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&mesh, &[], 0),
             &Default::default(),
         )
@@ -1917,7 +1965,7 @@ fn point_instances_address_points_after_the_first_chunk() {
         .set_paint(&mut h.gpu, 0, &circle_paint([1.0, 0.0, 0.0, 1.0]));
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     let mut b = LayerBuilder::new("points", 4096);
     b.begin_feature(None, GeometryType::Point);
@@ -1932,7 +1980,7 @@ fn point_instances_address_points_after_the_first_chunk() {
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&mesh, &[], 0),
             &Default::default(),
         )
@@ -1985,13 +2033,13 @@ fn image_rows_fill_late_span_pages_and_recycle_without_recording_commands() {
     );
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
             &Default::default(),
         )
@@ -2087,10 +2135,15 @@ fn line_texture_rows_are_stable_and_retirement_recycles_sdf_storage() {
         miter_limit: 2.0,
         round_limit: 1.05,
     };
-    let mesh = orb_layout::line::layout_in_extent(&b.finish(), &[0], butt, 4096, true);
+    // Laid out in the normalized extent, as every line is.
+    let mesh = orb_layout::line::layout(&b.finish(), &[0], butt, true);
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(
+            tile,
+            LAYOUT_EXTENT,
+            &[full_view_tile_in(LAYOUT_EXTENT, 0.0)],
+        )
         .unwrap();
     let mut props = [0; orb_shaders::layout::LINE_ROW_WORDS];
     props[19] = ramp;
@@ -2098,7 +2151,7 @@ fn line_texture_rows_are_stable_and_retirement_recycles_sdf_storage() {
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, LAYOUT_EXTENT),
             &MeshData::new(&mesh, &props, orb_shaders::layout::LINE_ROW_WORDS as u32),
             &Default::default(),
         )
@@ -2201,18 +2254,8 @@ fn raster_texels_past_a_tiles_area_take_its_edge() {
             fade_duration: 0.0,
         }),
     );
-    let row = TileRow {
-        extent: 8192.0,
-        scale: 2.0 / 8192.0,
-        clips: [
-            ClipRect::new([0, 0], [8192, 8192]),
-            ClipRect::EMPTY,
-            ClipRect::EMPTY,
-            ClipRect::EMPTY,
-        ],
-        ..full_view_tile(0.0)
-    };
-    h.renderer.place(tile, 8192, &[row]).unwrap();
+    let row = full_view_tile_in(IMAGE_EXTENT, 0.0);
+    h.renderer.place(tile, IMAGE_EXTENT, &[row]).unwrap();
     let pixels = h.render();
     for x in 0..SIZE {
         let p = pixel(&pixels, x, SIZE / 2);
@@ -2377,7 +2420,7 @@ fn blended_fills(modes: [Blend; 2]) -> Vec<u8> {
     h.renderer.set_nodes(&mut h.gpu, &[Family::Fill; 3]);
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     for (node, color) in colors.into_iter().enumerate() {
         h.renderer.set_paint(
@@ -2402,7 +2445,7 @@ fn blended_fills(modes: [Blend; 2]) -> Vec<u8> {
             .add_mesh(
                 &mut h.gpu,
                 tile,
-                (node as u32, EXTENT),
+                (node as u32, SOURCE_EXTENT),
                 &MeshData::new(&left_half_square(), &[], 0),
                 &Default::default(),
             )
@@ -2462,7 +2505,7 @@ fn blended_raster(mode: Blend) -> Vec<u8> {
     assert!(h.renderer.remap_nodes(&mut h.gpu, &nodes, &[None, None]));
     let tile = h.tile();
     h.renderer
-        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .place(tile, SOURCE_EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer.set_paint(
         &mut h.gpu,
@@ -2480,7 +2523,7 @@ fn blended_raster(mode: Blend) -> Vec<u8> {
         .add_mesh(
             &mut h.gpu,
             tile,
-            (0, EXTENT),
+            (0, SOURCE_EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
             &Default::default(),
         )
@@ -2516,18 +2559,8 @@ fn blended_raster(mode: Blend) -> Vec<u8> {
             fade_duration: 0.0,
         }),
     );
-    let row = TileRow {
-        extent: 8192.0,
-        scale: 2.0 / 8192.0,
-        clips: [
-            ClipRect::new([0, 0], [8192, 8192]),
-            ClipRect::EMPTY,
-            ClipRect::EMPTY,
-            ClipRect::EMPTY,
-        ],
-        ..full_view_tile(0.0)
-    };
-    h.renderer.place(image, 8192, &[row]).unwrap();
+    let row = full_view_tile_in(IMAGE_EXTENT, 0.0);
+    h.renderer.place(image, IMAGE_EXTENT, &[row]).unwrap();
     h.renderer
         .set_layer_composite(&mut h.gpu, 0, 0, 1.0, Blend::Normal);
     h.renderer.set_layer_composite(&mut h.gpu, 1, 1, 1.0, mode);
