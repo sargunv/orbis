@@ -10,7 +10,7 @@ use glam::DVec2;
 use orb_camera::input::{GestureOptions, Input};
 use orb_camera::{
     AnimationId, Bounds, CameraTarget, Constraints, EaseOptions, FitOptions, FlyOptions,
-    FreeCamera, GestureMomentum, Padding,
+    FreeCamera, Padding,
 };
 use orb_crs::Geodetic;
 use orb_crs::{TileIndex, TileMatrixSet};
@@ -711,17 +711,6 @@ impl Map {
         self.map.command().fly_to(target, options)
     }
 
-    /// Continues a gesture the host recognized itself: each part of
-    /// `momentum` glides on from its release velocity and slows by its
-    /// decay, from the next frame on, then settles on its snap. Any input
-    /// or camera move stops it; its
-    /// [`CameraEvent::AnimationEnd`](crate::CameraEvent::AnimationEnd) then reports the speed it had left.
-    /// `None` when nothing moves or settles over time. [`input`](Self::input)
-    /// gestures end with one of their own.
-    pub fn start_momentum(&mut self, momentum: &GestureMomentum) -> Option<AnimationId> {
-        self.map.command().start_momentum(momentum)
-    }
-
     /// Whether the camera's target stands on the terrain at rest (GL JS
     /// `centerClampedToGround`, on by default). Off, it keeps the
     /// elevation it is given, and the camera orbits a point in the air.
@@ -733,10 +722,6 @@ impl Map {
     /// leaning by `skew` and padding ignored, or in perspective (`None`).
     pub fn set_axonometric(&mut self, skew: Option<Skew>) {
         self.map.command().set_axonometric(skew);
-    }
-
-    pub fn center_clamped_to_ground(&self) -> bool {
-        self.map.center_clamped_to_ground()
     }
 
     /// Puts the target this many metres above sea level at once (GL JS

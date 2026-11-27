@@ -27,10 +27,9 @@ pub use orb_camera::input::{
     Modes, Modifiers, Move, Movement, Notch, PointerKind, Reading, Thresholds, Tick, WheelDelta,
 };
 pub use orb_camera::{
-    AnchoredMomentum, AnimationId, Bounds, CameraEvent, CameraTarget, Change, Constraints,
-    DecayModel, EaseOptions, Easing, FitOptions, FlyOptions, FreeCamera, GestureMomentum,
-    MomentumDecay, MomentumSnap, MomentumVelocity, Padding, PanMomentum, Phase, Skew, TileLod,
-    TileLodMode,
+    AnimationId, Bounds, CameraEvent, CameraTarget, Change, Constraints, DecayModel, EaseOptions,
+    Easing, FitOptions, FlyOptions, FreeCamera, MomentumDecay, MomentumSnap, Padding, Phase, Skew,
+    TileLod, TileLodMode,
 };
 pub use orb_crs::{Geodetic, Projection, TileIndex, TileMatrixSet};
 pub use orb_hal::GpuCounters;
