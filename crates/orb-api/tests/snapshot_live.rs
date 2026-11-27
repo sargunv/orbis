@@ -3,28 +3,14 @@
 
 mod common;
 
-use std::time::{Duration, Instant};
-
 use glam::DVec2;
 use orb_api::{
-    CameraState, Event, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target, TileMatrixSet,
+    CameraState, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target, TileMatrixSet,
 };
 
-fn query(map: &mut Map, at: DVec2) -> String {
+fn query(map: &mut Map, target: &mut Target, at: DVec2) -> String {
     let id = map.query_rendered(at, at);
-    let started = Instant::now();
-    loop {
-        if let Some(Event::Query { id: got, result }) = map.poll_event()
-            && got == id
-        {
-            return result.unwrap();
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "no query result"
-        );
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    common::answer(map, target, id).unwrap()
 }
 
 #[test]
@@ -59,7 +45,7 @@ fn snapshots_leave_the_live_view_as_it_was() {
     };
     let (before, features, pixels) = (
         hits(&map),
-        query(&mut map, DVec2::new(200.0, 150.0)),
+        query(&mut map, &mut target, DVec2::new(200.0, 150.0)),
         target.read_pixels().unwrap(),
     );
     assert!(features.contains("\"type\":\"Feature\""), "{features}");
@@ -71,7 +57,10 @@ fn snapshots_leave_the_live_view_as_it_was() {
     // A snapshot of another size than the live view.
     map.snapshot(256, 512, 2.0).unwrap();
     assert_eq!(hits(&map), before, "hit tests after the snapshot");
-    assert_eq!(query(&mut map, DVec2::new(200.0, 150.0)), features);
+    assert_eq!(
+        query(&mut map, &mut target, DVec2::new(200.0, 150.0)),
+        features
+    );
 
     common::settle(&mut map, &mut target);
     let after = target.read_pixels().unwrap();

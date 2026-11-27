@@ -104,22 +104,29 @@ fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::mpsc;
 
     #[test]
     fn rings_once_at_the_time_last_set() {
-        let rings = Arc::new(AtomicU32::new(0));
-        let counted = Arc::clone(&rings);
+        let (rang, rings) = mpsc::channel();
         let mut alarm = Alarm::new(Arc::new(move || {
-            counted.fetch_add(1, Ordering::SeqCst);
+            let _ = rang.send(Instant::now());
         }));
-        alarm.set(Some(Duration::from_secs(60)));
+        let set = Instant::now();
+        alarm.set(Some(Duration::from_secs(600)));
         alarm.set(Some(Duration::from_millis(20)));
-        std::thread::sleep(Duration::from_millis(300));
-        assert_eq!(rings.load(Ordering::SeqCst), 1);
-        alarm.set(Some(Duration::from_millis(20)));
+        // Long before the first time set, long after the last.
+        let at = rings
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the alarm rang");
+        assert!(at - set >= Duration::from_millis(20), "rang early");
+        // Unset long before it's due, it rings no more.
+        alarm.set(Some(Duration::from_millis(250)));
         alarm.set(None);
-        std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(rings.load(Ordering::SeqCst), 1, "unset before it rang");
+        assert_eq!(
+            rings.recv_timeout(Duration::from_millis(500)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "rang after it was unset"
+        );
     }
 }

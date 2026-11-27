@@ -12,6 +12,8 @@ use orb_api::{
     StyleImage, Target, Transaction, Value, json,
 };
 
+use common::{answer, now};
+
 /// A red background and a blue box around the origin, with feature ids.
 const STYLE: &str = r##"{
   "version": 8,
@@ -38,16 +40,6 @@ const STYLE: &str = r##"{
 }"##;
 
 const SIZE: u32 = 64;
-
-/// Milliseconds on the test's clock, which frames and input share.
-fn now() -> f64 {
-    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    START
-        .get_or_init(std::time::Instant::now)
-        .elapsed()
-        .as_secs_f64()
-        * 1000.0
-}
 
 fn pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
     let i = ((y * SIZE + x) * 4) as usize;
@@ -98,21 +90,16 @@ fn style_frame_query_edit_gesture_idle() {
     // Rendered features arrive as an event, and wake the map.
     let center = glam::DVec2::splat(f64::from(SIZE) / 2.0);
     let id = map.query_rendered(center, center);
-    let started = std::time::Instant::now();
-    let features = loop {
-        if let Some(Event::Query { id: done, result }) = map.poll_event() {
-            assert_eq!(done, id);
-            break result.expect("query");
-        }
-        assert!(started.elapsed().as_secs() < 10, "no query result");
-        std::thread::sleep(std::time::Duration::from_millis(1));
+    common::wake(&map);
+    let features = match map.poll_event() {
+        Some(Event::Query { id: done, result }) if done == id => result.expect("query"),
+        other => panic!("woken for {other:?}"),
     };
     assert!(features.contains(r#""id":"box""#), "{features}");
     assert!(
         features.starts_with('[') && features.contains(r#""id":7"#),
         "{features}"
     );
-    assert!(map.needs_frame(), "the result woke the map");
     settle(&mut map, &mut target);
 
     // Edits built op by op apply as one: one generation.
@@ -129,7 +116,7 @@ fn style_frame_query_edit_gesture_idle() {
     assert_eq!(generation, before + 1);
     assert!(map.needs_frame());
     let report = map
-        .render_until_idle(&mut target, Duration::from_secs(30))
+        .render_until_idle(&mut target, common::DEADLINE)
         .unwrap();
     assert!(report.generation >= generation);
     let pixels = target.read_pixels().unwrap();
@@ -287,6 +274,7 @@ fn idle_comes_once_after_an_ease() {
     let (mut frames, mut idles, mut arrived) = (0, 0, None);
     let started = std::time::Instant::now();
     while idles == 0 || map.needs_frame() {
+        assert!(started.elapsed() < common::DEADLINE, "the map never idled");
         if map.needs_frame() {
             let time = 1e6 + f64::from(frames) * 1000.0 / 60.0;
             let report = map.render(&mut target, time).unwrap().unwrap();
@@ -308,9 +296,8 @@ fn idle_comes_once_after_an_ease() {
             }
         } else {
             // Waiting on data (the new zoom's tiles): its wake asks for a frame.
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            map.wait_woken(Duration::from_secs(1));
         }
-        assert!(started.elapsed().as_secs() < 30, "the map never idled");
     }
     assert_eq!(
         arrived,
@@ -359,12 +346,9 @@ fn wake_callbacks_die_with_their_map() {
         1,
         "the map kept its wake callback"
     );
-
-    // The fetch fails now, and its completion finds no callback to call.
+    // The test holds the only reference left, so the fetch's completion
+    // has no callback to call, whenever it comes.
     drop(connection);
-    drop(listener);
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
     drop(runtime);
 }
 
@@ -822,7 +806,7 @@ fn pitch_scales_feature_data_and_state() {
     let center = glam::DVec2::splat(f64::from(SIZE) / 2.0);
     let radius = |map: &mut Map, target: &mut Target| {
         let query = map.query_rendered(center, center);
-        let doc = json::parse(&query_answer(map, target, query)).unwrap();
+        let doc = json::parse(&answer(map, target, query).unwrap()).unwrap();
         let layer = doc.as_array().unwrap()[0].get("layer").unwrap();
         let paint = layer.get("paint").unwrap();
         paint.get("circle-radius").unwrap().as_f64().unwrap()
@@ -1312,7 +1296,7 @@ fn queried_layers_are_evaluated_for_their_feature() {
     let center = glam::DVec2::splat(f64::from(SIZE) / 2.0);
     let layer = |map: &mut Map, target: &mut Target| {
         let query = map.query_rendered(center, center);
-        let doc = json::parse(&query_answer(map, target, query)).unwrap();
+        let doc = json::parse(&answer(map, target, query).unwrap()).unwrap();
         doc.as_array().unwrap()[0].get("layer").unwrap().to_string()
     };
     assert_eq!(
@@ -1350,7 +1334,7 @@ fn rendered_query_filters_evaluate_at_the_tiles_zoom() {
     let center = glam::DVec2::splat(f64::from(SIZE) / 2.0);
     let mut query = |filter: &str| {
         let id = map.query_rendered_in(center, center, None, Some(filter));
-        query_answer(&mut map, &mut target, id)
+        answer(&mut map, &mut target, id).unwrap()
     };
     let kept = r#"["all", [">=", ["zoom"], 10], ["==", ["geometry-type"], "Polygon"],
         ["==", ["get", "kind"], "park"]]"#;
@@ -1360,21 +1344,6 @@ fn rendered_query_filters_evaluate_at_the_tiles_zoom() {
     // Legacy syntax, as a layer's filter takes it.
     assert!(query(r#"["==", "kind", "park"]"#).contains(r#""id":7"#));
     assert_eq!(query(r#"["!=", "kind", "park"]"#), "[]");
-}
-
-/// The answer to query `id`, waiting for it.
-fn answer(map: &mut Map, id: u64) -> String {
-    let started = std::time::Instant::now();
-    loop {
-        match map.poll_event() {
-            Some(Event::Query { id: done, result }) if done == id => {
-                return result.expect("query");
-            }
-            Some(_) => {}
-            None => std::thread::sleep(std::time::Duration::from_millis(1)),
-        }
-        assert!(started.elapsed().as_secs() < 10, "no answer to query {id}");
-    }
 }
 
 #[test]
@@ -1412,9 +1381,12 @@ fn source_queries_select_by_filter_and_area() {
         ids
     };
     let all = map.query_source("p", None, None);
-    assert_eq!(ids(answer(&mut map, all)), [0, 1, 2, 3, 4, 5]);
+    assert_eq!(
+        ids(answer(&mut map, &mut target, all).unwrap()),
+        [0, 1, 2, 3, 4, 5]
+    );
     let even = map.query_source("p", None, Some(r#"["get", "even"]"#));
-    assert_eq!(ids(answer(&mut map, even)), [0, 2, 4]);
+    assert_eq!(ids(answer(&mut map, &mut target, even).unwrap()), [0, 2, 4]);
     // East of the meridian: points at 5, 15 and 25 degrees.
     let east = map.query_source(
         "p",
@@ -1423,18 +1395,9 @@ fn source_queries_select_by_filter_and_area() {
             r#"["within", {"type":"Polygon","coordinates":[[[0,-10],[30,-10],[30,10],[0,10],[0,-10]]]}]"#,
         ),
     );
-    assert_eq!(ids(answer(&mut map, east)), [3, 4, 5]);
+    assert_eq!(ids(answer(&mut map, &mut target, east).unwrap()), [3, 4, 5]);
     let missing = map.query_source("nope", None, None);
-    let started = std::time::Instant::now();
-    loop {
-        if let Some(Event::Query { id, result }) = map.poll_event() {
-            assert_eq!(id, missing);
-            assert!(result.is_err());
-            break;
-        }
-        assert!(started.elapsed().as_secs() < 10);
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    assert!(answer(&mut map, &mut target, missing).is_err());
 }
 
 #[test]
@@ -1472,7 +1435,7 @@ fn clustered_sources_draw_clusters_and_answer_cluster_queries() {
     );
     let center = glam::DVec2::splat(f64::from(SIZE) / 2.0);
     let rendered = map.query_rendered(center, center);
-    let doc = json::parse(&answer(&mut map, rendered)).unwrap();
+    let doc = json::parse(&answer(&mut map, &mut target, rendered).unwrap()).unwrap();
     let cluster = &doc.as_array().unwrap()[0];
     let properties = cluster.get("properties").unwrap();
     assert_eq!(properties.get("point_count").unwrap().as_f64(), Some(12.0));
@@ -1487,26 +1450,20 @@ fn clustered_sources_draw_clusters_and_answer_cluster_queries() {
             offset: 10,
         },
     );
-    let leaves = json::parse(&answer(&mut map, leaves)).unwrap();
+    let leaves = json::parse(&answer(&mut map, &mut target, leaves).unwrap()).unwrap();
     assert_eq!(leaves.as_array().unwrap().len(), 2);
     let zoom = map.query_cluster("p", orb_api::ClusterQuery::ExpansionZoom(id));
-    let zoom: f64 = answer(&mut map, zoom).parse().unwrap();
+    let zoom: f64 = answer(&mut map, &mut target, zoom)
+        .unwrap()
+        .parse()
+        .unwrap();
     assert!(zoom >= 1.0, "{zoom}");
     let children = map.query_cluster("p", orb_api::ClusterQuery::Children(id));
-    let children = json::parse(&answer(&mut map, children)).unwrap();
+    let children = json::parse(&answer(&mut map, &mut target, children).unwrap()).unwrap();
     assert!(!children.as_array().unwrap().is_empty());
     // Not a cluster: an error.
     let wrong = map.query_cluster("p", orb_api::ClusterQuery::Children(3));
-    let started = std::time::Instant::now();
-    loop {
-        if let Some(Event::Query { id, result }) = map.poll_event() {
-            assert_eq!(id, wrong);
-            assert!(result.is_err());
-            break;
-        }
-        assert!(started.elapsed().as_secs() < 10);
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    assert!(answer(&mut map, &mut target, wrong).is_err());
 }
 
 #[test]
@@ -1604,7 +1561,7 @@ fn geojson_diffs_change_what_queries_find() {
     map.edit(&tx).expect("a diff");
     settle(&mut map, &mut target);
     let all = map.query_source("p", None, None);
-    let doc = json::parse(&answer(&mut map, all)).unwrap();
+    let doc = json::parse(&answer(&mut map, &mut target, all).unwrap()).unwrap();
     let mut found: Vec<(i64, i64)> = doc
         .as_array()
         .unwrap()
@@ -1627,17 +1584,12 @@ fn geojson_diffs_change_what_queries_find() {
 
 /// Draws frames until the map asks for a tile of an app's source.
 fn tile_request(map: &mut Map, target: &mut Target) -> (String, orb_api::TileIndex) {
-    let started = std::time::Instant::now();
-    loop {
-        map.render(target, now()).unwrap();
-        while let Some(event) = map.poll_event() {
-            if let Event::Map(MapEvent::TileRequest { source, tile }) = event {
-                return (source, tile);
-            }
-        }
-        assert!(started.elapsed().as_secs() < 10, "no tile request");
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
+    common::until(map, target, "tile request", |map, _| {
+        std::iter::from_fn(|| map.poll_event()).find_map(|event| match event {
+            Event::Map(MapEvent::TileRequest { source, tile }) => Some((source, tile)),
+            _ => None,
+        })
+    })
 }
 
 #[test]
@@ -1699,52 +1651,24 @@ fn app_sources_draw_the_tiles_the_app_hands_in() {
 /// A vector tile of one layer, `shapes`, whose one polygon covers the
 /// tile, with a property `c` if `marked`.
 fn covering_tile(marked: bool) -> Vec<u8> {
-    fn varint(out: &mut Vec<u8>, mut v: u64) {
-        while v >= 0x80 {
-            out.push(v as u8 | 0x80);
-            v >>= 7;
-        }
-        out.push(v as u8);
-    }
-    fn field(out: &mut Vec<u8>, number: u64, bytes: &[u8]) {
-        varint(out, number << 3 | 2);
-        varint(out, bytes.len() as u64);
-        out.extend(bytes);
-    }
-    let packed = |values: &[u64]| {
-        let mut out = Vec::new();
-        values.iter().for_each(|&v| varint(&mut out, v));
-        out
+    use common::mvt;
+    let square = [[0, 0], [4096, 0], [4096, 4096], [0, 4096]];
+    let feature = mvt::Feature {
+        kind: 3,
+        geometry: mvt::path(&square, true),
+        tags: if marked { &[0, 0] } else { &[] },
     };
-    // MoveTo (0, 0), LineTo by (4096, 0), (0, 4096), (-4096, 0), close.
-    let geometry = packed(&[9, 0, 0, 26, 8192, 0, 0, 8192, 8191, 0, 15]);
-    let mut feature = Vec::new();
-    if marked {
-        field(&mut feature, 2, &packed(&[0, 0]));
+    match marked {
+        true => mvt::tile("shapes", &[feature], &["c"], &["x"]),
+        false => mvt::tile("shapes", &[feature], &[], &[]),
     }
-    feature.extend([3 << 3, 3]);
-    field(&mut feature, 4, &geometry);
-    let mut layer = vec![15 << 3, 2];
-    field(&mut layer, 1, b"shapes");
-    field(&mut layer, 2, &feature);
-    if marked {
-        field(&mut layer, 3, b"c");
-        let mut value = Vec::new();
-        field(&mut value, 1, b"x");
-        field(&mut layer, 4, &value);
-    }
-    layer.extend([5 << 3]);
-    varint(&mut layer, 4096);
-    let mut tile = Vec::new();
-    field(&mut tile, 3, &layer);
-    tile
 }
 
 #[test]
 fn tiles_whose_data_expires_load_again_while_drawn() {
     use std::io::{Read, Write};
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // The tile, fresh for a second (which the map takes as its shortest
     // lifetime, a few), then a failure, then marked and fresh for none.
@@ -1777,9 +1701,6 @@ fn tiles_whose_data_expires_load_again_while_drawn() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
     let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
-    let woken = Arc::new(AtomicBool::new(false));
-    let heard = Arc::clone(&woken);
-    map.set_wake(move || heard.store(true, Ordering::SeqCst));
     let asked = std::time::Instant::now();
     map.set_style_json(&format!(
         r##"{{"version": 8, "center": [0, 0], "zoom": 0,
@@ -1796,16 +1717,8 @@ fn tiles_whose_data_expires_load_again_while_drawn() {
     let (old, new) = ([0, 0, 255, 255], [0, 255, 0, 255]);
     assert_eq!(centre(&target), old, "the tile as it came first");
     // Idle while the tile is fresh, until its expiry wakes the map.
-    woken.store(false, Ordering::SeqCst);
     assert!(!map.needs_frame(), "a map waiting for an expiry is idle");
-    let started = std::time::Instant::now();
-    while !woken.load(Ordering::SeqCst) {
-        assert!(
-            started.elapsed().as_secs() < 10,
-            "no wake when the tile expired"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    common::wake(&map);
     assert!(
         asked.elapsed() >= Duration::from_secs(3),
         "woken before the shortest lifetime"
@@ -1817,22 +1730,17 @@ fn tiles_whose_data_expires_load_again_while_drawn() {
     );
     // Each frame draws the old tile until the new one replaces it, the
     // failed reload tried again a little later.
-    loop {
-        let report = map.render(&mut target, now()).unwrap();
-        let shown = centre(&target);
+    common::until(&mut map, &mut target, "reloaded tile", |map, target| {
+        let shown = centre(target);
         assert!(shown == old || shown == new, "a frame drew {shown:?}");
-        if shown == new && report.is_some_and(|r| r.idle()) {
-            break;
-        }
-        assert!(
-            started.elapsed().as_secs() < 20,
-            "the tile didn't load again"
-        );
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    // The reload came with no lifetime: the map loads nothing more.
-    std::thread::sleep(Duration::from_millis(1500));
-    assert!(!map.needs_frame());
+        (shown == new && !map.needs_frame()).then_some(())
+    });
+    // The reload came with no lifetime: nothing waits on the clock, so the
+    // map loads nothing more.
+    let report = map
+        .render_until_idle(&mut target, common::DEADLINE)
+        .expect("the map idles");
+    assert_eq!(report.wake_in, None);
     assert_eq!(requests.load(Ordering::SeqCst), 3);
 }
 
@@ -1844,19 +1752,25 @@ fn failed_tiles_wake_an_idle_map_for_their_retry() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    // The server is down for the first request, then answers.
+    // The server is down, however often the map retries (a first frame
+    // to idle slower than the backoff retries before it idles), until
+    // it's up; then it answers.
     let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = server.local_addr().unwrap();
-    let requests = Arc::new(AtomicUsize::new(0));
-    let counted = Arc::clone(&requests);
+    let (up, requests) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let (serving, counted) = (Arc::clone(&up), Arc::clone(&requests));
     std::thread::spawn(move || {
         for stream in server.incoming() {
             let Ok(mut stream) = stream else { return };
             let mut request = [0; 2048];
             let _ = stream.read(&mut request);
-            let (status, body) = match counted.fetch_add(1, Ordering::SeqCst) {
-                0 => ("503 Service Unavailable", Vec::new()),
-                _ => ("200 OK", covering_tile(false)),
+            counted.fetch_add(1, Ordering::SeqCst);
+            let (status, body) = match serving.load(Ordering::SeqCst) {
+                false => ("503 Service Unavailable", Vec::new()),
+                true => ("200 OK", covering_tile(false)),
             };
             let head = format!(
                 "HTTP/1.1 {status}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
@@ -1869,9 +1783,6 @@ fn failed_tiles_wake_an_idle_map_for_their_retry() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
     let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
-    let woken = Arc::new(AtomicBool::new(false));
-    let heard = Arc::clone(&woken);
-    map.set_wake(move || heard.store(true, Ordering::SeqCst));
     map.set_style_json(&format!(
         r##"{{"version": 8, "center": [0, 0], "zoom": 0,
             "sources": {{"v": {{"type": "vector", "tiles": ["http://{address}/{{z}}/{{x}}/{{y}}.mvt"],
@@ -1883,7 +1794,7 @@ fn failed_tiles_wake_an_idle_map_for_their_retry() {
     ))
     .expect("style");
     let report = map
-        .render_until_idle(&mut target, Duration::from_secs(60))
+        .render_until_idle(&mut target, common::DEADLINE)
         .expect("the map idles");
     let drawn = std::time::Instant::now();
     let centre = |target: &Target| pixel(&target.read_pixels().unwrap(), SIZE / 2, SIZE / 2);
@@ -1892,16 +1803,18 @@ fn failed_tiles_wake_an_idle_map_for_their_retry() {
         [255, 0, 0, 255],
         "the failed tile left a hole"
     );
-    assert_eq!(requests.load(Ordering::SeqCst), 1);
-    // Idle until the first failure's second of backoff ends.
+    let failed = requests.load(Ordering::SeqCst);
+    assert!(failed >= 1);
+    // Idle until the backoff ends: a second after the first failure,
+    // doubling with each further one.
     let wake_in = report.wake_in.expect("a wake for the retry");
-    assert!(wake_in <= Duration::from_secs(1), "{wake_in:?}");
+    assert!(
+        wake_in <= Duration::from_secs(1 << (failed - 1)),
+        "{wake_in:?} after {failed} failures"
+    );
     assert!(!map.needs_frame(), "a map waiting for a retry is idle");
-    woken.store(false, Ordering::SeqCst);
-    while !woken.load(Ordering::SeqCst) {
-        assert!(drawn.elapsed().as_secs() < 10, "no wake for the retry");
-        map.wait_woken(Duration::from_secs(1));
-    }
+    up.store(true, Ordering::SeqCst);
+    common::wake(&map);
     // The alarm's slack aside.
     assert!(
         drawn.elapsed() + Duration::from_millis(20) >= wake_in,
@@ -1910,15 +1823,15 @@ fn failed_tiles_wake_an_idle_map_for_their_retry() {
     );
     assert_eq!(
         requests.load(Ordering::SeqCst),
-        1,
+        failed,
         "retried before the wake"
     );
     // The frame it wakes for asks for the tile again.
     let report = map
-        .render_until_idle(&mut target, Duration::from_secs(60))
+        .render_until_idle(&mut target, common::DEADLINE)
         .expect("the map idles");
     assert_eq!(centre(&target), [0, 0, 255, 255], "the retried tile");
-    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    assert_eq!(requests.load(Ordering::SeqCst), failed + 1);
     assert_eq!(report.wake_in, None, "nothing left to retry");
 }
 
@@ -1982,25 +1895,14 @@ fn stale_cached_tiles_draw_at_once_while_they_revalidate() {
     // A new map draws the cached copy while the server holds its answer.
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(&style).expect("style");
-    let started = std::time::Instant::now();
-    while centre(&target) != old || requests.load(Ordering::SeqCst) < 2 {
-        assert!(
-            started.elapsed().as_secs() < 10,
-            "the stale copy never drew"
-        );
-        map.render(&mut target, now()).unwrap();
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    common::until(&mut map, &mut target, "stale copy", |_, target| {
+        (centre(target) == old && requests.load(Ordering::SeqCst) >= 2).then_some(())
+    });
     assert!(map.needs_frame(), "busy while it revalidates");
     release.send(()).unwrap();
-    while !(centre(&target) == new && !map.needs_frame()) {
-        assert!(
-            started.elapsed().as_secs() < 20,
-            "the revalidated tile never drew"
-        );
-        map.render(&mut target, now()).unwrap();
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    common::until(&mut map, &mut target, "revalidated tile", |map, target| {
+        (centre(target) == new && !map.needs_frame()).then_some(())
+    });
     assert_eq!(requests.load(Ordering::SeqCst), 2);
     drop(map);
 
@@ -2008,7 +1910,8 @@ fn stale_cached_tiles_draw_at_once_while_they_revalidate() {
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(&style).expect("style");
     let mut released = false;
-    for _ in 0..500 {
+    let started = std::time::Instant::now();
+    loop {
         if requests.load(Ordering::SeqCst) == 3 && !released {
             release.send(()).unwrap();
             released = true;
@@ -2018,9 +1921,12 @@ fn stale_cached_tiles_draw_at_once_while_they_revalidate() {
             assert_eq!(pixel(&image.pixels, SIZE / 2, SIZE / 2), old);
             return;
         }
-        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            started.elapsed() < common::DEADLINE,
+            "the still never settled"
+        );
+        map.wait_woken(Duration::from_millis(16));
     }
-    panic!("the still never settled");
 }
 
 /// A stale tile the server confirms, with a 304 that gives it no
@@ -2087,44 +1993,21 @@ fn stale_cached_tiles_the_server_confirms_settle() {
 
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(&style).expect("style");
-    let started = std::time::Instant::now();
-    while requests.load(Ordering::SeqCst) < 2 || map.needs_frame() {
-        assert!(
-            started.elapsed().as_secs() < 10,
-            "the stale tile never revalidated"
-        );
-        map.render(&mut target, now()).unwrap();
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    common::until(&mut map, &mut target, "revalidation", |map, _| {
+        (requests.load(Ordering::SeqCst) >= 2 && !map.needs_frame()).then_some(())
+    });
+    // Nothing waits on the clock, no reload's retry: nothing more is asked
+    // for.
+    let report = map
+        .render_until_idle(&mut target, common::DEADLINE)
+        .expect("the map idles");
+    assert_eq!(report.wake_in, None, "a reload is due");
     let blue = [0, 0, 255, 255];
     assert_eq!(
         pixel(&target.read_pixels().unwrap(), SIZE / 2, SIZE / 2),
         blue
     );
-    // Past the reloads' first retries, nothing more is asked for.
-    let settled = std::time::Instant::now();
-    while settled.elapsed() < Duration::from_millis(3500) {
-        map.render(&mut target, now()).unwrap();
-        std::thread::sleep(Duration::from_millis(10));
-    }
     assert_eq!(requests.load(Ordering::SeqCst), 2, "reloaded again");
-}
-
-/// The answer of `query` once it arrives.
-fn query_answer(map: &mut Map, target: &mut Target, query: u64) -> String {
-    let started = std::time::Instant::now();
-    loop {
-        map.render(target, now()).unwrap();
-        while let Some(event) = map.poll_event() {
-            if let Event::Query { id, result } = event
-                && id == query
-            {
-                return result.expect("a query answer");
-            }
-        }
-        assert!(started.elapsed().as_secs() < 10, "no query answer");
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
 }
 
 #[test]
@@ -2161,7 +2044,7 @@ fn an_app_sources_geojson_reaches_layers_without_a_source_layer() {
     );
     // A query reads the answer the map keeps.
     let query = map.query_source("app", None, None);
-    let found = query_answer(&mut map, &mut target, query);
+    let found = answer(&mut map, &mut target, query).unwrap();
     assert!(found.contains(r#""n":1"#), "{found}");
 }
 
@@ -2213,18 +2096,12 @@ fn request_transforms_rewrite_what_the_map_fetches() {
     );
     // The transform refuses what it doesn't rewrite.
     map.load_style_url("https://example.com/style.json");
-    let started = std::time::Instant::now();
-    let refused = loop {
-        map.render(&mut target, now()).unwrap();
-        if let Some(message) = std::iter::from_fn(|| map.poll_event()).find_map(|e| match e {
+    let refused = common::until(&mut map, &mut target, "error", |map, _| {
+        std::iter::from_fn(|| map.poll_event()).find_map(|e| match e {
             Event::Map(MapEvent::Error { message }) => Some(message),
             _ => None,
-        }) {
-            break message;
-        }
-        assert!(started.elapsed().as_secs() < 10, "no error");
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    };
+        })
+    });
     assert!(refused.contains("refused"), "{refused}");
 }
 
@@ -2431,22 +2308,29 @@ fn pixel_of(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
 fn failed_glyph_ranges_are_fetched_again() {
     use std::io::{Read, Write};
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    // The server is down for the first request, then answers.
+    // The server is down, however often the map retries, until it's up;
+    // then it answers.
     let range = std::fs::read(common::data().join("glyphs/Noto Sans Regular/0-255.pbf")).unwrap();
     let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = server.local_addr().unwrap();
-    let requests = Arc::new(AtomicUsize::new(0));
-    let counted = Arc::clone(&requests);
+    let (up, answered) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let (serving, counted) = (Arc::clone(&up), Arc::clone(&answered));
     std::thread::spawn(move || {
         for stream in server.incoming() {
             let Ok(mut stream) = stream else { return };
             let mut request = [0; 2048];
             let _ = stream.read(&mut request);
-            let (status, body) = match counted.fetch_add(1, Ordering::SeqCst) {
-                0 => ("503 Service Unavailable", &[][..]),
-                _ => ("200 OK", &range[..]),
+            let (status, body) = match serving.load(Ordering::SeqCst) {
+                false => ("503 Service Unavailable", &[][..]),
+                true => {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    ("200 OK", &range[..])
+                }
             };
             let head = format!(
                 "HTTP/1.1 {status}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
@@ -2471,9 +2355,9 @@ fn failed_glyph_ranges_are_fetched_again() {
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(&style).unwrap();
     let without = still(&mut map);
-    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    up.store(true, Ordering::SeqCst);
     let retried = still(&mut map);
-    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    assert_eq!(answered.load(Ordering::SeqCst), 1, "fetched again once");
     let mut fresh = Map::new(&runtime, MapOptions::default());
     fresh.set_style_json(&style).unwrap();
     let expected = still(&mut fresh);
@@ -2526,7 +2410,7 @@ fn layers_that_lay_out_alike_show_the_same_labels() {
     let mut shown = |map: &mut Map| {
         settle(map, &mut target);
         let all = map.query_rendered(glam::DVec2::ZERO, glam::DVec2::splat(256.0));
-        let doc = json::parse(&answer(map, all)).unwrap();
+        let doc = json::parse(&answer(map, &mut target, all).unwrap()).unwrap();
         let mut by_layer = [Vec::new(), Vec::new()];
         for feature in doc.as_array().unwrap() {
             let layer = feature.get("layer").and_then(|l| l.get("id"));

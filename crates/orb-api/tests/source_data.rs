@@ -2,6 +2,8 @@
 //! `setData`) never leaves a frame without its features: the drawn tiles
 //! stay until the new data's replace them.
 
+mod common;
+
 use orb_api::{Map, MapOptions, Op, Runtime, RuntimeOptions, Target, Transaction, json};
 
 /// GL JS `setData` on source `p`.
@@ -51,13 +53,10 @@ fn data_replaced_every_frame_never_blanks() {
     map.set_style_json(&style).unwrap();
     map.snapshot(256, 256, 1.0).unwrap();
     // A continuous frame or two after the snapshot, until the circle shows.
-    for _ in 0..100 {
-        map.render(&mut target, 0.0).unwrap();
-        if circle(&target).0 > 0 {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    map.render(&mut target, 0.0).unwrap();
+    common::until_at(&mut map, &mut target, 0.0, "circle", |_, target| {
+        (circle(target).0 > 0).then_some(())
+    });
     let (start, _) = circle(&target);
     assert!(start > 200, "{start} red pixels before the edits");
     let mut last = 0.0;
@@ -107,28 +106,32 @@ fn queries_answer_from_the_drawn_data() {
     let mut target = Target::texture(&runtime, 256, 256, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(&style).unwrap();
-    map.snapshot(256, 256, 1.0).unwrap();
-    for _ in 0..50 {
-        map.render(&mut target, 0.0).unwrap();
-        if map.hit_test(glam::DVec2::splat(128.0)).is_some() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    map.edit(&source_data(&feature(40.0, "b"))).unwrap();
-    // The jobs have the new data; the frame still draws the old.
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    map.render_until_idle(&mut target, common::DEADLINE)
+        .unwrap();
     let centre = glam::DVec2::splat(128.0);
+    assert!(map.hit_test(centre).is_some());
+    let (wake, woken) = std::sync::mpsc::channel();
+    map.set_wake(move || {
+        let _ = wake.send(());
+    });
+    map.edit(&source_data(&feature(40.0, "b"))).unwrap();
+    // The map was idle: its next wake is the jobs', with what they laid
+    // out from the new data, which no frame draws yet.
+    woken
+        .recv_timeout(common::DEADLINE)
+        .expect("the jobs' wake");
     let id = map.query_rendered(centre, centre);
-    let started = std::time::Instant::now();
     let features = loop {
-        if let Some(orb_api::Event::Query { id: got, result }) = map.poll_event()
-            && got == id
-        {
-            break result.unwrap();
+        let answer = std::iter::from_fn(|| map.poll_event()).find_map(|event| match event {
+            orb_api::Event::Query { id: got, result } if got == id => Some(result),
+            _ => None,
+        });
+        if let Some(answer) = answer {
+            break answer.unwrap();
         }
-        assert!(started.elapsed().as_secs() < 10, "no answer");
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        woken
+            .recv_timeout(common::DEADLINE)
+            .expect("the answer's wake");
     };
     assert!(features.contains(r#""name":"a""#), "{features}");
 }
@@ -160,7 +163,7 @@ fn new_data_shows_its_labels_at_once() {
     let mut target = Target::texture(&runtime, 256, 256, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(&style).unwrap();
-    map.render_until_idle(&mut target, std::time::Duration::from_secs(30))
+    map.render_until_idle(&mut target, common::DEADLINE)
         .unwrap();
     // Frames from here on are all at one time: nothing fades.
     let time = 1e9;
@@ -168,13 +171,9 @@ fn new_data_shows_its_labels_at_once() {
     assert_eq!(map.shown_labels().get("before"), Some(&1.0));
     map.edit(&source_data(&feature("after"))).unwrap();
     // Fading in from nothing, the label would stay hidden at this time.
-    for _ in 0..400 {
-        map.render(&mut target, time).unwrap();
-        if map.shown_labels().get("after") == Some(&1.0) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    common::until_at(&mut map, &mut target, time, "new label", |map, _| {
+        (map.shown_labels().get("after") == Some(&1.0)).then_some(())
+    });
     let shown = map.shown_labels();
     assert_eq!(shown.get("after"), Some(&1.0), "{shown:?}");
     assert!(!shown.contains_key("before"), "{shown:?}");

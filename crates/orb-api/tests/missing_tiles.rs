@@ -8,53 +8,16 @@ mod common;
 
 use orb_api::{Map, MapOptions, MissingTiles, Runtime, RuntimeOptions};
 
-fn varint(mut n: u64, out: &mut Vec<u8>) {
-    while n >= 128 {
-        out.push(n as u8 | 128);
-        n >>= 7;
-    }
-    out.push(n as u8);
-}
-
-/// A length-delimited protobuf field.
-fn message(field: u64, bytes: &[u8], out: &mut Vec<u8>) {
-    varint(field << 3 | 2, out);
-    varint(bytes.len() as u64, out);
-    out.extend_from_slice(bytes);
-}
-
-fn uint(field: u64, n: u64, out: &mut Vec<u8>) {
-    varint(field << 3, out);
-    varint(n, out);
-}
-
 /// A vector tile whose layer `l` holds one polygon over the whole tile.
 fn full_tile() -> Vec<u8> {
-    let zigzag = |n: i64| ((n << 1) ^ (n >> 63)) as u64;
-    let mut geometry = Vec::new();
-    // MoveTo(-64, -64), LineTo ×3 around the buffered square, ClosePath.
-    for n in [9, zigzag(-64), zigzag(-64), 26]
-        .into_iter()
-        .chain(
-            [(4224, 0), (0, 4224), (-4224, 0)]
-                .into_iter()
-                .flat_map(|(x, y)| [zigzag(x), zigzag(y)]),
-        )
-        .chain([15])
-    {
-        varint(n, &mut geometry);
-    }
-    let mut feature = Vec::new();
-    uint(3, 3, &mut feature);
-    message(4, &geometry, &mut feature);
-    let mut layer = Vec::new();
-    uint(15, 2, &mut layer);
-    message(1, b"l", &mut layer);
-    message(2, &feature, &mut layer);
-    uint(5, 4096, &mut layer);
-    let mut tile = Vec::new();
-    message(3, &layer, &mut tile);
-    tile
+    // The tile's square and some of its buffer.
+    let square = [[-64, -64], [4160, -64], [4160, 4160], [-64, 4160]];
+    let feature = common::mvt::Feature {
+        kind: 3,
+        geometry: common::mvt::path(&square, true),
+        tags: &[],
+    };
+    common::mvt::tile("l", &[feature], &[], &[])
 }
 
 /// A 256-pixel blue PNG.

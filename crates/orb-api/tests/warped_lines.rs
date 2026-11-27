@@ -9,51 +9,17 @@ mod common;
 
 use orb_api::{Map, MapOptions, Previews, Runtime, RuntimeOptions};
 
-fn varint(mut n: u64, out: &mut Vec<u8>) {
-    while n >= 128 {
-        out.push(n as u8 | 128);
-        n >>= 7;
-    }
-    out.push(n as u8);
-}
-
-/// A length-delimited protobuf field.
-fn message(field: u64, bytes: &[u8], out: &mut Vec<u8>) {
-    varint(field << 3 | 2, out);
-    varint(bytes.len() as u64, out);
-    out.extend_from_slice(bytes);
-}
-
-fn uint(field: u64, n: u64, out: &mut Vec<u8>) {
-    varint(field << 3, out);
-    varint(n, out);
-}
-
 /// A vector tile whose layer `l` holds these lines.
 fn tile(lines: &[&[[i64; 2]]]) -> Vec<u8> {
-    let zigzag = |n: i64| ((n << 1) ^ (n >> 63)) as u64;
-    let mut layer = Vec::new();
-    uint(15, 2, &mut layer);
-    message(1, b"l", &mut layer);
-    for line in lines {
-        let mut geometry = Vec::new();
-        varint(9, &mut geometry);
-        varint(zigzag(line[0][0]), &mut geometry);
-        varint(zigzag(line[0][1]), &mut geometry);
-        varint(2 | (line.len() as u64 - 1) << 3, &mut geometry);
-        for pair in line.windows(2) {
-            varint(zigzag(pair[1][0] - pair[0][0]), &mut geometry);
-            varint(zigzag(pair[1][1] - pair[0][1]), &mut geometry);
-        }
-        let mut feature = Vec::new();
-        uint(3, 2, &mut feature);
-        message(4, &geometry, &mut feature);
-        message(2, &feature, &mut layer);
-    }
-    uint(5, 4096, &mut layer);
-    let mut tile = Vec::new();
-    message(3, &layer, &mut tile);
-    tile
+    let features: Vec<_> = lines
+        .iter()
+        .map(|line| common::mvt::Feature {
+            kind: 2,
+            geometry: common::mvt::path(line, false),
+            tags: &[],
+        })
+        .collect();
+    common::mvt::tile("l", &features, &[], &[])
 }
 
 /// A `size`-pixel square snapshot of `style`, with every preview on.

@@ -1,16 +1,20 @@
 //! What the integration tests share: the demo's Tokyo extract, terrain to
-//! put under it ([`dem`]), drawing until idle, and comparing pictures.
+//! put under it ([`dem`]), vector tiles ([`mvt`]), drawing until idle or
+//! until something happens, and comparing pictures.
 
 // Each test binary uses some of these.
 #![allow(dead_code)]
 
 pub(crate) mod dem;
+pub(crate) mod mvt;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use orb_api::{CameraState, CameraTarget, Constraints, Geodetic, Map, MapOptions, Runtime, Target};
+use orb_api::{
+    CameraState, CameraTarget, Constraints, Event, Geodetic, Map, MapOptions, Runtime, Target,
+};
 
 /// The demo's data directory: the Tokyo extract, its glyphs and sprites.
 pub(crate) fn data() -> PathBuf {
@@ -39,10 +43,86 @@ pub(crate) fn tokyo_json() -> String {
         .replace("\"./", &format!("\"file://{}/", data.display()))
 }
 
+/// How long a test waits for what it waits on before it fails: long past
+/// anything a loaded machine takes, so that reaching it means a hang.
+pub(crate) const DEADLINE: Duration = Duration::from_secs(60);
+
 /// Draws until the map is loaded and idle.
 pub(crate) fn settle(map: &mut Map, target: &mut Target) {
-    map.render_until_idle(target, Duration::from_secs(60))
+    map.render_until_idle(target, DEADLINE)
         .expect("the map idles");
+}
+
+/// Milliseconds on the test's clock, which frames and input share.
+pub(crate) fn now() -> f64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
+}
+
+/// Draws the frames the map asks for, on the test's clock, as a host
+/// does, waiting for its wakes in between, until `ready` gives a value:
+/// `what` names it should it never come.
+pub(crate) fn until<T>(
+    map: &mut Map,
+    target: &mut Target,
+    what: &str,
+    ready: impl FnMut(&mut Map, &Target) -> Option<T>,
+) -> T {
+    frames_until(map, target, now, what, ready)
+}
+
+/// [`until`] with every frame at `time`, for tests that hold the clock
+/// still.
+pub(crate) fn until_at<T>(
+    map: &mut Map,
+    target: &mut Target,
+    time: f64,
+    what: &str,
+    ready: impl FnMut(&mut Map, &Target) -> Option<T>,
+) -> T {
+    frames_until(map, target, || time, what, ready)
+}
+
+fn frames_until<T>(
+    map: &mut Map,
+    target: &mut Target,
+    clock: impl Fn() -> f64,
+    what: &str,
+    mut ready: impl FnMut(&mut Map, &Target) -> Option<T>,
+) -> T {
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        if let Some(value) = ready(map, target) {
+            return value;
+        }
+        assert!(Instant::now() < deadline, "no {what} in {DEADLINE:?}");
+        if map.needs_frame() {
+            map.render(target, clock()).unwrap();
+        }
+        // A display's frame at most: a wake since the frame ends it now.
+        map.wait_woken(Duration::from_millis(16));
+    }
+}
+
+/// The answer to query `id`, drawing the frames the map asks for while it
+/// waits; other events are dropped.
+pub(crate) fn answer(map: &mut Map, target: &mut Target, id: u64) -> Result<String, String> {
+    until(map, target, "query answer", |map, _| {
+        std::iter::from_fn(|| map.poll_event()).find_map(|event| match event {
+            Event::Query { id: done, result } if done == id => Some(result),
+            _ => None,
+        })
+    })
+}
+
+/// Waits, drawing nothing, until something wakes the idle map: for what
+/// holds between a wake and the frame it asks for.
+pub(crate) fn wake(map: &Map) {
+    let deadline = Instant::now() + DEADLINE;
+    while !map.needs_frame() {
+        assert!(Instant::now() < deadline, "no wake in {DEADLINE:?}");
+        map.wait_woken(Duration::from_secs(1));
+    }
 }
 
 /// A directory of a test's own under the system's temporary one, removed
