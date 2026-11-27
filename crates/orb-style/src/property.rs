@@ -1,6 +1,6 @@
 //! Typed property values.
 
-use orb_expr::{Bound, Color, Inputs, Kind, PropertyExpression, Value};
+use orb_expr::{Bound, Color, Kind, PropertyExpression, Value};
 
 /// A value type a property can hold.
 pub trait PropertyValue: Clone + Sized {
@@ -454,6 +454,21 @@ impl Slot {
     }
 }
 
+/// The feature a value is evaluated for, beyond what its
+/// [`EvaluationContext`](orb_expr::EvaluationContext) gives.
+#[derive(Clone, Copy, Debug)]
+pub enum FeatureInput<'a> {
+    /// No feature: exact for constant and camera values, and for state
+    /// lookups with the context's state. A source or composite value reads
+    /// no properties, so it usually falls back to the default.
+    None,
+    /// A feature's captured properties.
+    Data(&'a orb_expr::FeatureData),
+    /// Feature `row` of a tile layer, in its canonical tile for `within`
+    /// and `distance`.
+    Row(&'a orb_tile::Layer, usize, Option<orb_expr::CanonicalTile>),
+}
+
 /// A property read as type `T`, with the default it falls back to.
 #[derive(Clone, Debug)]
 pub struct PropertyRef<'a, T> {
@@ -532,92 +547,99 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
         fit(value, || self.default.get())
     }
 
-    /// The value at `zoom` without a feature: exact for constant and camera
-    /// values. A source or composite value reads no properties, so it
-    /// usually falls back to the default.
+    /// The value at `zoom` without a feature or camera, as
+    /// [`evaluate_in`](Self::evaluate_in) gives it.
     pub fn evaluate(&self, zoom: f64) -> T {
-        self.evaluate_state(zoom, &[], None)
+        self.evaluate_in(
+            &orb_expr::EvaluationContext {
+                zoom,
+                ..Default::default()
+            },
+            FeatureInput::None,
+        )
     }
 
-    /// The value at `zoom` without a feature, under `camera`: exact for
-    /// constant and camera values.
+    /// The value at `zoom` without a feature, under `camera`, as
+    /// [`evaluate_in`](Self::evaluate_in) gives it.
     pub fn evaluate_camera(&self, zoom: f64, camera: orb_expr::CameraInputs) -> T {
-        let slot = self.slot.items().first().unwrap_or(self.slot);
-        match &slot.value {
-            Inner::Constant(v) => self.fit(Some(v)),
-            Inner::Expression(expression) => {
-                let context = orb_expr::EvaluationContext {
-                    zoom,
-                    pitch: camera.pitch,
-                    bearing: camera.bearing,
-                    ..Default::default()
-                };
-                let value = expression.expression().evaluate_with(&context);
-                self.fit(value.ok().as_ref())
-            }
-            Inner::List(_) => unreachable!("a list's items are values"),
-        }
+        self.evaluate_in(
+            &orb_expr::EvaluationContext {
+                zoom,
+                pitch: camera.pitch,
+                bearing: camera.bearing,
+                ..Default::default()
+            },
+            FeatureInput::None,
+        )
     }
 
-    /// The value at `zoom` for a feature with `state`: exact for constant,
-    /// camera and state-only values, and with the feature's captured `data`
-    /// for values that read both state and data.
-    pub fn evaluate_state(
-        &self,
-        zoom: f64,
-        state: &[(String, Value<'static>)],
-        data: Option<&orb_expr::FeatureData>,
-    ) -> T {
-        let slot = self.slot.items().first().unwrap_or(self.slot);
-        match &slot.value {
-            Inner::Constant(v) => self.fit(Some(v)),
-            Inner::Expression(expression) => {
-                let context = orb_expr::EvaluationContext {
-                    zoom,
-                    feature_state: state,
-                    ..Default::default()
-                };
-                let expression = expression.expression();
-                let value = match data {
-                    Some(data) => expression.evaluate_data(&context, data),
-                    None => expression.evaluate_with(&context),
-                };
-                self.fit(value.ok().as_ref())
-            }
-            Inner::List(_) => unreachable!("a list's items are values"),
-        }
-    }
-
-    /// The value for feature `row` of `layer` (in canonical `tile`, for
-    /// `within` and `distance`) in `context`: its zoom, camera, state and
-    /// images. Exact for every kind, as it draws: a value with a camera
-    /// scale scales its feature part's, or the default where that fails.
-    pub fn evaluate_feature(
+    /// The value as it draws for `feature` in `context` (its zoom, camera,
+    /// feature state and images): a value with a camera scale is its
+    /// feature part's (the default where that fails) as the context's
+    /// camera scales it. In a plan with its camera reads resolved, the
+    /// context's zoom alone gives the resolved scale.
+    pub fn evaluate_in(
         &self,
         context: &orb_expr::EvaluationContext<'_>,
-        (layer, row, tile): (&orb_tile::Layer, usize, Option<orb_expr::CanonicalTile>),
+        feature: FeatureInput<'_>,
     ) -> T {
-        let slot = self.slot.items().first().unwrap_or(self.slot);
-        match &slot.value {
-            Inner::Constant(v) => self.fit(Some(v)),
+        let Some(scale) = self.camera_scale() else {
+            return self.feature_part(context, feature);
+        };
+        let default = self.default_number();
+        let part = self.read(context, feature, |value| match value {
+            Some(Value::Number(n)) if !n.is_nan() => *n,
+            _ => default,
+        });
+        let scaled = scale.at(context, default).apply(part);
+        self.fit(Some(&Value::Number(scaled)))
+    }
+
+    /// The part of the value a feature's property rows and state-table
+    /// words hold, for `feature` in `context`: the whole value, but for
+    /// one with a camera scale, which the shaders apply, its feature part
+    /// unscaled.
+    pub fn feature_part(
+        &self,
+        context: &orb_expr::EvaluationContext<'_>,
+        feature: FeatureInput<'_>,
+    ) -> T {
+        self.read(context, feature, |value| self.fit(value))
+    }
+
+    /// The feature part's value for `feature` in `context`, given to
+    /// `finish`: a list by its first item, an empty one as `None`.
+    fn read<R>(
+        &self,
+        context: &orb_expr::EvaluationContext<'_>,
+        feature: FeatureInput<'_>,
+        finish: impl FnOnce(Option<&Value<'_>>) -> R,
+    ) -> R {
+        match &self.first().value {
+            Inner::Constant(v) => finish(Some(v)),
             Inner::Expression(expression) => {
-                let bound = expression.expression().bind(layer).with_tile(tile);
-                let value = bound.evaluate_in(context, row);
-                match expression.camera_scale() {
-                    Some(scale) => {
-                        let default = self.default_number();
-                        let n = match value {
-                            Ok(Value::Number(n)) if !n.is_nan() => n,
-                            _ => default,
-                        };
-                        let scaled = scale.at(context, default).apply(n);
-                        self.fit(Some(&Value::Number(scaled)))
-                    }
-                    None => self.fit(value.ok().as_ref()),
-                }
+                let expression = expression.expression();
+                let value = match feature {
+                    FeatureInput::None => expression.evaluate_with(context),
+                    FeatureInput::Data(data) => expression.evaluate_data(context, data),
+                    FeatureInput::Row(layer, row, tile) => expression
+                        .bind(layer)
+                        .with_tile(tile)
+                        .evaluate_in(context, row),
+                };
+                finish(value.ok().as_ref())
             }
-            Inner::List(_) => unreachable!("a list's items are values"),
+            Inner::List(_) => finish(None),
         }
+    }
+
+    /// The slot that gives the value: a list's first item.
+    fn first(&self) -> &'a Slot {
+        self.slot.items().first().unwrap_or(self.slot)
+    }
+
+    fn camera_scale(&self) -> Option<&'a orb_expr::CameraScale> {
+        self.first().as_expression()?.camera_scale()
     }
 
     /// The default of a number property: 0 for one read with a typed
@@ -629,21 +651,19 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
         }
     }
 
-    /// What the camera in `context` scales a per-feature value by
-    /// ([`orb_expr::CameraScale`]): the identity for a value without a
-    /// camera scale.
+    /// What the camera in `context` scales a value's feature part by
+    /// ([`orb_expr::CameraScale`]), for row writers' shaders and bounds
+    /// over rows: the identity for a value without a camera scale.
     pub fn scale(&self, context: &orb_expr::EvaluationContext<'_>) -> orb_expr::Scale {
-        (self.as_expression().and_then(|e| e.camera_scale()))
-            .map_or(orb_expr::Scale::IDENTITY, |s| {
-                s.at(context, self.default_number())
-            })
+        self.camera_scale().map_or(orb_expr::Scale::IDENTITY, |s| {
+            s.at(context, self.default_number())
+        })
     }
 
     /// Whether the value reads `feature-state`, but no feature properties:
     /// a `StateLookup`.
     pub fn is_state_lookup(&self) -> bool {
-        self.as_expression()
-            .is_some_and(|e| e.reads().contains(Inputs::STATE) && !e.reads().contains(Inputs::DATA))
+        crate::Binding::of_slot(self.slot) == crate::Binding::State
     }
 
     /// An owned copy, to hold apart from its layer.

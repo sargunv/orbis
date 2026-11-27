@@ -121,8 +121,6 @@ impl ElevationColor {
             paint.colors[i] = if property.per_feature() {
                 paint.rows |= 1 << i;
                 0
-            } else if property.is_state_lookup() {
-                pack_color(property.default_color(zoom))
             } else {
                 pack_color(property.color(zoom))
             };

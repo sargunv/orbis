@@ -460,9 +460,14 @@ fn global_state_resolves_at_parse() {
     );
     // State-only: a state lookup, with the global default as the fallback.
     assert!(l.get(LINE_WIDTH).is_state_lookup());
-    assert_eq!(l.get(LINE_WIDTH).evaluate_state(0.0, &[], None), 2.0);
+    assert_eq!(l.get(LINE_WIDTH).evaluate(0.0), 2.0);
     let state = [("w".to_string(), Value::Number(5.0))];
-    assert_eq!(l.get(LINE_WIDTH).evaluate_state(0.0, &state, None), 5.0);
+    let context = orb_expr::EvaluationContext {
+        feature_state: &state,
+        ..Default::default()
+    };
+    let width = l.get(LINE_WIDTH).evaluate_in(&context, FeatureInput::None);
+    assert_eq!(width, 5.0);
     let s = parse_with(
         text,
         Previews::NONE,
@@ -1157,6 +1162,27 @@ fn camera_scales_of_feature_data_are_drawn() {
     };
     assert_eq!(w.scale(&context).apply(4.0), 2.0);
     assert_eq!(w.scale(&context).apply(0.1), 1.0);
+
+    // CPU readers get the value as drawn; rows hold the feature part.
+    let data = orb_expr::FeatureData {
+        id: Value::Null,
+        geometry_type: None,
+        properties: vec![("w".into(), Value::Number(4.0))],
+    };
+    assert_eq!(w.evaluate_in(&context, FeatureInput::Data(&data)), 2.0);
+    assert_eq!(w.feature_part(&context, FeatureInput::Data(&data)), 4.0);
+
+    // A state lookup with no state draws its fallback, scaled.
+    let lookup =
+        r#""line-width": ["*", ["coalesce", ["feature-state", "w"], 4], ["/", ["pitch"], 60]]"#;
+    let style = parse(&layer(lookup)).unwrap();
+    let w = style.layers[0].get(LINE_WIDTH);
+    assert!(w.is_state_lookup());
+    let camera = orb_expr::CameraInputs {
+        pitch: 30.0,
+        bearing: 0.0,
+    };
+    assert_eq!(w.evaluate_camera(0.0, camera), 2.0);
 }
 
 #[test]

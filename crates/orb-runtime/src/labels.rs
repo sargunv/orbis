@@ -1939,22 +1939,14 @@ pub(crate) fn paint(
             paint.curves[slot] = crate::paint::curve(property, zoom);
         }
         // A state lookup's constant is its value with no state.
-        let lookup = property.is_state_lookup();
-        if lookup {
+        if property.is_state_lookup() {
             paint.curves[slot] = crate::paint::curve(property, zoom);
         }
         let number = |p: &crate::style::PaintProperty<'_>| match p {
-            _ if lookup => p.default_number(zoom),
             crate::style::PaintProperty::Number(n) => n.evaluate(zoom),
             _ => 0.0,
         };
-        let color = |p: &crate::style::PaintProperty<'_>| {
-            if lookup {
-                p.default_color(zoom)
-            } else {
-                p.color(zoom)
-            }
-        };
+        let color = |p: &crate::style::PaintProperty<'_>| p.color(zoom);
         match slot {
             0 => paint.opacity = number(property),
             1 => paint.color = color(property),

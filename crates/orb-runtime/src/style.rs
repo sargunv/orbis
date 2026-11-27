@@ -11,7 +11,9 @@ use std::sync::Arc;
 use orb_expr::Kind;
 use orb_layout::Family;
 use orb_shaders::layout;
-use orb_style::{Color, Inputs, LayerType, PropertyRef, SourceKind, Style, TargetRead, Value};
+use orb_style::{
+    Color, FeatureInput, Inputs, LayerType, PropertyRef, SourceKind, Style, TargetRead, Value,
+};
 
 use crate::elevation::ElevationColor;
 
@@ -104,7 +106,8 @@ impl PaintProperty<'_> {
         }
     }
 
-    /// A colour property's premultiplied value at `zoom`.
+    /// A colour property's premultiplied value at `zoom`: a state lookup's
+    /// with no state, its node constant.
     pub(crate) fn color(&self, zoom: f64) -> [f32; 4] {
         match self {
             Self::Color(p) => p.evaluate(zoom).premultiplied(),
@@ -164,34 +167,29 @@ impl PaintProperty<'_> {
     }
 
     /// A state-table value packed as a row word: for a feature with
-    /// `state` and captured `data` at `zoom`.
+    /// `state` and captured `data` at `zoom`, its feature part, which the
+    /// shaders scale as they do rows.
     pub(crate) fn state_word(
         &self,
         zoom: f64,
         state: &[(String, Value<'static>)],
         data: Option<&orb_expr::FeatureData>,
     ) -> u32 {
+        let context = orb_expr::EvaluationContext {
+            zoom,
+            feature_state: state,
+            ..Default::default()
+        };
+        let feature = data.map_or(FeatureInput::None, FeatureInput::Data);
         match self {
             Self::Color(p) => {
-                orb_layout::pack_color(p.evaluate_state(zoom, state, data).premultiplied())
+                orb_layout::pack_color(p.feature_part(&context, feature).premultiplied())
             }
             Self::OptionalColor(p) => orb_layout::pack_color(
-                p.evaluate_state(zoom, state, data)
+                p.feature_part(&context, feature)
                     .map_or([0.0; 4], |c| c.premultiplied()),
             ),
-            Self::Number(p) => p.evaluate_state(zoom, state, data).to_bits(),
-        }
-    }
-
-    /// The node constant of a state lookup: its value with no state, as
-    /// the camera scales it.
-    pub(crate) fn default_number(&self, zoom: f64) -> f32 {
-        match self {
-            Self::Number(p) => {
-                let value = p.evaluate_state(zoom, &[], None);
-                self.scale(zoom).apply(f64::from(value)) as f32
-            }
-            _ => unreachable!("not a number"),
+            Self::Number(p) => p.feature_part(&context, feature).to_bits(),
         }
     }
 
@@ -216,16 +214,6 @@ impl PaintProperty<'_> {
         match self.expression().and_then(|e| e.camera_scale()) {
             Some(_) => self.scale(zoom).magnitude(f64::from(max)) as f32,
             None => max,
-        }
-    }
-
-    pub(crate) fn default_color(&self, zoom: f64) -> [f32; 4] {
-        match self {
-            Self::Color(p) => p.evaluate_state(zoom, &[], None).premultiplied(),
-            Self::OptionalColor(p) => p
-                .evaluate_state(zoom, &[], None)
-                .map_or([0.0; 4], |c| c.premultiplied()),
-            Self::Number(_) => unreachable!("not a colour"),
         }
     }
 }

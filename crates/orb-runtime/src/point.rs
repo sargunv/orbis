@@ -68,13 +68,11 @@ pub(crate) fn node_paint(
             table_mask |= 1 << slot;
             curves[slot] = crate::paint::curve(property, zoom);
             numbers[slot] = property.row_maximum(zoom, maxima[slot]);
-        } else if property.is_state_lookup() {
-            curves[slot] = crate::paint::curve(property, zoom);
-            match property {
-                PaintProperty::Number(_) => numbers[slot] = property.default_number(zoom),
-                p => colors[slot] = p.default_color(zoom),
-            }
         } else {
+            // A state lookup's node constant is its value with no state.
+            if property.is_state_lookup() {
+                curves[slot] = crate::paint::curve(property, zoom);
+            }
             match property {
                 PaintProperty::Number(p) => numbers[slot] = p.evaluate(zoom),
                 p => colors[slot] = p.color(zoom),

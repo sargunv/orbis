@@ -15,7 +15,7 @@ use glam::{DVec2, Vec2};
 use orb_camera::{CameraState, View};
 use orb_crs::{Metres, TileIndex, TileMatrixSet};
 use orb_expr::Scale;
-use orb_style::{Inputs, Kind, LayerType, Property, TranslateAnchor};
+use orb_style::{FeatureInput, Inputs, Kind, LayerType, Property, TranslateAnchor};
 
 use crate::state::FeatureState;
 
@@ -1054,24 +1054,26 @@ pub(crate) struct Scene<'a> {
     pub(crate) states: Option<&'a crate::state::FeatureStates>,
 }
 
-/// A dimension at the query's zoom: under the feature's state where it
-/// reads state (with its captured data where it mixes in properties),
-/// else `fallback` (the layer's value, or the feature's at layout).
-fn live(p: &Property<f32>, zoom: f64, state: FeatureState<'_>, fallback: f32) -> f32 {
-    let p_ref = p.get();
+/// A dimension as it draws in the query's context under the feature's
+/// state, where it reads state (with its captured data where it mixes in
+/// properties): `None` where the feature's record gives it.
+fn live(p: &Property<f32>, query: &Query<'_>, state: FeatureState<'_>) -> Option<f32> {
+    let p = p.get();
     if !p
         .as_expression()
         .is_some_and(|e| e.reads().contains(Inputs::STATE))
     {
-        return fallback;
+        return None;
     }
-    match state {
-        Some((state, data)) if p_ref.is_state_lookup() || data.is_some() => {
-            p_ref.evaluate_state(zoom, state, data)
-        }
-        None if p_ref.is_state_lookup() => p_ref.evaluate_state(zoom, &[], None),
-        _ => fallback,
-    }
+    let (state, data) = match state {
+        Some((state, data)) if p.is_state_lookup() || data.is_some() => (state, data),
+        None if p.is_state_lookup() => (&[][..], None),
+        _ => return None,
+    };
+    Some(p.evaluate_in(
+        &query.context(state),
+        data.map_or(FeatureInput::None, FeatureInput::Data),
+    ))
 }
 
 /// A feature a query may report, in the order that puts upper ones last:
@@ -1176,16 +1178,27 @@ impl Query<'_> {
         Some(f64::from(a.distance(b)))
     }
 
-    fn layer(&self, layer: &HitLayer) -> LayerAt {
-        let zoom = self.zoom;
-        // Values that read the camera read the query's, as frames do.
+    /// What values read at the query, under a feature's state: the
+    /// query's camera, as frames read theirs. Layer values and feature
+    /// states both read it, so the two agree on what the camera scales.
+    fn context<'s>(
+        &self,
+        feature_state: &'s [(String, orb_expr::Value<'static>)],
+    ) -> orb_expr::EvaluationContext<'s> {
         let camera = crate::paint::camera_inputs(self.camera);
-        let context = orb_expr::EvaluationContext {
-            zoom,
+        orb_expr::EvaluationContext {
+            zoom: self.zoom,
             pitch: camera.pitch,
             bearing: camera.bearing,
+            feature_state,
             ..Default::default()
-        };
+        }
+    }
+
+    fn layer(&self, layer: &HitLayer) -> LayerAt {
+        let zoom = self.zoom;
+        let camera = crate::paint::camera_inputs(self.camera);
+        let context = self.context(&[]);
         let mut scales = [Scale::IDENTITY; 3];
         for (s, p) in scales.iter_mut().zip(layer.paint.dimensions()) {
             *s = p.get().scale(&context);
@@ -1277,15 +1290,13 @@ impl Query<'_> {
         f: &FeatureRef<'_>,
         state: FeatureState<'_>,
     ) -> (f32, f32, Option<(Metres, Metres)>) {
-        let zoom = self.zoom;
         let s = at.scales;
-        // The layer's value, else the feature's: its record's, or its
-        // state's, as the camera scales it.
+        // The layer's value, else the feature's: its state's, or its
+        // record's feature part as the camera scales it.
         let value = |p: &Property<f32>, layer: Option<f32>, record: f32, scale: Scale| {
-            layer.unwrap_or_else(|| {
-                let part = live(p, zoom, state, record);
-                scale.apply(f64::from(part)) as f32
-            })
+            layer
+                .or_else(|| live(p, self, state))
+                .unwrap_or_else(|| scale.apply(f64::from(record)) as f32)
         };
         let (radius, offset) = match &layer.paint {
             HitPaint::Circle { radius, stroke, .. } => (

@@ -174,7 +174,7 @@ impl TileWorker {
                         let members = evaluated(
                             style_layer,
                             &context,
-                            (l, drawn.feature as usize, canonical),
+                            orb_style::FeatureInput::Row(l, drawn.feature as usize, canonical),
                         );
                         feature.evaluated.push((drawn.layer, members));
                     }
@@ -229,7 +229,7 @@ fn parse_state(json: &str) -> Vec<(String, orb_expr::Value<'static>)> {
 fn evaluated(
     style_layer: &orb_style::Layer,
     context: &orb_expr::EvaluationContext<'_>,
-    feature: (&Layer, usize, Option<orb_expr::CanonicalTile>),
+    feature: orb_style::FeatureInput<'_>,
 ) -> String {
     let mut sections = [String::new(), String::new()];
     for (id, slot) in style_layer.slots() {
@@ -238,7 +238,7 @@ fn evaluated(
             continue;
         }
         let value: orb_expr::Value<'static> =
-            orb_style::PropertyRef::of(slot, id).evaluate_feature(context, feature);
+            orb_style::PropertyRef::of(slot, id).evaluate_in(context, feature);
         let out = &mut sections[usize::from(prop.paint)];
         if !out.is_empty() {
             out.push(',');
