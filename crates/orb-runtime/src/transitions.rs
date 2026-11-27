@@ -11,11 +11,12 @@
 //! Beyond GL JS and Native, which snap, a layer shown or hidden fades in
 //! or out by the style's `transition`: the overlay keeps a hidden layer
 //! drawing while it fades, and scales its opacity, the layer opacity of a
-//! fill or line (which composites the layer once) and the per-feature
-//! opacities of the rest, where those are the same for every feature. A
-//! layer whose opacity varies by feature shows or hides at once. A fill or
-//! line starts fading once the composite's pipeline compiled: a frame
-//! waiting for it would draw nothing.
+//! fill, line or fill extrusion (which composites the layer once) and the
+//! per-feature opacities of the rest, where those are the same for every
+//! feature. A layer of the rest whose opacity varies by feature shows or
+//! hides at once. A fill or line starts fading once the composite's
+//! pipeline compiled: a frame waiting for it would draw nothing (an
+//! extrusion layer always draws through its composite).
 
 use std::sync::Arc;
 
@@ -92,7 +93,7 @@ fn fade_properties(ty: LayerType) -> &'static [PropertyId] {
         LayerType::Line => ids!(LINE_LAYER_OPACITY),
         LayerType::Circle => ids!(CIRCLE_OPACITY, CIRCLE_STROKE_OPACITY),
         LayerType::Symbol => ids!(TEXT_OPACITY, ICON_OPACITY),
-        LayerType::FillExtrusion => ids!(EXTRUSION_OPACITY),
+        LayerType::FillExtrusion => ids!(EXTRUSION_LAYER_OPACITY),
         LayerType::Raster => ids!(RASTER_OPACITY),
         LayerType::Heatmap => ids!(HEATMAP_OPACITY),
         LayerType::Background => ids!(BACKGROUND_OPACITY),

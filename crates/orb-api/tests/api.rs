@@ -567,9 +567,8 @@ fn fill_antialias_follows_each_feature_and_the_zoom() {
     assert!(left > 0 && right > 0, "outlined from 2.5: {left} {right}");
 }
 
-/// Each building takes its own opacity from its data, beyond the spec:
-/// over black, a building at a quarter draws a quarter as bright as one at
-/// full.
+/// Each building takes its own opacity from its data: over black, a
+/// building at a quarter draws a quarter as bright as one at full.
 #[test]
 fn extrusion_opacity_follows_the_feature() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
@@ -598,6 +597,68 @@ fn extrusion_opacity_follows_the_feature() {
             "{quarter:?} is not a quarter of {full:?}"
         );
     }
+}
+
+/// `fill-extrusion-layer-opacity` fades the layer as one surface, times
+/// `fill-extrusion-opacity`: the layer at 0.75 draws as buildings at 0.75
+/// do, as do 0.9375 and 0.8 together; with each building's own opacity,
+/// each draws at its own times the layer's; at zero nothing draws.
+#[test]
+fn extrusion_layer_opacity_multiplies_the_buildings() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let snapshot = |paint: &str| {
+        let style = format!(
+            r##"{{"version": 8, "center": [0, 0], "zoom": 2, "sources": {{"b": {{"type": "geojson",
+            "data": {{"type": "FeatureCollection", "features": [
+              {{"type": "Feature", "properties": {{"o": 1}}, "geometry": {{"type": "Polygon",
+                "coordinates": [[[-10, -5], [-1, -5], [-1, 5], [-10, 5], [-10, -5]]]}}}},
+              {{"type": "Feature", "properties": {{"o": 0.25}}, "geometry": {{"type": "Polygon",
+                "coordinates": [[[1, -5], [10, -5], [10, 5], [1, 5], [1, -5]]]}}}}]}}}}}},
+          "layers": [
+            {{"id": "background", "type": "background", "paint": {{"background-color": "#000000"}}}},
+            {{"id": "b", "type": "fill-extrusion", "source": "b", "paint": {{
+              "fill-extrusion-color": "#ffffff", "fill-extrusion-height": 1000, {paint}}}}}]}}"##
+        );
+        let mut map = Map::new(&runtime, MapOptions::default());
+        map.set_style_json(&style).expect("style");
+        map.snapshot(SIZE, SIZE, 1.0).expect("snapshot").pixels
+    };
+    let close = |a: &[u8], b: &[u8]| a.iter().zip(b).all(|(a, b)| a.abs_diff(*b) <= 1);
+    let shared = snapshot(r#""fill-extrusion-opacity": 0.75"#);
+    assert!(shared.iter().any(|&c| c > 100), "the buildings draw");
+    let layer = snapshot(r#""fill-extrusion-layer-opacity": 0.75"#);
+    assert!(close(&shared, &layer), "the layer at 0.75");
+    let both = snapshot(r#""fill-extrusion-layer-opacity": 0.9375, "fill-extrusion-opacity": 0.8"#);
+    assert!(close(&shared, &both), "0.9375 times 0.8");
+
+    let roofs = |pixels: &[u8]| {
+        let roof = |x| pixel(pixels, x, SIZE / 2);
+        (roof(SIZE / 2 - 12), roof(SIZE / 2 + 12))
+    };
+    let per_building = r#""fill-extrusion-opacity": ["get", "o"]"#;
+    let (full, _) = roofs(&snapshot(per_building));
+    let (half, eighth) = roofs(&snapshot(&format!(
+        r#"{per_building}, "fill-extrusion-layer-opacity": 0.5"#
+    )));
+    assert!(full[0] > 100, "{full:?}");
+    for c in 0..3 {
+        let full = f32::from(full[c]);
+        assert!(
+            (f32::from(half[c]) - full * 0.5).abs() <= 2.0,
+            "{half:?} of {full}"
+        );
+        assert!(
+            (f32::from(eighth[c]) - full * 0.125).abs() <= 2.0,
+            "{eighth:?} of {full}"
+        );
+    }
+    let hidden = snapshot(&format!(
+        r#"{per_building}, "fill-extrusion-layer-opacity": 0"#
+    ));
+    assert!(
+        hidden.chunks(4).all(|p| p[..3] == [0, 0, 0]),
+        "nothing draws at zero"
+    );
 }
 
 /// Each feature takes its own translate from its data, beyond the spec:

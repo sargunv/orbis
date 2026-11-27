@@ -414,19 +414,32 @@ fn camera_free(plan: &StylePlan, node: &crate::style::NodePlan) -> bool {
         && !crate::line::has_textures(layer)
 }
 
-/// Whether `node` of `layer` draws at `zoom`. A layer-wide extrusion
-/// opacity of zero hides the layer; a per-feature one hides only its own
-/// buildings, in the shader. So does a fill's `fill-antialias` its outline.
+/// Whether `node` of `layer` draws at `zoom`. An extrusion layer whose
+/// composite opacity is zero ([`extrusion_composite_opacity`]) is hidden;
+/// a per-feature opacity of zero hides only its own buildings, in the
+/// shader. So does a fill's `fill-antialias` its outline.
 pub(crate) fn drawn_at(layer: &orb_style::Layer, node: &crate::style::NodePlan, zoom: f64) -> bool {
     layer.is_visible_at(zoom)
-        && (layer.ty != LayerType::FillExtrusion || {
-            let opacity = layer.get(orb_style::EXTRUSION_OPACITY);
-            is_per_feature(opacity.kind()) || opacity.evaluate(zoom) > 0.0
-        })
+        && (layer.ty != LayerType::FillExtrusion || extrusion_composite_opacity(layer, zoom) > 0.0)
         && (node.family != Family::FillOutline || {
             let antialias = layer.get(orb_style::FILL_ANTIALIAS);
             is_per_feature(antialias.kind()) || antialias.evaluate(zoom)
         })
+}
+
+/// The opacity an extrusion layer's target composites at: its
+/// `fill-extrusion-layer-opacity` times its `fill-extrusion-opacity` where
+/// that is the same for every building, which then fades the layer as
+/// one surface too. A per-feature opacity is drawn per building, in the
+/// shader, from the rows' flags.
+fn extrusion_composite_opacity(layer: &orb_style::Layer, zoom: f64) -> f32 {
+    let opacity = layer.get(orb_style::EXTRUSION_OPACITY);
+    let shared = if is_per_feature(opacity.kind()) {
+        1.0
+    } else {
+        opacity.evaluate(zoom)
+    };
+    layer.get(orb_style::EXTRUSION_LAYER_OPACITY).evaluate(zoom) * shared
 }
 
 /// Writes every node's paint and visibility for `zoom`, if it changed.
@@ -681,8 +694,6 @@ pub(crate) fn node_paint(
         }),
         Family::FillExtrusion => {
             let e = layer;
-            // Per feature (beyond the spec), from the rows' flags: the
-            // layer composites at full opacity.
             let opacity = e.get(orb_style::EXTRUSION_OPACITY);
             let gradient = e.get(orb_style::EXTRUSION_VERTICAL_GRADIENT);
             let opacity_rows = is_per_feature(opacity.kind());
@@ -695,11 +706,7 @@ pub(crate) fn node_paint(
                 color,
                 height: numbers[1],
                 base: numbers[2],
-                opacity: if opacity_rows {
-                    1.0
-                } else {
-                    opacity.evaluate(zoom)
-                },
+                opacity: extrusion_composite_opacity(e, zoom),
                 translate,
                 vertical_gradient: gradient.evaluate(zoom),
                 table_mask: table_mask

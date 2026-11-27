@@ -300,8 +300,7 @@ fn extrusion_depth_scale(height: f32, feature: u32) -> f32 {
     return 1.0 - f32((31u - tall) * 4u + feature % 4u) * EXTRUSION_DEPTH_STEP;
 }
 // A feature's base, height and opacity, from the node, its row (its
-// opacity, beyond the spec, packed beside the whole-building bit) or its
-// state.
+// opacity packed beside the whole-building bit) or its state.
 fn extrusion_feature(tile: Tile, row: u32, state: u32) -> vec3<f32> {
     var height = node.height;
     var base = node.base;

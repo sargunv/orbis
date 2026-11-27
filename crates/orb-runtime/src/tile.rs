@@ -1069,8 +1069,8 @@ impl NodeLayout<'_> {
             }
             if node.family == Family::FillExtrusion {
                 let whole = orb_layout::extrusion::whole(layer, features, bent);
-                // Per-feature opacity and vertical gradient
-                // (beyond the spec) share the flags word.
+                // Per-feature opacity and vertical gradient (the
+                // latter beyond the spec) share the flags word.
                 let opacity = style_layer.get(orb_style::EXTRUSION_OPACITY);
                 let gradient = style_layer.get(orb_style::EXTRUSION_VERTICAL_GRADIENT);
                 let per_feature = |kind| matches!(kind, Kind::Source | Kind::Composite);

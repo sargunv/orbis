@@ -472,6 +472,39 @@ fn visibility_edits_fade() {
     }
 }
 
+/// An extrusion layer fades through its layer opacity, so it fades even
+/// where each building has an opacity of its own.
+#[test]
+fn extrusions_with_their_own_opacities_fade() {
+    let mut map = tokyo();
+    let add = r##"[["addLayer", {"id": "buildings", "type": "fill-extrusion",
+        "source": "openmaptiles", "source-layer": "building",
+        "paint": {"fill-extrusion-height": 30, "fill-extrusion-color": "#ff0000",
+            "fill-extrusion-opacity": ["coalesce", ["get", "absent"], 1]}}]]"##;
+    edit(&mut map, add);
+    map.frame();
+    // A per-building opacity draws, but isn't portable.
+    let warnings = crate::common::take_warnings(&mut map.map);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("fill-extrusion-opacity")),
+        "{warnings:?}"
+    );
+    settle(&mut map);
+    let shown = map.pixels();
+    edit(
+        &mut map,
+        r#"[["setLayoutProperty", "buildings", "visibility", "none"]]"#,
+    );
+    let frames = frames_until_idle(&mut map);
+    settle(&mut map);
+    assert!(
+        some_frame_between(&shown, &map.pixels(), &frames),
+        "the buildings faded out"
+    );
+}
+
 /// The CPU cost of a feature-state write on the scene thread: the edit
 /// call, and the next frame's extra time over a frame without one.
 /// `cargo test --release -p orb-runtime --test edits feature_state_write_cost -- --ignored --nocapture`

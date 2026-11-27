@@ -608,7 +608,14 @@ properties! {
         layout EXTRUSION_ROUNDED_CORNER: f32 = prop("fill-extrusion-rounded-corner-distance", NUMBER, Some("0")).range(0.0, None).zoom_independent();
         /// Per fragment over `["elevation"]`, the height above the ground.
         paint EXTRUSION_COLOR: Color = prop("fill-extrusion-color", COLOR, Some("\"#000000\"")).data_driven().interpolated().elevation().extends(Inputs::CAMERA);
+        /// Data-driven in style-spec 26.9, where buildings at 1 show
+        /// through translucent ones in front of them. Orbis draws every
+        /// building into one target, the nearest surface only, so a
+        /// translucent building hides those behind it: until it draws the
+        /// spec's picture, data stays an extension that warns as not
+        /// portable, and feature state isn't read.
         paint EXTRUSION_OPACITY: f32 = prop("fill-extrusion-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA).extends(Inputs::DATA);
+        paint EXTRUSION_LAYER_OPACITY: f32 = prop("fill-extrusion-layer-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0)).in_phase(Phase::Layer).extends(Inputs::CAMERA);
         paint EXTRUSION_HEIGHT: f32 = prop("fill-extrusion-height", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None).extends(Inputs::CAMERA_DATA);
         paint EXTRUSION_BASE: f32 = prop("fill-extrusion-base", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None).extends(Inputs::CAMERA_DATA);
         paint EXTRUSION_TRANSLATE: [f32; 2] = prop("fill-extrusion-translate", TRANSLATE, Some("[0,0]")).interpolated().extends(Inputs::DATA).extends(Inputs::CAMERA);
