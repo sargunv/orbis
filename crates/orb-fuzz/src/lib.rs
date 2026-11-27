@@ -84,7 +84,10 @@ pub fn lay_out(bytes: &[u8], encoding: Encoding, options: u8) {
             let range = if url.ends_with("/0-255.pbf") {
                 Ok(LATIN)
             } else {
-                Err("missing".to_string())
+                Err(orb_runtime::ResourceError {
+                    message: "missing".into(),
+                    passing: false,
+                })
             };
             worker.add_resource(url, range);
         }

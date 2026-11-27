@@ -53,7 +53,7 @@ impl Stages {
     }
 
     /// Adds a resource a layout asked for (a glyph range), or its failure.
-    pub fn add_resource(&self, url: &str, bytes: Result<&[u8], String>) {
+    pub fn add_resource(&self, url: &str, bytes: Result<&[u8], crate::ResourceError>) {
         self.worker.add_resource(url, bytes);
     }
 

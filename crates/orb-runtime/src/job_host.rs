@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use orb_host::jobs::Executor;
 use orb_host::{Abort, Fetch, FetchError, FontFiles, ResourceKind};
 
-use crate::glyphs::{GlyphRaster, LocalGlyphs, RasterDone};
+use crate::glyphs::{GlyphRaster, LocalGlyphs, RasterDone, ResourceError};
 use crate::loader::TileLoader;
 use crate::modules::{Load, Modules};
 use crate::style::ImageKind;
@@ -252,7 +252,7 @@ impl GlyphLoads {
             &key.1.clone(),
             &Abort::NEVER,
             Box::new(move |fetched| {
-                let fetched = fetched.map(|f| f.bytes).map_err(|e| e.to_string());
+                let fetched = fetched.map(|f| f.bytes).map_err(|e| (&e).into());
                 this.arrived(worker, key, fetched);
             }),
         );
@@ -274,7 +274,7 @@ impl GlyphLoads {
         self: &Arc<Self>,
         worker: Arc<TileWorker>,
         key: (u64, String),
-        fetched: Result<Vec<u8>, String>,
+        fetched: Result<Vec<u8>, ResourceError>,
     ) {
         let url = key.1.clone();
         let files = worker
@@ -293,6 +293,10 @@ impl GlyphLoads {
         let this = Arc::clone(self);
         let finish = move |prepared: Result<(), String>| {
             let fetched = fetched.as_ref().map(|b| b.as_slice());
+            let prepared = prepared.map_err(|message| ResourceError {
+                message,
+                passing: false,
+            });
             let bytes = prepared.and(fetched.map_err(Clone::clone));
             worker.add_resource(&url, bytes);
             let waiters = this
@@ -598,7 +602,7 @@ impl JobHost {
 
     /// A glyph range [`expect_glyphs`](Self::expect_glyphs) announced,
     /// fetched (or failed) elsewhere.
-    pub fn glyph_range(&self, id: u64, url: String, fetched: Result<Vec<u8>, String>) {
+    pub fn glyph_range(&self, id: u64, url: String, fetched: Result<Vec<u8>, ResourceError>) {
         let Some(worker) = self.worker(id) else {
             return;
         };

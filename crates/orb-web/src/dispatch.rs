@@ -567,7 +567,8 @@ impl Jobs for WorkerJobs {
                 let Some(jobs) = me.upgrade() else {
                     return;
                 };
-                let bytes = (fetched.map(|f| f.bytes)).map_err(|e| format!("glyphs {url}: {e}"));
+                let bytes =
+                    (fetched.map(|f| f.bytes)).map_err(|e| orb_runtime::ResourceError::from(&e));
                 jobs.broadcast(&JobRequest::GlyphRange { style, url, bytes });
             });
             let never = &orb_host::Abort::NEVER;

@@ -67,7 +67,7 @@ pub use video::{NO_VIDEO, VideoRequest};
 
 pub use features::{FeatureRequest, FeaturesDone, TileFeature};
 pub use geojson::{ClusterQuery, ClusterRequest};
-pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
+pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone, ResourceError};
 pub use host_heights::HostElevations;
 pub use job_host::{Fetched, JobHost, Loaded};
 pub use jobs::{

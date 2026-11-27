@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use orb_crs::TileIndex;
+use orb_runtime::ResourceError;
 use orb_runtime::stages::Stages;
 use orb_source::pmtiles::{Entry, Header};
 use orb_style::Encoding;
@@ -75,7 +76,7 @@ pub(crate) fn run(
         };
 
         // The untimed round: the glyph ranges every tile's labels need.
-        let mut resources: Vec<(String, Result<Vec<u8>, String>)> = Vec::new();
+        let mut resources: Vec<(String, Result<Vec<u8>, ResourceError>)> = Vec::new();
         let first = stages()?;
         for (tile, bytes) in &tiles {
             first.decode(SOURCE, *tile, bytes)?;
@@ -186,12 +187,16 @@ fn tile_of(lon: f64, lat: f64, z: u8) -> (u32, u32) {
 }
 
 /// A `file://` URL's bytes.
-fn read_url(url: &str) -> Result<Vec<u8>, String> {
+fn read_url(url: &str) -> Result<Vec<u8>, ResourceError> {
+    let lasting = |message| ResourceError {
+        message,
+        passing: false,
+    };
     let path = url
         .strip_prefix("file://")
-        .ok_or_else(|| format!("{url}: not a file URL"))?
+        .ok_or_else(|| lasting(format!("{url}: not a file URL")))?
         .replace("%20", " ");
-    std::fs::read(&path).map_err(|e| format!("{path}: {e}"))
+    std::fs::read(&path).map_err(|e| lasting(format!("{path}: {e}")))
 }
 
 impl TilesReport {

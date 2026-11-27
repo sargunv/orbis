@@ -19,6 +19,26 @@ use orb_text::{
 
 pub use orb_host::{FontFiles, LocalGlyphs};
 
+/// Why a resource a build asked for (a glyph range, a font file) didn't
+/// come.
+#[derive(Clone, Debug, PartialEq, Eq, orb_wire::Wire)]
+pub struct ResourceError {
+    pub message: String,
+    /// The failure may pass by itself (the network, a server failing or
+    /// rate-limiting), so the tiles that need the resource fetch it again
+    /// on their backoff; one that won't (not found, say) stays failed.
+    pub passing: bool,
+}
+
+impl From<&orb_host::FetchError> for ResourceError {
+    fn from(error: &orb_host::FetchError) -> Self {
+        Self {
+            message: error.to_string(),
+            passing: error.transient(),
+        }
+    }
+}
+
 fn face(font: &LocalFont) -> orb_host::LocalFace<'_> {
     orb_host::LocalFace {
         family: &font.family,
@@ -82,9 +102,12 @@ pub(crate) struct GlyphCatalog {
 enum RangeState {
     Ready(Arc<GlyphRange>),
     /// The range failed to load or parse: its glyphs fall back to local
-    /// fonts, as in GL JS, until [`GlyphCatalog::retry_failed`] lets it be
-    /// fetched again.
-    Failed,
+    /// fonts, as in GL JS. A failure that may pass lasts until
+    /// [`GlyphCatalog::retry_failed`] lets it be fetched again; one that
+    /// won't (not found, a body that doesn't parse) for good.
+    Failed {
+        passing: bool,
+    },
 }
 
 /// The font files text may draw with: the style's, by name, and the
@@ -121,8 +144,8 @@ pub(crate) struct Resolved {
     pub(crate) glyphs: GlyphMap,
     /// Glyphs that need a local font, which the host doesn't provide.
     pub(crate) local: usize,
-    /// Some glyph's range failed: it draws locally, or not at all, until
-    /// a retry fetches the range.
+    /// Some glyph's range failed for a reason that may pass: it draws
+    /// locally, or not at all, until a retry fetches the range.
     pub(crate) failed: bool,
 }
 
@@ -192,21 +215,29 @@ impl GlyphCatalog {
 
     /// Records a fetched range, or its failure, which the next build
     /// reports.
-    pub(crate) fn insert(&self, url: &str, bytes: Result<&[u8], String>) {
+    pub(crate) fn insert(&self, url: &str, bytes: Result<&[u8], ResourceError>) {
         let local = self.local.lock().expect("glyph catalog poisoned").is_some();
-        let (state, warning) =
-            match bytes.and_then(|b| GlyphRange::parse(b).map_err(|e| e.to_string())) {
-                Ok(range) => (RangeState::Ready(Arc::new(range.without_bitmaps())), None),
-                // GL JS warns alike, and draws the range's glyphs locally.
-                Err(e) => (
-                    RangeState::Failed,
-                    Some(if local {
-                        format!("glyphs {url}: {e}; its glyphs are drawn with local fonts instead")
-                    } else {
-                        format!("glyphs {url}: {e}; its glyphs are not drawn")
-                    }),
-                ),
-            };
+        let parsed = bytes.and_then(|b| {
+            GlyphRange::parse(b).map_err(|e| ResourceError {
+                message: e.to_string(),
+                passing: false,
+            })
+        });
+        let (state, warning) = match parsed {
+            Ok(range) => (RangeState::Ready(Arc::new(range.without_bitmaps())), None),
+            // GL JS warns alike, and draws the range's glyphs locally.
+            Err(e) => (
+                RangeState::Failed { passing: e.passing },
+                Some(if local {
+                    format!(
+                        "glyphs {url}: {}; its glyphs are drawn with local fonts instead",
+                        e.message
+                    )
+                } else {
+                    format!("glyphs {url}: {}; its glyphs are not drawn", e.message)
+                }),
+            ),
+        };
         self.ranges
             .lock()
             .expect("glyph catalog poisoned")
@@ -219,12 +250,12 @@ impl GlyphCatalog {
         }
     }
 
-    /// Forgets the ranges that failed: tiles that need one fetch it again
-    /// ([`missing`](Self::missing)) rather than keep drawing its glyphs
-    /// locally.
+    /// Forgets the ranges that failed for a reason that may pass: tiles
+    /// that need one fetch it again ([`missing`](Self::missing)) rather
+    /// than keep drawing its glyphs locally.
     pub(crate) fn retry_failed(&self) {
         (self.ranges.lock().expect("glyph catalog poisoned"))
-            .retain(|_, state| !matches!(state, RangeState::Failed));
+            .retain(|_, state| !matches!(state, RangeState::Failed { passing: true }));
     }
 
     /// Reports a text-stage warning with the glyph warnings.
@@ -362,8 +393,13 @@ impl GlyphCatalog {
                             let code_point = request.text.chars().next().map_or(0, u32::from);
                             range.get(code_point).map(|g| g.glyph(&request.stack))
                         }
-                        // A failed range draws locally, as in GL JS.
-                        Some(RangeState::Failed) | None => {
+                        // A failed range draws locally, as in GL JS, and
+                        // is retried if the failure may pass.
+                        Some(RangeState::Failed { passing }) => {
+                            resolved.failed |= passing;
+                            draw_locally(&request, &mut resolved)
+                        }
+                        None => {
                             resolved.failed = true;
                             draw_locally(&request, &mut resolved)
                         }
@@ -555,7 +591,11 @@ mod tests {
         );
         catalog.insert(&missing[0], Ok(&range_bytes()));
         assert!(catalog.take_warnings().is_empty());
-        catalog.insert(&missing[1], Err("not found".into()));
+        let passing = ResourceError {
+            message: "HTTP 503".into(),
+            passing: true,
+        };
+        catalog.insert(&missing[1], Err(passing));
         assert_eq!(catalog.take_warnings().len(), 1);
         assert!(
             catalog
@@ -591,6 +631,30 @@ mod tests {
         catalog.insert(&missing[1], Ok(&range_bytes()));
         let resolved = catalog.resolve(r, Some(TEMPLATE), policy, None, Fonts::NONE);
         assert!(!resolved.failed && resolved.local == 0);
+    }
+
+    /// A range the server doesn't have draws locally for good: no retry
+    /// fetches it again.
+    #[test]
+    fn ranges_not_found_stay_failed() {
+        let catalog = GlyphCatalog::default();
+        let policy = FontPolicy {
+            glyphs_url: true,
+            local_ideographs: false,
+        };
+        let r = requests("東");
+        let missing = catalog.missing(&r, Some(TEMPLATE), policy, Fonts::NONE);
+        catalog.insert(&missing[0], Err((&orb_host::FetchError::NotFound).into()));
+        let resolved = catalog.resolve(r, Some(TEMPLATE), policy, None, Fonts::NONE);
+        assert_eq!(resolved.local, 1, "drawn with local fonts");
+        assert!(!resolved.failed, "nothing to retry");
+        catalog.retry_failed();
+        let r = requests("東");
+        assert!(
+            catalog
+                .missing(&r, Some(TEMPLATE), policy, Fonts::NONE)
+                .is_empty()
+        );
     }
 
     #[test]

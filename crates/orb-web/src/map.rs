@@ -103,8 +103,9 @@ pub struct FrameStats {
     #[wasm_bindgen(readonly, js_name = needsFrame)]
     pub needs_frame: bool,
     /// Milliseconds until the map wants a frame though nothing else
-    /// happens: the data a tile it draws shows expires then, and that
-    /// frame loads it again. Undefined while nothing drawn expires.
+    /// happens: the data a tile it draws shows expires then, or a failed
+    /// tile or glyph range is due to be tried again, and that frame loads
+    /// it. Undefined while nothing waits on the clock.
     #[wasm_bindgen(readonly, js_name = wakeInMs)]
     pub wake_in_ms: Option<f64>,
     /// The frame drew and presented: not one held back while compiles

@@ -1836,6 +1836,92 @@ fn tiles_whose_data_expires_load_again_while_drawn() {
     assert_eq!(requests.load(Ordering::SeqCst), 3);
 }
 
+/// A tile that failed for a reason that may pass loads once its backoff
+/// ends, on a map idle until then: the map wakes itself for the retry.
+#[test]
+fn failed_tiles_wake_an_idle_map_for_their_retry() {
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    // The server is down for the first request, then answers.
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = server.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&requests);
+    std::thread::spawn(move || {
+        for stream in server.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut request = [0; 2048];
+            let _ = stream.read(&mut request);
+            let (status, body) = match counted.fetch_add(1, Ordering::SeqCst) {
+                0 => ("503 Service Unavailable", Vec::new()),
+                _ => ("200 OK", covering_tile(false)),
+            };
+            let head = format!(
+                "HTTP/1.1 {status}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+        }
+    });
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    let woken = Arc::new(AtomicBool::new(false));
+    let heard = Arc::clone(&woken);
+    map.set_wake(move || heard.store(true, Ordering::SeqCst));
+    map.set_style_json(&format!(
+        r##"{{"version": 8, "center": [0, 0], "zoom": 0,
+            "sources": {{"v": {{"type": "vector", "tiles": ["http://{address}/{{z}}/{{x}}/{{y}}.mvt"],
+                "maxzoom": 0}}}},
+            "layers": [
+                {{"id": "background", "type": "background", "paint": {{"background-color": "#ff0000"}}}},
+                {{"id": "shapes", "type": "fill", "source": "v", "source-layer": "shapes",
+                 "paint": {{"fill-color": "#0000ff"}}}}]}}"##
+    ))
+    .expect("style");
+    let report = map
+        .render_until_idle(&mut target, Duration::from_secs(60))
+        .expect("the map idles");
+    let drawn = std::time::Instant::now();
+    let centre = |target: &Target| pixel(&target.read_pixels().unwrap(), SIZE / 2, SIZE / 2);
+    assert_eq!(
+        centre(&target),
+        [255, 0, 0, 255],
+        "the failed tile left a hole"
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    // Idle until the first failure's second of backoff ends.
+    let wake_in = report.wake_in.expect("a wake for the retry");
+    assert!(wake_in <= Duration::from_secs(1), "{wake_in:?}");
+    assert!(!map.needs_frame(), "a map waiting for a retry is idle");
+    woken.store(false, Ordering::SeqCst);
+    while !woken.load(Ordering::SeqCst) {
+        assert!(drawn.elapsed().as_secs() < 10, "no wake for the retry");
+        map.wait_woken(Duration::from_secs(1));
+    }
+    // The alarm's slack aside.
+    assert!(
+        drawn.elapsed() + Duration::from_millis(20) >= wake_in,
+        "woken {:?} early",
+        wake_in - drawn.elapsed()
+    );
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        1,
+        "retried before the wake"
+    );
+    // The frame it wakes for asks for the tile again.
+    let report = map
+        .render_until_idle(&mut target, Duration::from_secs(60))
+        .expect("the map idles");
+    assert_eq!(centre(&target), [0, 0, 255, 255], "the retried tile");
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    assert_eq!(report.wake_in, None, "nothing left to retry");
+}
+
 /// A continuous map draws a tile its HTTP cache holds stale at once and
 /// revalidates it behind, drawing the server's answer once it comes; a
 /// still waits for the server.
@@ -2337,37 +2423,57 @@ fn pixel_of(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
     pixels[at..at + 4].try_into().unwrap()
 }
 
-/// A glyph range that failed is fetched again when failed resources are
-/// retried, as a still does first, and its labels lay out with it: the
-/// map then draws as one that had the range from the start.
+/// A glyph range that failed for a reason that may pass (its server
+/// down) is fetched again when failed resources are retried, as a still
+/// does first, and its labels lay out with it: the map then draws as one
+/// that had the range from the start.
 #[test]
 fn failed_glyph_ranges_are_fetched_again() {
-    let glyphs = common::Scratch::new("glyph-retry");
-    let font = glyphs.join("Noto Sans Regular");
-    std::fs::create_dir_all(&font).unwrap();
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // The server is down for the first request, then answers.
+    let range = std::fs::read(common::data().join("glyphs/Noto Sans Regular/0-255.pbf")).unwrap();
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = server.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&requests);
+    std::thread::spawn(move || {
+        for stream in server.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut request = [0; 2048];
+            let _ = stream.read(&mut request);
+            let (status, body) = match counted.fetch_add(1, Ordering::SeqCst) {
+                0 => ("503 Service Unavailable", &[][..]),
+                _ => ("200 OK", &range[..]),
+            };
+            let head = format!(
+                "HTTP/1.1 {status}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(body);
+        }
+    });
     let style = format!(
         r##"{{"version": 8, "center": [0, 0], "zoom": 2,
-        "glyphs": "file://{}/{{fontstack}}/{{range}}.pbf",
+        "glyphs": "http://{address}/{{fontstack}}/{{range}}.pbf",
         "sources": {{"p": {{"type": "geojson", "data": {{"type": "Feature", "properties": {{}},
             "geometry": {{"type": "Point", "coordinates": [0, 0]}}}}}}}},
         "layers": [
           {{"id": "bg", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
           {{"id": "t", "type": "symbol", "source": "p",
-           "layout": {{"text-field": "Orbis", "text-font": ["Noto Sans Regular"], "text-size": 30}}}}]}}"##,
-        glyphs.display()
+           "layout": {{"text-field": "Orbis", "text-font": ["Noto Sans Regular"], "text-size": 30}}}}]}}"##
     );
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let still = |map: &mut Map| map.snapshot(200, 100, 1.0).expect("snapshot").pixels;
     let mut map = Map::new(&runtime, MapOptions::default());
     map.set_style_json(&style).unwrap();
-    // The range's file isn't there yet: a missing range, as a failed fetch.
     let without = still(&mut map);
-    std::fs::copy(
-        common::data().join("glyphs/Noto Sans Regular/0-255.pbf"),
-        font.join("0-255.pbf"),
-    )
-    .unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
     let retried = still(&mut map);
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
     let mut fresh = Map::new(&runtime, MapOptions::default());
     fresh.set_style_json(&style).unwrap();
     let expected = still(&mut fresh);

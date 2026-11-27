@@ -147,9 +147,10 @@ pub struct FrameReport {
     /// the set left out, none for a complete one.
     pub pipelines_late: u32,
     /// How long until the map wants a frame though nothing else happens:
-    /// the data a tile it draws shows expires then, and the frame loads
-    /// it again. A host that draws only when the map is woken, as an idle
-    /// map is, wakes it then. `None` while nothing drawn expires.
+    /// the data a tile it draws shows expires then, or a tile or glyph
+    /// range that failed is due to be tried again, and that frame loads
+    /// it. A host that draws only when the map is woken, as an idle map
+    /// is, wakes it then. `None` while nothing waits on the clock.
     pub wake_in: Option<std::time::Duration>,
     /// The tiles under the view's centre have arrived, for every source
     /// the frame draws: what time-to-centre waits for.
@@ -454,8 +455,9 @@ impl NodeState {
 
 /// When tiles whose labels drew glyphs of a range that failed lay out
 /// again, fetching the range again: on the tiles' backoff
-/// ([`orb_source::retry_delay`]) while it keeps failing, retried while
-/// frames are drawn, and at once when the host asks
+/// ([`orb_source::retry_delay`]) while it keeps failing, by a frame the
+/// map is woken for when it's [`due`](Self::due)
+/// ([`FrameReport::wake_in`]), and at once when the host asks
 /// ([`Map::retry_failed_tiles`]).
 #[derive(Debug, Default)]
 pub(crate) struct GlyphRetry {
@@ -477,6 +479,11 @@ impl GlyphRetry {
         } else if had_failed {
             self.failures = 0;
         }
+    }
+
+    /// When the next retry is due (ms), if a range failed.
+    fn due(&self) -> Option<f64> {
+        self.due
     }
 
     /// Whether a retry is due at `now`, which it then starts.
@@ -1219,25 +1226,34 @@ impl Map {
 
     /// Requests every tile that failed (the network, say) again now, as
     /// when the host learns the network is back; until then each waits out
-    /// its backoff, retried while frames are drawn.
+    /// its backoff ([`FrameReport::wake_in`]).
     pub fn retry_failed_tiles(&mut self) {
         let Some(style) = &mut self.style else {
             return;
         };
-        for source in &mut style.sources {
-            if let SourceState::Ready { pyramid, .. } = &mut source.state {
-                pyramid.retry_failed(f64::INFINITY);
-            }
-        }
-        if let Some(terrain) = style.terrain.get_mut() {
-            terrain.pyramid.retry_failed(f64::INFINITY);
-        }
         style.glyph_retry = GlyphRetry {
             due: Some(f64::NEG_INFINITY),
             failures: 0,
         };
-        self.retry_glyphs(f64::INFINITY);
+        self.retry_failed(f64::INFINITY);
         (self.services.wake)();
+    }
+
+    /// Readies the tiles that failed, the sources' and terrain's, due for
+    /// a retry at `now` (ms) for the next plan to ask for again, and asks
+    /// for failed glyph ranges again if they're due, laying out the labels
+    /// that drew them. Returns when (ms) the next retry left is due.
+    fn retry_failed(&mut self, now: f64) -> Option<f64> {
+        let style = self.style.as_mut()?;
+        let pyramids = (style.sources.iter_mut()).filter_map(|source| match &mut source.state {
+            SourceState::Ready { pyramid, .. } => Some(pyramid.retry_failed(now)),
+            _ => None,
+        });
+        let terrain = (style.terrain.get_mut()).map(|t| t.pyramid.retry_failed(now));
+        let tiles = pyramids.chain(terrain).flatten().reduce(f64::min);
+        self.retry_glyphs(now);
+        let glyphs = self.style.as_ref().and_then(|s| s.glyph_retry.due());
+        tiles.into_iter().chain(glyphs).reduce(f64::min)
     }
 
     /// Whether tiles that leave the view stay cached for a view that
@@ -2255,6 +2271,13 @@ impl Map {
     ) -> (Option<orb_render::FrameTerrain>, DrapeDrawn) {
         let clock = Arc::clone(&self.services.clock);
         let mut frame_terrain = None;
+        // Failed tiles and glyph ranges due for a retry are asked for
+        // again; a still map is woken for the next, as for the next
+        // expiry.
+        let now = clock.now();
+        let retry = (self.retry_failed(now))
+            .map(|due| std::time::Duration::from_secs_f64((due - now).max(0.0) / 1000.0));
+        report.wake_in = self.reload_expired().into_iter().chain(retry).min();
         // Terrain's DEM and cover first: the sources cover over its
         // elevations, and drape over its tiles.
         let at = clock.now();
@@ -2264,17 +2287,6 @@ impl Map {
         let planning = clock.now();
         times.terrain = micros(at, planning);
         let elevation = self.terrain_elevation();
-        // Failed tiles due for a retry are readied for the plan to ask for
-        // again; failed glyph ranges are asked for again too, laying out
-        // the labels that drew them.
-        let now = self.services.clock.now();
-        for source in self.style.iter_mut().flat_map(|s| &mut s.sources) {
-            if let SourceState::Ready { pyramid, .. } = &mut source.state {
-                pyramid.retry_failed(now);
-            }
-        }
-        self.retry_glyphs(now);
-        report.wake_in = self.reload_expired();
         // The sources' plan reads the view, the style, the tiles held and
         // the terrain: unchanged, the last one stands, its loads asked for.
         let key = self.plan_key(renderer, view);
@@ -3225,7 +3237,6 @@ impl Map {
         };
         terrain.set_exaggeration(root.exaggeration);
         let endpoint = Arc::clone(&terrain.endpoint);
-        terrain.pyramid.retry_failed(self.services.clock.now());
         let unpack = endpoint.dem_unpack.expect("raster-dem").map(|v| v as f32);
         // GL JS's `getSkirtLength`: a fifth of a tile's width at the
         // camera's zoom, in metres at the equator.
@@ -3787,6 +3798,7 @@ mod tests {
         let mut retry = GlyphRetry::default();
         assert!(!retry.take(f64::INFINITY), "nothing failed");
         retry.arrived(true, false, 0.0);
+        assert_eq!(retry.due(), Some(1000.0), "the frame woken for it");
         assert!(!retry.take(999.0) && retry.take(1000.0));
         // Failing again, twice as long; a second tile doesn't put it off.
         retry.arrived(true, true, 5000.0);

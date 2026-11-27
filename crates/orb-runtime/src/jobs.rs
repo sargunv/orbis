@@ -73,7 +73,7 @@ pub enum JobRequest {
     GlyphRange {
         style: u64,
         url: String,
-        bytes: Result<Vec<u8>, String>,
+        bytes: Result<Vec<u8>, crate::ResourceError>,
     },
     /// [`Jobs::retry_glyphs`].
     RetryGlyphs,

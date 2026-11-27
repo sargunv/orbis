@@ -84,6 +84,10 @@ enum State<T> {
 /// it, up to [`RETRY_MAX_MS`].
 const RETRY_MS: f64 = 1000.0;
 const RETRY_MAX_MS: f64 = 60_000.0;
+/// The longest wait a server's `Retry-After` is taken at: a day. One
+/// asking for longer is asked again then rather than at a time that
+/// never comes (or past what the clock can hold).
+const RETRY_AFTER_MAX_MS: f64 = 86_400_000.0;
 
 /// How long to wait (ms) before retrying what failed `failures` times in
 /// a row before: [`RETRY_MS`], doubling with each, up to [`RETRY_MAX_MS`].
@@ -569,35 +573,38 @@ impl<T> TilePyramid<T> {
     /// Marks a loading tile as failed at `now` (ms) for a reason that may
     /// pass: ancestors or children stand in until it's retried, after a
     /// delay that doubles with each failure in a row, or the `wait` (ms)
-    /// its server asked for (`Retry-After`) when that's longer.
+    /// its server asked for (`Retry-After`) when that's longer, up to a
+    /// day.
     pub fn insert_failed(&mut self, tile: TileIndex, now: f64, wait: f64) {
         let Some(entry) = self.tiles.get(&tile) else {
             return;
         };
-        let retry_at = now + retry_delay(entry.failures).max(wait);
+        let retry_at = now + retry_delay(entry.failures).max(wait.min(RETRY_AFTER_MAX_MS));
         let _ = self.settle(tile, State::Failed { retry_at });
     }
 
     /// Readies failed tiles due for a retry at `now` (ms), so the next
     /// [`update`](Self::update) requests those it covers again and
     /// forgets the rest; every failed tile with `now` infinite, as when
-    /// the network returns.
-    /// Whether any failed tile remains.
-    pub fn retry_failed(&mut self, now: f64) -> bool {
-        let (mut waiting, mut due) = (false, false);
+    /// the network returns. Returns when (ms) the next of those left is
+    /// due, the time to retry again.
+    pub fn retry_failed(&mut self, now: f64) -> Option<f64> {
+        let (mut next, mut due) = (None::<f64>, false);
         for entry in self.tiles.values_mut() {
             match entry.state {
                 State::Failed { retry_at } if retry_at <= now => {
                     entry.state = State::Retry;
                     due = true;
                 }
-                State::Failed { .. } => waiting = true,
+                State::Failed { retry_at } => {
+                    next = Some(next.map_or(retry_at, |next| next.min(retry_at)));
+                }
                 _ => {}
             }
         }
         self.revision += u64::from(due);
         self.retrying |= due;
-        waiting
+        next
     }
 
     /// Forgets the settled tiles `which` picks that hold nothing (empty,
@@ -1202,15 +1209,19 @@ mod tests {
         let update = p.update(&cover(&[(1, 0, 0)]));
         assert_eq!(update.draw[0].tile, t(0, 0, 0), "the ancestor stands in");
         assert!(update.request.is_empty());
-        assert!(p.retry_failed(999.0), "not due before a second");
+        assert_eq!(
+            p.retry_failed(999.0),
+            Some(1000.0),
+            "not due before a second"
+        );
         assert!(p.update(&cover(&[(1, 0, 0)])).request.is_empty());
-        assert!(!p.retry_failed(1000.0));
+        assert_eq!(p.retry_failed(1000.0), None);
         assert_eq!(p.update(&cover(&[(1, 0, 0)])).request, [t(1, 0, 0)]);
         // The second failure waits twice as long; the network's return
         // retries at once.
         p.insert_failed(t(1, 0, 0), 1000.0, 0.0);
-        assert!(p.retry_failed(2999.0));
-        assert!(!p.retry_failed(f64::INFINITY));
+        assert_eq!(p.retry_failed(2999.0), Some(3000.0));
+        assert_eq!(p.retry_failed(f64::INFINITY), None);
         assert_eq!(p.update(&cover(&[(1, 0, 0)])).request, [t(1, 0, 0)]);
         // A success clears the count: nothing stands in for the tile.
         assert!(p.wants(t(0, 0, 0)));
@@ -1227,16 +1238,16 @@ mod tests {
         let (here, there) = (cover(&[(1, 0, 0)]), cover(&[(1, 1, 1)]));
         p.update(&here);
         p.insert_failed(t(1, 0, 0), 0.0, 0.0);
-        assert!(!p.retry_failed(1000.0));
+        assert_eq!(p.retry_failed(1000.0), None);
         p.update(&here);
         p.insert_failed(t(1, 0, 0), 1000.0, 0.0);
         p.update(&there);
-        assert!(!p.retry_failed(3000.0));
+        assert_eq!(p.retry_failed(3000.0), None);
         p.update(&there);
         assert_eq!(p.tiles.len(), 1, "only the view's tile is held");
         assert_eq!(p.update(&here).request, [t(1, 0, 0)]);
         p.insert_failed(t(1, 0, 0), 3000.0, 0.0);
-        assert!(!p.retry_failed(4000.0), "backs off a second, not four");
+        assert_eq!(p.retry_failed(4000.0), None, "backs off a second, not four");
     }
 
     /// A tile due for a retry plans as one never asked for: its ancestor
@@ -1251,7 +1262,7 @@ mod tests {
         let deeper = cover(&[(2, 0, 0)]);
         p.update(&deeper);
         p.insert_failed(t(2, 0, 0), 0.0, 0.0);
-        assert!(!p.retry_failed(1000.0));
+        assert_eq!(p.retry_failed(1000.0), None);
         let mut fresh = TilePyramid::new(0, 14, 8);
         fresh.update(&cover(&[(0, 0, 0)]));
         fresh.insert(t(0, 0, 0), "world");
@@ -1269,13 +1280,21 @@ mod tests {
         let mut p = TilePyramid::<&str>::new(0, 14, 8);
         p.update(&cover(&[(1, 0, 0)]));
         p.insert_failed(t(1, 0, 0), 0.0, 30_000.0);
-        assert!(p.retry_failed(29_999.0), "not due before the server's wait");
-        assert!(!p.retry_failed(30_000.0));
+        assert_eq!(
+            p.retry_failed(29_999.0),
+            Some(30_000.0),
+            "not due before the server's wait"
+        );
+        assert_eq!(p.retry_failed(30_000.0), None);
         assert_eq!(p.update(&cover(&[(1, 0, 0)])).request, [t(1, 0, 0)]);
         // A wait shorter than the backoff's doesn't shorten it.
         p.insert_failed(t(1, 0, 0), 30_000.0, 500.0);
-        assert!(p.retry_failed(31_999.0));
-        assert!(!p.retry_failed(32_000.0));
+        assert_eq!(p.retry_failed(31_999.0), Some(32_000.0));
+        assert_eq!(p.retry_failed(32_000.0), None);
+        // A wait past a day is asked again in a day.
+        p.update(&cover(&[(1, 0, 0)]));
+        p.insert_failed(t(1, 0, 0), 0.0, u64::MAX as f64 * 1000.0);
+        assert_eq!(p.retry_failed(0.0), Some(86_400_000.0));
     }
 
     #[test]

@@ -218,8 +218,8 @@ export class Engine {
   /** Ports apps' workers feed heights through. */
   #ports: MessagePort[] = [];
   #stats: FrameStats | undefined;
-  /** Wakes the map when the data a tile it draws expires, at `#alarmAt`
-   * on the page's clock. */
+  /** Wakes the map when the data a tile it draws expires, or a failed
+   * load is due again, at `#alarmAt` on the page's clock. */
   #alarm: ReturnType<typeof setTimeout> | undefined;
   #alarmAt = Infinity;
   #phase: Phase = { is: "running" };
@@ -949,7 +949,8 @@ export class Engine {
     }
     stats.inputTime = this.#inputTime;
     this.#stats = stats;
-    // The data a drawn tile shows expires then: a frame loads it again.
+    // The data a drawn tile shows expires then, or a failed load is due
+    // again: a frame loads it.
     this.#setAlarm(stats.wakeInMs);
     this.#drain();
     // A frame held back while compiles run drew nothing: no `render`, and

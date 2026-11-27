@@ -15,7 +15,7 @@ use orb_style::{Encoding, GeoJsonData, SourceKind, Style, Value};
 use orb_tile::TileFrame;
 
 use crate::TileLocation;
-use crate::glyphs::{GlyphCatalog, LocalGlyphs};
+use crate::glyphs::{GlyphCatalog, LocalGlyphs, ResourceError};
 use crate::style::{ImageKind, StylePlan};
 use crate::symbol::SpriteIcons;
 use crate::tile::{self, Select, TileBuild};
@@ -289,9 +289,11 @@ impl TileWorker {
 
     /// Adds a resource a build asked for (or its failure) for later
     /// builds, which report a failure.
-    pub fn add_resource(&self, url: &str, bytes: Result<&[u8], String>) {
+    pub fn add_resource(&self, url: &str, bytes: Result<&[u8], ResourceError>) {
         if self.declares_font(url) {
-            self.data.glyphs.insert_font(url, bytes);
+            self.data
+                .glyphs
+                .insert_font(url, bytes.map_err(|e| e.message));
             return;
         }
         self.data.glyphs.insert(url, bytes);

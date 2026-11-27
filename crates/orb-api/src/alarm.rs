@@ -4,8 +4,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 /// Wakes a map once at the time it last set: when the data a tile it
-/// draws shows expires ([`orb_runtime::FrameReport::wake_in`]), so that a
-/// host drawing only when woken draws the frame that loads it again. Its
+/// draws shows expires or a failed load is due to be tried again
+/// ([`orb_runtime::FrameReport::wake_in`]), so that a host drawing only
+/// when woken draws the frame that loads it. Its
 /// thread starts with the first time set and ends with the alarm.
 pub(crate) struct Alarm {
     shared: Arc<Shared>,

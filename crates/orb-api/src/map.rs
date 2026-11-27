@@ -95,7 +95,8 @@ pub struct Map {
     hook: WakeHook,
     /// Marks the map woken and calls the hook, from any thread.
     wake: Arc<dyn Fn() + Send + Sync>,
-    /// Wakes the map when the data a tile it draws expires.
+    /// Wakes the map when the data a tile it draws expires, or a failed
+    /// tile or glyph range is due to be tried again.
     alarm: crate::alarm::Alarm,
     events: VecDeque<Event>,
     /// Queries finished on worker threads, not yet events.
@@ -369,8 +370,8 @@ impl Map {
     }
 
     /// Requests the tiles that failed again now: call it when the network
-    /// comes back. Until then each is retried after a backoff while frames
-    /// are drawn, with its ancestors or children standing in.
+    /// comes back. Until then each is retried after a backoff, the map
+    /// woken for it, with its ancestors or children standing in.
     pub fn retry_failed_tiles(&mut self) {
         self.map.retry_failed_tiles();
         self.dirty = true;
