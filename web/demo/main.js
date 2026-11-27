@@ -595,10 +595,7 @@ async function load(next, { camera }) {
   map = created;
   rememberBackend(map);
   attachMarker(map, () => current.scene);
-  quake = attachQuake(map, {
-    active: () => !!current.scene.quake,
-    epicentre: () => current.scene.quake.epicentre,
-  });
+  quake = attachQuake(map, () => current.scene.quake);
   options.drawing(map.backend);
   showGaps([]);
   map.on("gaps", ({ gaps }) => showGaps(gaps));

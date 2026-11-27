@@ -257,7 +257,8 @@ impl Demo {
                         let [lon, lat] = quake.epicentre;
                         let repaint = std::sync::Arc::clone(&self.repaint);
                         let start = || {
-                            crate::quake::Quake::start(orb_api::Geodetic::new(lon, lat), repaint)
+                            let at = orb_api::Geodetic::new(lon, lat);
+                            crate::quake::Quake::start(at, quake.wave, repaint)
                         };
                         self.quake.get_or_insert_with(start).tile(tile);
                     }

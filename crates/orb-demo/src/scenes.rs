@@ -61,8 +61,8 @@ pub(crate) struct Scene {
     pub(crate) light: bool,
     /// A looping flight, relative to the data directory.
     pub(crate) flight: Option<String>,
-    /// The Earthquake's shock: its host-fed ground ripples from here
-    /// (`crate::quake`).
+    /// The Earthquake's shock: where its host-fed ground ripples from and
+    /// how (`crate::quake`).
     pub(crate) quake: Option<QuakeScene>,
     /// Where a click on the landmark the style marks flies.
     pub(crate) marker: Option<Marker>,
@@ -93,6 +93,7 @@ impl Marker {
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub(crate) struct QuakeScene {
     pub(crate) epicentre: [f64; 2],
+    pub(crate) wave: crate::quake::Wave,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]

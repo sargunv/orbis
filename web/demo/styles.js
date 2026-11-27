@@ -63,7 +63,8 @@ const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
  * projection or CRS beyond the spec, which it draws by default; the
  * picker tags it. `unsupported` says, by engine, why that engine can't
  * show the entry in the comparison (app/compare.js). `quake` makes the
- * entry's host-fed DEM source ripple from `quake.epicentre` (app/quake.js).
+ * entry's host-fed DEM source ripple from `quake.epicentre` in the wave
+ * `quake.wave` describes (app/quake.js, and orb-demo's quake.rs).
  * `marker.view` is where a click on the landmark the style marks flies
  * (app/marker.js).
  *
@@ -71,7 +72,7 @@ const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
  *   swatch: [string, string, string], dark?: boolean, orbisOnly?: boolean, basemap?: boolean, camera?: object,
  *   constraints?: object, flight?: object[], formats?: Record<string, string>,
  *   light?: boolean, terrain?: boolean, off?: string[], projection?: object, sky?: object,
- *   quake?: { epicentre: [number, number] }, marker?: { view: object }, own?: boolean,
+ *   quake?: { epicentre: [number, number], wave: Record<string, number> }, marker?: { view: object }, own?: boolean,
  *   unsupported?: { gljs?: string, native?: string } }} Scene
  */
 

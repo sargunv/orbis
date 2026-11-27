@@ -23,16 +23,21 @@ const MAPTERHORN: &str = "https://tiles.mapterhorn.com";
 /// Metres around the Earth at the equator: Web Mercator's world.
 const EARTH: f64 = 40_075_016.686;
 
-/// The wave, as the web demo's `WAVE`: a front at `SPEED` m/s, behind which
-/// the ground rings at `HERTZ`, `AMPLITUDE` metres at the epicentre,
-/// spreading (as 1/√, halving by `SPREAD` m out) and dying away over
-/// `DECAY` s; a new shock every `PERIOD` s.
-const SPEED: f64 = 3000.0;
-const HERTZ: f64 = 0.5;
-const AMPLITUDE: f64 = 900.0;
-const SPREAD: f64 = 15_000.0;
-const DECAY: f64 = 4.0;
-const PERIOD: f64 = 12.0;
+/// The wave, which the catalogue's `quake.wave` sets for both demos: a
+/// front at `speed` m/s, behind which the ground rings at `hertz`,
+/// `amplitude` metres at the epicentre, spreading (as 1/√, halving by
+/// `spread` m out) and dying away over `decay` s; a new shock every
+/// `period` s.
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
+pub(crate) struct Wave {
+    speed: f64,
+    hertz: f64,
+    amplitude: f64,
+    spread: f64,
+    decay: f64,
+    period: f64,
+}
+
 /// The wave's table: one entry per `BIN` metres out to `REACH`.
 const BIN: f64 = 40.0;
 const REACH: f64 = 400_000.0;
@@ -56,14 +61,18 @@ pub(crate) struct Quake {
 }
 
 impl Quake {
-    pub(crate) fn start(epicentre: Geodetic, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
+    pub(crate) fn start(
+        epicentre: Geodetic,
+        wave: Wave,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
         let (commands, inbox) = channel();
         let (out, steps) = channel();
         let fetch = orb_host_native::NativeFetch::new();
         let loads = commands.clone();
         std::thread::Builder::new()
             .name("quake".into())
-            .spawn(move || run(epicentre, &inbox, &out, &*wake, &fetch, &loads))
+            .spawn(move || run(epicentre, wave, &inbox, &out, &*wake, &fetch, &loads))
             .expect("the quake's thread");
         Self { commands, steps }
     }
@@ -123,19 +132,22 @@ fn distances(tile: TileIndex, epicentre: Geodetic) -> Vec<f32> {
         .collect()
 }
 
-/// The wave's swing at each bin out from the epicentre, `t` s after the shock.
-fn table(t: f64) -> Vec<f32> {
-    (0..BINS)
-        .map(|k| {
-            let d = k as f64 * BIN;
-            let s = t - d / SPEED;
-            if s <= 0.0 {
-                return 0.0;
-            }
-            let swing = AMPLITUDE / (1.0 + d / SPREAD).sqrt();
-            (swing * (-s / DECAY).exp() * (std::f64::consts::TAU * HERTZ * s).sin()) as f32
-        })
-        .collect()
+impl Wave {
+    /// The swing at each bin out from the epicentre, `t` s after the shock.
+    fn table(&self, t: f64) -> Vec<f32> {
+        (0..BINS)
+            .map(|k| {
+                let d = k as f64 * BIN;
+                let s = t - d / self.speed;
+                if s <= 0.0 {
+                    return 0.0;
+                }
+                let swing = self.amplitude / (1.0 + d / self.spread).sqrt();
+                let ring = (std::f64::consts::TAU * self.hertz * s).sin();
+                (swing * (-s / self.decay).exp() * ring) as f32
+            })
+            .collect()
+    }
 }
 
 /// A Mapterhorn tile's terrarium texels as SIDE² heights.
@@ -166,6 +178,7 @@ fn decode(bytes: &[u8]) -> Result<Vec<f32>, String> {
 
 fn run(
     mut epicentre: Geodetic,
+    wave: Wave,
     inbox: &Receiver<Command>,
     out: &Sender<Step>,
     wake: &(dyn Fn() + Send + Sync),
@@ -227,7 +240,7 @@ fn run(
                 }
             }
             None => {
-                let lut = table(shock.elapsed().as_secs_f64() % PERIOD);
+                let lut = wave.table(shock.elapsed().as_secs_f64() % wave.period);
                 let step: Step = (tiles.iter())
                     .filter_map(|(&tile, t)| {
                         let base = t.base.as_ref()?;

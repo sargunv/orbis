@@ -4,8 +4,9 @@
 // `raster-dem` source through its elevation port, at most one step in
 // flight, so the map shows every step it is given at the rate it can.
 //
-// From the page (quake.js): `{ start, port }` once, then `{ tile }` for
-// each tile the map asks for and `{ epicentre }` on a click.
+// From the page (quake.js): `{ start, port }` once, `start` carrying the
+// source, the epicentre and the catalogue's `quake.wave`, then `{ tile }`
+// for each tile the map asks for and `{ epicentre }` on a click.
 
 /** Heights a tile side: Mapterhorn's 512-texel tiles averaged 2×2. */
 const SIDE = 256;
@@ -13,20 +14,6 @@ const MAPTERHORN = "https://tiles.mapterhorn.com/{z}/{x}/{y}.webp";
 /** Metres around the Earth at the equator: Web Mercator's world. */
 const EARTH = 40075016.686;
 
-/**
- * The wave: a front at `speed` m/s, behind which the ground rings at
- * `hertz`, its swing `amplitude` metres at the epicentre, spreading
- * (halving by `spread` m out, as 1/√) and dying away over `decay`
- * seconds; a new shock every `period` seconds.
- */
-const WAVE = {
-  speed: 3000,
-  hertz: 0.5,
-  amplitude: 900,
-  spread: 15000,
-  decay: 4,
-  period: 12,
-};
 /** The wave's table: one entry per `BIN` metres out to `REACH`. */
 const BIN = 40;
 const REACH = 400_000;
@@ -38,6 +25,13 @@ let source = "quake";
  * epicentre in bins, per texel. */
 const tiles = new Map();
 let epicentre = { x: 0.5, y: 0.5, lat: 0 };
+/**
+ * The wave, from the catalogue (data/scenes.json): a front at `speed` m/s,
+ * behind which the ground rings at `hertz`, its swing `amplitude` metres
+ * at the epicentre, spreading (halving by `spread` m out, as 1/√) and
+ * dying away over `decay` seconds; a new shock every `period` seconds.
+ */
+let wave;
 let shockAt = performance.now();
 let inFlight = false;
 let nextId = 0;
@@ -108,7 +102,7 @@ async function baseHeights(z, x, y) {
 
 /** The wave's swing at each bin out from the epicentre, `t` seconds after the shock. */
 function table(t) {
-  const { speed, hertz, amplitude, spread, decay } = WAVE;
+  const { speed, hertz, amplitude, spread, decay } = wave;
   const lut = new Float32Array(BINS);
   for (let k = 0; k < BINS; k++) {
     const d = k * BIN;
@@ -125,7 +119,7 @@ function step(now) {
   if (inFlight || !port) return;
   const ready = [...tiles.values()].filter((t) => t.base);
   if (!ready.length) return;
-  const lut = table(((now - shockAt) / 1000) % WAVE.period);
+  const lut = table(((now - shockAt) / 1000) % wave.period);
   const n = SIDE * SIDE;
   const heights = new Float32Array(ready.length * n);
   const zxy = new Uint32Array(ready.length * 3);
@@ -171,7 +165,7 @@ function onPort({ data }) {
 
 self.onmessage = ({ data }) => {
   if (data.start) {
-    ({ source } = data.start);
+    ({ source, wave } = data.start);
     epicentre = world(data.start.epicentre);
     shockAt = performance.now();
     port = data.port;

@@ -32,7 +32,15 @@
           "detail": "The Alps rippling from a shock, heights fed live. Click to move it",
           "url": "earthquake.json",
           "quake": {
-            "epicentre": [7.6586, 45.9763]
+            "epicentre": [7.6586, 45.9763],
+            "wave": {
+              "speed": 3000,
+              "hertz": 0.5,
+              "amplitude": 900,
+              "spread": 15000,
+              "decay": 4,
+              "period": 12
+            }
           },
           "camera": {
             "center": [7.79, 46.06],
