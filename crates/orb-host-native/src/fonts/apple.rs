@@ -180,7 +180,8 @@ impl Fallbacks {
 
     /// The face Safari draws `c` in for the CSS family list `families`
     /// at CSS weight `weight`: the first font of the family list's
-    /// cascade that has it and that `opens` opens.
+    /// cascade that has it and whose face in the database `draws` says
+    /// draws it.
     pub(super) fn face(
         &mut self,
         db: &mut fontdb::Database,
@@ -188,7 +189,7 @@ impl Fallbacks {
         c: char,
         weight: u16,
         italic: bool,
-        mut opens: impl FnMut(&mut fontdb::Database, fontdb::ID) -> bool,
+        mut draws: impl FnMut(&mut fontdb::Database, fontdb::ID) -> bool,
     ) -> Option<fontdb::ID> {
         let key = (c, weight, italic);
         if let Some(&id) = self.found.get(families).and_then(|found| found.get(&key)) {
@@ -198,7 +199,7 @@ impl Fallbacks {
             .cascade
             .fonts(families, c, weight, italic)
             .iter()
-            .find_map(|font| self.resolve(db, font).filter(|&id| opens(db, id)));
+            .find_map(|font| self.resolve(db, font).filter(|&id| draws(db, id)));
         let found = self.found.entry(families.to_string()).or_default();
         found.insert(key, id);
         id

@@ -1,11 +1,20 @@
 //! Local glyphs from system fonts: fontdb finds a face for
 //! the CSS family list GL JS would hand a canvas, falling back per code
 //! point as a browser does (on Apple platforms to the fonts CoreText
-//! falls back to for the user's languages), and `orb-text` draws it as
-//! TinySDF draws a canvas glyph.
+//! falls back to for the user's languages, on Android to its fallback
+//! chain for the app's), and `orb-text` draws it as TinySDF draws a
+//! canvas glyph.
 
+#[cfg(target_os = "android")]
+mod android;
 #[cfg(target_vendor = "apple")]
 mod apple;
+
+/// The fonts the system itself falls back to.
+#[cfg(target_os = "android")]
+use android::Fallbacks;
+#[cfg(target_vendor = "apple")]
+use apple::Fallbacks;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -22,9 +31,10 @@ pub struct SystemFonts {
 
 /// Families a browser falls back to for scripts the requested ones lack,
 /// tried before every installed face; Apple platforms ask CoreText
-/// instead. On Windows its own faces for those scripts, installed with
-/// every language: without them every CJK code point would scan the
-/// installed faces.
+/// instead, and Android its font matcher, which takes these only before
+/// the app gave its JVM or below API level 29. On Windows its own faces
+/// for those scripts, installed with every language: without them every
+/// CJK code point would scan the installed faces.
 #[cfg(windows)]
 const FALLBACKS: &[&str] = &[
     "Yu Gothic UI",
@@ -58,9 +68,9 @@ struct State {
     weighted: HashMap<(fontdb::ID, u16), Face>,
     /// Per code point, the face a search of every installed face found.
     fallback: HashMap<char, Option<fontdb::ID>>,
-    /// The fonts CoreText falls back to for the user's languages.
-    #[cfg(target_vendor = "apple")]
-    cascade: apple::Fallbacks,
+    /// The fonts the system falls back to for the user's languages.
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
+    system: Fallbacks,
     /// Per family, weight and style, the face the database matched: each
     /// query scans every installed face.
     queries: HashMap<(String, u16, fontdb::Style), Option<fontdb::ID>>,
@@ -93,8 +103,8 @@ impl State {
             faces: HashMap::new(),
             weighted: HashMap::new(),
             fallback: HashMap::new(),
-            #[cfg(target_vendor = "apple")]
-            cascade: apple::Fallbacks::default(),
+            #[cfg(any(target_vendor = "apple", target_os = "android"))]
+            system: Fallbacks::default(),
             queries: HashMap::new(),
             last: None,
         }
@@ -122,7 +132,8 @@ impl State {
     }
 
     /// The database's face for `text` in `font`, as [`choose`](Self::choose)
-    /// picks it.
+    /// picks it: the family list's, then the system's fallback, then a
+    /// fixed list's, then the first installed face's.
     fn choose_id(
         &mut self,
         font: &LocalFace<'_>,
@@ -135,46 +146,27 @@ impl State {
             "oblique" => fontdb::Style::Oblique,
             _ => fontdb::Style::Normal,
         };
-        let names: Vec<String> = font
-            .family
-            .split(',')
-            .map(|f| f.trim().to_string())
-            .collect();
-        let names = names.iter().map(String::as_str);
-        #[cfg(not(target_vendor = "apple"))]
-        let names = names.chain(FALLBACKS.iter().copied());
-        for name in names {
-            let family = match name {
-                "sans-serif" => fontdb::Family::SansSerif,
-                "serif" => fontdb::Family::Serif,
-                "monospace" => fontdb::Family::Monospace,
-                "cursive" => fontdb::Family::Cursive,
-                "fantasy" => fontdb::Family::Fantasy,
-                name => fontdb::Family::Name(name),
+        for name in font.family.split(',') {
+            if let Some(id) = self.named(name.trim(), weight, style, first) {
+                return Some(id);
+            }
+        }
+        #[cfg(any(target_vendor = "apple", target_os = "android"))]
+        {
+            let italic = style != fontdb::Style::Normal;
+            let faces = &mut self.faces;
+            let draws = |db: &mut fontdb::Database, id| {
+                open(faces, db, id).is_some_and(|f| f.covers(first))
             };
-            let query = fontdb::Query {
-                families: &[family],
-                weight,
-                stretch: fontdb::Stretch::Normal,
-                style,
-            };
-            let key = (name.to_string(), weight.0, style);
-            let db = &self.db;
-            let matched = *self.queries.entry(key).or_insert_with(|| db.query(&query));
-            if let Some(id) = matched
-                && self.face(id).is_some_and(|face| face.covers(first))
+            if let Some(id) =
+                (self.system).face(&mut self.db, font.family, first, weight.0, italic, draws)
             {
                 return Some(id);
             }
         }
-        #[cfg(target_vendor = "apple")]
-        {
-            let italic = style != fontdb::Style::Normal;
-            let faces = &mut self.faces;
-            let opens = |db: &mut fontdb::Database, id| open(faces, db, id).is_some();
-            if let Some(id) =
-                (self.cascade).face(&mut self.db, font.family, first, weight.0, italic, opens)
-            {
+        #[cfg(not(target_vendor = "apple"))]
+        for name in FALLBACKS {
+            if let Some(id) = self.named(name, weight, style, first) {
                 return Some(id);
             }
         }
@@ -199,6 +191,35 @@ impl State {
                 id
             }
         }
+    }
+
+    /// The database's face of the CSS family `name` at `weight` and
+    /// `style`, if it has `first`.
+    fn named(
+        &mut self,
+        name: &str,
+        weight: fontdb::Weight,
+        style: fontdb::Style,
+        first: char,
+    ) -> Option<fontdb::ID> {
+        let family = match name {
+            "sans-serif" => fontdb::Family::SansSerif,
+            "serif" => fontdb::Family::Serif,
+            "monospace" => fontdb::Family::Monospace,
+            "cursive" => fontdb::Family::Cursive,
+            "fantasy" => fontdb::Family::Fantasy,
+            name => fontdb::Family::Name(name),
+        };
+        let query = fontdb::Query {
+            families: &[family],
+            weight,
+            stretch: fontdb::Stretch::Normal,
+            style,
+        };
+        let key = (name.to_string(), weight.0, style);
+        let db = &self.db;
+        let matched = *self.queries.entry(key).or_insert_with(|| db.query(&query));
+        matched.filter(|&id| self.face(id).is_some_and(|face| face.covers(first)))
     }
 
     fn drawn(&mut self, font: &LocalFace<'_>, text: &str) -> Option<&Drawn> {
@@ -334,7 +355,7 @@ mod tests {
         let mut faces = Vec::new();
         for language in ["ja-JP", "ko-KR"] {
             let mut state = State::new();
-            state.cascade = apple::Fallbacks::with_languages(vec![language.to_string()]);
+            state.system = apple::Fallbacks::with_languages(vec![language.to_string()]);
             let (regular, regular_ink) = drawn_in(&mut state, "直", "400");
             let (bold, bold_ink) = drawn_in(&mut state, "直", "700");
             assert!(regular_ink > 0, "{language}: {regular} draws the ideograph");

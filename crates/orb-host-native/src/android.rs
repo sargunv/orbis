@@ -1,7 +1,9 @@
-//! What fetching needs of the Android app it runs in, which [`init`] hands
-//! over: HTTP goes through the platform's `HttpURLConnection` in the app's
-//! JVM ([`url_connection`](crate::url_connection)), and
-//! `file:///android_asset/` URLs read the app's assets.
+//! What fetching and fonts need of the Android app they run in, which
+//! [`init`] hands over: HTTP goes through the platform's
+//! `HttpURLConnection` in the app's JVM
+//! ([`url_connection`](crate::url_connection)), `file:///android_asset/`
+//! URLs read the app's assets, and local glyphs fall back through the
+//! system's fonts for the app's languages.
 
 use std::ffi::CString;
 use std::path::Path;
@@ -31,12 +33,14 @@ pub(crate) fn java_vm() -> Option<&'static JavaVM> {
     APP.get().map(|app| &app.vm)
 }
 
-/// Gives fetching the app's JVM and `Context`: `env` is the calling
+/// Gives fetching and fonts the app's JVM and `Context`: `env` is the calling
 /// thread's `JNIEnv*`, `context` a `jobject` reference to a `Context`, whose
 /// application it keeps. From then on HTTP goes through
 /// `HttpURLConnection`, with Android's TLS, trust store, proxy settings and
-/// the app's network security config, and `file:///android_asset/` URLs
-/// read the app's assets. Later calls change nothing. Before it, HTTP fails
+/// the app's network security config, `file:///android_asset/` URLs
+/// read the app's assets, and local glyphs a style's fonts lack come
+/// from the fonts Android falls back to for the app's languages (API
+/// level 29). Later calls change nothing. Before it, HTTP fails
 /// (but in a build with the `standalone` feature, which fetches through
 /// ureq until then).
 ///
