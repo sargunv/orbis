@@ -42,10 +42,10 @@ The live demo is at <https://code.sargunv.dev/orbis/>.
 ## How it differs
 
 MapLibre GL JS and MapLibre Native, and
-[mln-rs](https://github.com/louwers/mln-rs), a file-by-file Rust port of Native,
-share one design: worker threads turn each tile into buffers, and every frame
-the CPU walks the visible tiles of each layer and issues their draw calls. Orbis
-carries out the principles above with a different design:
+[mln-rs](https://github.com/maplibre/mln-rs), a file-by-file Rust port of
+Native, share one design: worker threads turn each tile into buffers, and every
+frame the CPU walks the visible tiles of each layer and issues their draw calls.
+Orbis carries out the principles above with a different design:
 
 - **The GPU drives each frame.** All tiles' geometry lives in a few large
   buffers, and the draw commands are recorded once and replayed. Each frame, a

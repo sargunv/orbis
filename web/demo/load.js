@@ -3,9 +3,10 @@
 // `?globe`, on the globe under the demo's sky) at
 // `?at=lon,lat,zoom,bearing,pitch` in Orbis (`?engine=orbis`), the pinned
 // GL JS (`gljs`), MapLibre Native's browser build (`native`, which needs
-// the page cross-origin isolated) or mln-rs's browser build (`mlnrs`, its
-// module at `?mlnrs=<url>`: `scripts/mlnrs-map.js`, which has no `tour`),
-// timed from this script's start to the engine's first `idle`. `?nonce=`
+// the page cross-origin isolated) or mln-rs's browser page (`mlnrs`, its
+// index.html at `?mlnrs=<url>`, in a frame; its `idle` is `window.mln`'s
+// `loaded`, and it has no `tour`), timed from this script's start to the
+// engine's first `idle`. `?nonce=`
 // compiles Orbis's pipelines cold (`cold.js`); `?fetches=` sets Orbis's
 // `tileFetches`. The title becomes `done {json}` with `performance.now()` at the script's
 // start, the map's creation and idle
@@ -140,21 +141,41 @@ const engines = {
     return { created: performance.now(), idle, jumpTo: map.jumpTo };
   },
   async mlnrs(style) {
-    const { Map } = await import(/* @vite-ignore */ params.get("mlnrs"));
-    const map = new Map({
-      container,
-      style,
-      center: [lon, lat],
+    if (typeof style !== "string")
+      throw new Error("mln-rs's page takes a style URL, without a scene");
+    // Its own page in a frame filling the container, at this camera; a
+    // page that reloads itself (a backend that couldn't start) is another
+    // window, so each load watches its own.
+    const frame = document.createElement("iframe");
+    frame.style.cssText =
+      "display: block; width: 100%; height: 100%; border: 0";
+    frame.src = `${params.get("mlnrs")}?${new URLSearchParams({
+      style: new URL(style, location.href).href,
+      lon,
+      lat,
       zoom,
       bearing,
       pitch,
-      interactive: false,
+    })}`;
+    const loaded = new Promise((resolve, reject) => {
+      frame.onload = () => {
+        const { mln } = frame.contentWindow;
+        if (!mln) return reject(new Error("mln-rs's page has no window.mln"));
+        mln.fatal.then(reject);
+        mln.loaded.then(() =>
+          mln.backend === "webgpu"
+            ? resolve()
+            : reject(new Error(`mln-rs drew on ${mln.backend}`)),
+        );
+      };
     });
-    map.on("error", (e) => console.error(String(e.error)));
+    container.append(frame);
     return {
       created: performance.now(),
-      idle: () => map.once("idle"),
-      jumpTo: (c) => map.jumpTo(c),
+      idle: () => loaded,
+      jumpTo: () => {
+        throw new Error("mln-rs's page here takes no camera after its first");
+      },
     };
   },
 };

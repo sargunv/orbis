@@ -1,7 +1,7 @@
 // Load times in headless Chromium with WebGPU: Orbis, the pinned GL JS and
-// mln-rs's browser build (its examples/web at the commit `cargo xtask h2h`
-// pins, built once into the h2h cache: `views.mjs`'s `mlnrs`) on
-// demo/load.html, from the page's script start to the engine's first
+// mln-rs's browser page (its examples/web at the commit `cargo xtask h2h`
+// pins, built once into the h2h cache: `views.mjs`'s `mlnrs`, in a frame)
+// on demo/load.html, from the page's script start to the engine's first
 // `idle` (mln-rs's: fully loaded), 1024×768 at 1×. Each sample opens a
 // fresh browser context, so the HTTP cache is empty; the browser (and its
 // shader cache) is shared, after one untimed pass of each engine and view.
@@ -179,7 +179,7 @@ try {
           engine: name,
           style: styleOf(view),
           at: VIEWS[view],
-          mlnrs: `${new URL(server.url).pathname}mlnrs/index.js`,
+          mlnrs: `${new URL(server.url).pathname}mlnrs/index.html`,
           ...(scene === "globe" && { globe: "" }),
           // Orbis's shaders unique to the sample.
           ...(name === "orbis" &&

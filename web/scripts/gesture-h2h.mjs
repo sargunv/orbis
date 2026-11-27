@@ -1,7 +1,9 @@
 // Gestures head to head: the same mouse drags, flings, right-drag
 // rotations and wheel zooms on Orbis's demo and on mln-rs's browser page
-// (its examples/web, as its `just web` builds it into examples/web/dist),
-// both on live Liberty from the same camera, at 1280x800 @2x on WebGPU.
+// (its examples/web at the h2h pin, built once into the h2h cache:
+// `views.mjs`'s `mlnrs`; `--mlnrs=<dist>` another build of it, such as its
+// `mise run web:build` output, examples/web/dist), both on live Liberty from
+// the same camera, at 1280x800 @2x on WebGPU.
 //
 // In headless Chromium, under a Chrome trace: for each gesture, the GPU
 // process's presents from its start until its glide or ease is over (their
@@ -13,13 +15,14 @@
 // bearing, pitch and centre (pixels at the start's zoom, x east and y
 // south), read from each page's camera as its frames report it.
 //
-//   pnpm gestures --mlnrs=<dist> [--engines=orbis,mlnrs]
+//   pnpm gestures [--mlnrs=<dist>] [--engines=orbis,mlnrs]
 //     [--scene=paris|manhattan] [--runs=n] [--warm]
 import { resolve } from "node:path";
 
 import { chromium } from "playwright";
 
 import { chromiumPlatform, serveDemo } from "./serve.mjs";
+import { mlnrs as pinnedMlnrs } from "./views.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
@@ -305,11 +308,13 @@ function analyse(trace) {
   return out;
 }
 
-const mlnrs = args.mlnrs && resolve(args.mlnrs);
-if (engines.includes("mlnrs") && !mlnrs)
-  throw new Error("--mlnrs=<dist> is needed");
+const mlnrs = !engines.includes("mlnrs")
+  ? undefined
+  : args.mlnrs
+    ? resolve(args.mlnrs) + "/"
+    : pinnedMlnrs();
 const server = await serveDemo({
-  mounts: mlnrs ? { "mlnrs/": mlnrs + "/" } : {},
+  mounts: mlnrs ? { "mlnrs/": mlnrs } : {},
 });
 try {
   for (let r = 0; r < runs; r++)

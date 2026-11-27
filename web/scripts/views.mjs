@@ -1,19 +1,18 @@
-// What the head-to-head page scripts (load.mjs, memory.mjs) load: their
-// cameras, the h2h cache, mln-rs's browser build and MapLibre Native's
-// real-world render tests served offline.
+// What the head-to-head page scripts (load.mjs, memory.mjs, gesture-h2h.mjs)
+// load: their cameras, the h2h cache, mln-rs's browser page and MapLibre
+// Native's real-world render tests served offline.
 import { execFileSync } from "node:child_process";
 import {
-  copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
@@ -62,29 +61,6 @@ function cacheDir() {
   );
 }
 
-/** The real-world render tests' cache in the pinned mln-rs checkout that `cargo xtask h2h` builds, if there is one. */
-export function realWorldCache() {
-  const checkouts = join(
-    process.env.CARGO_HOME ?? join(homedir(), ".cargo"),
-    "git/checkouts",
-  );
-  if (!existsSync(checkouts)) return undefined;
-  for (const repo of readdirSync(checkouts).filter((d) =>
-    d.startsWith("mln-rs-"),
-  )) {
-    for (const rev of readdirSync(join(checkouts, repo))) {
-      const db = join(
-        checkouts,
-        repo,
-        rev,
-        "tools/render-test/testdata/metrics/cache-style.db",
-      );
-      if (existsSync(db)) return db;
-    }
-  }
-  return undefined;
-}
-
 const root = fileURLToPath(new URL("../../", import.meta.url));
 /** The mln-rs commit `xtask/h2h/Cargo.toml` pins, which `cargo xtask h2h` builds natively. */
 const MLNRS_REV = readFileSync(
@@ -93,45 +69,89 @@ const MLNRS_REV = readFileSync(
 ).match(/^mln-rs = .*rev = "([0-9a-f]{40})"/m)?.[1];
 if (!MLNRS_REV) throw new Error("xtask/h2h/Cargo.toml pins no mln-rs rev");
 
-export const MLNRS = { name: `louwers/mln-rs@${MLNRS_REV.slice(0, 8)}` };
+export const MLNRS = { name: `maplibre/mln-rs@${MLNRS_REV.slice(0, 8)}` };
 
 /**
- * mln-rs's browser build (its examples/web) at the h2h pin, as its
- * `just profile=release web` builds it, in the cache: wasm-bindgen's
- * package, the map's and the tile workers' Web Workers, and as index.js
- * `mlnrs-map.js`, the `Map` demo/load.js drives. Built once per pin, with
- * the wasm-bindgen and wasm-opt mise provides.
+ * `MISE_IGNORED_CONFIG_PATHS` with Cargo's git checkouts added, as
+ * `cargo xtask h2h` sets it (`mise_ignored`): mln-rs's checkout has a
+ * mise.toml, which mise won't run a tool under (cargo, rustc through
+ * sccache) until it is trusted.
+ */
+function miseIgnored() {
+  const checkouts = join(
+    process.env.CARGO_HOME ?? join(homedir(), ".cargo"),
+    "git/checkouts",
+  );
+  return [
+    ...(process.env.MISE_IGNORED_CONFIG_PATHS ?? "")
+      .split(delimiter)
+      .filter(Boolean),
+    checkouts,
+  ].join(delimiter);
+}
+
+/**
+ * Cargo's checkout of the pinned mln-rs, the one `cargo xtask h2h` builds:
+ * fetched if need be, or with `offline`, undefined where Cargo hasn't
+ * fetched it.
+ */
+function mlnrsCheckout({ offline = false } = {}) {
+  let metadata;
+  try {
+    metadata = JSON.parse(
+      execFileSync(
+        "cargo",
+        [
+          "metadata",
+          "--format-version=1",
+          "--locked",
+          ...(offline ? ["--offline"] : []),
+          "--manifest-path",
+          join(root, "xtask/h2h/Cargo.toml"),
+        ],
+        {
+          maxBuffer: 1 << 28,
+          stdio: ["ignore", "pipe", offline ? "ignore" : "inherit"],
+        },
+      ),
+    );
+  } catch (e) {
+    if (offline) return undefined;
+    throw e;
+  }
+  const manifest = metadata.packages.find(
+    (p) => p.name === "mln-rs" && p.source?.includes(MLNRS_REV),
+  )?.manifest_path;
+  if (!manifest) throw new Error(`cargo metadata found no ${MLNRS.name}`);
+  return dirname(manifest);
+}
+
+/** The real-world render tests' cache in the pinned mln-rs checkout, if Cargo has fetched it. */
+export function realWorldCache() {
+  const checkout = mlnrsCheckout({ offline: true });
+  const db =
+    checkout &&
+    join(checkout, "tools/render-test/testdata/metrics/cache-style.db");
+  return db && existsSync(db) ? db : undefined;
+}
+
+/**
+ * mln-rs's browser page (its examples/web) at the h2h pin, built in the
+ * cache as its `mise run web:build --profile release` builds it: the map's
+ * module for WebGPU and again for WebGL 2, and the font-face shaper's, each
+ * through wasm-bindgen and the pin's own wasm-opt flags, then the page
+ * bundled by Vite. Scripts open its index.html and drive it through
+ * `window.mln` (its web/main.ts). Built once per pin, with the wasm-bindgen
+ * and wasm-opt mise provides.
  */
 export function mlnrs() {
   const dir = join(cacheDir(), `mln-rs-web-${MLNRS_REV.slice(0, 8)}`);
-  if (!existsSync(join(dir, "pkg/mln_web_bg.wasm"))) buildMlnrs(dir);
-  copyFileSync(
-    fileURLToPath(new URL("./mlnrs-map.js", import.meta.url)),
-    join(dir, "index.js"),
-  );
+  if (!existsSync(join(dir, "index.html"))) buildMlnrs(dir);
   return dir + "/";
 }
 
 function buildMlnrs(dir) {
-  // Cargo's checkout of the pin, fetched if need be.
-  const metadata = JSON.parse(
-    execFileSync(
-      "cargo",
-      [
-        "metadata",
-        "--format-version=1",
-        "--locked",
-        "--manifest-path",
-        join(root, "xtask/h2h/Cargo.toml"),
-      ],
-      { maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "inherit"] },
-    ),
-  );
-  const checkout = dirname(
-    metadata.packages.find(
-      (p) => p.name === "mln-rs" && p.source?.includes(MLNRS_REV),
-    ).manifest_path,
-  );
+  const checkout = mlnrsCheckout();
   const bindgen = readFileSync(join(checkout, "Cargo.lock"), "utf8").match(
     /name = "wasm-bindgen"\nversion = "([^"]+)"/,
   )?.[1];
@@ -143,59 +163,74 @@ function buildMlnrs(dir) {
       `${MLNRS.name} needs wasm-bindgen ${bindgen}, not ${have.trim()}: pin that version in mise.toml`,
     );
   const target = join(cacheDir(), "target");
-  // Cargo's output on stderr: load.mjs's stdout is its report.
-  const run = (command, args, env = {}) =>
-    execFileSync(command, args, {
-      cwd: checkout,
-      env: { ...process.env, ...env },
-      stdio: ["ignore", 2, "inherit"],
-    });
-  console.error(`mlnrs: building ${MLNRS.name}'s browser build`);
-  // The checkout's own toolchain and Cargo config, from its directory; the
-  // `s` opt-level is `just web`'s, for the browser build only.
-  run(
-    "cargo",
-    [
-      "build",
-      "--release",
-      "--locked",
-      "--target=wasm32-unknown-unknown",
-      "-p=mln-rs-web",
-      "-p=mln-rs-web-shaper",
-      "--target-dir",
-      target,
-    ],
-    { CARGO_PROFILE_RELEASE_OPT_LEVEL: "s" },
-  );
   const partial = `${dir}.partial-${process.pid}`;
   rmSync(partial, { recursive: true, force: true });
-  for (const module of ["mln_web", "mln_web_shaper"]) {
-    run("wasm-bindgen", [
-      "--target=web",
-      "--out-dir",
-      join(partial, "pkg"),
-      join(target, `wasm32-unknown-unknown/release/${module}.wasm`),
-    ]);
-    const wasm = join(partial, `pkg/${module}_bg.wasm`);
-    // `just web`'s flags.
-    run("wasm-opt", [
-      "-Oz",
-      "--converge",
-      "--one-caller-inline-max-function-size=20",
-      "--zero-filled-memory",
-      "--low-memory-unused",
-      "--strip-debug",
-      "--strip-producers",
-      "--strip-target-features",
-      wasm,
-      "-o",
-      wasm,
-    ]);
+  try {
+    // The page's sources, with the style catalogue its styles.ts imports
+    // beside them, copied so that wasm-bindgen's output, the packages and the
+    // build land here and Cargo's checkout stays as it fetched it.
+    const page = join(partial, "web");
+    cpSync(join(checkout, "examples/web"), page, { recursive: true });
+    cpSync(
+      join(checkout, "examples/styles.json"),
+      join(partial, "styles.json"),
+    );
+    const pkg = join(page, "web/pkg");
+    // Tools' output on stderr: load.mjs's stdout is its report.
+    const run = (command, args, { cwd = checkout, env = {} } = {}) =>
+      execFileSync(command, args, {
+        cwd,
+        env: {
+          ...process.env,
+          MISE_IGNORED_CONFIG_PATHS: miseIgnored(),
+          ...env,
+        },
+        stdio: ["ignore", 2, "inherit"],
+      });
+    // From the checkout's directory, for its own toolchain and Cargo config;
+    // the `s` opt-level is web:build's, for the browser build only.
+    const cargo = (...packages) =>
+      run(
+        "cargo",
+        [
+          "build",
+          "--release",
+          "--locked",
+          "--target=wasm32-unknown-unknown",
+          "--target-dir",
+          target,
+          ...packages,
+        ],
+        { env: { CARGO_PROFILE_RELEASE_OPT_LEVEL: "s" } },
+      );
+    const bind = (module, out) => {
+      run("wasm-bindgen", [
+        "--target=web",
+        "--out-dir",
+        out,
+        join(target, `wasm32-unknown-unknown/release/${module}.wasm`),
+      ]);
+      run("bash", [
+        "-c",
+        'source tools/web-wasm-opt.sh && web_wasm_opt "$1" --strip-debug',
+        "web_wasm_opt",
+        join(out, `${module}_bg.wasm`),
+      ]);
+    };
+    console.error(`mlnrs: building ${MLNRS.name}'s browser page`);
+    cargo("-p=mln-rs-web", "-p=mln-rs-web-shaper");
+    bind("mln_web", pkg);
+    bind("mln_web_shaper", pkg);
+    // The map's module again, drawing with WebGL 2, which the page bundles too.
+    cargo("-p=mln-rs-web", "--no-default-features", "--features=webgl");
+    bind("mln_web", join(pkg, "webgl"));
+    run("pnpm", ["install", "--frozen-lockfile"], { cwd: page });
+    run("pnpm", ["build"], { cwd: page });
+    rmSync(dir, { recursive: true, force: true });
+    renameSync(join(page, "dist"), dir);
+  } finally {
+    rmSync(partial, { recursive: true, force: true });
   }
-  for (const file of ["map-worker.js", "worker.js"])
-    copyFileSync(join(checkout, "examples/web/web", file), join(partial, file));
-  rmSync(dir, { recursive: true, force: true });
-  renameSync(partial, dir);
 }
 
 /**
