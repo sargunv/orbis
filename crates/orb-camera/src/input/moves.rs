@@ -7,7 +7,7 @@
 use glam::DVec2;
 
 use super::rates::NOTCH_DURATION;
-use super::{GestureOptions, Movement, Release};
+use super::{GestureOptions, Movement, Reading, Release};
 use crate::momentum::Delta;
 use crate::{
     AnchoredMomentum, Camera, CameraTarget, EaseOptions, Easing, GestureMomentum, MomentumVelocity,
@@ -69,7 +69,7 @@ pub(super) enum Step {
 }
 
 /// A release, resolved into a momentum once the camera applies it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct Plan {
     pub release: Release,
     /// Whether it glides on, or only settles.
@@ -165,6 +165,18 @@ impl Plan {
 }
 
 impl Camera {
+    /// The camera as a recognizer samples it for notches
+    /// ([`Interaction::sample`](super::Interaction::sample)).
+    pub fn reading(&self) -> Reading {
+        let state = self.state();
+        Reading {
+            zoom: self.zoom(),
+            bearing: state.bearing,
+            pitch: state.pitch,
+            moving: self.is_held() || self.is_user_animating(),
+        }
+    }
+
     /// Applies a recognizer's move at host time `now` (milliseconds), the
     /// time its animations start from. Returns whether input took the
     /// camera from its animations, stopping them: a gesture that begins

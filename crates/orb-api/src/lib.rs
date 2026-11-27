@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 pub use map::{Event, Image, Map, STILL_TIMEOUT, TileRequest, Waiter};
 pub use orb_camera::input::{
-    Button, Fling, GestureOptions, GesturePhase, Input, InteractEvent, Interaction, Key, Modes,
-    Modifiers, Move, Movement, PointerKind, Thresholds, WheelDelta,
+    Axis, Button, Fling, GestureOptions, GesturePhase, Input, InteractEvent, Interaction, Key,
+    Modes, Modifiers, Move, Movement, Notch, PointerKind, Reading, Thresholds, Tick, WheelDelta,
 };
 pub use orb_camera::{
     AnchoredMomentum, AnimationId, Bounds, CameraEvent, CameraTarget, Change, Constraints,

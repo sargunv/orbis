@@ -8,7 +8,7 @@ use crate::{DecayModel, Easing, MomentumDecay, MomentumSnap};
 
 /// What gestures may move and how releases continue. Changing it cancels
 /// a gesture under way.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GestureOptions {
     pub pan: Movement,
     pub zoom: Movement,
@@ -28,6 +28,7 @@ pub struct GestureOptions {
 impl Default for GestureOptions {
     /// Every movement on, with mln-ffi's default decays; the bearing
     /// settles on north within 7° (Compose's `MapInteractions.Standard`).
+    /// No part has notches.
     fn default() -> Self {
         Self {
             pan: Movement::new(MomentumDecay::PAN),
@@ -61,11 +62,29 @@ impl GestureOptions {
             ..all
         }
     }
+
+    /// The movement of a part notches are on.
+    pub(super) fn part(&self, axis: Axis) -> &Movement {
+        match axis {
+            Axis::Zoom => &self.zoom,
+            Axis::Bearing => &self.rotate,
+            Axis::Pitch => &self.pitch,
+        }
+    }
+
+    /// Whether gestures may reach a notch.
+    pub(super) fn has_notches(&self) -> bool {
+        Axis::ALL.into_iter().any(|axis| {
+            let part = self.part(axis);
+            part.enabled && !part.notches.is_empty()
+        })
+    }
 }
 
 /// One camera movement: whether gestures make it, how a release keeps it
-/// going, and where it settles after input that changed it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// going, where it settles after input that changed it, and where it
+/// reports notches.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Movement {
     pub enabled: bool,
     /// How a release keeps it moving; without one it stops where the
@@ -74,17 +93,64 @@ pub struct Movement {
     /// Where it settles once input that changed it and its momentum end;
     /// pans don't settle.
     pub snap: Option<MomentumSnap>,
+    /// Where input moving it reports an
+    /// [`InteractEvent::Notch`](super::InteractEvent::Notch); pans have
+    /// none. Several notches at one value report one event, with the kind
+    /// of the first in the list.
+    pub notches: Vec<Notch>,
 }
 
 impl Movement {
-    /// On, slowing by `decay`, settling nowhere.
+    /// On, slowing by `decay`, settling nowhere, without notches.
     pub const fn new(decay: MomentumDecay) -> Self {
         Self {
             enabled: true,
             momentum: Some(Fling::Decay(decay)),
             snap: None,
+            notches: Vec::new(),
         }
     }
+}
+
+/// A part of the camera that notches are on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Axis {
+    /// In zoom levels.
+    Zoom,
+    /// In degrees clockwise from north.
+    Bearing,
+    /// In degrees from looking straight down.
+    Pitch,
+}
+
+impl Axis {
+    pub(super) const ALL: [Self; 3] = [Self::Zoom, Self::Bearing, Self::Pitch];
+}
+
+/// Values every `spacing` from `offset`, in a part's unit, where input
+/// that moves the part to or across one (a gesture, its glide and its
+/// snap, or an eased step other than a box zoom's) reports an
+/// [`InteractEvent::Notch`](super::InteractEvent::Notch), for the host to
+/// play as haptic feedback, as MapLibre Compose plays one at north.
+/// Bearing notches lie within one turn from the offset.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Notch {
+    /// Positive and finite.
+    pub spacing: f64,
+    /// Finite.
+    pub offset: f64,
+    /// The host's name for the feedback, such as which haptic to play,
+    /// which the notch's events carry.
+    pub kind: u32,
+}
+
+impl Notch {
+    /// North, of kind 0.
+    pub const NORTH: Self = Self {
+        spacing: 360.0,
+        offset: 0.0,
+        kind: 0,
+    };
 }
 
 /// How a release keeps a movement going, in its unit: logical pixels for

@@ -249,6 +249,7 @@ fn gestures(value: &JsValue) -> GestureOptions {
                 .unwrap_or(default.enabled),
             momentum,
             snap,
+            notches: default.notches,
         }
     };
     let t = defaults.thresholds;

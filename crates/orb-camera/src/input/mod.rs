@@ -26,17 +26,22 @@
 //! libinput) hand them over as [`Input::Pinch`], which zooms, turns and
 //! glides as a touch pinch does.
 //!
-//! [`GestureOptions`] turns each movement on or off, with its momentum and
-//! settling, and takes the platform's thresholds.
+//! [`GestureOptions`] turns each movement on or off, with its momentum,
+//! settling and notches, and takes the platform's thresholds. Notches
+//! report where input moves the zoom, bearing or pitch to or across a
+//! value, for haptic feedback; the host samples the camera for them
+//! ([`Interaction::sample`]).
 
 mod moves;
+mod notches;
 mod options;
 mod rates;
 mod velocity;
 
 pub use moves::Move;
 use moves::{Plan, Step};
-pub use options::{Fling, GestureOptions, Movement, Thresholds};
+use notches::NotchWatch;
+pub use options::{Axis, Fling, GestureOptions, Movement, Notch, Thresholds};
 use rates::*;
 use velocity::VelocityTracker;
 
@@ -212,6 +217,36 @@ pub enum InteractEvent {
     /// Two fingers tapped together, which zooms as
     /// [`GestureOptions::two_finger_tap_zoom`] says.
     TwoFingerTap { position: DVec2 },
+    /// Input moved a part of the camera to or across one of its
+    /// [`Movement::notches`], at `value` (a bearing from 0 up to 360°), of
+    /// the notch's `kind`. A part reports at most one notch every 50 ms.
+    Notch { axis: Axis, value: f64, kind: u32 },
+}
+
+/// What a host reads of its camera for notches
+/// ([`Interaction::sample`]); a [`Camera`] store gives it
+/// ([`Camera::reading`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Reading {
+    pub zoom: f64,
+    /// Degrees clockwise from north.
+    pub bearing: f64,
+    pub pitch: f64,
+    /// Whether input still moves the camera: holds it, or a glide, snap or
+    /// eased step it started runs.
+    pub moving: bool,
+}
+
+/// When the recognizer next needs [`Interaction::frame`] and
+/// [`Interaction::sample`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Tick {
+    /// Every display frame: input moves the camera, which may reach a
+    /// notch.
+    Frame,
+    /// At this time on the inputs' clock: when a press becomes a long
+    /// press, or a continuous delta's hold ends.
+    At(f64),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -421,6 +456,9 @@ pub struct Interaction {
     /// The camera moves made and not yet taken.
     moves: Vec<Move>,
     options: GestureOptions,
+    /// The notches input moving the camera may reach, from its first move
+    /// until the host's [`Reading`] says input moves it no more.
+    notches: Option<NotchWatch>,
 }
 
 impl Default for Interaction {
@@ -434,6 +472,7 @@ impl Default for Interaction {
             events: Vec::new(),
             moves: Vec::new(),
             options: GestureOptions::default(),
+            notches: None,
         }
     }
 }
@@ -444,14 +483,16 @@ impl Interaction {
     }
 
     /// Sets what gestures may move. A change cancels the gesture under
-    /// way, with no click and no momentum; pointers still down, or a
-    /// platform pinch under way, do nothing until they end.
+    /// way, with no click and no momentum, and reports no more notches of
+    /// what input started before; pointers still down, or a platform pinch
+    /// under way, do nothing until they end.
     pub fn set_options(&mut self, options: GestureOptions) {
         if options == self.options {
             return;
         }
         self.options = options;
         self.last_tap = None;
+        self.notches = None;
         if self.is_active() {
             self.mode = if self.pointers.is_empty() && !matches!(self.mode, Mode::Platform) {
                 Mode::Idle
@@ -470,6 +511,21 @@ impl Interaction {
     }
 
     fn camera(&mut self, step: Step) {
+        match step {
+            // What the platform took away, and a box zoom's ease, report no
+            // notches.
+            Step::Cancel | Step::ZoomToBox(_) => self.notches = None,
+            Step::Hold { .. }
+            | Step::Scroll
+            | Step::Delta(_)
+            | Step::TapZoom { .. }
+            | Step::Key { .. }
+                if self.notches.is_none() && self.options.has_notches() =>
+            {
+                self.notches = Some(NotchWatch::default());
+            }
+            _ => {}
+        }
         self.moves.push(Move(step));
     }
 
@@ -487,7 +543,7 @@ impl Interaction {
         }
     }
 
-    /// Clicks and double clicks recognized since the last call.
+    /// Clicks, double clicks and notches recognized since the last call.
     pub fn take_events(&mut self) -> Vec<InteractEvent> {
         std::mem::take(&mut self.events)
     }
@@ -509,14 +565,52 @@ impl Interaction {
         }
     }
 
-    /// When the recognizer next needs [`frame`](Self::frame), on the
-    /// inputs' clock: when a press becomes a long press, or a continuous
-    /// delta's hold ends; `None` until the next input.
-    pub fn next_tick(&self) -> Option<f64> {
-        match (self.long_press_at(), self.wheel_hold_until) {
+    /// When the recognizer next needs [`frame`](Self::frame) and
+    /// [`sample`](Self::sample): every display frame while input moving the
+    /// camera may reach a notch, else when a press becomes a long press or
+    /// a continuous delta's hold ends; `None` until the next input.
+    pub fn next_tick(&self) -> Option<Tick> {
+        // A press held still moves nothing that could reach a notch.
+        let still = matches!(
+            self.mode,
+            Mode::Pressed { .. } | Mode::TapDrag { moved: false, .. }
+        );
+        if self.notches.is_some() && !still {
+            return Some(Tick::Frame);
+        }
+        let at = match (self.long_press_at(), self.wheel_hold_until) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
+        };
+        at.map(Tick::At)
+    }
+
+    /// Checks the camera, as `reading` finds it at `now`, for the notches
+    /// input moving it reached since the last sample, which
+    /// [`take_events`](Self::take_events) reports. Hosts call it once a
+    /// display frame with the camera the frame shows, and may call it
+    /// before applying an input's moves too, so a gesture's notches start
+    /// from where the camera stood, and after, so an input that leaves the
+    /// camera still ends the watch. A notch the camera stands at as input
+    /// starts moving it reports once it leaves and comes back.
+    pub fn sample(&mut self, reading: Reading, now: f64) {
+        let Some(watch) = &mut self.notches else {
+            return;
+        };
+        let values = [reading.zoom, reading.bearing, reading.pitch];
+        watch.sample(values, &self.options, now, &mut self.events);
+        // Input moves the camera no more: the gesture, its glide and its
+        // snap, or its eased step, ended.
+        if !reading.moving && !self.is_active() {
+            self.notches = None;
         }
+    }
+
+    /// Whether input moving the camera may reach a notch, so
+    /// [`sample`](Self::sample) has something to check: a host that reads
+    /// its camera at a cost can skip the reading while not.
+    pub fn watches_notches(&self) -> bool {
+        self.notches.is_some()
     }
 
     /// Ends gestures that time out and recognizes long presses. Call at
@@ -639,7 +733,9 @@ impl Interaction {
             // A touch during a platform pinch takes over from it.
             self.finish(now, End::Cancel);
         }
-        let options = self.options;
+        let zoom_enabled = self.options.zoom.enabled;
+        let pitch_enabled = self.options.pitch.enabled;
+        let tap_interval = self.options.thresholds.tap_interval;
         self.pointers.push(Pointer {
             id,
             kind,
@@ -651,22 +747,21 @@ impl Interaction {
         self.camera(Step::Hold { first });
         match (self.mode, self.pointers.len()) {
             (Mode::Idle, 1) => {
-                self.mode =
-                    if touch && options.zoom.enabled && self.follows_tap(kind, position, now) {
-                        Mode::TapDrag {
-                            origin: position,
-                            moved: false,
-                        }
-                    } else {
-                        Mode::Pressed {
-                            modes: Modes {
-                                box_zoom: modes.box_zoom && options.zoom.enabled,
-                                ..modes
-                            },
-                            context,
-                            long: false,
-                        }
-                    };
+                self.mode = if touch && zoom_enabled && self.follows_tap(kind, position, now) {
+                    Mode::TapDrag {
+                        origin: position,
+                        moved: false,
+                    }
+                } else {
+                    Mode::Pressed {
+                        modes: Modes {
+                            box_zoom: modes.box_zoom && zoom_enabled,
+                            ..modes
+                        },
+                        context,
+                        long: false,
+                    }
+                };
                 self.tracking.reset(now);
             }
             (Mode::Pressed { .. } | Mode::Pan | Mode::TapDrag { .. }, 2) if touch => {
@@ -680,11 +775,10 @@ impl Interaction {
                     zooming: false,
                     rotating: false,
                     // Fingers above one another can't tilt.
-                    pitch: (vector.y.abs() > vector.x.abs() || !options.pitch.enabled)
-                        .then_some(false),
+                    pitch: (vector.y.abs() > vector.x.abs() || !pitch_enabled).then_some(false),
                     single_since: None,
                     panning: false,
-                    tap: now - self.pointers[0].down_at < options.thresholds.tap_interval
+                    tap: now - self.pointers[0].down_at < tap_interval
                         && matches!(self.mode, Mode::Pressed { .. }),
                 });
                 self.tracking.record(now, Sample::default());
@@ -800,7 +894,7 @@ impl Interaction {
         let [la, lb] = pinch.last;
         let (va, vb) = (a - la, b - lb);
         let vector = b - a;
-        let options = self.options;
+        let options = &self.options;
         let tolerance = options.thresholds.tap_tolerance;
         if pinch.tap
             && (a.distance(self.pointers[0].down) > tolerance
@@ -1044,7 +1138,7 @@ impl Interaction {
             let plan = Plan {
                 release: self.tracking.release(now),
                 glide: end == End::Glide,
-                options: self.options,
+                options: self.options.clone(),
                 changed: self.tracking.changed,
             };
             self.camera(Step::Momentum(Box::new(plan)));

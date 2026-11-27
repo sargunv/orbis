@@ -33,9 +33,13 @@ impl Rig {
         }
     }
 
+    /// Hands the recognizer an input, sampling the camera for notches
+    /// before and after its moves apply, as a map does.
     fn send(&mut self, input: Input) -> bool {
         let used = self.input.handle(input, self.now);
+        self.input.sample(self.camera.reading(), self.now);
         self.apply();
+        self.input.sample(self.camera.reading(), self.now);
         used
     }
 
@@ -99,6 +103,7 @@ impl Rig {
             let gesture = self.input.frame(self.now);
             self.apply();
             let moving = self.camera.frame(self.now);
+            self.input.sample(self.camera.reading(), self.now);
             if !gesture && !moving {
                 return frames;
             }
@@ -112,6 +117,7 @@ impl Rig {
         self.input.frame(self.now);
         self.apply();
         self.camera.frame(self.now);
+        self.input.sample(self.camera.reading(), self.now);
     }
 }
 
@@ -1210,7 +1216,9 @@ fn deltas_move_each_part_eased_or_at_once() {
         "{under}"
     );
     assert!(rig.input.is_active(), "a continuous delta holds the camera");
-    let tick = rig.input.next_tick().expect("its hold ends at a time");
+    let Some(Tick::At(tick)) = rig.input.next_tick() else {
+        panic!("its hold ends at a time");
+    };
     rig.now = tick;
     rig.frame();
     assert!(!rig.input.is_active());
@@ -1226,7 +1234,9 @@ fn deltas_move_each_part_eased_or_at_once() {
 fn a_press_held_past_the_long_press_without_frames_lifts_as_one() {
     let mut rig = Rig::new();
     rig.down(1, PointerKind::Touch, 300.0, 300.0);
-    let at = rig.input.next_tick().expect("a long press is due");
+    let Some(Tick::At(at)) = rig.input.next_tick() else {
+        panic!("a long press is due");
+    };
     assert_eq!(at, rig.now + rig.input.options().thresholds.long_press);
     rig.now = at + 10.0;
     rig.up(1, 300.0, 300.0);
@@ -1270,4 +1280,141 @@ fn tap_zooms_follow_their_options() {
     );
     rig.settle();
     assert!((rig.camera.zoom() - (zoom - 2.0)).abs() < 1e-9);
+}
+
+impl Rig {
+    /// Notches at `notches` on the bearing, `zoom` on the zoom.
+    fn notched(bearing: Vec<Notch>, zoom: Vec<Notch>) -> Self {
+        let defaults = GestureOptions::default();
+        Self::with(GestureOptions {
+            rotate: Movement {
+                notches: bearing,
+                ..defaults.rotate.clone()
+            },
+            zoom: Movement {
+                notches: zoom,
+                ..defaults.zoom.clone()
+            },
+            ..defaults
+        })
+    }
+
+    /// A right-drag through `xs` from 300, a move every 16 ms with a frame
+    /// after each, held still before it lifts so nothing glides.
+    fn twist(&mut self, xs: impl IntoIterator<Item = f64>) {
+        self.send(Input::PointerDown {
+            id: 1,
+            kind: PointerKind::Mouse,
+            button: Button::Secondary,
+            position: DVec2::new(300.0, 300.0),
+            modifiers: Modifiers::default(),
+        });
+        let mut last = 300.0;
+        for x in xs {
+            self.now += 16.0;
+            self.to(1, x, 300.0);
+            self.frame();
+            last = x;
+        }
+        self.now += 200.0;
+        self.up(1, last, 300.0);
+        self.settle();
+    }
+}
+
+#[test]
+fn a_twist_across_north_reports_its_notch_once() {
+    let mut rig = Rig::notched(vec![Notch::NORTH], Vec::new());
+    rig.camera.jump_to(&crate::CameraTarget {
+        bearing: Some(-20.0),
+        ..crate::CameraTarget::default()
+    });
+    // Half a degree a pixel: -20° to 20°, 5° a move.
+    rig.twist((1..=8).map(|i| 300.0 + 10.0 * f64::from(i)));
+    assert!((rig.camera.state().bearing - 20.0).abs() < 1e-6);
+    assert_eq!(
+        rig.input.take_events(),
+        [InteractEvent::Notch {
+            axis: Axis::Bearing,
+            value: 0.0,
+            kind: 0
+        }]
+    );
+    assert_eq!(rig.input.next_tick(), None, "its watch ended with it");
+}
+
+/// A gesture that starts at a notch reports it once it leaves and comes
+/// back, and once only while it rests there; the app's moves report none.
+#[test]
+fn a_notch_reports_on_coming_back_and_not_while_resting() {
+    let mut rig = Rig::notched(vec![Notch::NORTH], Vec::new());
+    rig.send(Input::PointerDown {
+        id: 1,
+        kind: PointerKind::Mouse,
+        button: Button::Secondary,
+        position: DVec2::new(300.0, 300.0),
+        modifiers: Modifiers::default(),
+    });
+    for x in [305.0, 310.0, 315.0, 320.0, 315.0, 310.0, 305.0, 300.0] {
+        rig.now += 16.0;
+        rig.to(1, x, 300.0);
+        rig.frame();
+        assert_eq!(rig.input.next_tick(), Some(Tick::Frame));
+    }
+    for _ in 0..20 {
+        rig.frame();
+    }
+    rig.now += 200.0;
+    rig.up(1, 300.0, 300.0);
+    rig.settle();
+    assert_eq!(rig.camera.state().bearing, 0.0);
+    assert_eq!(
+        rig.input.take_events(),
+        [InteractEvent::Notch {
+            axis: Axis::Bearing,
+            value: 0.0,
+            kind: 0
+        }]
+    );
+
+    rig.camera.ease_to(
+        &crate::CameraTarget {
+            bearing: Some(90.0),
+            ..crate::CameraTarget::default()
+        },
+        crate::EaseOptions::default(),
+        None,
+    );
+    rig.settle();
+    assert!(rig.input.take_events().is_empty());
+}
+
+#[test]
+fn a_glide_across_two_whole_zooms_reports_both() {
+    let whole = Notch {
+        spacing: 1.0,
+        offset: 0.0,
+        kind: 7,
+    };
+    let mut rig = Rig::notched(Vec::new(), vec![whole]);
+    rig.camera.jump_to(&crate::CameraTarget {
+        zoom: Some(12.3),
+        ..crate::CameraTarget::default()
+    });
+    rig.pinch(1.0, 0.0, GesturePhase::Begin);
+    for _ in 0..4 {
+        rig.now += 16.0;
+        rig.pinch(1.1, 0.0, GesturePhase::Update);
+    }
+    let released = rig.camera.zoom();
+    rig.pinch(1.0, 0.0, GesturePhase::End);
+    rig.settle();
+    let zoom = rig.camera.zoom();
+    assert!(released < 12.95 && zoom > 14.05, "{released} → {zoom}");
+    let notch = |value| InteractEvent::Notch {
+        axis: Axis::Zoom,
+        value,
+        kind: 7,
+    };
+    assert_eq!(rig.input.take_events(), [notch(13.0), notch(14.0)]);
 }

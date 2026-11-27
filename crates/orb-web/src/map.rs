@@ -752,10 +752,12 @@ impl OrbisMap {
             let object = js_sys::Object::new();
             let kind = match event {
                 // MapLibre Native's resource and tile events, which the
-                // page's API doesn't report.
+                // page's API doesn't report, and notches, which its
+                // gestures don't set.
                 MapEvent::SourceChanged { .. }
                 | MapEvent::Tile { .. }
-                | MapEvent::Sprite { .. } => {
+                | MapEvent::Sprite { .. }
+                | MapEvent::Notch { .. } => {
                     continue;
                 }
                 MapEvent::StyleLoad => "styleload",

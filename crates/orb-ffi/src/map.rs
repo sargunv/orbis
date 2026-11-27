@@ -32,6 +32,9 @@ pub(crate) struct MapHandle {
     pub(crate) mode: mln_map_mode,
     /// The commands sent to the map so far, which number them.
     posted: AtomicU64,
+    /// The number of the last command the published snapshot shows; every
+    /// number once the map is released, as none applies after.
+    shown: AtomicU64,
 }
 
 impl MapHandle {
@@ -42,6 +45,12 @@ impl MapHandle {
     /// The number of the last command sent: a frame demanded now shows it.
     pub(crate) fn posted(&self) -> u64 {
         self.posted.load(Ordering::Acquire)
+    }
+
+    /// The number of the last command the snapshot shows: a snapshot read
+    /// after this call shows at least the commands up to it.
+    pub(crate) fn shown(&self) -> u64 {
+        self.shown.load(Ordering::Acquire)
     }
 
     /// Runs a query on the map: `job` reads it, and the caller waits for
@@ -125,6 +134,8 @@ impl MapHandle {
             let (generation, update) = (entry.generation, entry.next_update());
             crate::runtime::complete_update(completion, result, generation, update);
             cell.applied.fetch_max(number, Ordering::AcqRel);
+            // The snapshot settle published shows it.
+            entry.handle.shown.fetch_max(number, Ordering::AcqRel);
             // Its frames wait for the commands sent before them.
             entry.wake_session();
         })
@@ -942,6 +953,7 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                 has_session: AtomicBool::new(false),
                 mode: options.map_mode,
                 posted: AtomicU64::new(0),
+                shown: AtomicU64::new(0),
             });
             let id = handles::insert(Object::Map(handle.clone()));
             let _ = handle.id.set(id);
@@ -1126,6 +1138,7 @@ fn release(map: mln_map, completion: Option<Completion>, force: bool) -> Result 
                 );
             }
         }
+        handle.shown.store(u64::MAX, Ordering::Release);
         drop(handle);
         state.complete(completion, Ok(Value::None), 0);
     })

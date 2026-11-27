@@ -135,7 +135,12 @@ impl Map {
     /// used it, so hosts can stop the platform's default.
     pub fn input(&mut self, input: Input, time: f64) -> bool {
         let used = self.input.handle(input, time);
+        // Before its moves apply, so a gesture's notches start from where
+        // the camera stood, and after, so an input that leaves the camera
+        // still ends the watch and an app's move after it reports none.
+        self.input.sample(self.camera.reading(), time);
         self.apply_gestures(time);
+        self.input.sample(self.camera.reading(), time);
         used
     }
 
@@ -290,6 +295,7 @@ impl Map {
         let gesture = self.input.frame(time);
         self.apply_gestures(time);
         let animating = self.camera.frame(time);
+        self.input.sample(self.camera.reading(), time);
         // A camera that moved since the last frame makes the next rest a
         // new idle.
         if self.camera.revision() != self.camera_seen {
@@ -306,6 +312,7 @@ impl Map {
                 InteractEvent::LongClick { position, .. } => MapEvent::LongClick { position },
                 // It zooms as the options say; hosts have no use for it.
                 InteractEvent::TwoFingerTap { .. } => continue,
+                InteractEvent::Notch { axis, value, kind } => MapEvent::Notch { axis, value, kind },
             });
         }
         gesture || animating

@@ -13,10 +13,12 @@
 // no long press (a host shows a context menu itself), so a mouse held past
 // 500 ms still taps as it lifts, as a browser's click does; a drag and a
 // double tap read their modes as the pointer goes down; options that change
-// cancel the gesture under way, letting go of the camera without a glide;
-// and the recognizer reports no notches yet, though it checks the ones it
-// is given. In a flipped viewport the host's positions are the picture's,
-// upside down: the recognizer takes them turned the right way up, as the
+// cancel the gesture under way, letting go of the camera without a glide,
+// and end its notches. The recognizer samples the camera for notches from
+// the map's snapshot, as the runtime's thread last published it, on each
+// input and tick; until the snapshot shows the moves it sent, it takes the
+// camera as still moving. In a flipped viewport the host's positions are
+// the picture's, upside down: the recognizer takes them turned the right way up, as the
 // map's own, a pinch's turn on the screen with them (the delta's bearing
 // is the camera's, so it stays), and its taps and box come back turned
 // over again.
@@ -26,8 +28,8 @@ use std::sync::{Arc, Mutex};
 
 use glam::DVec2;
 use orb_api::{
-    DecayModel, Fling, GestureOptions, GesturePhase, Input, InteractEvent, Interaction, Modes,
-    MomentumDecay, MomentumSnap, Movement, PointerKind,
+    Axis, DecayModel, Fling, GestureOptions, GesturePhase, Input, InteractEvent, Interaction,
+    Modes, MomentumDecay, MomentumSnap, Movement, Notch, PointerKind, Reading, Tick,
 };
 
 use crate::base::{Failure, Result, boundary, fresh_out, lock, put, sized};
@@ -51,6 +53,8 @@ struct State {
     /// Each part's glide and snap as the host set them, kept while it
     /// turns them off.
     kept: Kept,
+    /// The number of the last command that sent the map moves.
+    sent: u64,
 }
 
 /// How each part glides (pan, zoom, bearing, pitch) and settles (zoom,
@@ -84,10 +88,12 @@ impl Kept {
     }
 }
 
-/// A new recognizer's options: Orbis's, with the header's long press.
+/// A new recognizer's options: Orbis's, with the header's long press and
+/// notch at north.
 fn defaults() -> GestureOptions {
     let mut options = GestureOptions::default();
     options.thresholds.long_press = 500.0;
+    options.rotate.notches = vec![Notch::NORTH];
     options
 }
 
@@ -115,7 +121,7 @@ unsafe fn options(
         MLN_GESTURE_OPTION_DOUBLE_TAP_ZOOM | MLN_GESTURE_OPTION_TWO_FINGER_TAP_ZOOM,
         "mln_gesture_options.fields",
     )?;
-    let mut next = *current;
+    let mut next = current.clone();
     let finite = |v: f64, what: &str| match v.is_finite() {
         true => Ok(v),
         false => Err(Failure::argument(format!("{what} must be finite"))),
@@ -222,21 +228,35 @@ unsafe fn axis(
         false => part.snap.is_some(),
     };
     part.snap = snaps.then_some(*kept_snap);
-    if has(MLN_GESTURE_AXIS_OPTION_NOTCHES) && o.notch_count > 0 {
-        if o.notches.is_null() {
-            return Err(Failure::argument(format!("the notches of {name} are null")));
-        }
-        // SAFETY: non-null, and the caller's contract.
-        let notches = unsafe { std::slice::from_raw_parts(o.notches, o.notch_count) };
-        for notch in notches {
-            if !(notch.spacing.is_finite() && notch.spacing > 0.0 && notch.offset.is_finite()) {
-                return Err(Failure::argument(format!(
-                    "a notch of {name} needs a positive spacing and a finite offset"
-                )));
+    if has(MLN_GESTURE_AXIS_OPTION_NOTCHES) {
+        let notches = match o.notch_count {
+            0 => &[][..],
+            _ if o.notches.is_null() => {
+                return Err(Failure::argument(format!("the notches of {name} are null")));
             }
-        }
+            // SAFETY: non-null, and the caller's contract.
+            count => unsafe { std::slice::from_raw_parts(o.notches, count) },
+        };
+        part.notches = notches
+            .iter()
+            .map(|n| notch(n, name))
+            .collect::<Result<_>>()?;
     }
     Ok(())
+}
+
+/// `n`, checked.
+fn notch(n: &mln_gesture_notch, part: &str) -> Result<Notch> {
+    if !(n.spacing.is_finite() && n.spacing > 0.0 && n.offset.is_finite()) {
+        return Err(Failure::argument(format!(
+            "a notch of {part} needs a positive, finite spacing and a finite offset"
+        )));
+    }
+    Ok(Notch {
+        spacing: n.spacing,
+        offset: n.offset,
+        kind: n.kind,
+    })
 }
 
 /// A part's glide: `decay` over the one it `kept`, which it glides by
@@ -542,6 +562,20 @@ fn event(e: InteractEvent, screen: Screen) -> mln_gesture_event {
         InteractEvent::TwoFingerTap { position } => {
             tap_event(MLN_GESTURE_EVENT_TWO_FINGER_TAP, 0, position)
         }
+        InteractEvent::Notch { axis, value, kind } => mln_gesture_event {
+            type_: MLN_GESTURE_EVENT_NOTCH,
+            data: mln_gesture_event_data {
+                notch: mln_gesture_notch_event {
+                    axis: match axis {
+                        Axis::Zoom => MLN_GESTURE_AXIS_ZOOM,
+                        Axis::Bearing => MLN_GESTURE_AXIS_BEARING,
+                        Axis::Pitch => MLN_GESTURE_AXIS_PITCH,
+                    },
+                    kind,
+                    value,
+                },
+            },
+        },
     }
 }
 
@@ -564,20 +598,46 @@ impl Recognizer {
                 entry.apply_gesture(moves);
                 Ok(Drawn::New)
             });
+            // This command's number, or a later one's.
+            state.sent = self.map.posted();
         }
     }
 
-    /// Sends the moves the last call made, and fills `result` with what it
-    /// reported.
-    fn finish(&self, state: &mut State, handled: bool, result: &mut mln_gesture_result) {
+    /// Samples the camera for notches at `now`, as the map's snapshot
+    /// shows it: input still moves the camera until the snapshot shows the
+    /// moves sent last.
+    fn sample(&self, state: &mut State, now: f64) {
+        if !state.gestures.watches_notches() {
+            return;
+        }
+        let shown = self.map.shown();
+        let Some(snapshot) = self.map.snapshot() else {
+            return;
+        };
+        let camera = snapshot.view.camera;
+        let reading = Reading {
+            zoom: camera.zoom,
+            bearing: camera.bearing,
+            pitch: camera.pitch,
+            // A released map moves no more, whatever it last published.
+            moving: shown != u64::MAX && (snapshot.gesture_in_progress || shown < state.sent),
+        };
+        state.gestures.sample(reading, now);
+    }
+
+    /// Sends the moves the last call made, samples the camera for notches,
+    /// and fills `result` with what the recognizer reported.
+    fn finish(&self, state: &mut State, handled: bool, now: f64, result: &mut mln_gesture_result) {
         self.send(state);
+        self.sample(state, now);
         let screen = self.screen();
         let events = state.gestures.take_events().into_iter();
         let events = events.map(|e| event(e, screen));
         state.pending.extend(events);
         result.handled = handled;
         (result.next_tick, result.next_tick_ms) = match state.gestures.next_tick() {
-            Some(at) => (MLN_GESTURE_NEXT_TICK_AT, at),
+            Some(Tick::Frame) => (MLN_GESTURE_NEXT_TICK_FRAME, 0.0),
+            Some(Tick::At(at)) => (MLN_GESTURE_NEXT_TICK_AT, at),
             None => (MLN_GESTURE_NEXT_TICK_NONE, 0.0),
         };
         let corners = state.gestures.box_zoom();
@@ -628,9 +688,10 @@ pub unsafe extern "C" fn mln_gesture_recognizer_create(
             let map = handles::map(map.0)?;
             let mut gestures = Interaction::default();
             let defaults = defaults();
+            let kept = Kept::of(&defaults);
             let (options, kept) = match options.is_null() {
-                true => (defaults, Kept::of(&defaults)),
-                false => self::options(sized(options, "options")?, &defaults, Kept::of(&defaults))?,
+                true => (defaults, kept),
+                false => self::options(sized(options, "options")?, &defaults, kept)?,
             };
             gestures.set_options(options);
             fresh_out(out_recognizer, "out_recognizer")?;
@@ -641,6 +702,7 @@ pub unsafe extern "C" fn mln_gesture_recognizer_create(
                     held: Modes::default(),
                     pending: VecDeque::new(),
                     kept,
+                    sent: 0,
                 }),
             });
             let handle = handles::insert(Object::Gestures(recognizer));
@@ -713,7 +775,7 @@ pub unsafe extern "C" fn mln_gesture_recognizer_handle(
                 Some(input) => state.gestures.handle(input, now),
                 None => false,
             };
-            recognizer.finish(state, handled, result);
+            recognizer.finish(state, handled, now, result);
             Ok(())
         })
     }
@@ -734,7 +796,7 @@ pub unsafe extern "C" fn mln_gesture_recognizer_tick(
             let result = result(out_result)?;
             let mut state = lock(&recognizer.state);
             state.gestures.frame(now);
-            recognizer.finish(&mut state, false, result);
+            recognizer.finish(&mut state, false, now, result);
             Ok(())
         })
     }
@@ -775,6 +837,24 @@ mod tests {
     }
 
     fn pointer(r: mln_gesture_recognizer, kind: mln_gesture_input_type, x: f64, t: f64) {
+        assert!(press(r, kind, x, t, 0).handled);
+    }
+
+    fn empty_result() -> mln_gesture_result {
+        // SAFETY: plain C data.
+        let mut result: mln_gesture_result = unsafe { std::mem::zeroed() };
+        result.size = std::mem::size_of::<mln_gesture_result>() as u32;
+        result
+    }
+
+    /// A mouse's input at `x`, pressing with `modes`.
+    fn press(
+        r: mln_gesture_recognizer,
+        kind: mln_gesture_input_type,
+        x: f64,
+        t: f64,
+        modes: mln_gesture_modes,
+    ) -> mln_gesture_result {
         // SAFETY: plain C data.
         let mut input: mln_gesture_input = unsafe { std::mem::zeroed() };
         input.size = std::mem::size_of::<mln_gesture_input>() as u32;
@@ -786,22 +866,103 @@ mod tests {
                     id: 1,
                     kind: MLN_POINTER_KIND_MOUSE,
                     position,
-                    modes: 0,
+                    modes,
                 },
             },
             _ => mln_gesture_input_data {
                 pointer_move: mln_gesture_pointer { id: 1, position },
             },
         };
-        // SAFETY: plain C data, sized for the call.
-        let mut result: mln_gesture_result = unsafe { std::mem::zeroed() };
-        result.size = std::mem::size_of::<mln_gesture_result>() as u32;
+        let mut result = empty_result();
         // SAFETY: a live recognizer, a sized input and result.
         let status = unsafe {
             mln_gesture_recognizer_handle(r, &input, t, &mut result, std::ptr::null_mut())
         };
         assert_eq!(status, MLN_STATUS_OK);
-        assert!(result.handled);
+        result
+    }
+
+    fn tick(r: mln_gesture_recognizer, t: f64) -> mln_gesture_result {
+        let mut result = empty_result();
+        // SAFETY: a live recognizer and a sized result.
+        let status =
+            unsafe { mln_gesture_recognizer_tick(r, t, &mut result, std::ptr::null_mut()) };
+        assert_eq!(status, MLN_STATUS_OK);
+        result
+    }
+
+    /// The notches a result reported: axis, value and kind.
+    fn notches(result: &mln_gesture_result) -> Vec<(mln_gesture_axis, f64, u32)> {
+        let events = &result.events[..result.event_count];
+        let notches = events.iter().filter(|e| e.type_ == MLN_GESTURE_EVENT_NOTCH);
+        // SAFETY: a notch event's data is its notch.
+        let notches = notches.map(|e| unsafe { e.data.notch });
+        notches.map(|n| (n.axis, n.value, n.kind)).collect()
+    }
+
+    /// A runtime and an 800 × 600 map on it, with a recognizer of the
+    /// default options.
+    fn recognizer() -> (mln_runtime, mln_map, mln_gesture_recognizer) {
+        let mut runtime = mln_runtime(0);
+        // SAFETY: default options, a fresh out handle.
+        let status =
+            unsafe { mln_runtime_create(std::ptr::null(), &mut runtime, std::ptr::null_mut()) };
+        assert_eq!(status, MLN_STATUS_OK);
+        // SAFETY: plain C data.
+        let mut options: mln_map_options = unsafe { std::mem::zeroed() };
+        options.size = std::mem::size_of::<mln_map_options>() as u32;
+        options.initial_extent = mln_logical_extent {
+            width: 800,
+            height: 600,
+            scale_factor: 1.0,
+        };
+        let (c, made) = completion();
+        let mut map = mln_map(0);
+        // SAFETY: a live runtime, sized options, a fresh out handle.
+        let status = unsafe {
+            mln_runtime_create_map(runtime, &options, &mut map, &c, std::ptr::null_mut())
+        };
+        assert_eq!(status, MLN_STATUS_OK);
+        assert_eq!(
+            made.recv_timeout(WAIT).unwrap(),
+            Report::Result(MLN_STATUS_OK, String::new())
+        );
+        let mut recognizer = mln_gesture_recognizer(0);
+        // SAFETY: a live map, default options, a fresh out handle.
+        let status = unsafe {
+            mln_gesture_recognizer_create(
+                map,
+                std::ptr::null(),
+                &mut recognizer,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, MLN_STATUS_OK);
+        (runtime, map, recognizer)
+    }
+
+    fn release(runtime: mln_runtime, map: mln_map, recognizer: mln_gesture_recognizer) {
+        mln_gesture_recognizer_release(recognizer);
+        let (c, released) = completion();
+        // SAFETY: a live map, a valid completion.
+        assert_eq!(
+            unsafe { mln_map_release(map, &c, std::ptr::null_mut()) },
+            MLN_STATUS_OK
+        );
+        assert_eq!(
+            released.recv_timeout(WAIT).unwrap(),
+            Report::Result(MLN_STATUS_OK, String::new())
+        );
+        let (c, released) = completion();
+        // SAFETY: a live runtime without maps, a valid completion.
+        assert_eq!(
+            unsafe { mln_runtime_release(runtime, &c, std::ptr::null_mut()) },
+            MLN_STATUS_OK
+        );
+        assert_eq!(
+            released.recv_timeout(WAIT).unwrap(),
+            Report::Result(MLN_STATUS_OK, String::new())
+        );
     }
 
     fn gesture_options() -> mln_gesture_options {
@@ -852,41 +1013,7 @@ mod tests {
     /// and its release glides on before the gesture ends.
     #[test]
     fn a_flung_drag_moves_the_map_and_glides_on() {
-        let mut runtime = mln_runtime(0);
-        // SAFETY: default options, a fresh out handle.
-        let status =
-            unsafe { mln_runtime_create(std::ptr::null(), &mut runtime, std::ptr::null_mut()) };
-        assert_eq!(status, MLN_STATUS_OK);
-        // SAFETY: plain C data.
-        let mut options: mln_map_options = unsafe { std::mem::zeroed() };
-        options.size = std::mem::size_of::<mln_map_options>() as u32;
-        options.initial_extent = mln_logical_extent {
-            width: 800,
-            height: 600,
-            scale_factor: 1.0,
-        };
-        let (c, made) = completion();
-        let mut map = mln_map(0);
-        // SAFETY: a live runtime, sized options, a fresh out handle.
-        let status = unsafe {
-            mln_runtime_create_map(runtime, &options, &mut map, &c, std::ptr::null_mut())
-        };
-        assert_eq!(status, MLN_STATUS_OK);
-        assert_eq!(
-            made.recv_timeout(WAIT).unwrap(),
-            Report::Result(MLN_STATUS_OK, String::new())
-        );
-        let mut recognizer = mln_gesture_recognizer(0);
-        // SAFETY: a live map, default options, a fresh out handle.
-        let status = unsafe {
-            mln_gesture_recognizer_create(
-                map,
-                std::ptr::null(),
-                &mut recognizer,
-                std::ptr::null_mut(),
-            )
-        };
-        assert_eq!(status, MLN_STATUS_OK);
+        let (runtime, map, recognizer) = recognizer();
         let before = snapshot(map);
         let start = before.view.camera.center.longitude;
 
@@ -912,27 +1039,50 @@ mod tests {
         let end = rest.view.camera.center.longitude;
         assert!(dragged < start, "{dragged} {start}");
         assert!(end < dragged, "it glides on: {end} {dragged}");
+        release(runtime, map, recognizer);
+    }
 
-        mln_gesture_recognizer_release(recognizer);
-        let (c, released) = completion();
-        // SAFETY: a live map, a valid completion.
-        assert_eq!(
-            unsafe { mln_map_release(map, &c, std::ptr::null_mut()) },
-            MLN_STATUS_OK
-        );
-        assert_eq!(
-            released.recv_timeout(WAIT).unwrap(),
-            Report::Result(MLN_STATUS_OK, String::new())
-        );
-        let (c, released) = completion();
-        // SAFETY: a live runtime without maps, a valid completion.
-        assert_eq!(
-            unsafe { mln_runtime_release(runtime, &c, std::ptr::null_mut()) },
-            MLN_STATUS_OK
-        );
-        assert_eq!(
-            released.recv_timeout(WAIT).unwrap(),
-            Report::Result(MLN_STATUS_OK, String::new())
-        );
+    /// A twist that leaves north and comes back reports the header's
+    /// default notch there once, sampled from the map's snapshots, and
+    /// asks for frames until its gesture ends.
+    #[test]
+    fn a_twist_back_to_north_reports_its_notch() {
+        let (runtime, map, recognizer) = recognizer();
+        let bearing = |b: f64| move |s: &mln_map_snapshot| (s.view.camera.bearing - b).abs() < 1e-6;
+        let mut reported = Vec::new();
+        let mut t = 0.0;
+        let drag =
+            |kind, x: f64, t: f64| notches(&press(recognizer, kind, x, t, MLN_GESTURE_MODE_ROTATE));
+        reported.extend(drag(MLN_GESTURE_INPUT_POINTER_DOWN, 300.0, t));
+        // Half a degree a pixel: to 20° and back.
+        for x in [310.0, 320.0, 330.0, 340.0] {
+            t += 16.0;
+            reported.extend(drag(MLN_GESTURE_INPUT_POINTER_MOVE, x, t));
+        }
+        until(map, bearing(20.0));
+        t += 16.0;
+        let away = tick(recognizer, t);
+        assert_eq!(away.next_tick, MLN_GESTURE_NEXT_TICK_FRAME);
+        reported.extend(notches(&away));
+        for x in [330.0, 320.0, 310.0, 300.0] {
+            t += 16.0;
+            reported.extend(drag(MLN_GESTURE_INPUT_POINTER_MOVE, x, t));
+        }
+        until(map, bearing(0.0));
+        t += 100.0;
+        reported.extend(drag(MLN_GESTURE_INPUT_POINTER_UP, 300.0, t));
+        let start = Instant::now();
+        loop {
+            t += 16.0;
+            let result = tick(recognizer, t);
+            reported.extend(notches(&result));
+            if result.next_tick == MLN_GESTURE_NEXT_TICK_NONE {
+                break;
+            }
+            assert!(start.elapsed() < WAIT, "its watch never ended");
+            std::thread::yield_now();
+        }
+        assert_eq!(reported, [(MLN_GESTURE_AXIS_BEARING, 0.0, 0)]);
+        release(runtime, map, recognizer);
     }
 }

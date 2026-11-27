@@ -1,6 +1,6 @@
 //! A map's events (GL JS's map events as reference): style and
-//! source data, load, idle, errors and warnings, the camera's moves and
-//! clicks.
+//! source data, load, idle, errors and warnings, the camera's moves,
+//! clicks and notches.
 
 use std::collections::BTreeSet;
 
@@ -75,6 +75,16 @@ pub enum MapEvent {
     /// `longClick`, GL JS's `contextmenu`).
     LongClick {
         position: DVec2,
+    },
+    /// Input moved the camera to or across one of the gestures' notches
+    /// ([`Movement::notches`](orb_camera::input::Movement::notches)), for
+    /// the host to play haptic feedback.
+    Notch {
+        axis: orb_camera::input::Axis,
+        /// In the part's unit; a bearing from 0 up to 360 degrees.
+        value: f64,
+        /// The notch's kind, from the options.
+        kind: u32,
     },
     /// A source's description arrived: its TileJSON (MapLibre Native's
     /// `onSourceChanged`).
