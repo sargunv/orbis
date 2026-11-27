@@ -609,7 +609,7 @@ impl Map {
         // Pressure sheds what's kept out of view, parked payloads too.
         let release = std::mem::take(&mut self.release_cached);
         if release {
-            (self.parked).drop_where(|_, _| true, &mut self.retired.host);
+            (self.parked).drop_where(|_, _| true, &mut self.released_host);
         }
         let keeps = !release && self.tile_cache;
         let Some(style) = &mut self.style else {

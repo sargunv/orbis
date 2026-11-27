@@ -427,6 +427,17 @@ pub struct HostData {
     images: Slots<wgpu::ExternalImageSource>,
 }
 
+impl HostData {
+    /// Whether it holds nothing: all that was registered was released.
+    pub fn is_empty(&self) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        if self.images.len() != 0 {
+            return false;
+        }
+        self.bytes.len() == 0
+    }
+}
+
 /// Bytes held for [`Gpu::write_buffer_from_host`].
 #[derive(Debug)]
 enum HostBytes {

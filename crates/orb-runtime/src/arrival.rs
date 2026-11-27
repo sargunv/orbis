@@ -147,7 +147,7 @@ impl Map {
             Applied::Parks(build) => {
                 let at = (generation, source, tile);
                 let cap = self.cache_limit();
-                (self.parked).park(at, build, cap, &mut self.retired.host);
+                (self.parked).park(at, build, cap, &mut self.released_host);
                 true
             }
             Applied::Uploading(build, reserved) => {

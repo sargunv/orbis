@@ -597,7 +597,9 @@ impl SpriteState {
 }
 
 /// What tiles and styles let go of between frames, released at the next:
-/// from the renderer, or from the runtime's image atlas.
+/// from the renderer, or from the runtime's image atlas. All of it is on
+/// the device, and goes with a lost one; their host data isn't
+/// ([`Map::released_host`]).
 #[derive(Debug, Default)]
 pub(crate) struct Retired {
     /// Tiles of sources and the background.
@@ -610,8 +612,6 @@ pub(crate) struct Retired {
     pub(crate) images: Vec<u64>,
     /// Gradient ramps of meshes that went.
     pub(crate) ramps: Vec<u32>,
-    /// Host data of tile results dropped, parked ones among them.
-    pub(crate) host: Vec<HostData>,
     /// Room held for tiles going up in pieces that went.
     pub(crate) reserved: Vec<orb_render::Reserved>,
 }
@@ -879,6 +879,11 @@ pub struct Map {
     /// What tiles and styles let go of between frames, for the next frame
     /// to release from the renderer.
     pub(crate) retired: Retired,
+    /// Host data of tile results dropped (parked ones among them), for the
+    /// next frame to release. It is host memory, which outlives a lost
+    /// device: the device that replaces it takes it over, ids and all
+    /// (`WgpuGpu::adopt_host_data`), and releases it.
+    pub(crate) released_host: Vec<HostData>,
     /// The renderer's nodes are of a replaced style.
     pub(crate) nodes_stale: bool,
     /// The scene's capacity the host set ([`Map::set_scene_capacity`]);
@@ -1092,6 +1097,7 @@ impl Map {
             style: None,
             renderer: None,
             retired: Retired::default(),
+            released_host: Vec::new(),
             options: crate::MapOptions::default(),
             keep_all_cull: false,
             flip_y: false,
@@ -1638,15 +1644,14 @@ impl Map {
     /// glyphs load again.
     fn forget_gpu(&mut self) {
         self.planned = None;
-        // Their host data went with the device.
-        self.parked = Default::default();
-        self.uploading = None;
+        // While the style is in: answers to the loads this gives up land
+        // nowhere, and the host data of results parked, waiting or going
+        // up is released on the device that took it over.
+        self.clear_style_tiles();
         self.globe_warps = crate::globe::GlobeWarps::new(*self.surface.projection());
-        self.retired = Retired::default();
         self.labels = crate::labels::Labels::new(Arc::clone(&self.labels.lane));
         self.label_epoch += 1;
         *self.picking.get_mut() = Default::default();
-        self.cancel_tile_loads();
         if let Some(style) = self.style.take() {
             self.next_generation();
             // What the host set at run time comes back with it, feature
@@ -1656,8 +1661,8 @@ impl Map {
                 let _ = self.add_image(&name, Arc::unwrap_or_clone(image));
             }
         }
-        // What the old renderer held went with it.
-        (self.retired.tiles, self.retired.tables) = Default::default();
+        // What the old renderer and image atlas held went with them.
+        self.retired = Retired::default();
     }
 
     /// Replaces the style with a document, every tile loaded fresh, and
@@ -1719,6 +1724,11 @@ impl Map {
             generation: self.version,
         });
         self.clear_style();
+        if previous.is_none() {
+            // A new style's sources are others; the same style again keeps
+            // the heights the app gave it.
+            self.host_heights.clear();
+        }
         self.pending.clear();
         match previous {
             Some((id, _)) => self.style_id = id,
@@ -1930,7 +1940,7 @@ impl Map {
             self.nodes_stale = true;
         }
         self.retired.release(renderer);
-        for host in self.retired.host.drain(..) {
+        for host in self.released_host.drain(..) {
             host.release(gpu);
         }
         self.start_sprites(gpu, pixel_ratio);
@@ -2985,20 +2995,20 @@ impl Map {
         };
         let (asked, held) = self.host_tiles.forget(key, which);
         self.host_heights.forget(key, which);
-        (self.parked).drop_where(|s, tile| s == key && picks(tile), &mut self.retired.host);
+        (self.parked).drop_where(|s, tile| s == key && picks(tile), &mut self.released_host);
         // Answers waiting for room hold the old data: their tiles load again.
         let generation = self.tile_generation;
         let (old, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.waiting)
             .into_iter()
             .partition(|w| (w.generation, w.source) == (generation, key) && picks(w.tile));
         self.waiting = waiting;
-        (self.retired.host).extend(old.iter().map(|w| HostData::of(&w.build)));
+        (self.released_host).extend(old.iter().map(|w| HostData::of(&w.build)));
         let stale = |u: &crate::arrival::Uploading| {
             (u.generation, u.source) == (generation, key) && picks(u.tile)
         };
         let old_upload = self.uploading.take_if(|u| stale(u));
         if let Some(up) = old_upload {
-            self.retired.host.push(HostData::of(&up.build));
+            self.released_host.push(HostData::of(&up.build));
             self.retired.reserved.push(up.reserved);
             if let Some(SourceState::Ready { pyramid, .. }) = self
                 .style
@@ -3779,6 +3789,17 @@ impl Map {
     /// Removes the style's tiles from the scene; they reload as needed.
     fn clear_style_tiles(&mut self) {
         self.cancel_tile_loads();
+        // In-flight tiles belong to the old scene: none lands to be
+        // dropped as stale.
+        self.tile_generation += 1;
+        (self.parked).drop_where(|_, _| true, &mut self.released_host);
+        if let Some(up) = self.uploading.take() {
+            self.released_host.push(HostData::of(&up.build));
+            self.retired.reserved.push(up.reserved);
+        }
+        self.host_tiles.clear_stale();
+        // The layers the app's heights went into go with their tiles.
+        self.host_heights.unstage();
         let Some(style) = &mut self.style else { return };
         let sources = style.sources.iter_mut().map(|s| &mut s.state);
         for source in sources.chain(&mut style.retired) {
@@ -3799,16 +3820,6 @@ impl Map {
             // Destroyed once the renderer's terrain is off.
             self.retired.pages.extend(terrain.page);
         }
-        // In-flight tiles belong to the old scene: none lands to be
-        // dropped as stale.
-        self.tile_generation += 1;
-        (self.parked).drop_where(|_, _| true, &mut self.retired.host);
-        if let Some(up) = self.uploading.take() {
-            self.retired.host.push(HostData::of(&up.build));
-            self.retired.reserved.push(up.reserved);
-        }
-        self.host_tiles.clear_stale();
-        self.host_heights.clear();
     }
 }
 
@@ -4343,6 +4354,124 @@ mod gpu_tests {
             .filter(|(a, b)| a != b)
             .count();
         assert_eq!(differ, 0, "pixels that differ from a fresh map's");
+    }
+
+    /// A device lost with a tile loading and another parked: the parked
+    /// one's host data, which the device that replaces it took over
+    /// (`WgpuGpu::adopt_host_data`), is released there, and the answer to
+    /// the load the loss gave up lands nowhere, so the new device's tile
+    /// is laid out once, not twice.
+    #[test]
+    fn a_lost_devices_tiles_load_once_and_release_their_host_data_on_the_next() {
+        let Ok(mut lost) = pollster::block_on(WgpuGpu::offscreen()) else {
+            eprintln!("no GPU adapter; skipped");
+            return;
+        };
+        let fetch = Arc::new(crate::testing::HeldFetch::default());
+        let mut map = Map::new(crate::testing::services(fetch.clone()), None);
+        map.set_style_json(
+            r#"{"version": 8, "center": [0, 0], "zoom": 0,
+                "sources": {"v": {"type": "vector",
+                    "tiles": ["https://example.com/{z}/{x}/{y}.pbf"]}},
+                "layers": [{"id": "f", "type": "fill", "source": "v", "source-layer": "l"}]}"#,
+        )
+        .unwrap();
+        let format = TargetFormat {
+            color: orb_hal::TextureFormat::Rgba8Unorm,
+            sample_count: 1,
+        };
+        let target = |gpu: &mut WgpuGpu| {
+            gpu.create_texture(&orb_hal::TextureDesc {
+                label: "loss test",
+                width: 64,
+                height: 64,
+                array_layers: 1,
+                dimension: orb_hal::TextureViewDimension::D2,
+                format: format.color,
+                usage: orb_hal::TextureUsages::RENDER_ATTACHMENT,
+                sample_count: 1,
+                mip_levels: 1,
+            })
+        };
+        let viewport = Viewport {
+            width: 64.0,
+            height: 64.0,
+        };
+        let requests = || fetch.aborts.lock().unwrap().len();
+        let answer = |result: &dyn Fn() -> Result<orb_host::Fetched, orb_host::FetchError>| {
+            let pending = std::mem::take(&mut *fetch.pending.lock().unwrap());
+            for (_, done) in pending {
+                done(result());
+            }
+        };
+        let mut renderer = map.create_renderer(&mut lost, format);
+        let drawn = target(&mut lost);
+        map.render(&mut lost, &mut renderer, drawn, viewport, 1.0, 0.0);
+        let loads = requests();
+        assert!(loads > 0, "the view's tiles load");
+        let key = map.style.as_ref().unwrap().worker.plan().sources[0].key;
+        let bytes = lost.register_bytes(vec![0; 8]);
+        let build = TileResult {
+            payload: crate::jobs::Payload::Host {
+                bytes,
+                base: 0,
+                words: 2,
+            },
+            ..TileResult::default()
+        };
+        let at = (map.tile_generation, key, TileIndex::new(3, 0, 0));
+        (map.parked).park(at, build, 8, &mut map.released_host);
+        // How the view's load answers, as the jobs would.
+        let late = map.tile_done(&TileRequest::whole(
+            map.style_id,
+            key,
+            TileIndex::new(0, 0, 0),
+            crate::loader::TileLocation::Url("https://example.com/0/0/0.pbf".into()),
+            orb_style::Encoding::Mvt,
+        ));
+
+        lost.lose();
+        let mut gpu = pollster::block_on(WgpuGpu::offscreen()).expect("a second GPU");
+        gpu.adopt_host_data(lost.take_host_data());
+        map.services.images.reset();
+        let mut renderer = map.create_renderer(&mut gpu, format);
+        let drawn = target(&mut gpu);
+        map.render(&mut gpu, &mut renderer, drawn, viewport, 1.0, 0.0);
+        assert_eq!(requests(), 2 * loads, "the new device's view loads");
+        map.take_events();
+        // The fetch the loss aborted ends unanswered, and its load's answer
+        // comes after the view asked again, as a browser's job worker's
+        // reply may.
+        drop(fetch.pending.lock().unwrap().drain(..loads));
+        late(Ok(crate::TileOutcome::Cancelled));
+        map.render(&mut gpu, &mut renderer, drawn, viewport, 1.0, 0.0);
+        let mut idle = false;
+        for _ in 0..50 {
+            answer(&|| Ok(orb_host::Fetched::default()));
+            idle = map
+                .render(&mut gpu, &mut renderer, drawn, viewport, 1.0, 0.0)
+                .idle();
+            if idle {
+                break;
+            }
+        }
+        assert!(idle, "the map settles");
+        let laid_out = (map.take_events().into_iter())
+            .filter(|e| {
+                matches!(
+                    e,
+                    MapEvent::Tile {
+                        progress: crate::Progress::Loaded,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(laid_out, loads, "the view's tiles laid out once each");
+        assert!(
+            gpu.take_host_data().is_empty(),
+            "the parked tile's host data is released"
+        );
     }
 
     #[test]

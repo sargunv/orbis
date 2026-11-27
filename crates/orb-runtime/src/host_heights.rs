@@ -223,6 +223,18 @@ impl HostHeights {
         self.shown.retain(|&(s, t), _| s != source || !which(t));
     }
 
+    /// Takes back what the batches going in wrote: the tiles that held
+    /// those layers went (the map's tiles cleared, or the device lost).
+    /// Each tile staged is written again, over the layers it holds when it
+    /// comes back, and its batch still shows whole.
+    pub(crate) fn unstage(&mut self) {
+        for batch in self.batches.values_mut() {
+            for staged in batch.staged.drain(..).rev() {
+                (batch.queue).push_front((staged.tile, Heights::Shown(staged.packed)));
+            }
+        }
+    }
+
     /// Forgets every batch going in: a new style's sources are others.
     pub(crate) fn clear(&mut self) {
         self.batches.clear();
