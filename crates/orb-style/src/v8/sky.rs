@@ -1,62 +1,24 @@
 //! v8's `sky`, lowered into the style's [`Atmosphere`]: one sky and fog
 //! model.
-use crate::v8::{Cx, layer::typed_property_at};
+use crate::spec::sky::{
+    ATMOSPHERE_BLEND, FOG_COLOR, FOG_GROUND_BLEND, HORIZON_COLOR, HORIZON_FOG_BLEND, PROPS,
+    SKY_COLOR, SKY_HORIZON_BLEND,
+};
+use crate::v8::{Cx, root::RootObject};
 use crate::*;
-use orb_expr::{PropertyType, json::Json};
+use orb_expr::json::Json;
 
 pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Atmosphere {
-    const NAMES: &[&str] = &[
-        "sky-color",
-        "horizon-color",
-        "fog-color",
-        "fog-ground-blend",
-        "horizon-fog-blend",
-        "sky-horizon-blend",
-        "atmosphere-blend",
-    ];
-    for m in cx.object(json, "sky").unwrap_or_default() {
-        let name = m.key.strip_suffix("-transition").unwrap_or(&m.key);
-        if !NAMES.contains(&name) {
-            cx.warn_unknown("sky", m);
-        }
-    }
-    let prop = |name, ty: PropertyType, default| {
-        let number = ty == PropertyType::Number;
-        Prop {
-            name,
-            ty,
-            default: Some(default),
-            interpolated: true,
-            minimum: number.then_some(0.0),
-            maximum: number.then_some(1.0),
-            ..Prop::ROOT
-        }
-    };
-    let color = |cx: &mut Cx, name: &'static str, default| {
-        typed_property_at(
-            cx,
-            json.get(name),
-            &format!("sky.{name}"),
-            &prop(name, PropertyType::Color, default),
-        )
-    };
-    let number = |cx: &mut Cx, name: &'static str, default| {
-        typed_property_at(
-            cx,
-            json.get(name),
-            &format!("sky.{name}"),
-            &prop(name, PropertyType::Number, default),
-        )
-    };
+    let sky = RootObject::parse(cx, Some(json), "sky", PROPS);
     Atmosphere {
-        sky_color: color(cx, "sky-color", "\"#88C6FC\""),
-        horizon_color: color(cx, "horizon-color", "\"white\""),
-        fog_color: color(cx, "fog-color", "\"white\""),
-        fog_ground_blend: number(cx, "fog-ground-blend", "0.5"),
-        horizon_fog_blend: number(cx, "horizon-fog-blend", "0.8"),
-        sky_horizon_blend: number(cx, "sky-horizon-blend", "0.8"),
-        atmosphere_blend: number(cx, "atmosphere-blend", "0.8"),
-        transitions: crate::v8::paint::root_transitions(cx, Some(json), "sky", NAMES),
+        sky_color: sky.read(cx, &SKY_COLOR),
+        horizon_color: sky.read(cx, &HORIZON_COLOR),
+        fog_color: sky.read(cx, &FOG_COLOR),
+        fog_ground_blend: sky.read(cx, &FOG_GROUND_BLEND),
+        horizon_fog_blend: sky.read(cx, &HORIZON_FOG_BLEND),
+        sky_horizon_blend: sky.read(cx, &SKY_HORIZON_BLEND),
+        atmosphere_blend: sky.read(cx, &ATMOSPHERE_BLEND),
+        transitions: sky.transitions,
     }
 }
 

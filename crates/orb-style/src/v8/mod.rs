@@ -13,6 +13,7 @@ mod geojson;
 mod layer;
 mod light;
 mod paint;
+mod root;
 mod sky;
 mod source;
 mod sprite;

@@ -1,10 +1,12 @@
 //! The v8 spec entries of the properties Orbis types (`v8.json`): one
-//! table of every layer property, which [`PropertyId`]s index. Each entry
-//! has its layer type, section, value type, default and the inputs the
-//! spec lets it read, and Orbis's own: the [`Phase`] it is evaluated in
-//! and the further [`Inputs`] Orbis honours there, which it draws with a
-//! warning that the style isn't portable. Parsing, validation, the diff, the
-//! renderer and the generated support matrix all read it.
+//! table of every layer property, which [`PropertyId`]s index, and one
+//! each for the root `light` and `sky`. Each entry has its value type,
+//! default and the inputs the spec lets it read, and Orbis's own: the
+//! [`Phase`] it is evaluated in and the further [`Inputs`] Orbis honours
+//! there, which it draws with a warning that the style isn't portable. A
+//! layer property's entry also has its layer type and section; a root
+//! one's has neither. Parsing, validation, the diff and the renderer read
+//! the tables, and the generated support matrix reads the layers'.
 
 use orb_expr::json::{self, Json};
 use orb_expr::{Inputs, PropertyExpression, PropertySpec, PropertyType, Type};
@@ -108,10 +110,6 @@ impl Phase {
 }
 
 impl Prop {
-    /// The fields a root-level property (light, sky, terrain) leaves at
-    /// their defaults.
-    pub(crate) const ROOT: Self = prop("", PropertyType::Number, None).in_phase(Phase::Layer);
-
     /// What the spec lets it read: its expression parameters, which are
     /// zoom, data where it is data-driven, state where it is
     /// data-driven paint drawn per frame (not cross-faded patterns and
@@ -284,6 +282,66 @@ const TRANSLATE: PropertyType = PropertyType::Array(Type::Number, Some(2));
 
 const fn enumeration<E: Enum>() -> PropertyType {
     PropertyType::Enum(E::VALUES)
+}
+
+/// A root object's property (`light`, `sky`): evaluated once for the
+/// whole map, as a layer-phase property is.
+const fn root(name: &'static str, ty: PropertyType, default: &'static str) -> Prop {
+    prop(name, ty, Some(default)).in_phase(Phase::Layer)
+}
+
+/// v8's `light`. Its interpolated properties take a `*-transition`.
+pub(crate) mod light {
+    use super::*;
+
+    pub(crate) const ANCHOR: Prop =
+        root("anchor", enumeration::<TranslateAnchor>(), "\"viewport\"");
+    pub(crate) const POSITION: Prop = root(
+        "position",
+        PropertyType::Array(Type::Number, Some(3)),
+        "[1.15,210,30]",
+    )
+    .interpolated();
+    pub(crate) const COLOR: Prop = root("color", PropertyType::Color, "\"white\"").interpolated();
+    pub(crate) const INTENSITY: Prop = root("intensity", NUMBER, "0.5")
+        .interpolated()
+        .range(0.0, Some(1.0));
+
+    /// Every property, in the spec's order.
+    pub(crate) static PROPS: &[Prop] = &[ANCHOR, POSITION, COLOR, INTENSITY];
+}
+
+/// v8's `sky`. Its interpolated properties take a `*-transition`.
+pub(crate) mod sky {
+    use super::*;
+
+    const fn blend(name: &'static str, default: &'static str) -> Prop {
+        root(name, NUMBER, default)
+            .interpolated()
+            .range(0.0, Some(1.0))
+    }
+    const fn color(name: &'static str, default: &'static str) -> Prop {
+        root(name, PropertyType::Color, default).interpolated()
+    }
+
+    pub(crate) const SKY_COLOR: Prop = color("sky-color", "\"#88C6FC\"");
+    pub(crate) const HORIZON_COLOR: Prop = color("horizon-color", "\"white\"");
+    pub(crate) const FOG_COLOR: Prop = color("fog-color", "\"white\"");
+    pub(crate) const FOG_GROUND_BLEND: Prop = blend("fog-ground-blend", "0.5");
+    pub(crate) const HORIZON_FOG_BLEND: Prop = blend("horizon-fog-blend", "0.8");
+    pub(crate) const SKY_HORIZON_BLEND: Prop = blend("sky-horizon-blend", "0.8");
+    pub(crate) const ATMOSPHERE_BLEND: Prop = blend("atmosphere-blend", "0.8");
+
+    /// Every property, in the spec's order.
+    pub(crate) static PROPS: &[Prop] = &[
+        SKY_COLOR,
+        HORIZON_COLOR,
+        FOG_COLOR,
+        FOG_GROUND_BLEND,
+        HORIZON_FOG_BLEND,
+        SKY_HORIZON_BLEND,
+        ATMOSPHERE_BLEND,
+    ];
 }
 
 /// `visibility`: a constant, which only `global-state` could vary.
@@ -708,16 +766,20 @@ properties! {
 mod tests {
     use super::*;
 
+    /// Every property: the layers' and the root objects'.
+    fn all() -> impl Iterator<Item = &'static Prop> {
+        PROPS.iter().chain(light::PROPS).chain(sky::PROPS)
+    }
+
     /// Every property's inputs, the spec's and Orbis's, are ones its phase
     /// can follow.
     #[test]
     fn phases_honour_their_inputs() {
-        for p in PROPS {
+        for p in all() {
             let honours = p.phase().honours();
             assert!(
                 honours.contains(p.orbis_inputs()),
-                "{} {}: {:?} beyond its {:?} phase",
-                p.layer.name(),
+                "{}: {:?} beyond its {:?} phase",
                 p.name,
                 p.orbis_inputs().minus(honours).names().collect::<Vec<_>>(),
                 p.phase(),
@@ -729,7 +791,7 @@ mod tests {
     /// the preview of its own name.
     #[test]
     fn extensions_are_named_by_their_preview() {
-        for p in PROPS {
+        for p in all() {
             let extension = p.name.starts_with(crate::NAMESPACE);
             assert_eq!(
                 p.preview.map(crate::Preview::name),
