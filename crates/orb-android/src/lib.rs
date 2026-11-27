@@ -386,12 +386,13 @@ impl State {
             Err(e) => panic!("{e}"),
         };
         self.events();
-        let Some(report) = report else {
-            self.window.request_redraw();
-            return;
-        };
-        self.frames += 1;
-        self.log_load(&report, lose);
+        // A frame not drawn (a lost device's replacement waiting out its
+        // backoff, a surface skipped) asks again only if the map needs
+        // one: the map's wake asks once the backoff ends.
+        if let Some(report) = report {
+            self.frames += 1;
+            self.log_load(&report, lose);
+        }
         if self.map.needs_frame() {
             self.window.request_redraw();
         }
