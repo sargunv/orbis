@@ -35,38 +35,62 @@ const modifiers = (e: KeyboardEvent | MouseEvent) =>
   (e.altKey ? 4 : 0) |
   (e.metaKey ? 8 : 0);
 
-/** Safari's wheel notch in pixels, and a faster turn's a whole multiple. */
-const SAFARI_NOTCH = 4.000244140625;
+/** A slow wheel notch on macOS in pixels (Safari's and Chromium's there):
+ * 40 × `NSEvent.deltaY`. */
+const MAC_NOTCH = 4.000244140625;
 
 /** A wheel event as the gestures take it (orb-web's `wheel`): its notches
  * (`notches` 1), for a mouse wheel's detents, which the map eases, or its
- * pixels (0), for continuous scrolling (a trackpad, a precise wheel),
- * which it applies at once. Positive scrolls down. Browsers don't say
- * which device scrolled, so this reads it from how each reports it, as
- * mln-rs's page does, `deltaMode` first:
- * - Firefox reports wheels in lines, 3 a notch, and pages.
- * - Safari reports a notch as 4.000244140625 px, and a faster turn as a
- *   whole multiple of it (GL JS's test): one notch per multiple.
- * - Chromium's legacy `wheelDeltaY` is 120 a detent, and -3 × `deltaY`
- *   for precise scrolling.
- * A misread zooms the same way by a similar amount, with or without the
- * easing. */
+ * pixels (0), for continuous scrolling (a trackpad, a precise wheel, a
+ * trackpad pinch), which it applies at once. Positive scrolls down.
+ * Browsers don't say which device scrolled, so this reads it from how
+ * each reports a notch, as their source has it (mln-rs's page's rules),
+ * `deltaMode` first:
+ * - Firefox reports a mouse wheel in lines. On Windows and Linux a notch
+ *   is 6 lines (the system's 3, doubled by its
+ *   `mousewheel.system_scroll_override`) with a legacy `wheelDeltaY` of
+ *   ∓120 ticks, which counts it; a high-resolution wheel, an old
+ *   touchpad or GTK's smooth scrolling sends a fraction of a tick, which
+ *   counts as that fraction of a notch. On macOS a notch is
+ *   `NSEvent.deltaY` rounded away from 0, a line for a slow notch, with
+ *   no ticks: its `wheelDeltaY` is −3 × the lines × the line's whole px.
+ *   Pages are notches.
+ * - Safari, and Chromium on macOS, report a notch as 4.000244140625 px,
+ *   and a faster turn as a whole multiple of it: one notch per multiple.
+ *   Safari's accelerated notches fall off the multiple and read as
+ *   pixels (GL JS's rule that keeps a burst as notches zoomed a fast turn
+ *   far too far in mln-rs).
+ * - Chromium's legacy `wheelDeltaY` is ±120 a detent (100 px on Windows,
+ *   33 at its lowest, 120 on Linux; on macOS it counts the notches when
+ *   acceleration breaks the multiple above), and −3 × `deltaY` for
+ *   precise scrolling on macOS, about −`deltaY` elsewhere.
+ * - Every browser sends a trackpad pinch as pixels with Ctrl. Chromium
+ *   gives each update ±120 ticks too, but a `deltaY` of 100 × ln(scale):
+ *   a few px against at least 33 for a notch's 120.
+ * Chromium divides both deltas by the page's zoom, so away from 100% its
+ * notches read as pixels. A misread zooms the same way by a similar
+ * amount, with or without the easing. */
 export const wheelDelta = (
-  e: Pick<WheelEvent, "deltaMode" | "deltaY"> & { wheelDeltaY?: number },
+  e: Pick<WheelEvent, "deltaMode" | "deltaY" | "ctrlKey"> & {
+    wheelDeltaY?: number;
+  },
 ): [notches: number, amount: number] => {
-  if (e.deltaMode === 1) return [1, e.deltaY / 3];
-  if (e.deltaMode === 2) return [1, e.deltaY];
-  if (e.deltaY !== 0 && e.deltaY % SAFARI_NOTCH === 0)
-    return [1, e.deltaY / SAFARI_NOTCH];
-  const legacy = e.wheelDeltaY;
-  if (
-    typeof legacy === "number" &&
-    legacy !== 0 &&
-    Math.abs(legacy + 3 * e.deltaY) >= 1 &&
-    legacy % 120 === 0
-  )
-    return [1, -legacy / 120];
-  return [0, e.deltaY];
+  const mode = e.deltaMode;
+  const legacy = e.wheelDeltaY ?? 0;
+  const ticks = legacy !== 0 && legacy % 120 === 0 ? -legacy / 120 : null;
+  const delta = e.deltaY;
+  if (mode === 1) {
+    if (ticks !== null || legacy === 0) return [1, ticks ?? delta];
+    const macLines =
+      delta !== 0 && Number.isInteger(delta) && legacy % (3 * delta) === 0;
+    return [1, macLines ? delta : -legacy / 120];
+  }
+  if (mode === 2) return [1, delta];
+  if (delta !== 0 && delta % MAC_NOTCH === 0) return [1, delta / MAC_NOTCH];
+  const precise = Math.abs(legacy + 3 * delta) < 1;
+  const pinch = e.ctrlKey && 4 * Math.abs(delta) < Math.abs(legacy);
+  if (ticks !== null && !precise && !pinch) return [1, ticks];
+  return [0, delta];
 };
 
 /** Whether the map uses a key (orb-web's `key`) with what it allows;
