@@ -120,16 +120,10 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
     let mut changes = Vec::new();
     let mut warnings = Vec::new();
 
-    // The root: camera and state defaults, sprites.
-    let mut style = Style {
-        terrain: None,
-        sources: Vec::new(),
-        layers: Vec::new(),
-        warnings: Vec::new(),
-        ..(**old).clone()
-    };
-    if draft.new_root {
-        // Terrain names a source: it is parsed with the sources below.
+    // The root without its sources, layers and terrain (which names a
+    // source: it is parsed with the sources below), under the draft's
+    // global state overrides, which light, sky and projection read.
+    let parse_root = || {
         let mut members: Vec<Member> = draft
             .root
             .iter()
@@ -151,12 +145,15 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
             .iter()
             .filter_map(Written::root_path)
             .collect();
-        let root = crate::v8::parse_json(
+        crate::v8::parse_json(
             &synthetic(JsonValue::Object(members)),
             previews,
-            &[],
+            &draft.overrides,
             written,
-        )?;
+        )
+    };
+    let mut root = draft.new_root.then(parse_root).transpose()?;
+    if draft.new_root {
         if RESTYLE_ROOT
             .iter()
             .any(|k| !same_opt(member(&doc.root, k), member(&draft.root, k)))
@@ -166,12 +163,6 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         if !same_opt(member(&doc.root, "sprite"), member(&draft.root, "sprite")) {
             changes.push(Change::Sprite);
         }
-        if !same_opt(
-            member(&doc.root, "projection"),
-            member(&draft.root, "projection"),
-        ) {
-            changes.push(Change::Projection);
-        }
         // Sky, light, terrain, transition, the camera defaults: frames read
         // them from the new snapshot.
         if (doc.root.iter().chain(draft.root.iter()))
@@ -179,15 +170,11 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         {
             changes.push(Change::Root);
         }
-        warnings.extend(root.warnings.iter().cloned());
-        style = Style {
-            warnings: Vec::new(),
-            ..root
-        };
     }
 
     let old_state = doc.global_state();
-    let new_state = crate::v8::resolve_state(&style.state, &draft.overrides);
+    let defaults = root.as_ref().map_or(&old.state, |root| &root.state);
+    let new_state = crate::v8::resolve_state(defaults, &draft.overrides);
     let changed: HashSet<&str> = old_state
         .iter()
         .chain(&new_state)
@@ -200,33 +187,33 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         })
         .collect();
 
-    if let Some(json) = member(&draft.root, "sky")
-        && reads_global(json, &changed)
-    {
-        let (sky, w) = crate::v8::parse_sky(json, &new_state, previews)?;
-        style.atmosphere = Some(sky);
-        warnings.extend(w);
-        add_once(&mut changes, Change::Root);
-    }
-
-    if let Some(json) = member(&draft.root, "light")
-        && reads_global(json, &changed)
-    {
-        style.light = crate::v8::parse_light(json, &new_state, previews)?;
-        add_once(&mut changes, Change::Root);
-    }
-
-    // A projection that reads the global state follows it.
-    if let Some(json) = member(&draft.root, "projection")
-        && (draft.new_root || reads_global(json, &changed))
-    {
-        let (plane, globe, w) = crate::v8::parse_projection(json, &new_state, previews);
-        warnings.extend(w);
-        if globe != old.globe {
-            add_once(&mut changes, Change::Projection);
+    // A root value that reads changed global state (light, sky,
+    // projection) follows it.
+    if draft.root.iter().any(|m| reads_global(&m.value, &changed)) {
+        if root.is_none() {
+            root = Some(parse_root()?);
         }
-        style.projection = plane;
-        style.globe = globe;
+        add_once(&mut changes, Change::Root);
+    }
+
+    // The root: camera and state defaults, sprites, light, sky, projection.
+    let root = match root {
+        Some(mut root) => {
+            warnings.append(&mut root.warnings);
+            root
+        }
+        None => (**old).clone(),
+    };
+    let mut style = Style {
+        terrain: None,
+        sources: Vec::new(),
+        layers: Vec::new(),
+        warnings: Vec::new(),
+        ..root
+    };
+    // A new surface: tiles lay out again for it.
+    if style.projection != old.projection || style.globe != old.globe {
+        changes.push(Change::Projection);
     }
 
     // Sources.

@@ -365,6 +365,49 @@ fn sky_rebinds_changed_global_state() {
     );
 }
 
+/// Light, sky and projection read the global state's overrides, and keep
+/// reading them after an edit to another root value parses the root again.
+#[test]
+fn root_values_keep_global_state_overrides_across_root_edits() {
+    let mut doc = StyleDoc::parse(
+        r##"{"version":8,"state":{"night":{"default":false},"surface":{"default":"mercator"}},
+            "light":{"color":["case",["global-state","night"],"blue","white"]},
+            "sky":{"sky-color":["case",["global-state","night"],"blue","white"]},
+            "projection":{"type":["global-state","surface"]},
+            "sources":{},"layers":[]}"##,
+    )
+    .unwrap();
+    assert_eq!(doc.style().globe, None);
+    let night = |doc: &StyleDoc| {
+        let style = doc.style();
+        let sky = style.atmosphere.as_ref().unwrap();
+        (
+            style.light.color.evaluate(0.0).straight(),
+            sky.sky_color.evaluate(0.0).straight(),
+            style.globe,
+        )
+    };
+    let blue = [0.0, 0.0, 1.0, 1.0];
+    let patch = commands(
+        &mut doc,
+        r#"[["setGlobalStateProperty","night",true],
+            ["setGlobalStateProperty","surface","vertical-perspective"]]"#,
+    );
+    assert!(patch.changes.contains(&Change::Root));
+    assert!(patch.changes.contains(&Change::Projection));
+    assert_eq!(night(&doc), (blue, blue, Some(orb_crs::Globe::SPHERE)));
+    let patch = commands(&mut doc, r#"[["setTransition",{"duration":0,"delay":0}]]"#);
+    assert!(!patch.changes.contains(&Change::Projection));
+    assert_eq!(night(&doc), (blue, blue, Some(orb_crs::Globe::SPHERE)));
+    let patch = commands(
+        &mut doc,
+        r#"[["setGlobalStateProperty","night",null],
+            ["setGlobalStateProperty","surface",null]]"#,
+    );
+    assert!(patch.changes.contains(&Change::Projection));
+    assert_eq!(night(&doc), ([1.0; 4], [1.0; 4], None));
+}
+
 #[test]
 fn terrain_switches_without_a_reload_and_follows_its_source() {
     let mut doc = StyleDoc::parse(r##"{"version":8,"sources":{"dem":{"type":"raster-dem","tiles":["x/{z}/{x}/{y}.png"]}},"layers":[{"id":"bg","type":"background"}]}"##).unwrap();

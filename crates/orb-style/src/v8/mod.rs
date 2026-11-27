@@ -360,36 +360,6 @@ pub(crate) fn parse_edited_layer(
     cx.finish(layer)
 }
 
-/// Parses a root light with the current global state.
-pub(crate) fn parse_light(
-    json: &Json,
-    state: &[(String, Value<'static>)],
-    previews: Previews,
-) -> Result<Light, Diagnostics> {
-    let mut cx = Cx {
-        state: state.to_vec(),
-        previews,
-        ..Cx::default()
-    };
-    let light = light::parse(&mut cx, Some(json));
-    if cx.diagnostics.errors.is_empty() {
-        Ok(light)
-    } else {
-        Err(cx.diagnostics)
-    }
-}
-
-/// Parses a root sky with the current global state, returning its warnings.
-pub(crate) fn parse_sky(
-    json: &Json,
-    state: &[(String, Value<'static>)],
-    previews: Previews,
-) -> Result<(Atmosphere, Vec<Diagnostic>), Diagnostics> {
-    let mut cx = Cx::new(state, previews);
-    let sky = sky::parse(&mut cx, json);
-    cx.finish(Some(sky))
-}
-
 /// Parses a root `terrain` against the style's sources, returning its
 /// warnings.
 pub(crate) fn parse_terrain(
@@ -399,22 +369,6 @@ pub(crate) fn parse_terrain(
     let mut cx = Cx::default();
     let terrain = terrain::parse(&mut cx, json, sources);
     cx.finish(terrain)
-}
-
-/// Parses a root `projection`, returning its plane (`None` for Web
-/// Mercator), its low-zoom surface and its warnings.
-pub(crate) fn parse_projection(
-    json: &Json,
-    state: &[(String, Value<'static>)],
-    previews: Previews,
-) -> (
-    Option<orb_crs::Projection>,
-    Option<orb_crs::Globe>,
-    Vec<Diagnostic>,
-) {
-    let mut cx = Cx::new(state, previews);
-    let (plane, globe) = parse_surface(&mut cx, json);
-    (plane, globe, cx.diagnostics.warnings)
 }
 
 /// v8 `projection`, returning the plane the map draws on and the low-zoom

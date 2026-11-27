@@ -679,15 +679,14 @@ fn projections_parse_to_globes() {
 
 #[test]
 fn projections_read_the_global_state() {
-    let style = parse(
-        r#"{"version": 8, "state": {"kind": {"default": "vertical-perspective"}},
-            "projection": {"type": ["global-state", "kind"]}, "sources": {}, "layers": []}"#,
-    )
-    .unwrap();
-    assert_eq!(style.globe, Some(orb_crs::Globe::SPHERE));
-    let state = vec![("kind".to_string(), Value::String("mercator".into()))];
-    let json = orb_expr::json::parse(r#"{"type": ["global-state", "kind"]}"#).unwrap();
-    assert_eq!(parse_projection(&json, &state, Previews::NONE).0, None);
+    let text = r#"{"version": 8, "state": {"kind": {"default": "vertical-perspective"}},
+        "projection": {"type": ["global-state", "kind"]}, "sources": {}, "layers": []}"#;
+    assert_eq!(parse(text).unwrap().globe, Some(orb_crs::Globe::SPHERE));
+    let state = [("kind".to_string(), Value::String("mercator".into()))];
+    assert_eq!(
+        parse_with(text, Previews::NONE, &state).unwrap().globe,
+        None
+    );
 }
 
 /// style-spec's `layer-blend` validation test: every mode of the spec's
