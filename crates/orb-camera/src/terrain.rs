@@ -222,8 +222,11 @@ impl CameraState {
     /// Moves the target to the terrain along the view, keeping the eye
     /// where it is (GL JS's `recalculateZoomAndCenter`): the picture
     /// doesn't move while the target, its elevation and the zoom do. Ends
-    /// gestures and animations that held the elevation. Returns whether it
-    /// changed.
+    /// gestures and animations that held the elevation. The target stands
+    /// on the terrain under it, as [`settle_on`](Self::settle_on) puts it,
+    /// not at the height the ray met it, which is off by the search's
+    /// tolerance: a camera recentered at rest is a fresh one's there.
+    /// Returns whether it changed.
     pub(crate) fn recenter_on(
         &mut self,
         terrain: &dyn Elevation,
@@ -240,7 +243,10 @@ impl CameraState {
         let eye_distance_px = 0.5 * viewport.height / (self.fov.to_radians() / 2.0).tan();
         let before = *self;
         self.set_target_world(projection, world, distance / eye_distance_px);
-        self.elevation = elevation.0;
+        self.elevation = terrain
+            .at(self.target_world(projection))
+            .unwrap_or(elevation)
+            .0;
         *self != before
     }
 
@@ -346,6 +352,10 @@ mod tests {
         assert!((camera.elevation - 1000.0).abs() < 1.0);
         assert!(before.distance(eye(&camera)) < 1e-3 * before.length().max(1.0));
         assert!(camera.zoom(&projection) > 13.0, "the target came closer");
+        assert!(
+            !camera.settle_on(&ridge, &projection),
+            "the target stands off the ground under it"
+        );
     }
 
     #[test]

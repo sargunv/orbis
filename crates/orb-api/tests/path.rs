@@ -1,16 +1,27 @@
-//! Every frame is right for its camera: a map brought to a camera through
-//! a gesture draws, once loaded and faded, the pixels a fresh map at rest
-//! at that camera draws. Nothing the path left behind (resident tiles of
-//! other zooms, rows, cull state, warps, paint written for other zooms)
-//! may show.
+//! Every frame is right for its camera: a map brought to a camera by any
+//! path draws, once loaded and faded, the pixels a fresh map at rest at
+//! that camera draws. Nothing the path left behind (resident tiles of
+//! other zooms, rows, cull state, warps, paint written for other zooms, an
+//! elevation a gesture held) may show.
+//!
+//! `both_ways` jumps the camera along a line, a frame a step, for what
+//! stays resident and drawn along the way. `gestured` hands the map a
+//! host's input (drags, a pinch-twist, wheel notches) and lets the glides
+//! and eases they start run out, and `flown` flies it, both on a
+//! display link's clock: what only moves made by the map itself reach,
+//! such as the elevation a gesture holds and puts back at rest. The rest
+//! check one part a path can leave behind: drape slots, terrain switched
+//! on and off, edits, labels' clocks, memory.
 
 mod common;
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use glam::DVec2;
 use orb_api::{
-    CameraTarget, Constraints, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target,
+    Button, CameraTarget, Constraints, FlyOptions, FrameReport, Geodetic, Input, Map, MapOptions,
+    Modifiers, PointerKind, Runtime, RuntimeOptions, Target, WheelDelta,
 };
 
 const WIDTH: u32 = 512;
@@ -90,53 +101,268 @@ fn camera((center, zoom, bearing, pitch): At) -> CameraTarget {
     }
 }
 
-/// What a live map draws at `end` once loaded and faded to idle, after
-/// moving there frame by frame from `start` (a gesture: one frame per
-/// step, nothing waits for data), and what a fresh map draws at rest at
-/// `end`. Labels too: what idle shows depends on the camera and the data
-/// alone, not on the order tiles arrived in or what showed on the way.
-fn both_ways(style: &str, start: At, end: At, steps: u32) -> (Vec<u8>, Vec<u8>) {
+/// Milliseconds between the frames of the display link these tests stand
+/// in for.
+const FRAME_MS: f64 = 16.0;
+
+/// A display link's clock for one map: the frames a test draws itself,
+/// and the input it hands the map, are a frame apart, so input times, and
+/// with them the curves of glides and eases, are the same on every run
+/// however long a frame takes to draw, while data still arrives on the
+/// wall clock (over terrain, what a gesture grips depends on it); the
+/// frames the map times itself while it settles go on from it, as a
+/// host's would.
+struct Clock {
+    /// The last frame's time, and when it was drawn.
+    time: f64,
+    at: Instant,
+}
+
+impl Clock {
+    /// Made with its map, before the map's first frame.
+    fn new() -> Self {
+        Self {
+            time: 0.0,
+            at: Instant::now(),
+        }
+    }
+
+    /// Hands the map `inputs` and draws a frame, all at the next frame's
+    /// time, then waits up to a frame for data.
+    fn frame(&mut self, map: &mut Map, target: &mut Target, inputs: &[Input]) {
+        self.time += FRAME_MS;
+        self.at = Instant::now();
+        for &input in inputs {
+            map.input(input, self.time);
+        }
+        map.render(target, self.time).unwrap();
+        map.wait_woken(Duration::from_millis(FRAME_MS as u64));
+    }
+
+    /// Draws until the map is idle, timed on the map's own clock, and
+    /// catches up with it; the last frame's report.
+    fn settle(&mut self, map: &mut Map, target: &mut Target) -> FrameReport {
+        let report = map
+            .render_until_idle(target, Duration::from_secs(60))
+            .expect("the map idles");
+        self.time += self.at.elapsed().as_secs_f64() * 1000.0;
+        self.at = Instant::now();
+        report
+    }
+
+    /// Draws frames until the camera stops: glides and eases run out.
+    fn until_still(&mut self, map: &mut Map, target: &mut Target) {
+        for _ in 0..1000 {
+            if !map.is_moving() {
+                return;
+            }
+            self.frame(map, target, &[]);
+        }
+        panic!("the camera never came to rest");
+    }
+}
+
+/// What a live map draws once loaded and faded to idle after `drive`
+/// moved it from `start` on its clock, and what a fresh map draws at rest
+/// at `end`, or at the camera the moved map came to rest at. Labels too:
+/// what idle shows depends on the camera and the data alone, not on the
+/// order tiles arrived in or what showed on the way.
+fn moved_and_fresh(
+    style: &str,
+    start: At,
+    end: Option<At>,
+    drive: impl FnOnce(&mut Map, &mut Target, &mut Clock),
+) -> (Vec<u8>, Vec<u8>) {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
 
     let mut moved = Map::new(&runtime, options());
+    let mut clock = Clock::new();
     moved.set_constraints(steep());
     moved.set_style_json(style).unwrap();
     moved.jump_to(&camera(start));
-    common::settle(&mut moved, &mut target);
+    clock.settle(&mut moved, &mut target);
+    let started = moved.camera();
     // The style's pipeline set came with it: what the path shows on the
     // way, and at its end, asks for none.
     let requested = runtime.stats().counters.pipelines_requested;
-    let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
-    for step in 1..=steps {
-        let t = f64::from(step) / f64::from(steps);
-        let (a, b) = (start.0, end.0);
-        moved.jump_to(&camera((
-            Geodetic::new(lerp(a.lon, b.lon, t), lerp(a.lat, b.lat, t)),
-            lerp(start.1, end.1, t),
-            lerp(start.2, end.2, t),
-            lerp(start.3, end.3, t),
-        )));
-        moved.render(&mut target, 0.0).unwrap();
-        std::thread::sleep(Duration::from_millis(8));
-    }
-    common::settle(&mut moved, &mut target);
+    drive(&mut moved, &mut target, &mut clock);
+    clock.settle(&mut moved, &mut target);
     assert_eq!(
         runtime.stats().counters.pipelines_requested,
         requested,
         "the path's frames asked for pipelines the style's set left out"
     );
-    let gestured = target.read_pixels().unwrap();
+    let moved_pixels = target.read_pixels().unwrap();
     let rest = moved.camera();
+    assert_ne!(rest, started, "the path never moved the camera");
     drop(moved);
-    let (fresh, fresh_rest) = fresh_at(&runtime, &mut target, style, end);
+    let (fresh, fresh_rest) = match end {
+        Some(end) => fresh_at(&runtime, &mut target, style, end),
+        None => fresh(&runtime, &mut target, style, |map| map.jump_to_state(rest)),
+    };
     // At rest, the camera too is what a fresh one is: over terrain, it
     // stands on the same ground at the same height.
     assert_eq!(
         rest, fresh_rest,
         "the camera at rest differs from a fresh map's"
     );
-    (gestured, fresh)
+    (moved_pixels, fresh)
+}
+
+/// What a live map draws at `end` once idle after jumping there from
+/// `start` along a line, a frame a step, each step waiting at most a
+/// frame for data, and what a fresh map draws at rest at `end`.
+fn both_ways(style: &str, start: At, end: At, steps: u32) -> (Vec<u8>, Vec<u8>) {
+    moved_and_fresh(style, start, Some(end), |map, target, clock| {
+        let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
+        for step in 1..=steps {
+            let t = f64::from(step) / f64::from(steps);
+            let (a, b) = (start.0, end.0);
+            map.jump_to(&camera((
+                Geodetic::new(lerp(a.lon, b.lon, t), lerp(a.lat, b.lat, t)),
+                lerp(start.1, end.1, t),
+                lerp(start.2, end.2, t),
+                lerp(start.3, end.3, t),
+            )));
+            clock.frame(map, target, &[]);
+        }
+    })
+}
+
+/// A gesture as a display link brings it: the inputs of each frame.
+type Gesture = Vec<Vec<Input>>;
+
+/// The middle of the view, in logical pixels.
+const MIDDLE: DVec2 = DVec2::new(WIDTH as f64 / 2.0, HEIGHT as f64 / 2.0);
+
+/// A mouse drag with `button` from `from`, `by` pixels a frame for
+/// `frames` frames, let go while it moves: it glides on.
+fn drag(button: Button, from: DVec2, by: DVec2, frames: u32) -> Gesture {
+    let mut gesture = vec![vec![Input::PointerDown {
+        id: 1,
+        kind: PointerKind::Mouse,
+        button,
+        position: from,
+        modifiers: Modifiers::default(),
+    }]];
+    let mut at = from;
+    for _ in 0..frames {
+        at += by;
+        gesture.push(vec![Input::PointerMove {
+            id: 1,
+            position: at,
+        }]);
+    }
+    gesture.last_mut().unwrap().push(Input::PointerUp {
+        id: 1,
+        position: at,
+    });
+    gesture
+}
+
+/// Two fingers `radius` pixels either side of `center` spreading by
+/// `scale` and turning `turn` degrees clockwise over `frames` frames, let
+/// go while they move.
+fn pinch(center: DVec2, radius: f64, scale: f64, turn: f64, frames: u32) -> Gesture {
+    let finger = |id: u32, f: f64| {
+        let angle = turn.to_radians() * f + std::f64::consts::PI * f64::from(id - 2);
+        center + radius * scale.powf(f) * DVec2::new(angle.cos(), angle.sin())
+    };
+    let mut gesture = vec![
+        [2, 3]
+            .map(|id| Input::PointerDown {
+                id,
+                kind: PointerKind::Touch,
+                button: Button::Primary,
+                position: finger(id, 0.0),
+                modifiers: Modifiers::default(),
+            })
+            .to_vec(),
+    ];
+    for frame in 1..=frames {
+        let f = f64::from(frame) / f64::from(frames);
+        gesture.push(
+            [2, 3]
+                .map(|id| Input::PointerMove {
+                    id,
+                    position: finger(id, f),
+                })
+                .to_vec(),
+        );
+    }
+    let last = gesture.last_mut().unwrap();
+    last.extend([2, 3].map(|id| Input::PointerUp {
+        id,
+        position: finger(id, 1.0),
+    }));
+    gesture
+}
+
+/// `count` wheel notches at `at`, one every `every` frames, each zooming
+/// in by a notch.
+fn notches(at: DVec2, count: u32, every: usize) -> Gesture {
+    let mut gesture = Vec::new();
+    for _ in 0..count {
+        gesture.push(vec![Input::Wheel {
+            position: at,
+            delta: WheelDelta::Notches(-1.0),
+            modifiers: Modifiers::default(),
+        }]);
+        gesture.extend(std::iter::repeat_n(Vec::new(), every - 1));
+    }
+    gesture
+}
+
+/// `frames` frames without input: what a glide or ease does meanwhile.
+fn wait(frames: usize) -> Gesture {
+    vec![Vec::new(); frames]
+}
+
+/// What a hand does to a map in a few seconds: drags it off and lets it
+/// glide, pinches it in with a twist, turns and tilts it with the
+/// secondary button, and wheels in off the middle, a few frames apart:
+/// a press stops the glide before it.
+fn handling() -> Gesture {
+    [
+        drag(Button::Primary, MIDDLE, DVec2::new(-14.0, -8.0), 12),
+        wait(12),
+        pinch(MIDDLE, 60.0, 1.6, 30.0, 16),
+        wait(12),
+        drag(Button::Secondary, MIDDLE, DVec2::new(6.0, -5.0), 10),
+        wait(8),
+        notches(MIDDLE + DVec2::new(80.0, 40.0), 4, 4),
+    ]
+    .concat()
+}
+
+/// What a live map draws once idle after `gesture` from `start` and the
+/// glides and eases it started, and what a fresh map draws at rest at the
+/// camera the gesture left.
+fn gestured(style: &str, start: At, gesture: &[Vec<Input>]) -> (Vec<u8>, Vec<u8>) {
+    moved_and_fresh(style, start, None, |map, target, clock| {
+        let before = map.camera();
+        for inputs in gesture {
+            clock.frame(map, target, inputs);
+        }
+        clock.until_still(map, target);
+        let after = map.camera();
+        assert_ne!(
+            after.resolution, before.resolution,
+            "the gesture never zoomed"
+        );
+        assert_ne!(after.bearing, before.bearing, "the gesture never turned");
+        assert_ne!(after.pitch, before.pitch, "the gesture never tilted");
+    })
+}
+
+/// What a live map draws once idle after flying from `start` to `end`,
+/// and what a fresh map draws at rest at `end`.
+fn flown(style: &str, start: At, end: At) -> (Vec<u8>, Vec<u8>) {
+    moved_and_fresh(style, start, Some(end), |map, target, clock| {
+        map.fly_to(&camera(end), &FlyOptions::default());
+        clock.until_still(map, target);
+    })
 }
 
 /// What a fresh map draws at rest at `at`, live, once idle, and its camera.
@@ -146,10 +372,21 @@ fn fresh_at(
     style: &str,
     at: At,
 ) -> (Vec<u8>, orb_api::CameraState) {
+    fresh(runtime, target, style, |map| map.jump_to(&camera(at)))
+}
+
+/// What a fresh map draws at rest where `place` puts it, live, once idle,
+/// and its camera.
+fn fresh(
+    runtime: &Runtime,
+    target: &mut Target,
+    style: &str,
+    place: impl FnOnce(&mut Map),
+) -> (Vec<u8>, orb_api::CameraState) {
     let mut fresh = Map::new(runtime, options());
     fresh.set_constraints(steep());
     fresh.set_style_json(style).unwrap();
-    fresh.jump_to(&camera(at));
+    place(&mut fresh);
     common::settle(&mut fresh, target);
     (target.read_pixels().unwrap(), fresh.camera())
 }
@@ -263,6 +500,7 @@ fn panning_frame_by_frame_draws_what_a_fresh_map_does() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
     let mut map = Map::new(&runtime, options());
+    let mut clock = Clock::new();
     map.set_style_json(&style).unwrap();
     // A circle of about 300 m around the station.
     let at = |f: u32| {
@@ -274,14 +512,13 @@ fn panning_frame_by_frame_draws_what_a_fresh_map_does() {
         (center, 15.0, 0.0, 0.0)
     };
     map.jump_to(&camera(at(0)));
-    common::settle(&mut map, &mut target);
+    clock.settle(&mut map, &mut target);
     for stop in 1..=6 {
         for f in (stop - 1) * 20 + 1..=stop * 20 {
             map.jump_to(&camera(at(f)));
-            map.render(&mut target, 0.0).unwrap();
-            std::thread::sleep(Duration::from_millis(8));
+            clock.frame(&mut map, &mut target, &[]);
         }
-        common::settle(&mut map, &mut target);
+        clock.settle(&mut map, &mut target);
         let panned = target.read_pixels().unwrap();
         let rest = map.camera();
         let (fresh, fresh_rest) = fresh_at(&runtime, &mut target, &style, at(stop * 20));
@@ -328,6 +565,22 @@ fn zooming_out_draws_what_a_fresh_map_does() {
     let start = (STATION, 16.6, -20.0, 30.0);
     let end = (Geodetic::new(139.75, 35.69), 14.3, 10.0, 0.0);
     assert_same("mercator-out", both_ways(&tokyo("", ""), start, end, 30));
+}
+
+/// A map handled by hand, its glides and eases run out, draws what a
+/// fresh map at the camera they left draws.
+#[test]
+fn a_handled_map_draws_what_a_fresh_map_does() {
+    let start = (Geodetic::new(139.721, 35.701), 13.0, 0.0, 20.0);
+    assert_same("handled", gestured(&tokyo("", ""), start, &handling()));
+}
+
+/// The same on the globe, whose drags turn the planet under the camera.
+#[test]
+fn a_handled_globe_draws_what_a_fresh_globe_does() {
+    let style = tokyo(r#""projection": {"type": "globe"},"#, "");
+    let start = (Geodetic::new(139.35, 35.92), 9.0, 0.0, 20.0);
+    assert_same("handled-globe", gestured(&style, start, &handling()));
 }
 
 #[test]
@@ -1034,6 +1287,21 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     assert_same("terrain", both_ways(&style, start, end, 30));
 }
 
+/// Hills handled by hand: a gesture holds the target's elevation, and at
+/// rest the target stands on the ground under the middle of the view, as
+/// a fresh map's at that camera does, whatever DEM tiles had landed when
+/// the hand let go.
+#[test]
+fn handled_terrain_draws_what_a_fresh_map_does() {
+    let (hills, _dem) = hills();
+    let style = tokyo(
+        r#""terrain": {"source": "hills", "exaggeration": 1.5},"#,
+        &hills,
+    );
+    let start = (Geodetic::new(139.705, 35.712), 12.0, 0.0, 10.0);
+    assert_same("handled-terrain", gestured(&style, start, &handling()));
+}
+
 /// Tokyo's buildings on hills, lit by a map-anchored light: they stand
 /// on the terrain and draw as a fresh map does after a gesture over the
 /// hills.
@@ -1564,6 +1832,17 @@ fn an_alpine_gesture_draws_what_a_fresh_map_does() {
     assert_same("alps", both_ways(&alps, start, end, 30));
 }
 
+/// A flight over the ridges aims at the ground its end stands on as the
+/// DEM tiles under it land mid-flight, and ends where a fresh map at its
+/// end stands.
+#[test]
+fn an_alpine_flight_draws_what_a_fresh_map_does() {
+    let start = (Geodetic::new(7.6, 45.8), 10.0, 0.0, 0.0);
+    let end = (Geodetic::new(7.85, 45.95), 12.4, 60.0, 70.0);
+    let (alps, _dem) = alps();
+    assert_same("alps-flight", flown(&alps, start, end));
+}
+
 /// The same ridges on a globe, into the middle of its handover to Web
 /// Mercator at a pitch of 75°: the cover bounds each tile by the DEM's
 /// range under it and measures detail at the camera's elevation, both
@@ -1702,32 +1981,32 @@ fn a_turned_view_holds_the_drape_pages_a_fresh_one_does() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, 1440, 900, 1.0);
     let at = |bearing, pitch| (Geodetic::new(7.9, 46.0), 12.0, bearing, pitch);
-    let settled = |map: &mut Map, target: &mut Target| {
-        let report = map.render_until_idle(target, Duration::from_secs(60));
-        report.expect("the map idles").memory.drape_atlas
-    };
     let mut map = Map::new(&runtime, options());
+    let mut clock = Clock::new();
     map.set_constraints(tilted());
     map.set_style_json(&alps).unwrap();
     map.jump_to(&camera(at(45.0, 80.0)));
-    let rest = settled(&mut map, &mut target);
+    let rest = clock.settle(&mut map, &mut target).memory.drape_atlas;
     map.jump_to(&camera(at(0.0, 80.0)));
-    let grown = settled(&mut map, &mut target);
+    let grown = clock.settle(&mut map, &mut target).memory.drape_atlas;
     assert!(
         grown > rest,
         "looking north holds no larger pages: the test shows nothing"
     );
     for step in 0..90 {
         map.jump_to(&camera(at(45.0 + f64::from(step) * 0.05, 80.0)));
-        map.render(&mut target, 0.0).unwrap();
-        std::thread::sleep(Duration::from_millis(8));
+        clock.frame(&mut map, &mut target, &[]);
     }
-    let turned = settled(&mut map, &mut target);
+    let turned = clock.settle(&mut map, &mut target).memory.drape_atlas;
     let mut fresh = Map::new(&runtime, options());
     fresh.set_constraints(tilted());
     fresh.set_style_json(&alps).unwrap();
     fresh.jump_to(&camera(at(45.0 + 89.0 * 0.05, 80.0)));
-    let fresh = settled(&mut fresh, &mut target);
+    let fresh = fresh
+        .render_until_idle(&mut target, Duration::from_secs(60))
+        .expect("the map idles")
+        .memory
+        .drape_atlas;
     assert_eq!(
         turned, fresh,
         "the turned map's pages differ from a fresh map's"
@@ -2133,11 +2412,12 @@ fn stable_labels_converge_and_stay_put() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
+    let mut clock = Clock::new();
     map.set_style_json(&tokyo("", "")).unwrap();
     let start = (Geodetic::new(139.72, 35.67), 12.6, 0.0, 0.0);
     let end = (STATION, 15.4, 35.0, 50.0);
     map.jump_to(&camera(start));
-    common::settle(&mut map, &mut target);
+    clock.settle(&mut map, &mut target);
     let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
     for step in 1..=30 {
         let t = f64::from(step) / 30.0;
@@ -2150,10 +2430,9 @@ fn stable_labels_converge_and_stay_put() {
             lerp(start.2, end.2, t),
             lerp(start.3, end.3, t),
         )));
-        map.render(&mut target, 0.0).unwrap();
-        std::thread::sleep(Duration::from_millis(8));
+        clock.frame(&mut map, &mut target, &[]);
     }
-    common::settle(&mut map, &mut target);
+    clock.settle(&mut map, &mut target);
     let shown = |map: &Map| {
         let mut names: Vec<Box<str>> = map
             .shown_labels()
