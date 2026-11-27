@@ -20,6 +20,7 @@ use orb_runtime::{
 };
 
 use crate::{Activity, Error, GestureMotion, Move, Runtime, Skew, Target};
+use commanded::Commanded;
 
 /// Something a map, its camera or a gesture did.
 #[derive(Clone, Debug, PartialEq)]
@@ -80,7 +81,7 @@ type Finished = Arc<Mutex<Vec<(u64, Result<String, String>)>>>;
 /// [`render`](Self::render) whenever [`needs_frame`](Self::needs_frame).
 pub struct Map {
     runtime: Runtime,
-    map: orb_runtime::Map,
+    map: Commanded,
     /// Set from any thread when data arrived.
     woken: Arc<AtomicBool>,
     /// Set from any thread when the device woke the maps: a pipeline
@@ -119,10 +120,6 @@ pub struct Map {
     renderer: Option<orb_runtime::Renderer>,
     /// The runtime's device generation the map's GPU state is of.
     device: u64,
-    /// A command or input since the last frame changed what it shows.
-    dirty: bool,
-    /// How the map renders now.
-    mode: RenderMode,
     /// The last frame's time and when it was drawn: frames the map times
     /// itself (still output, [`render_until_idle`](Self::render_until_idle))
     /// go on from it, on the host's clock.
@@ -269,7 +266,7 @@ impl Map {
         map.set_options(&options);
         Self {
             runtime: runtime.clone(),
-            map,
+            map: Commanded::new(map),
             woken,
             device_woken,
             _device_wake: device_wake,
@@ -286,8 +283,6 @@ impl Map {
             next_query: 0,
             renderer: None,
             device: runtime.shared.generation(),
-            dirty: true,
-            mode: RenderMode::Continuous,
             last_frame: None,
             tiles_loading: 0,
         }
@@ -299,8 +294,7 @@ impl Map {
     /// the camera, gestures and every viewport position stay the right way
     /// up. The next frame draws so.
     pub fn set_flip_y(&mut self, flipped: bool) {
-        self.map.set_flip_y(flipped);
-        self.dirty = true;
+        self.map.command().set_flip_y(flipped);
     }
 
     /// The terrain as the last frame drew it, for measuring how still its
@@ -321,7 +315,7 @@ impl Map {
     /// moves to a target: for hosts that hold exact cameras, such as
     /// benches and fixtures.
     pub fn jump_to_state(&mut self, camera: CameraState) {
-        self.map.jump_to_state(camera);
+        self.map.command().jump_to_state(camera);
     }
 
     /// Per label text, the greatest opacity it drew with in the last
@@ -367,7 +361,7 @@ impl Map {
             Shown::GaveUp => false,
             Shown::AwaitingDevice => self.device_news(),
             Shown::Drew { busy, .. } => {
-                self.dirty
+                self.map.changed()
                     || busy
                     || self.woken.load(Ordering::Acquire)
                     || self.map.is_moving()
@@ -401,7 +395,7 @@ impl Map {
             Shown::GaveUp => false,
             Shown::AwaitingDevice => self.device_news(),
             Shown::Drew { activity, .. } => {
-                self.dirty
+                self.map.changed()
                     || self.woken.load(Ordering::Acquire)
                     || self.device_news()
                     || !matches!(activity, Activity::Idle | Activity::Compiling)
@@ -413,47 +407,42 @@ impl Map {
     /// comes back. Until then each is retried after a backoff, the map
     /// woken for it, with its ancestors or children standing in.
     pub fn retry_failed_tiles(&mut self) {
-        self.map.retry_failed_tiles();
-        self.dirty = true;
+        self.map.command().retry_failed_tiles();
     }
 
     /// Whether tiles that leave the view stay cached (the default) or go
     /// at the next frame ([`orb_runtime::Map::set_tile_cache`]).
     pub fn set_tile_cache(&mut self, enabled: bool) {
-        self.map.set_tile_cache(enabled);
-        self.dirty = true;
+        self.map.command().set_tile_cache(enabled);
     }
 
     /// Lets go of the tiles cached out of view at the next frame; they
     /// load again when the view needs them. For low-memory warnings.
     pub fn release_cached_tiles(&mut self) {
-        self.map.release_cached_tiles();
-        self.dirty = true;
+        self.map.command().release_cached_tiles();
     }
 
     /// Drops every loaded tile, which load again for the next frames.
     pub fn clear_tiles(&mut self) {
-        self.map.clear_tiles();
-        self.dirty = true;
+        self.map.command().clear_tiles();
     }
 
     /// Gives up the tiles still loading, aborting their fetches: the next
     /// frame that wants them loads them again. For a map that stops
     /// drawing for now, so that it stops using the network.
     pub fn cancel_tile_loads(&mut self) {
-        self.map.cancel_tile_loads();
+        self.map.command().cancel_tile_loads();
     }
 
     /// Loads a style from a URL (`http(s)://`, `file://`, `pmtiles://`).
     pub fn load_style_url(&mut self, url: &str) {
-        self.map.load_style_url(url);
-        self.dirty = true;
+        self.map.command().load_style_url(url);
     }
 
     /// Replaces the style with a v8 style document.
     pub fn set_style_json(&mut self, json: &str) -> Result<(), Error> {
-        self.dirty = true;
         self.map
+            .command()
             .set_style_json(json)
             .map_err(Error::InvalidArgument)
     }
@@ -465,8 +454,7 @@ impl Map {
     /// "fill-color", "red"], …]`).
     pub fn edit(&mut self, tx: &Transaction) -> Result<u64, Error> {
         self.styled()?;
-        self.dirty = true;
-        self.map.edit(tx).map_err(Error::InvalidArgument)
+        self.map.command().edit(tx).map_err(Error::InvalidArgument)
     }
 
     /// The state of `target`'s feature (GL JS `getFeatureState`): empty
@@ -489,9 +477,8 @@ impl Map {
         target: &FeatureTarget,
         state: &[(String, Value<'static>)],
     ) -> bool {
-        let changed = self.map.set_feature_state(target, state);
-        self.dirty |= changed;
-        changed
+        self.map
+            .command_if(|map| map.set_feature_state(target, state))
     }
 
     /// Removes `key` of the state of `target`'s feature, or its whole
@@ -499,17 +486,16 @@ impl Map {
     /// source layer (or of its source's features without one), whatever
     /// `key`, as MapLibre Native does. Returns whether it removed anything.
     pub fn remove_feature_state(&mut self, target: &FeatureTarget, key: Option<&str>) -> bool {
-        let changed = self.map.remove_feature_state(target, key);
-        self.dirty |= changed;
-        changed
+        self.map
+            .command_if(|map| map.remove_feature_state(target, key))
     }
 
     /// Adds an image to the style for icons, text and patterns (GL JS
     /// `addImage`); an error when it has one by that name.
     pub fn add_image(&mut self, name: &str, image: StyleImage) -> Result<(), Error> {
         self.styled()?;
-        self.dirty = true;
         self.map
+            .command()
             .add_image(name, image)
             .map_err(Error::InvalidArgument)
     }
@@ -519,23 +505,21 @@ impl Map {
     /// [`source_frame`](Self::source_frame). Without it, video sources draw
     /// nothing, with a warning.
     pub fn set_plays_video(&mut self, plays: bool) {
-        self.map.set_plays_video(plays);
+        self.map.command().set_plays_video(plays);
     }
 
     /// Sets the colour (premultiplied RGBA) the map draws on, which shows
     /// where nothing in the style covers it, as [`MapOptions::clear_color`]
     /// set it; the next frame draws on it.
     pub fn set_clear_color(&mut self, color: [f64; 4]) {
-        self.map.set_clear_color(color);
-        self.dirty = true;
+        self.map.command().set_clear_color(color);
     }
 
     /// Sets how tiles coarsen with distance in pitched views (MapLibre
     /// Native's tile level of detail, as maplibre-native-ffi's
     /// `mln_map_set_tile_options` takes it); the next frame covers with it.
     pub fn set_tile_lod(&mut self, lod: orb_camera::TileLod) {
-        self.map.set_tile_lod(lod);
-        self.dirty = true;
+        self.map.command().set_tile_lod(lod);
     }
 
     /// The options last set, the tile LOD brought into range; those that
@@ -554,13 +538,13 @@ impl Map {
         height: u32,
         pixels: Vec<u8>,
     ) -> Result<(), Error> {
-        self.dirty = true;
         let frame = orb_runtime::TileImage {
             width,
             height,
             pixels: orb_runtime::ImagePixels::Core(pixels),
         };
         self.map
+            .command()
             .source_frame(id, frame)
             .map_err(Error::InvalidArgument)
     }
@@ -569,8 +553,8 @@ impl Map {
     /// feeds (`"tiles": ["orbis-host:"]`), as a [`MapEvent::TileRequest`]
     /// asked: the tile encoded, its layers as GeoJSON, or empty.
     pub fn host_tile(&mut self, id: &str, tile: TileIndex, answer: HostTile) -> Result<(), Error> {
-        self.dirty = true;
         self.map
+            .command()
             .host_tile(id, tile, answer)
             .map_err(Error::InvalidArgument)
     }
@@ -589,8 +573,8 @@ impl Map {
         side: u32,
         tiles: Vec<(TileIndex, Vec<f32>)>,
     ) -> Result<orb_runtime::HostElevations, Error> {
-        self.dirty = true;
         self.map
+            .command()
             .set_host_elevations(id, side, tiles)
             .map_err(Error::InvalidArgument)
     }
@@ -598,8 +582,8 @@ impl Map {
     /// Asks for every tile of the app's source `id` again, as its data
     /// changed; drawn tiles stay until the new ones replace them.
     pub fn reload_host_tiles(&mut self, id: &str) -> Result<(), Error> {
-        self.dirty = true;
         self.map
+            .command()
             .reload_host_tiles(id)
             .map_err(Error::InvalidArgument)
     }
@@ -612,16 +596,16 @@ impl Map {
         id: &str,
         which: &dyn Fn(TileIndex) -> bool,
     ) -> Result<(), Error> {
-        self.dirty = true;
         self.map
+            .command()
             .reload_host_tiles_where(id, which)
             .map_err(Error::InvalidArgument)
     }
 
     /// The video of source `id` can't play on this host: it draws nothing.
     pub fn video_failed(&mut self, id: &str, message: &str) -> Result<(), Error> {
-        self.dirty = true;
         self.map
+            .command()
             .video_failed(id, message)
             .map_err(Error::InvalidArgument)
     }
@@ -629,9 +613,8 @@ impl Map {
     /// Asks the host to play, pause or seek the video of source `id`, as a
     /// [`MapEvent::Video`] (GL JS's `VideoSource` `play`, `pause`, `seek`).
     pub fn control_video(&mut self, id: &str, request: VideoRequest) -> Result<(), Error> {
-        // The request goes out with the next frame's events.
-        self.dirty = true;
         self.map
+            .command()
             .control_video(id, request)
             .map_err(Error::InvalidArgument)
     }
@@ -646,8 +629,8 @@ impl Map {
         pixels: Vec<u8>,
     ) -> Result<(), Error> {
         self.styled()?;
-        self.dirty = true;
         self.map
+            .command()
             .update_image(name, width, height, pixels)
             .map_err(Error::InvalidArgument)
     }
@@ -655,8 +638,10 @@ impl Map {
     /// Removes an image from the style (GL JS `removeImage`).
     pub fn remove_image(&mut self, name: &str) -> Result<(), Error> {
         self.styled()?;
-        self.dirty = true;
-        self.map.remove_image(name).map_err(Error::InvalidArgument)
+        self.map
+            .command()
+            .remove_image(name)
+            .map_err(Error::InvalidArgument)
     }
 
     /// Whether the style has an image by this name, from its sprites or
@@ -713,9 +698,8 @@ impl Map {
     /// that arrives before it ([`apply_arrivals`](Self::apply_arrivals))
     /// loads its sprites at the ratio it will draw at.
     pub fn set_viewport(&mut self, width: f64, height: f64, scale: f64) {
-        self.map.set_viewport(Viewport { width, height });
+        self.map.command().set_viewport(Viewport { width, height });
         self.scale = crate::target::sane_scale(scale);
-        self.dirty = true;
     }
 
     /// Moves the camera at once. Each move takes only the properties it
@@ -724,20 +708,17 @@ impl Map {
     /// interrupted. Its camera events come out as it moves, not with the
     /// next frame.
     pub fn jump_to(&mut self, target: &CameraTarget) {
-        self.map.jump_to(target);
-        self.dirty = true;
+        self.map.command().jump_to(target);
     }
 
     /// Animates the camera from the next frame on (GL JS `easeTo`).
     pub fn ease_to(&mut self, target: &CameraTarget, options: &EaseOptions) -> AnimationId {
-        self.dirty = true;
-        self.map.ease_to(target, *options)
+        self.map.command().ease_to(target, *options)
     }
 
     /// Flies along GL JS's zoom-out curve from the next frame on.
     pub fn fly_to(&mut self, target: &CameraTarget, options: &FlyOptions) -> AnimationId {
-        self.dirty = true;
-        self.map.fly_to(target, options)
+        self.map.command().fly_to(target, options)
     }
 
     /// Continues a gesture the host recognized itself: each part of
@@ -748,23 +729,20 @@ impl Map {
     /// `None` when nothing moves or settles over time. [`input`](Self::input)
     /// gestures end with one of their own.
     pub fn start_momentum(&mut self, momentum: &GestureMomentum) -> Option<AnimationId> {
-        self.dirty = true;
-        self.map.start_momentum(momentum)
+        self.map.command().start_momentum(momentum)
     }
 
     /// Whether the camera's target stands on the terrain at rest (GL JS
     /// `centerClampedToGround`, on by default). Off, it keeps the
     /// elevation it is given, and the camera orbits a point in the air.
     pub fn set_center_clamped_to_ground(&mut self, clamped: bool) {
-        self.map.set_center_clamped_to_ground(clamped);
-        self.dirty = true;
+        self.map.command().set_center_clamped_to_ground(clamped);
     }
 
     /// Draws the map in MapLibre Native's axonometric projection, heights
     /// leaning by `skew` and padding ignored, or in perspective (`None`).
     pub fn set_axonometric(&mut self, skew: Option<Skew>) {
-        self.map.set_axonometric(skew);
-        self.dirty = true;
+        self.map.command().set_axonometric(skew);
     }
 
     pub fn center_clamped_to_ground(&self) -> bool {
@@ -774,8 +752,7 @@ impl Map {
     /// Puts the target this many metres above sea level at once (GL JS
     /// `setCenterElevation`); while clamped, the terrain takes it back.
     pub fn set_center_elevation(&mut self, elevation: f64) {
-        self.map.set_center_elevation(elevation);
-        self.dirty = true;
+        self.map.command().set_center_elevation(elevation);
     }
 
     /// The camera's eye and orientation now (GL JS
@@ -787,8 +764,7 @@ impl Map {
     /// Puts the eye at `free` at once (GL JS `setFreeCameraOptions`),
     /// ending any animation; the field of view and padding stay.
     pub fn jump_to_free(&mut self, free: &FreeCamera) {
-        self.map.jump_to_free(free);
-        self.dirty = true;
+        self.map.command().jump_to_free(free);
     }
 
     /// The camera that shows `bounds` in the current viewport, inside the
@@ -799,24 +775,23 @@ impl Map {
 
     /// Stops every camera animation where it is.
     pub fn stop(&mut self) {
-        self.map.stop();
+        self.map.command().stop();
     }
 
     /// Stops the camera animation `id` where it is, leaving the others.
     pub fn stop_animation(&mut self, id: AnimationId) {
-        self.map.stop_animation(id);
+        self.map.command().stop_animation(id);
     }
 
     /// Zoom and pitch ranges and bounds the camera keeps to.
     pub fn set_constraints(&mut self, constraints: Constraints) {
-        self.map.set_constraints(constraints);
-        self.dirty = true;
+        self.map.command().set_constraints(constraints);
     }
 
     /// Whether drags and their glides on the globe turn the bearing with
     /// the planet; off, the default, they hold it.
     pub fn set_globe_free_bearing(&mut self, free: bool) {
-        self.map.set_globe_free_bearing(free);
+        self.map.command().set_globe_free_bearing(free);
     }
 
     pub fn globe_free_bearing(&self) -> bool {
@@ -835,16 +810,13 @@ impl Map {
     /// pixels from the target's top-left corner. Returns whether the map
     /// used it.
     pub fn input(&mut self, input: Input, time: f64) -> bool {
-        let used = self.map.input(input, time);
-        self.dirty |= used;
-        used
+        self.map.command_if(|map| map.input(input, time))
     }
 
     /// What gestures may move, how releases continue, and the platform's
     /// thresholds; changing it cancels a gesture under way.
     pub fn set_gestures(&mut self, options: GestureOptions) {
-        self.map.set_gestures(options);
-        self.dirty = true;
+        self.map.command().set_gestures(options);
     }
 
     pub fn gestures(&self) -> &GestureOptions {
@@ -856,8 +828,7 @@ impl Map {
     /// API's gesture recognizers' moves. Returns whether one took the
     /// camera from its animations, stopping them.
     pub fn apply_moves(&mut self, moves: impl IntoIterator<Item = Move>, time: f64) -> bool {
-        self.dirty = true;
-        self.map.apply_moves(moves, time)
+        self.map.command().apply_moves(moves, time)
     }
 
     /// How input moves the camera: holding it, or through a glide, snap or
@@ -988,11 +959,9 @@ impl Map {
     /// and no device is needed. Returns whether the camera moves on; call
     /// it again on the host's beat until it doesn't.
     pub fn advance(&mut self, time: f64) -> bool {
-        let moving = self.map.advance(time);
+        let moving = self.map.command().advance(time);
         self.events
             .extend(self.map.take_events().into_iter().map(Event::Map));
-        // The next frame shows where the camera went.
-        self.dirty = true;
         moving
     }
 
@@ -1157,7 +1126,7 @@ impl Map {
             let mut device = self.runtime.shared.gpu()?;
             self.woken.store(false, Ordering::Release);
             let gpu: &mut dyn orb_hal::Gpu = &mut *device;
-            let map = &mut self.map;
+            let map = self.map.drawing();
             let format = self.format;
             let renderer = self
                 .renderer
@@ -1299,10 +1268,8 @@ impl Map {
     }
 
     fn set_mode(&mut self, mode: RenderMode) {
-        if self.mode != mode {
-            self.map.set_mode(mode.clone());
-            self.mode = mode;
-            self.dirty = true;
+        if *self.map.mode() != mode {
+            self.map.command().set_mode(mode);
         }
     }
 
@@ -1484,7 +1451,7 @@ impl Map {
             self.woken.store(false, Ordering::Release);
             self.device_woken.store(false, Ordering::Release);
             let gpu: &mut dyn orb_hal::Gpu = &mut *device;
-            let map = &mut self.map;
+            let map = self.map.drawing();
             let renderer = self
                 .renderer
                 .get_or_insert_with(|| map.create_renderer(gpu, format));
@@ -1506,7 +1473,10 @@ impl Map {
         let lost = self.runtime.lost();
         self.events
             .extend(self.map.take_events().into_iter().map(Event::Map));
-        self.dirty = lost;
+        self.map.drawn();
+        if lost {
+            self.map.mark();
+        }
         self.shown = Shown::Drew {
             activity: report.activity,
             busy: report.needs_frame(),
@@ -1580,7 +1550,7 @@ impl Map {
             self.device = self.runtime.shared.generation();
             self.renderer = None;
             self.shown = Shown::FRESH;
-            self.dirty = true;
+            self.map.mark();
         }
         Ok(true)
     }
@@ -1599,5 +1569,80 @@ impl Map {
                 .extend(self.map.take_events().into_iter().map(Event::Map));
         }
         self.events.pop_front()
+    }
+}
+
+mod commanded {
+    use std::ops::Deref;
+
+    use orb_runtime::MapEvent;
+
+    /// The runtime map, and whether something since the last frame
+    /// changed what it shows. It reads through `Deref`; a command reaches
+    /// it only through [`command`](Self::command) or
+    /// [`command_if`](Self::command_if), which mark it changed, so none can
+    /// leave the map idle after changing it. Only the frame itself
+    /// ([`drawing`](Self::drawing)) and draining its events
+    /// ([`take_events`](Self::take_events)), which changes nothing it
+    /// shows, reach it unmarked.
+    pub(super) struct Commanded {
+        map: orb_runtime::Map,
+        changed: bool,
+    }
+
+    impl Commanded {
+        /// A new map, which has drawn nothing yet.
+        pub(super) fn new(map: orb_runtime::Map) -> Self {
+            Self { map, changed: true }
+        }
+
+        /// The map for a command, which the next frame shows.
+        pub(super) fn command(&mut self) -> &mut orb_runtime::Map {
+            self.changed = true;
+            &mut self.map
+        }
+
+        /// Runs a command that says whether it changed anything, such as
+        /// input the map may not use, marking the map only when it did.
+        pub(super) fn command_if(&mut self, f: impl FnOnce(&mut orb_runtime::Map) -> bool) -> bool {
+            let changed = f(&mut self.map);
+            self.changed |= changed;
+            changed
+        }
+
+        /// Marks the map changed for what isn't a command: a frame must
+        /// draw it again on a new renderer or device.
+        pub(super) fn mark(&mut self) {
+            self.changed = true;
+        }
+
+        /// Whether something since the last frame changed what it shows.
+        pub(super) fn changed(&self) -> bool {
+            self.changed
+        }
+
+        /// The map for drawing a frame or applying arrivals, unmarked:
+        /// those show what commands changed rather than changing it.
+        pub(super) fn drawing(&mut self) -> &mut orb_runtime::Map {
+            &mut self.map
+        }
+
+        /// A frame drew everything commands changed.
+        pub(super) fn drawn(&mut self) {
+            self.changed = false;
+        }
+
+        /// The events the map has raised since they were last taken.
+        pub(super) fn take_events(&mut self) -> Vec<MapEvent> {
+            self.map.take_events()
+        }
+    }
+
+    impl Deref for Commanded {
+        type Target = orb_runtime::Map;
+
+        fn deref(&self) -> &orb_runtime::Map {
+            &self.map
+        }
     }
 }

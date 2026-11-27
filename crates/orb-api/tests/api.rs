@@ -7,9 +7,9 @@ mod common;
 use std::time::Duration;
 
 use orb_api::{
-    Button, CameraEvent, CameraTarget, Constraints, EaseOptions, Error, Event, FeatureTarget,
-    Input, Map, MapEvent, MapOptions, Modifiers, Op, PointerKind, Runtime, RuntimeOptions,
-    StyleImage, Target, Transaction, Value, json,
+    AnimationId, Button, CameraEvent, CameraTarget, Constraints, EaseOptions, Error, Event,
+    FeatureTarget, Input, Map, MapEvent, MapOptions, Modifiers, Op, PointerKind, Runtime,
+    RuntimeOptions, StyleImage, Target, Transaction, Value, json,
 };
 
 use common::{answer, now};
@@ -306,6 +306,42 @@ fn idle_comes_once_after_an_ease() {
     );
     assert_eq!(idles, 1);
     assert!((map.zoom() - 1.0).abs() < 1e-9);
+}
+
+/// Every command wakes an idle map for a frame, whether or not the host
+/// draws on a schedule, and what only reads the map leaves it idle.
+#[test]
+fn commands_ask_for_a_frame_and_reads_do_not() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(STYLE).expect("style");
+    settle(&mut map, &mut target);
+
+    let center = glam::DVec2::splat(f64::from(SIZE) / 2.0);
+    let _ = (map.camera(), map.style_json(), map.hit_test(center));
+    let _ = (map.unproject(center), map.free_camera(), map.options());
+    assert!(!map.needs_frame(), "reading the map woke it");
+
+    let mut moved = map.camera();
+    moved.target.lon += 10.0;
+    type Command<'a> = (&'a str, &'a dyn Fn(&mut Map));
+    let commands: [Command; 6] = [
+        ("jump_to_state", &|map| map.jump_to_state(moved)),
+        ("stop", &|map| map.stop()),
+        ("stop_animation", &|map| map.stop_animation(AnimationId(1))),
+        ("set_globe_free_bearing", &|map| {
+            map.set_globe_free_bearing(true)
+        }),
+        ("set_plays_video", &|map| map.set_plays_video(true)),
+        ("cancel_tile_loads", &|map| map.cancel_tile_loads()),
+    ];
+    for (name, command) in commands {
+        command(&mut map);
+        assert!(map.needs_frame(), "{name} left the map idle");
+        settle(&mut map, &mut target);
+        assert!(!map.needs_frame(), "{name} kept the map busy");
+    }
 }
 
 /// A texture target's viewport is its size in logical pixels, and once

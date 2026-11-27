@@ -1123,6 +1123,11 @@ impl Map {
         self.mode = mode;
     }
 
+    /// How the map renders now ([`set_mode`](Self::set_mode)).
+    pub fn mode(&self) -> &RenderMode {
+        &self.mode
+    }
+
     /// Whether labels keep their place while the camera moves, as in
     /// MapLibre Native (on by default): a label tries its previous variable
     /// anchor first, and in tilted views labels shown before are placed
