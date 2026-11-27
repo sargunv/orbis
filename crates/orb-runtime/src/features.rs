@@ -54,6 +54,8 @@ pub struct FeatureRequest {
     /// The tile's load, unbent, at the zoom it laid out at.
     pub tile: TileRequest,
     pub select: FeatureSelect,
+    /// The map's global state, which the filter reads.
+    pub state: Vec<(String, orb_expr::Value<'static>)>,
     /// The style revision the drawn tile's features were laid out with:
     /// they are read from the source's data as of then, not newer data
     /// a `setSourceData` brought since. `None` for the newest.
@@ -128,6 +130,7 @@ impl TileWorker {
                 })
                 .collect::<Vec<_>>()
         };
+        let state = &request.state;
         Ok(match &request.select {
             FeatureSelect::Indices {
                 layer,
@@ -142,7 +145,8 @@ impl TileWorker {
                     let canonical = self.canonical(index, tile);
                     // At the tile's zoom, as GL JS and Native filter a
                     // rendered query, not the camera's.
-                    if let Some(filter) = filter.as_deref().map(parse_filter).transpose()? {
+                    let filter = filter.as_deref().map(|f| parse_filter(f, state));
+                    if let Some(filter) = filter.transpose()? {
                         indices = filter.select_rows(l, request.tile.zoom, canonical, indices);
                     }
                     let mut read = read(l, &mut indices.into_iter());
@@ -183,7 +187,8 @@ impl TileWorker {
                 None => Vec::new(),
             },
             FeatureSelect::Filter { layer, filter } => {
-                let filter = filter.as_deref().map(parse_filter).transpose()?;
+                let filter = filter.as_deref().map(|f| parse_filter(f, state));
+                let filter = filter.transpose()?;
                 let zoom = request.tile.zoom;
                 let canonical = self.canonical(index, tile);
                 frame
@@ -203,10 +208,14 @@ impl TileWorker {
     }
 }
 
-/// A query's v8 filter, from its JSON.
-fn parse_filter(json: &str) -> Result<orb_expr::Filter, String> {
+/// A query's v8 filter, from its JSON, reading the global state `state`.
+fn parse_filter(
+    json: &str,
+    state: &[(String, orb_expr::Value<'static>)],
+) -> Result<orb_expr::Filter, String> {
     let json = orb_expr::json::parse(json).map_err(|e| e.to_string())?;
-    orb_expr::Filter::parse(&json, &mut Vec::new()).map_err(|e| {
+    let layer = orb_expr::FilterLayer::Query;
+    orb_expr::Filter::parse(&json, &mut Vec::new(), layer, state).map_err(|e| {
         e.iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()

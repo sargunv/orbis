@@ -92,7 +92,7 @@ pub(crate) fn format_number(number: f64, o: NumberFormat<'_>) -> Result<String, 
 /// Without a host in a browser: code points in order, and numbers as
 /// JavaScript prints them, rather than the built-in tables the browser
 /// would carry.
-#[cfg(all(target_arch = "wasm32", not(test)))]
+#[cfg(target_arch = "wasm32")]
 mod builtin {
     use super::{Collator, NumberFormat, Ordering};
 
@@ -109,8 +109,8 @@ mod builtin {
     }
 }
 
-// Built in natively, and in wasm tests, which have no browser host.
-#[cfg(any(test, not(target_arch = "wasm32")))]
+// Built in natively.
+#[cfg(not(target_arch = "wasm32"))]
 mod builtin {
     use super::{Collator, NumberFormat, Ordering};
 

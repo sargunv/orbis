@@ -223,7 +223,8 @@ unsafe fn filter(view: mln_buffer_view) -> Result<Option<String>> {
     }
     let json = json::parse(&source)
         .map_err(|e| Failure::argument(format!("the filter is not valid JSON: {e}")))?;
-    orb_expr::Filter::parse(&json, &mut Vec::new()).map_err(|errors| {
+    let layer = orb_expr::FilterLayer::Query;
+    orb_expr::Filter::parse(&json, &mut Vec::new(), layer, &[]).map_err(|errors| {
         let messages: Vec<String> = errors.iter().map(ToString::to_string).collect();
         Failure::argument(format!("the filter is invalid: {}", messages.join("; ")))
     })?;

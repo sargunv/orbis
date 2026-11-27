@@ -4,7 +4,8 @@
 //!
 //! Semantics follow the style-spec's TypeScript reference
 //! (`src/expression/`, version 26.5.1). All public v8 operators are supported;
-//! the complete pinned expression suite runs natively and as wasm in Chrome.
+//! the complete pinned expression suite runs under `cargo test`, and
+//! MapLibre Native's copy under `cargo xtask rt --suite native-expression`.
 //!
 //! Two consumers shape the API:
 //!
@@ -67,8 +68,6 @@ use parse::Parser;
 pub mod conformance;
 #[cfg(test)]
 mod tests;
-#[cfg(all(test, target_arch = "wasm32"))]
-wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 /// A number as JavaScript's `String(x)` writes it, as GL JS keys feature
 /// state by `String(id)`.

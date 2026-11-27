@@ -24,7 +24,7 @@ impl<'a> Evaluator<'_, 'a> {
                 .global_state
                 .iter()
                 .rev()
-                .find(|(k, _)| k == &*self.ir.keys[*key as usize])
+                .find(|(k, _)| **k == **key)
                 .map_or(Value::Null, |(_, v)| v.reborrow()),
             Call::Heatmap => Value::Number(self.context.heatmap_density),
             Call::Pitch => Value::Number(self.context.pitch),

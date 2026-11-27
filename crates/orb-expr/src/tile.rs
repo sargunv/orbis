@@ -15,7 +15,6 @@ pub struct Bound<'a> {
     ir: &'a Ir,
     layer: &'a Layer,
     columns: Vec<Option<&'a Column>>,
-    images: &'a [String],
     /// Whether the expression reads the feature's geometry (`within`,
     /// `distance`).
     reads_geometry: bool,
@@ -30,55 +29,24 @@ impl<'a> Bound<'a> {
             ir,
             layer,
             columns,
-            images: &[],
             reads_geometry,
             tile: None,
         }
     }
 
     /// The canonical tile the layer's geometry is in, which `within` and
-    /// `distance` read when evaluated with [`evaluate`](Self::evaluate);
-    /// without one they find no geometry, as in a filter.
+    /// `distance` read; without one they find no geometry, as in a filter.
     #[must_use]
     pub fn with_tile(mut self, tile: Option<crate::CanonicalTile>) -> Self {
         self.tile = tile;
         self
     }
 
-    /// The images `image` expressions find available when evaluated with
-    /// [`evaluate`](Self::evaluate); none by default.
-    #[must_use]
-    pub fn with_images(mut self, images: &'a [String]) -> Self {
-        self.images = images;
-        self
-    }
-
-    /// Evaluates the expression for feature `row` at `zoom`.
+    /// Evaluates feature `row` at `zoom`, with nothing else in its context.
     pub fn evaluate(&self, zoom: f64, row: usize) -> Result<Value<'a>, EvalError> {
-        if let Some(tile) = self.tile.filter(|_| self.reads_geometry) {
-            let geometry = crate::FeatureGeometry::from_layer(self.layer, row, tile);
-            let context = crate::EvaluationContext {
-                zoom,
-                available_images: self.images,
-                geometry: Some(&geometry),
-                ..crate::EvaluationContext::default()
-            };
-            return Evaluator {
-                context: &context,
-                ir: self.ir,
-                feature: Some(&Row {
-                    layer: self.layer,
-                    columns: &self.columns,
-                    row,
-                }),
-            }
-            .eval_root()
-            .map(Value::into_owned);
-        }
-        self.evaluate_with(
+        self.evaluate_in(
             &crate::EvaluationContext {
                 zoom,
-                available_images: self.images,
                 ..crate::EvaluationContext::default()
             },
             row,
@@ -93,47 +61,32 @@ impl<'a> Bound<'a> {
         context: &crate::EvaluationContext<'a>,
         row: usize,
     ) -> Result<Value<'a>, EvalError> {
-        match self.tile.filter(|_| self.reads_geometry) {
-            Some(tile) => {
-                let geometry = crate::FeatureGeometry::from_layer(self.layer, row, tile);
-                let context = crate::EvaluationContext {
-                    geometry: Some(&geometry),
-                    accumulated: context.accumulated.clone(),
-                    ..*context
-                };
-                Evaluator {
-                    context: &context,
-                    ir: self.ir,
-                    feature: Some(&Row {
-                        layer: self.layer,
-                        columns: &self.columns,
-                        row,
-                    }),
-                }
-                .eval_root()
-                .map(Value::into_owned)
+        let feature = Row {
+            layer: self.layer,
+            columns: &self.columns,
+            row,
+        };
+        let Some(tile) = self.tile.filter(|_| self.reads_geometry) else {
+            return Evaluator {
+                context,
+                ir: self.ir,
+                feature: Some(&feature),
             }
-            None => self.evaluate_with(context, row),
-        }
-    }
-
-    /// Evaluates a row with explicit state, geometry and globals.
-    /// Literal property keys still address the columns resolved at bind time.
-    pub fn evaluate_with(
-        &self,
-        context: &crate::EvaluationContext<'a>,
-        row: usize,
-    ) -> Result<Value<'a>, EvalError> {
+            .eval_root();
+        };
+        let geometry = crate::FeatureGeometry::from_layer(self.layer, row, tile);
+        let context = crate::EvaluationContext {
+            geometry: Some(&geometry),
+            accumulated: context.accumulated.clone(),
+            ..*context
+        };
         Evaluator {
-            context,
+            context: &context,
             ir: self.ir,
-            feature: Some(&Row {
-                layer: self.layer,
-                columns: &self.columns,
-                row,
-            }),
+            feature: Some(&feature),
         }
         .eval_root()
+        .map(Value::into_owned)
     }
 }
 

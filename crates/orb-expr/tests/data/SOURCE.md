@@ -11,17 +11,5 @@ by fixture path into `expression-fixtures.json` with no filtering or changes.
 - License: upstream `LICENSE.txt`, copied as `LICENSE-style-spec.txt`.
 - Regenerate: `cargo xtask fixtures expressions`.
 
-Native and wasm conformance tests embed the same JSON, so neither needs
-filesystem I/O, serde or a separate download.
-
-Run natively with `cargo test -p orb-expr`. Run in headless Chrome with:
-
-```sh
-CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
-  cargo test -p orb-expr --lib --target wasm32-unknown-unknown -- --nocapture
-```
-
-`wasm-bindgen-test-runner` uses ChromeDriver on PATH, or `CHROMEDRIVER`.
-For a nonstandard Chrome installation, set `WASM_BINDGEN_TEST_WEBDRIVER_JSON`
-to a WebDriver capabilities JSON file containing
-`{"goog:chromeOptions":{"binary":"/path/to/chrome"}}`.
+The conformance test embeds the JSON, so it needs no filesystem I/O, serde
+or separate download. Run it with `cargo test -p orb-expr`.

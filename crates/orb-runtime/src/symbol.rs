@@ -282,18 +282,16 @@ pub(crate) fn prepare(
                 .is_some_and(|f| !f.is_empty()));
     let sort_by_key = crate::labels::draws_by_key(l, zoom);
 
-    let text_field = l
-        .get(orb_style::TEXT_FIELD)
-        .bind(layer)
-        .with_images(images)
-        .with_tile(tile);
+    let text_field = l.get(orb_style::TEXT_FIELD).bind(layer).with_tile(tile);
     let text_transform = l.get(orb_style::TEXT_TRANSFORM).bind(layer).with_tile(tile);
     let text_font = l.get(orb_style::TEXT_FONT).bind(layer).with_tile(tile);
-    let icon_image = l
-        .get(orb_style::ICON_IMAGE)
-        .bind(layer)
-        .with_images(images)
-        .with_tile(tile);
+    let icon_image = l.get(orb_style::ICON_IMAGE).bind(layer).with_tile(tile);
+    // `image` expressions find the style's images available.
+    let with_images = orb_expr::EvaluationContext {
+        zoom,
+        available_images: images,
+        ..Default::default()
+    };
     let sort_key = l
         .get(orb_style::SYMBOL_SORT_KEY)
         .bind(layer)
@@ -377,7 +375,7 @@ pub(crate) fn prepare(
                 orb_style::TextTransform::Uppercase => orb_text::TextTransform::Uppercase,
                 orb_style::TextTransform::Lowercase => orb_text::TextTransform::Lowercase,
             };
-            let sections = text_field.evaluate(zoom, row);
+            let sections = text_field.evaluate_in(&with_images, row);
             if sections.iter().any(|s| s.text_color.is_some()) {
                 // Layout drops image sections without a name.
                 let colors = sections
@@ -394,7 +392,7 @@ pub(crate) fn prepare(
             label(&sections, transform)
         });
         let icon: Option<Box<str>> = icon_image
-            .evaluate(zoom, row)
+            .evaluate_in(&with_images, row)
             .filter(|name| !name.is_empty())
             .map(Into::into);
         if text.is_none() && icon.is_none() {

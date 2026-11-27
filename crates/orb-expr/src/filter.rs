@@ -39,10 +39,13 @@ pub struct CameraFilter {
     expression: Expression,
 }
 
-/// The style layer a filter selects features for, which decides whether
-/// it may read the camera.
+/// What a filter selects features for, which decides whether it may read
+/// the camera.
 #[derive(Clone, Copy, Debug)]
 pub enum FilterLayer<'a> {
+    /// A feature query's (`querySourceFeatures`, a rendered query's
+    /// filter).
+    Query,
     /// A symbol layer's, whose camera conditions decide per symbol at
     /// placement ([`Filter::camera`]).
     Symbol,
@@ -128,40 +131,21 @@ fn camera_operator(ir: &Ir) -> &'static str {
 }
 
 impl Filter {
-    /// Parses a feature query's filter, in expression or legacy syntax.
-    /// Legacy syntax mixed into an expression filter is reported in
-    /// `warnings`, as GL JS warns about it. Diagnostic paths are relative
-    /// to the filter. A filter that reads the camera is an error: only a
-    /// symbol layer's may ([`parse_layer`](Self::parse_layer)).
+    /// Parses `layer`'s filter, in expression or legacy syntax, with
+    /// `global-state` reads folded to `state`'s values. Legacy syntax mixed
+    /// into an expression filter is reported in `warnings`, as GL JS warns
+    /// about it. Diagnostic paths are relative to the filter. Only a symbol
+    /// layer's filter may read the camera and each symbol's distance from
+    /// the view's centre ([`camera`](Self::camera)); elsewhere that is an
+    /// error.
     pub fn parse(
-        json: &crate::json::Json,
-        warnings: &mut Vec<Diagnostic>,
-    ) -> Result<Self, Vec<Diagnostic>> {
-        Self::parse_inner(json, warnings, None, None)
-    }
-
-    /// Parses `layer`'s filter as [`parse`](Self::parse) does, with
-    /// `global-state` reads folded to `state`'s values. A symbol layer's
-    /// may read the camera and each symbol's distance from the view's
-    /// centre ([`camera`](Self::camera)).
-    pub fn parse_layer(
         json: &crate::json::Json,
         warnings: &mut Vec<Diagnostic>,
         layer: FilterLayer<'_>,
         state: &[(String, Value<'static>)],
     ) -> Result<Self, Vec<Diagnostic>> {
-        Self::parse_inner(json, warnings, Some(state), Some(layer))
-    }
-
-    /// `layer` is none for a query's filter.
-    fn parse_inner(
-        json: &crate::json::Json,
-        warnings: &mut Vec<Diagnostic>,
-        state: Option<&[(String, Value<'static>)]>,
-        layer: Option<FilterLayer<'_>>,
-    ) -> Result<Self, Vec<Diagnostic>> {
         let mut parser = Parser {
-            global_state: state,
+            global_state: Some(state),
             in_filter: true,
             ..Parser::default()
         };
@@ -187,12 +171,12 @@ impl Filter {
             // Only a symbol layer's filter decides at placement; the rest
             // run per tile, which knows no camera beyond its zoom.
             let site = match layer {
-                Some(FilterLayer::Symbol) => None,
+                FilterLayer::Symbol => None,
                 // Mapbox GL JS's wording.
-                Some(FilterLayer::Other { ty, id }) => {
+                FilterLayer::Other { ty, id } => {
                     Some(format!("a filter for a {ty} layer with id: {id}"))
                 }
-                None => Some("a query's filter".into()),
+                FilterLayer::Query => Some("a query's filter".into()),
             };
             if let Some(site) = site {
                 let name = camera_operator(&parser.ir);
@@ -462,7 +446,7 @@ mod tests {
             r#"[">=", ["zoom"], 12]"#,
         ] {
             let json = crate::json::parse(text).unwrap();
-            let filter = Filter::parse(&json, &mut Vec::new()).unwrap();
+            let filter = Filter::parse(&json, &mut Vec::new(), FilterLayer::Query, &[]).unwrap();
             let one_by_one = filter.select(&layer, 10.0, None);
             assert!(!one_by_one.is_empty() || text.contains("zoom"), "{text}");
             let grouped = filter.select_grouped(&layer, 10.0, None, &mut groups);
@@ -482,7 +466,7 @@ mod tests {
 
     fn symbol_filter(text: &str) -> Result<Filter, Vec<Diagnostic>> {
         let json = crate::json::parse(text).unwrap();
-        Filter::parse_layer(&json, &mut Vec::new(), FilterLayer::Symbol, &[])
+        Filter::parse(&json, &mut Vec::new(), FilterLayer::Symbol, &[])
     }
 
     fn at(pitch: f64, center_distance: f64) -> crate::EvaluationContext<'static> {
@@ -560,22 +544,19 @@ mod tests {
             ty: "circle",
             id: "c",
         };
-        let message = |text: &str, layer: Option<FilterLayer<'_>>| {
+        let message = |text: &str, layer: FilterLayer<'_>| {
             let json = crate::json::parse(text).unwrap();
-            let parsed = match layer {
-                Some(layer) => Filter::parse_layer(&json, &mut Vec::new(), layer, &[]),
-                None => Filter::parse(&json, &mut Vec::new()),
-            };
+            let parsed = Filter::parse(&json, &mut Vec::new(), layer, &[]);
             parsed.unwrap_err().remove(0).message
         };
         let pitch = r#"["<", ["pitch"], 30]"#;
         let far = r#"["<", ["dev.sargunv.orbis:distance-from-center"], 1]"#;
         assert_eq!(
-            message(pitch, None),
+            message(pitch, FilterLayer::Query),
             "[\"pitch\"] expression is not supported in a query's filter"
         );
         assert_eq!(
-            message(far, Some(circle)),
+            message(far, circle),
             "[\"dev.sargunv.orbis:distance-from-center\"] expression is not supported in a filter for a circle layer with id: c"
         );
         let spec = crate::PropertySpec {

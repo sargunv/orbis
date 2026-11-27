@@ -2881,7 +2881,6 @@ dependencies = [
  "orb-tile",
  "orb-wire",
  "rustc-hash 2.1.3",
- "wasm-bindgen-test",
 ]
 
 [[package]]

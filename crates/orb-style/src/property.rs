@@ -770,21 +770,25 @@ impl<'a, T> BoundProperty<'a, T> {
         self.bound = self.bound.map(|b| b.with_tile(tile));
         self
     }
-
-    /// The style's images, which `image` expressions find available.
-    #[must_use]
-    pub fn with_images(mut self, images: &'a [String]) -> Self {
-        self.bound = self.bound.map(|b| b.with_images(images));
-        self
-    }
 }
 
-impl<T: PropertyValue> BoundProperty<'_, T> {
+impl<'a, T: PropertyValue> BoundProperty<'a, T> {
     /// The value for feature `row` at `zoom`.
     pub fn evaluate(&self, zoom: f64, row: usize) -> T {
+        self.evaluate_in(
+            &orb_expr::EvaluationContext {
+                zoom,
+                ..Default::default()
+            },
+            row,
+        )
+    }
+
+    /// The value for feature `row` in `context` (its zoom and images).
+    pub fn evaluate_in(&self, context: &orb_expr::EvaluationContext<'a>, row: usize) -> T {
         match (&self.constant, &self.bound) {
             (Some(v), _) => v.clone(),
-            (None, Some(bound)) => fit(bound.evaluate(zoom, row).ok().as_ref(), || {
+            (None, Some(bound)) => fit(bound.evaluate_in(context, row).ok().as_ref(), || {
                 self.default.clone()
             }),
             (None, None) => self.default.clone(),

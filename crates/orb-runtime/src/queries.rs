@@ -134,6 +134,7 @@ impl crate::Map {
                 source_layer: hit.source_layer.clone(),
             });
         }
+        let state = style.doc.global_state();
         let requests = drawn
             .into_iter()
             .filter_map(|((source, tile, layer), features)| {
@@ -143,6 +144,7 @@ impl crate::Map {
                     FeatureRequest {
                         revision: self.drawn_revision(source, tile),
                         tile: request,
+                        state: state.clone(),
                         select: FeatureSelect::Indices {
                             layer,
                             features,
@@ -185,6 +187,7 @@ impl crate::Map {
                 data_tiles.push(data);
             }
         }
+        let state = style.doc.global_state();
         let requests = data_tiles
             .into_iter()
             .filter_map(|tile| {
@@ -194,6 +197,7 @@ impl crate::Map {
                     FeatureRequest {
                         revision: None,
                         tile: request,
+                        state: state.clone(),
                         select: FeatureSelect::Filter {
                             layer: source_layer.map(str::to_string),
                             filter: filter.map(str::to_string),

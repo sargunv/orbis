@@ -144,8 +144,7 @@ impl Parser<'_> {
                     self.global_literals.push(id);
                     return Some(id);
                 }
-                let k = self.ir.intern_key(name);
-                self.call(Call::GlobalState(k), vec![], Type::Value, key)
+                self.call(Call::GlobalState(name.into()), vec![], Type::Value, key)
             }
             "index-of" | "slice" => {
                 if !(2..=3).contains(&n) {

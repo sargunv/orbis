@@ -330,7 +330,7 @@ fn selection(
                 LayerType::Symbol => FilterLayer::Symbol,
                 ty => FilterLayer::Other { ty: ty.name(), id },
             };
-            let filter = Filter::parse_layer(f, &mut warnings, layer, &cx.state)
+            let filter = Filter::parse(f, &mut warnings, layer, &cx.state)
                 .map_err(|errors| cx.errors_at(&filter_path, errors))
                 .ok();
             cx.warnings_at(&filter_path, warnings);

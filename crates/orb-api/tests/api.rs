@@ -1397,7 +1397,7 @@ fn source_queries_select_by_filter_and_area() {
         })
         .collect();
     map.set_style_json(&format!(
-        r#"{{"version":8,"center":[0,0],"zoom":0,
+        r#"{{"version":8,"center":[0,0],"zoom":0,"state":{{"even":{{"default":true}}}},
           "sources":{{"p":{{"type":"geojson","data":{{"type":"FeatureCollection","features":[{}]}}}}}},
           "layers":[{{"id":"p","type":"circle","source":"p"}}]}}"#,
         points.join(",")
@@ -1423,6 +1423,15 @@ fn source_queries_select_by_filter_and_area() {
     );
     let even = map.query_source("p", None, Some(r#"["get", "even"]"#));
     assert_eq!(ids(answer(&mut map, &mut target, even).unwrap()), [0, 2, 4]);
+    // Filters read the map's global state.
+    let state = r#"["==", ["get", "even"], ["global-state", "even"]]"#;
+    let even = map.query_source("p", None, Some(state));
+    assert_eq!(ids(answer(&mut map, &mut target, even).unwrap()), [0, 2, 4]);
+    map.edit(&commands(r#"[["setGlobalStateProperty", "even", false]]"#))
+        .expect("edit");
+    settle(&mut map, &mut target);
+    let odd = map.query_source("p", None, Some(state));
+    assert_eq!(ids(answer(&mut map, &mut target, odd).unwrap()), [1, 3, 5]);
     // East of the meridian: points at 5, 15 and 25 degrees.
     let east = map.query_source(
         "p",

@@ -187,7 +187,8 @@ pub(crate) enum Call {
     Var,
     Error,
     FeatureState,
-    GlobalState(KeyId),
+    /// A global state property, by name.
+    GlobalState(Box<str>),
     Heatmap,
     Elevation,
     Accumulated,
@@ -429,6 +430,26 @@ impl Op {
         each_child!(self, |id| *id = f(*id));
     }
 
+    /// Replaces the property key it reads under, if one, with `f(key)`.
+    fn map_key(&mut self, f: impl FnOnce(KeyId) -> KeyId) {
+        if let Op::Get(k)
+        | Op::Has(k)
+        | Op::Legacy(
+            LegacyFilter::Compare {
+                subject: Subject::Property(k),
+                ..
+            }
+            | LegacyFilter::In {
+                subject: Subject::Property(k),
+                ..
+            }
+            | LegacyFilter::Has(Subject::Property(k)),
+        ) = self
+        {
+            *k = f(*k);
+        }
+    }
+
     /// The node's own inputs, not counting its operands'.
     pub(crate) fn own_deps(&self) -> Deps {
         match self {
@@ -469,7 +490,7 @@ pub(crate) struct Ir {
     /// the conformance runner's error messages.
     #[cfg(any(test, feature = "conformance"))]
     pub paths: Vec<Box<str>>,
-    /// Literal property keys, by `KeyId`.
+    /// The literal property keys the nodes read, by `KeyId`.
     pub keys: Vec<Box<str>>,
 }
 
@@ -514,13 +535,11 @@ impl Ir {
     }
 
     /// A new arena holding only the nodes reachable from `root`, in post
-    /// order, with `root` last. Parsing leaves behind the nodes of failed
-    /// overloads and of subtrees folded into literals.
+    /// order, with `root` last, and only the keys they read. Parsing leaves
+    /// behind the nodes of failed overloads and of subtrees folded into
+    /// literals.
     pub(crate) fn compact(&self, root: NodeId) -> Ir {
-        let mut out = Ir {
-            keys: self.keys.clone(),
-            ..Ir::default()
-        };
+        let mut out = Ir::default();
         let mut map = vec![NodeId::MAX; self.nodes.len()];
         self.copy_into(root, &mut out, &mut map);
         out
@@ -533,6 +552,7 @@ impl Ir {
         let node = &self.nodes[id as usize];
         let mut op = node.op.clone();
         op.map_children(|c| self.copy_into(c, out, map));
+        op.map_key(|k| out.intern_key(&self.keys[k as usize]));
         out.nodes.push(Node {
             op,
             ty: node.ty.clone(),

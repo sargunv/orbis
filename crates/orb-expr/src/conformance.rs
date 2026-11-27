@@ -1,5 +1,4 @@
-//! The complete pinned style-spec expression conformance suite. Native and
-//! wasm tests share compilation, inputs, error paths and output comparisons.
+//! The complete pinned style-spec expression conformance suite.
 //! See `tests/data/SOURCE.md` for the upstream version and regeneration.
 //! With the `conformance` feature, [`check`] runs one fixture for
 //! `orb-fixtures`, which runs MapLibre Native's copy of the suite.
@@ -414,10 +413,8 @@ pub fn check(name: &str, fixture: &Json, reference: Reference) -> Result<(), Str
     Ok(())
 }
 
-/// Runs the entire pinned suite through the CPU evaluator. Shared by native
-/// tests and wasm tests in Chrome.
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-#[cfg_attr(not(target_arch = "wasm32"), test)]
+/// Runs the entire pinned suite through the CPU evaluator.
+#[test]
 fn style_spec_expression_fixtures() {
     let fixtures = json::parse(FIXTURES).expect("fixture bundle parses");
     let fixtures = fixtures.as_object().expect("bundle is an object");
@@ -425,14 +422,7 @@ fn style_spec_expression_fixtures() {
         .iter()
         .filter_map(|m| run_fixture(&m.key, &m.value).err())
         .collect();
-    #[cfg(not(target_arch = "wasm32"))]
     println!(
-        "CPU expression fixtures: {}/{} passed",
-        fixtures.len() - failures.len(),
-        fixtures.len()
-    );
-    #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_test::console_log!(
         "CPU expression fixtures: {}/{} passed",
         fixtures.len() - failures.len(),
         fixtures.len()

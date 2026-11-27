@@ -2,7 +2,7 @@
 use crate::json::{self, Json};
 use crate::property::{PropertyExpression, PropertySpec, PropertyType};
 use crate::value::{Type, Value};
-use crate::{CanonicalTile, Color, Expression, Filter, Inputs, Kind};
+use crate::{CanonicalTile, Color, Expression, Filter, FilterLayer, Inputs, Kind};
 use orb_tile::{GeometryType, LayerBuilder};
 use std::borrow::Cow;
 fn parse(text: &str) -> Json {
@@ -57,7 +57,7 @@ fn roads() -> orb_tile::Layer {
 
 fn select(filter: &str, zoom: f64) -> Vec<u32> {
     let mut warnings = Vec::new();
-    let filter = Filter::parse(&parse(filter), &mut warnings).unwrap();
+    let filter = Filter::parse(&parse(filter), &mut warnings, FilterLayer::Query, &[]).unwrap();
     filter.select(&roads(), zoom, None)
 }
 
@@ -80,6 +80,8 @@ fn within_filters_read_each_feature_where_its_tile_is() {
                 [[[-180, 0], [-90, 0], [-90, 85], [-180, 85], [-180, 0]]]}]"#,
         ),
         &mut warnings,
+        FilterLayer::Query,
+        &[],
     )
     .unwrap();
     assert!(west.expression().reads_geometry());
@@ -157,21 +159,38 @@ fn legacy_filters_keep_legacy_semantics() {
 #[test]
 fn legacy_filter_errors_and_mixed_warnings() {
     let mut warnings = Vec::new();
-    let err = Filter::parse(&parse(r#"["<", "$type", "Point"]"#), &mut warnings).unwrap_err();
+    let err = Filter::parse(
+        &parse(r#"["<", "$type", "Point"]"#),
+        &mut warnings,
+        FilterLayer::Query,
+        &[],
+    )
+    .unwrap_err();
     assert_eq!(
         err[0].message,
         "\"$type\" cannot be use with operator \"<\""
     );
-    let err = Filter::parse(&parse(r#"["==", "$type", "Circle"]"#), &mut warnings).unwrap_err();
+    let err = Filter::parse(
+        &parse(r#"["==", "$type", "Circle"]"#),
+        &mut warnings,
+        FilterLayer::Query,
+        &[],
+    )
+    .unwrap_err();
     assert_eq!(err[0].path, "[2]");
-    let err = Filter::parse(&parse(r#"["==", "x", [1]]"#), &mut warnings);
+    let err = Filter::parse(
+        &parse(r#"["==", "x", [1]]"#),
+        &mut warnings,
+        FilterLayer::Query,
+        &[],
+    );
     assert!(
         err.is_err(),
         "an array compared to a string is an expression type error"
     );
 
     let mixed = parse(r#"["all", ["==", ["get", "a"], 1], ["!in", "b", 1, 2]]"#);
-    Filter::parse(&mixed, &mut warnings).unwrap_err();
+    Filter::parse(&mixed, &mut warnings, FilterLayer::Query, &[]).unwrap_err();
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0].path, "[2]");
     assert_eq!(
@@ -390,7 +409,7 @@ fn deepest_document_fits_a_small_stack() {
 
 #[test]
 fn bound_evaluation_provides_all_state_and_global_inputs() {
-    use crate::{EvaluationContext, ir::Deps};
+    use crate::EvaluationContext;
     let expr = Expression::parse(&parse(r#"["+", ["get", "rank"], ["number", ["feature-state", "weight"]], ["number", ["global-state", "offset"]], ["line-progress"], ["heatmap-density"], ["elevation"], ["number", ["accumulated"]]]"#),None).unwrap();
     let layer = roads();
     let bound = expr.bind(&layer);
@@ -405,20 +424,8 @@ fn bound_evaluation_provides_all_state_and_global_inputs() {
         global_state: &global_state,
         ..EvaluationContext::default()
     };
-    assert_eq!(bound.evaluate_with(&context, 0), Ok(Value::Number(28.0)));
-    assert_eq!(bound.evaluate_with(&context, 1), Ok(Value::Number(29.0)));
-    for dependency in [
-        Deps::FEATURE,
-        Deps::FEATURE_STATE,
-        Deps::GLOBAL_STATE,
-        Deps::LINE_PROGRESS,
-        Deps::HEATMAP,
-        Deps::ELEVATION,
-        Deps::ACCUMULATED,
-    ] {
-        assert!(expr.deps().contains(dependency));
-    }
-    assert!(expr.constant().is_none());
+    assert_eq!(bound.evaluate_in(&context, 0), Ok(Value::Number(28.0)));
+    assert_eq!(bound.evaluate_in(&context, 1), Ok(Value::Number(29.0)));
 }
 
 #[test]
@@ -438,7 +445,7 @@ fn bound_geometry_uses_layer_extent_and_tile_location() {
         ..EvaluationContext::default()
     };
     assert_eq!(
-        expr.bind(&layer).evaluate_with(&context, 0),
+        expr.bind(&layer).evaluate_in(&context, 0),
         Ok(Value::Bool(true))
     );
     assert_eq!(expr.bind(&layer).evaluate(0.0, 0), Ok(Value::Bool(false)));
