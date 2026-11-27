@@ -49,9 +49,10 @@ impl Map {
         if !plan.nodes.iter().any(|n| n.source == index) {
             return None;
         }
-        let zoom = self.camera.state().zoom(self.surface.projection());
-        let camera = crate::paint::camera_inputs(self.camera.state());
-        let focus = self.camera.state().target;
+        let frame_camera = self.frame_camera();
+        let zoom = frame_camera.zoom(self.surface.projection());
+        let camera = crate::paint::camera_inputs(&frame_camera);
+        let focus = frame_camera.target;
         // The tallest extrusion or the highest a symbol layer lifts its
         // labels (`symbol-height-offset`): their tiles stay covered while
         // the lifted content can show, as in GL JS. Per feature, the most
@@ -163,7 +164,7 @@ impl Map {
         // alone (`neighbours`, `TileRequest::neighbour`).
         let grid_view;
         let (cover_view, margin, middle) = match &self.mode {
-            RenderMode::Tile(_) => {
+            RenderMode::Tile { .. } => {
                 let dem = endpoint.dem_unpack.is_some();
                 let crossing =
                     nodes().any(|(_, n)| n.family.crosses_tiles() || n.family.reaches_edges());
@@ -283,6 +284,7 @@ impl Map {
         plan: Option<SourcePlan>,
         report: &mut FrameReport,
     ) {
+        let focus = self.frame_camera().target;
         let style = self.style.as_mut().expect("called with a style");
         let slot = &mut style.sources[index];
         slot.draws = None;
@@ -374,7 +376,7 @@ impl Map {
             self.services.jobs.cancel(id, key, tile);
         }
         let ranks: Vec<u64> = {
-            let order = fetch_order(tms, self.camera.state().target);
+            let order = fetch_order(tms, focus);
             (requests.iter())
                 .map(|&tile| order(tile, Tier::of(tile, coarse, true)))
                 .collect()
@@ -399,6 +401,7 @@ impl Map {
         report: &mut FrameReport,
         drawn: &mut Vec<crate::query::DrawnTile>,
     ) {
+        let zoom = self.frame_zoom();
         let style = self.style.as_mut().expect("called with a style");
         let draped = drape.filter(|_| {
             let plan = style.worker.plan();
@@ -527,7 +530,7 @@ impl Map {
                 let at = Placement {
                     extent,
                     period,
-                    zoom: self.camera.state().zoom(self.surface.projection()),
+                    zoom,
                     frame,
                     series: series.as_deref(),
                     globe,
@@ -691,6 +694,7 @@ impl Map {
         let time = self.shader_time();
         // A still map redraws every stale slot in its one frame.
         let texels = (self.mode == RenderMode::Continuous).then_some(self.frame_budget.drape());
+        let camera = self.frame_camera();
         let style = self.style.as_mut().expect("checked");
         let terrain = style.terrain.get_mut().expect("checked");
         let worker = Arc::clone(&style.worker);
@@ -702,20 +706,13 @@ impl Map {
         // shows doesn't depend on them.
         let layout = renderer.reserve_drape(gpu)?;
         let surface = self.surface.tms().clone();
-        let zoom = drape_zoom(self.camera.state().zoom(self.surface.projection()));
-        let sphere = DrapeSphere::of(
-            &self.surface.view_surface(),
-            self.camera.state().target,
-            zoom,
-        );
+        let zoom = drape_zoom(camera.zoom(self.surface.projection()));
+        let sphere = DrapeSphere::of(&self.surface.view_surface(), camera.target, zoom);
         let stacks = layout.stack_count() as usize;
-        let bearing = self.camera.state().bearing;
+        let bearing = camera.bearing;
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
-        let at = (
-            layout.generation,
-            crate::paint::camera_inputs(self.camera.state()),
-        );
+        let at = (layout.generation, crate::paint::camera_inputs(&camera));
         // Draped paint eases as the rest does.
         let overlay = style.paint.overlay.clone();
         let eased = overlay.as_deref().unwrap_or(plan);
@@ -950,7 +947,7 @@ impl Map {
         let Some(background) = style.background else {
             return;
         };
-        let zoom = self.camera.state().zoom(self.surface.projection());
+        let zoom = self.frame_zoom();
         let tms = self.surface.tms();
         let cover = match view.low_plane() {
             Some(low) => low.cover_warped(tms, TILE_PX, 24, |tile| {

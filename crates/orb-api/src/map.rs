@@ -1051,9 +1051,11 @@ impl Map {
     /// tile's neighbours too and places them all in tile scope
     /// ([`RenderMode::Tile`]): tiles drawn apart agree on the labels that
     /// cross their edges, those smaller than half a tile at least, and the
-    /// same tile always draws the same bytes. The map's camera is left as it
-    /// was. An error once nothing has arrived for [`STILL_STALL`]. Failed
-    /// tiles are retried first, as for [`snapshot`](Self::snapshot).
+    /// same tile always draws the same bytes. The tile draws from a camera
+    /// of its own: the map's camera, its constraints, animations and
+    /// events, are left as they were. An error once nothing has arrived for
+    /// [`STILL_STALL`]. Failed tiles are retried first, as for
+    /// [`snapshot`](Self::snapshot).
     pub fn render_tile(&mut self, tile: &TileRequest) -> Result<Image, Error> {
         let mut patience = self.patience(STILL_STALL);
         let (index, px) = Self::tile_pixels(tile)?;
@@ -1072,8 +1074,8 @@ impl Map {
     /// [`render_tile`](Self::render_tile) for a host that can't wait on
     /// it, as [`snapshot_step`](Self::snapshot_step) is
     /// [`snapshot`](Self::snapshot)'s: the picture once the map has
-    /// settled, `None` until then. The camera is the interactive one again
-    /// between calls, so commands may move it meanwhile.
+    /// settled, `None` until then. Commands may move the map's camera
+    /// meanwhile: the tile draws from its own.
     pub fn render_tile_step(&mut self, tile: &TileRequest) -> Result<Option<Image>, Error> {
         let (index, px) = Self::tile_pixels(tile)?;
         let mut target = self.offscreen(px, px, tile.scale);
@@ -1149,17 +1151,12 @@ impl Map {
         while !self.tile_style_in(target)? {
             self.wait(patience)?;
         }
-        let (camera, tiles) = self.tile_scene(tile, index)?;
-        let interactive = *self.map.camera();
-        self.map.jump_to_state(camera);
-        self.set_mode(RenderMode::Tile(tiles));
-        let drawn = self.settle(target, patience).map(|_| ());
-        self.map.jump_to_state(interactive);
-        drawn
+        self.set_mode(self.tile_scene(tile, index)?);
+        self.settle(target, patience).map(|_| ())
     }
 
     /// One step of [`draw_tile`](Self::draw_tile): whether the map has
-    /// settled on the tile. The interactive camera is back after it.
+    /// settled on the tile.
     fn tile_step(
         &mut self,
         target: &mut Target,
@@ -1169,13 +1166,8 @@ impl Map {
         if !self.tile_style_in(target)? {
             return Ok(false);
         }
-        let (camera, tiles) = self.tile_scene(tile, index)?;
-        let interactive = *self.map.camera();
-        self.map.jump_to_state(camera);
-        self.set_mode(RenderMode::Tile(tiles));
-        let settled = self.settle_step(target).map(|report| report.is_some());
-        self.map.jump_to_state(interactive);
-        settled
+        self.set_mode(self.tile_scene(tile, index)?);
+        self.settle_step(target).map(|report| report.is_some())
     }
 
     /// Whether the style is in, after taking in what arrived. The style's
@@ -1191,13 +1183,9 @@ impl Map {
         Ok(self.map.style_doc().is_some())
     }
 
-    /// The camera that draws `tile`, and the grid of it and its
+    /// The mode that draws `tile`: its camera, and the grid of it and its
     /// neighbours whose labels it places.
-    fn tile_scene(
-        &self,
-        tile: &TileRequest,
-        index: TileIndex,
-    ) -> Result<(CameraState, Vec<GridTile>), Error> {
+    fn tile_scene(&self, tile: &TileRequest, index: TileIndex) -> Result<RenderMode, Error> {
         let surface = self.map.surface();
         let tms = &tile.tile_matrix_set;
         if surface.globe.is_some() || !tms.projection().same_plane(&surface.projection) {
@@ -1246,14 +1234,19 @@ impl Map {
         // The middle tile as the middle of a view of the whole grid sees
         // it: from three times as far, so that what stands up (extrusions)
         // leans at the tile's edges as it does at its neighbours'.
+        // In the map's projection: axonometric, it draws tiles so too.
         let camera = CameraState {
             fov: 2.0
                 * ((CameraState::DEFAULT_FOV / 2.0).to_radians().tan() / 3.0)
                     .atan()
                     .to_degrees(),
+            axonometric: self.map.camera().axonometric,
             ..grid(col, row).expect("checked above").camera
         };
-        Ok((camera, tiles))
+        Ok(RenderMode::Tile {
+            camera,
+            grid: tiles,
+        })
     }
 
     fn set_mode(&mut self, mode: RenderMode) {

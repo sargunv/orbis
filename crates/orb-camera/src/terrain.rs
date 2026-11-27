@@ -199,7 +199,7 @@ impl CameraState {
     /// `clampCenterToGround`: where its DEM data is still loading the
     /// target keeps its elevation, so the camera moves once, when the data
     /// lands (GL JS #8549). Returns whether it changed.
-    pub(crate) fn settle_on(&mut self, terrain: &dyn Elevation, projection: &Projection) -> bool {
+    pub fn settle_on(&mut self, terrain: &dyn Elevation, projection: &Projection) -> bool {
         match terrain.at(self.target_world(projection)) {
             Some(Metres(elevation)) if elevation != self.elevation => {
                 self.elevation = elevation;

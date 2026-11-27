@@ -657,11 +657,20 @@ pub enum RenderMode {
     /// One picture: nothing fades and labels place as if nothing had been
     /// placed before, so that the same inputs draw the same pixels.
     Still,
-    /// The middle tile of a grid, the camera's view: `Still`, with labels
-    /// placed in tile scope over the grid's tiles listed, so that tiles
+    /// The middle tile of a grid, drawn from `camera`: `Still`, with
+    /// labels placed in tile scope over the `grid`'s tiles, so that tiles
     /// drawn apart agree on the labels that cross their edges. Sources
     /// whose content crosses tile edges load the whole grid.
-    Tile(Vec<GridTile>),
+    ///
+    /// The camera is the frame's alone: the map's own camera, its
+    /// animations, constraints and events, stay as the host left them.
+    /// Over terrain it stands on the ground under the tile's centre and
+    /// clears it, whether or not the map clamps its own camera's centre to
+    /// the ground, so that a tile draws at its own scale over any relief.
+    Tile {
+        camera: CameraState,
+        grid: Vec<GridTile>,
+    },
 }
 
 /// A tile of the grid [`RenderMode::Tile`] places labels over.
@@ -683,7 +692,9 @@ pub struct GridTile {
 /// key the last plan had plans as it did, and keeps it.
 #[derive(Debug, PartialEq)]
 struct PlanKey {
-    camera: u64,
+    /// The frame camera: Tile mode's moves from tile to tile with the
+    /// map's own camera still.
+    camera: CameraState,
     viewport: [u64; 2],
     /// How covers coarsen with distance ([`Map::set_tile_lod`]).
     lod: orb_camera::TileLod,
@@ -1347,17 +1358,14 @@ impl Map {
         self.surface.view_surface()
     }
 
-    /// The view the camera gives for a viewport, covering with the map's
-    /// tile level of detail.
+    /// The view frames draw for a viewport, from the frame camera (the
+    /// tile's in [`RenderMode::Tile`], the map's otherwise), covering with
+    /// the map's tile level of detail.
     pub fn view(&self, viewport: Viewport) -> View {
+        let camera = self.frame_camera();
         let view = match self.elevation() {
-            Some(terrain) => View::over(
-                self.camera.state(),
-                viewport,
-                &self.surface.view_surface(),
-                &*terrain,
-            ),
-            None => View::new(self.camera.state(), viewport, &self.surface.view_surface()),
+            Some(terrain) => View::over(&camera, viewport, &self.surface.view_surface(), &*terrain),
+            None => View::new(&camera, viewport, &self.surface.view_surface()),
         };
         view.with_tile_lod(self.options.tile_lod)
     }
@@ -1491,7 +1499,7 @@ impl Map {
         let Some(style) = &self.style else {
             return false;
         };
-        let target = self.camera.state().target;
+        let target = self.frame_camera().target;
         style.sources.iter().all(|source| match &source.state {
             SourceState::Ready {
                 endpoint, pyramid, ..
@@ -1999,7 +2007,15 @@ impl Map {
         let moving = match target {
             Some(_) => {
                 self.apply_videos(gpu, renderer);
-                self.advance_camera(viewport, frame_time)
+                match self.mode {
+                    // Tile mode draws from a camera of its own and leaves
+                    // the map's, its animations and events, as they are.
+                    RenderMode::Tile { .. } => {
+                        self.stand_tile_on_terrain(viewport);
+                        false
+                    }
+                    _ => self.advance_camera(viewport, frame_time),
+                }
             }
             None => false,
         };
@@ -2016,7 +2032,7 @@ impl Map {
                 (s.sources.iter())
                     .any(|s| matches!(s.state, SourceState::Ready { warped: true, .. }))
             });
-        let zoom = self.zoom();
+        let zoom = self.frame_zoom();
         let surface_full = self.surface.globe().is_some() || warped;
         let declared = self.declare_terrain(gpu, renderer, surface_full);
         // The style's pipeline set, in what the map now declares, before
@@ -2049,7 +2065,7 @@ impl Map {
             &root.light,
             root.terrain_presence,
             &view,
-            self.camera.state(),
+            &self.frame_camera(),
         );
         renderer.set_atmosphere(gpu, root.sky, at);
         self.report_gaps(renderer);
@@ -2062,7 +2078,7 @@ impl Map {
         if let Some(style) = &mut self.style {
             style.symbol_tiles.clear();
         }
-        let frame_light = crate::light::frame_light(&root.light, self.camera.state());
+        let frame_light = crate::light::frame_light(&root.light, &self.frame_camera());
         if let Some(style) = &mut self.style
             && !std::mem::replace(&mut style.glyphs_fetched, true)
         {
@@ -2143,7 +2159,7 @@ impl Map {
         let animating = self.mode == RenderMode::Continuous
             && (self.style.as_ref()).is_some_and(|s| {
                 let plan = s.worker.plan();
-                let camera = crate::paint::camera_inputs(self.camera.state());
+                let camera = crate::paint::camera_inputs(&self.frame_camera());
                 crate::targets::animates(&plan.style, &plan.targets, zoom, camera)
             });
         let rests = complete
@@ -2212,7 +2228,7 @@ impl Map {
             Activity::Idle
         };
         report.resized = renderer.take_resized();
-        self.settle_report(renderer, &mut report, moving);
+        self.settle_report(renderer, &mut report, viewport, moving);
         report.centre_loaded = self.centre_loaded();
         let counted = gpu.counters();
         report.gpu = counted.since(&self.counted);
@@ -2250,6 +2266,7 @@ impl Map {
         zoom: f64,
         (now, time): (f64, f64),
     ) -> bool {
+        let camera = crate::paint::camera_inputs(&self.frame_camera());
         let Some(style) = &mut self.style else {
             return false;
         };
@@ -2259,7 +2276,7 @@ impl Map {
             renderer,
             style,
             &mut self.transitions,
-            (zoom, crate::paint::camera_inputs(self.camera.state())),
+            (zoom, camera),
             (now, time),
             images.atlas.as_mut().expect("initialized"),
         );
@@ -2370,6 +2387,9 @@ impl Map {
     ) -> FrameBlock {
         let now = self.frame_time;
         let globe = view.globe().map(|globe| frame_globe(globe, view));
+        let camera = self.frame_camera();
+        // A tile's camera never moves.
+        let tile = matches!(self.mode, RenderMode::Tile { .. });
         FrameBlock {
             camera: view.camera_world().to_array(),
             world_span: self
@@ -2383,13 +2403,13 @@ impl Map {
             world_per_px: view.world_per_px(),
             pixel_ratio,
             zoom,
-            bearing: self.camera.state().bearing.to_radians() as f32,
+            bearing: camera.bearing.to_radians() as f32,
             extrusion_scale: self.extrusion_scale() as f32,
             symbol_fade_change: self.labels.fade_change(now),
             time: self.shader_time() as f32,
             state_time: self.shader_time() as f32,
-            pitch: self.camera.state().pitch.to_radians() as f32,
-            roll: self.camera.state().roll.to_radians() as f32,
+            pitch: camera.pitch.to_radians() as f32,
+            roll: camera.roll.to_radians() as f32,
             camera_to_center: view.camera_to_center() as f32,
             // Image tiles snap to whole pixels only at rest, as GL JS and
             // Native align them: snapped while the camera moves, they'd
@@ -2398,10 +2418,8 @@ impl Map {
             // being drawn, is at rest. The camera has advanced for this
             // frame, so a move's last frame, and the one after input lets
             // go, snap.
-            align: match globe.is_none() && !self.camera.is_changing() {
-                true => {
-                    pixel_alignment(view, self.surface.projection(), self.camera.state().bearing)
-                }
+            align: match globe.is_none() && (tile || !self.camera.is_changing()) {
+                true => pixel_alignment(view, self.surface.projection(), camera.bearing),
                 false => [0.0; 2],
             },
             terrain: frame_terrain,
@@ -2413,10 +2431,20 @@ impl Map {
     /// Settles a drawn frame's report on whether the camera rests
     /// (`moving` it moves on from this frame), its events, scene and
     /// memory.
-    fn settle_report(&mut self, renderer: &Renderer, report: &mut FrameReport, moving: bool) {
+    fn settle_report(
+        &mut self,
+        renderer: &Renderer,
+        report: &mut FrameReport,
+        viewport: Viewport,
+        moving: bool,
+    ) {
         // DEM data that arrived after the camera advanced may move it onto
         // the ground it lands on: then this frame isn't a rest.
-        report.moved = self.stand_on_terrain() || moving;
+        let stood = match self.mode {
+            RenderMode::Tile { .. } => self.stand_tile_on_terrain(viewport),
+            _ => self.stand_on_terrain(),
+        };
+        report.moved = stood || moving;
         report.input = self.camera.is_held() || self.input.is_active();
         self.events
             .frame(report.loaded, report.idle() && !report.input);
@@ -2472,8 +2500,8 @@ impl Map {
     /// projection, terrain or sample count).
     fn pipeline_set(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
         renderer.renew_pipelines(gpu);
-        let zoom = self.zoom();
-        let inputs = crate::paint::camera_inputs(self.camera.state());
+        let zoom = self.frame_zoom();
+        let inputs = crate::paint::camera_inputs(&self.frame_camera());
         let Some(style) = &mut self.style else {
             return;
         };
@@ -2704,7 +2732,7 @@ impl Map {
     pub(crate) fn extrusion_scale(&self) -> f64 {
         self.surface
             .projection()
-            .style_height_scale(self.camera.state().target)
+            .style_height_scale(self.frame_camera().target)
     }
 
     /// Sends `job`, an edit's, to resident tile `tile` of source `index`.
@@ -3027,7 +3055,7 @@ impl Map {
         let Some(style) = &self.style else {
             return;
         };
-        let focus = self.camera.state().target;
+        let focus = self.frame_camera().target;
         let plan = style.worker.plan();
         let mut ranks: HashMap<crate::LoadKey, u64> = HashMap::default();
         for (index, source) in style.sources.iter().enumerate() {
@@ -3135,7 +3163,7 @@ impl Map {
                 &self.options,
             )
         };
-        let mut frame = frame_at(view, view.camera_world(), self.camera.state());
+        let mut frame = frame_at(view, view.camera_world(), &self.frame_camera());
         // Labels show at once until the map is first idle, as in GL JS: a
         // map's first view doesn't wait for fades.
         if self.mode != RenderMode::Continuous || !self.events.idled {
@@ -3144,9 +3172,8 @@ impl Map {
         frame.scope = match &self.mode {
             RenderMode::Continuous => orb_symbol::Scope::Viewport,
             RenderMode::Still => orb_symbol::Scope::Still,
-            RenderMode::Tile(tiles) => orb_symbol::Scope::Tiles(
-                tiles
-                    .iter()
+            RenderMode::Tile { grid, .. } => orb_symbol::Scope::Tiles(
+                grid.iter()
                     .map(|t| {
                         let view = View::new(&t.camera, t.viewport, &self.surface.view_surface());
                         let f = frame_at(&view, t.center, &t.camera);
@@ -3247,6 +3274,7 @@ impl Map {
             true => self.cover_room(gpu, renderer),
             false => 0,
         };
+        let camera = self.frame_camera();
         let style = self.style.as_mut()?;
         let plan = style.worker.plan();
         let Some(terrain) = style.terrain.get_mut() else {
@@ -3258,7 +3286,7 @@ impl Map {
         let unpack = endpoint.dem_unpack.expect("raster-dem").map(|v| v as f32);
         // GL JS's `getSkirtLength`: a fifth of a tile's width at the
         // camera's zoom, in metres at the equator.
-        let zoom = self.camera.state().zoom(self.surface.projection());
+        let zoom = camera.zoom(self.surface.projection());
         let skirt = Metres(match self.options.terrain_skirts {
             true => 2.0 * std::f64::consts::PI * 6_371_008.8 / zoom.max(0.0).exp2() / 5.0,
             false => 0.0,
@@ -3281,10 +3309,10 @@ impl Map {
                 SourceState::Ready { endpoint, .. } if endpoint.tms == *self.surface.tms());
             renderer.set_shaded_on_terrain(gpu, index as u32, viewport && on_surface);
         }
-        let at = (view, self.surface.tms(), self.camera.state().target);
+        let at = (view, self.surface.tms(), camera.target);
         let ground = (view.world_z(skirt), cover_room);
         let (frame, requests) = terrain.upkeep(gpu, renderer, at, unpack, ground);
-        let order = fetch_order(&endpoint.tms, self.camera.state().target);
+        let order = fetch_order(&endpoint.tms, camera.target);
         let mut loads = Vec::new();
         for tile in requests {
             if !endpoint.contains(tile) {
@@ -3397,7 +3425,7 @@ impl Map {
         }
         let viewport = view.viewport();
         Some(PlanKey {
-            camera: self.camera.revision(),
+            camera: self.frame_camera(),
             viewport: [viewport.width.to_bits(), viewport.height.to_bits()],
             lod: self.options.tile_lod,
             mode: std::mem::discriminant(&self.mode),

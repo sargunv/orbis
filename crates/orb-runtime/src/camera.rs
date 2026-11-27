@@ -11,7 +11,7 @@ use orb_camera::{
 };
 use orb_crs::Geodetic;
 
-use crate::{Map, MapEvent};
+use crate::{Map, MapEvent, RenderMode};
 
 /// How input moves the camera ([`Map::gesture_motion`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +31,22 @@ impl Map {
     /// The camera as it is now: it moves during gestures and animations.
     pub fn camera(&self) -> &CameraState {
         self.camera.state()
+    }
+
+    /// The camera frames draw from: the map's, or in Tile mode the tile's
+    /// ([`RenderMode::Tile`]), which leaves the map's alone. Whatever a
+    /// frame reads of the camera (its view, zoom, light, labels and
+    /// loads) reads it here.
+    pub(crate) fn frame_camera(&self) -> CameraState {
+        match &self.mode {
+            RenderMode::Tile { camera, .. } => *camera,
+            _ => *self.camera.state(),
+        }
+    }
+
+    /// The [frame camera](Self::frame_camera)'s style zoom.
+    pub(crate) fn frame_zoom(&self) -> f64 {
+        self.frame_camera().zoom(self.surface.projection())
     }
 
     /// Moves the camera at once (GL JS `jumpTo`). Like every move, it
@@ -281,6 +297,27 @@ impl Map {
     /// Returns whether the camera moves on.
     pub fn advance(&mut self, time: f64) -> bool {
         self.advance_camera(self.camera.viewport(), time)
+    }
+
+    /// Stands Tile mode's camera on the terrain that has arrived, its eye
+    /// clear of the ground in `viewport`: always, whatever the map's own
+    /// camera's `center_clamped_to_ground` ([`RenderMode::Tile`]). Returns
+    /// whether that moved it.
+    pub(crate) fn stand_tile_on_terrain(&mut self, viewport: Viewport) -> bool {
+        if !matches!(self.mode, RenderMode::Tile { .. }) {
+            return false;
+        }
+        let Some(terrain) = self.elevation() else {
+            return false;
+        };
+        let surface = self.surface.view_surface();
+        let RenderMode::Tile { camera, .. } = &mut self.mode else {
+            unreachable!("checked above");
+        };
+        let before = *camera;
+        camera.settle_on(&*terrain, &surface.projection);
+        camera.keep_above(&*terrain, &surface, viewport);
+        *camera != before
     }
 
     /// Brings the camera to this frame: it stands on the surface and

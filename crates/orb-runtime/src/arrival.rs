@@ -256,7 +256,7 @@ impl Map {
             }
         })?;
         (terrain || self.awaited(*source, *tile) == Awaited::Wanted).then_some(())?;
-        let order = crate::frame::fetch_order(&endpoint.tms, self.camera.state().target);
+        let order = crate::frame::fetch_order(&endpoint.tms, self.frame_camera().target);
         Some(order(*tile, tier))
     }
 

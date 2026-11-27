@@ -4,8 +4,8 @@
 mod common;
 
 use orb_api::{
-    CameraState, CameraTarget, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, TileMatrixSet,
-    TileRequest,
+    CameraState, CameraTarget, Constraints, EaseOptions, Event, Geodetic, Map, MapEvent,
+    MapOptions, Runtime, RuntimeOptions, TileMatrixSet, TileRequest,
 };
 
 /// A label's text and anchor (longitude, latitude).
@@ -149,6 +149,69 @@ fn a_tile_drawn_after_its_neighbour_matches_a_fresh_one() {
     );
 }
 
+/// A tile draws from a camera of its own: the map's camera, the limits
+/// the host keeps it to and the animation moving it play no part, and it
+/// neither moves nor reports a move.
+#[test]
+fn tiles_leave_the_maps_camera_alone() {
+    const Z: u8 = 12;
+    let (style, _) = crowd(false);
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let tile = tile_at(Geodetic::new(0.2, 0.2), Z);
+    let mut fresh = Map::new(&runtime, MapOptions::default());
+    fresh.set_style_json(&style).unwrap();
+    let unlimited = render_tile(&mut fresh, Z, tile.col, tile.row);
+
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).unwrap();
+    // Two zooms short of the tile's, and easing elsewhere for a minute.
+    map.set_constraints(Constraints {
+        max_zoom: f64::from(Z) - 2.0,
+        ..Constraints::default()
+    });
+    map.ease_to(
+        &CameraTarget {
+            center: Some(Geodetic::new(40.0, 20.0)),
+            zoom: Some(4.0),
+            ..CameraTarget::default()
+        },
+        &EaseOptions {
+            duration: 60_000.0,
+            ..EaseOptions::default()
+        },
+    );
+    while map.poll_event().is_some() {}
+    let camera = map.camera();
+    let request = TileRequest {
+        tile_matrix_set: mercator(),
+        z: Z,
+        col: tile.col,
+        row: tile.row,
+        size: TILE,
+        scale: 1.0,
+    };
+    let waiter = map.waiter();
+    let mut events = Vec::new();
+    let image = loop {
+        let step = map.render_tile_step(&request).unwrap();
+        events.extend(std::iter::from_fn(|| map.poll_event()));
+        match step {
+            Some(image) => break image,
+            None => waiter.wait(std::time::Duration::from_millis(50)),
+        }
+    };
+    let moves: Vec<_> = (events.iter())
+        .filter(|e| matches!(e, Event::Map(MapEvent::Camera(_))))
+        .collect();
+    assert!(moves.is_empty(), "a tile moved the camera: {moves:?}");
+    assert!(map.is_animating(), "a tile stopped the camera's animation");
+    assert!(map.camera() == camera, "a tile left the camera elsewhere");
+    assert!(
+        image.pixels == unlimited,
+        "a tile drew under the camera's limits"
+    );
+}
+
 /// Each tile places its labels with its neighbours' (tile scope), so
 /// two tiles that share an edge both see a label anchored a few pixels from
 /// it, which crosses it: both show it or neither does.
@@ -266,31 +329,8 @@ fn a_style_that_fails_to_load_fails_a_snapshot_at_once() {
 fn hillshade_tiles_shade_their_edges_from_their_neighbours() {
     const Z: u8 = 12;
     let (col, row) = (2048u32, 2048u32);
-    let dir = common::Scratch::new("tile-dem");
-    // Terrarium tiles of the 3×3 block around the tile, rising 8 m a DEM
-    // pixel (some 10 m wide) eastward and 4 m southward.
-    for x in col - 1..=col + 1 {
-        for y in row - 1..=row + 1 {
-            let mut pixels = Vec::with_capacity((TILE * TILE * 4) as usize);
-            for py in 0..TILE {
-                for px in 0..TILE {
-                    let east = (x + 1 - col) * TILE + px;
-                    let south = (y + 1 - row) * TILE + py;
-                    let metres = 8 * east + 4 * south;
-                    let v = (metres + 32768) * 256;
-                    pixels.extend([(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]);
-                }
-            }
-            let path = dir.join(format!("{Z}/{x}/{y}.png"));
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
-            let mut encoder = png::Encoder::new(file, TILE, TILE);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            let mut writer = encoder.write_header().unwrap();
-            writer.write_image_data(&pixels).unwrap();
-        }
-    }
+    // Rising 8 m a DEM pixel (some 10 m wide) eastward and 4 m southward.
+    let dir = dem_block("tile-dem", Z, col, row, |east, south| 8 * east + 4 * south);
     let style = format!(
         r#"{{"version":8,
             "sources":{{"dem":{{"type":"raster-dem","encoding":"terrarium","tileSize":{TILE},
@@ -324,5 +364,106 @@ fn hillshade_tiles_shade_their_edges_from_their_neighbours() {
     assert!(
         worst.0 <= 2,
         "an edge pixel shades apart: {worst:?} against {middle:?}"
+    );
+}
+
+/// Terrarium tiles of zoom `z`'s 3×3 block around (`col`, `row`) in a new
+/// scratch directory, as `{z}/{x}/{y}.png`: each pixel `metres(east,
+/// south)` high, counting pixels from the block's north-west corner.
+fn dem_block(
+    name: &str,
+    z: u8,
+    col: u32,
+    row: u32,
+    metres: impl Fn(u32, u32) -> u32,
+) -> common::Scratch {
+    let dir = common::Scratch::new(name);
+    for x in col - 1..=col + 1 {
+        for y in row - 1..=row + 1 {
+            let mut pixels = Vec::with_capacity((TILE * TILE * 4) as usize);
+            for py in 0..TILE {
+                for px in 0..TILE {
+                    let east = (x + 1 - col) * TILE + px;
+                    let south = (y + 1 - row) * TILE + py;
+                    let v = (metres(east, south) + 32768) * 256;
+                    pixels.extend([(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]);
+                }
+            }
+            let path = dir.join(format!("{z}/{x}/{y}.png"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+            let mut encoder = png::Encoder::new(file, TILE, TILE);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&pixels).unwrap();
+        }
+    }
+    dir
+}
+
+/// A tile over terrain draws from a camera standing on the ground under
+/// its centre, even when the map keeps its own camera's centre off the
+/// ground: a square filling the tile's middle half fills just that half
+/// over a plateau 10 km high, where a camera orbiting sea level, some
+/// 45 km above it, would see it nearly a third bigger.
+#[test]
+fn tiles_over_terrain_draw_from_the_ground() {
+    const Z: u8 = 12;
+    let (col, row) = (2048u32, 2048u32);
+    // Terrain meshes this tile from DEM tiles two zooms coarser.
+    let dir = dem_block("tile-plateau", Z - 2, col >> 2, row >> 2, |_, _| 10_000);
+    // The tile's longitude and latitude at a fraction across and down it.
+    let n = f64::from(1u32 << Z);
+    let lon = |f: f64| (f64::from(col) + f) / n * 360.0 - 180.0;
+    let lat = |f: f64| {
+        let y = (f64::from(row) + f) / n;
+        (std::f64::consts::PI * (1.0 - 2.0 * y))
+            .sinh()
+            .atan()
+            .to_degrees()
+    };
+    let (west, east, north, south) = (lon(0.25), lon(0.75), lat(0.25), lat(0.75));
+    let style = format!(
+        r#"{{"version":8,
+            "sources":{{
+              "dem":{{"type":"raster-dem","encoding":"terrarium","tileSize":{TILE},
+                "maxzoom":{dem},"tiles":["file://{}/{{z}}/{{x}}/{{y}}.png"]}},
+              "square":{{"type":"geojson","data":{{"type":"Polygon","coordinates":[[
+                [{west},{north}],[{east},{north}],[{east},{south}],[{west},{south}],[{west},{north}]]]}}}}}},
+            "terrain":{{"source":"dem"}},
+            "layers":[
+              {{"id":"bg","type":"background","paint":{{"background-color":"white"}}}},
+              {{"id":"square","type":"fill","source":"square","paint":{{"fill-color":"red"}}}}
+            ]}}"#,
+        dir.display(),
+        dem = Z - 2,
+    );
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_center_clamped_to_ground(false);
+    map.set_style_json(&style).unwrap();
+    let pixels = render_tile(&mut map, Z, col, row);
+    let red = |x: u32| {
+        let i = (((TILE / 2) * TILE + x) * 4) as usize;
+        match pixels[i..i + 3] {
+            [r, g, b] if r > 200 && g < 60 && b < 60 => true,
+            [r, g, b] if r > 200 && g > 200 && b > 200 => false,
+            ref other => panic!("pixel {x} is neither the square nor the ground: {other:?}"),
+        }
+    };
+    // The square's west edge is at a quarter of the tile; a camera on sea
+    // level would put it near a sixth.
+    let row_of = [
+        TILE / 5,
+        TILE * 3 / 10,
+        TILE / 2,
+        TILE * 7 / 10,
+        TILE * 4 / 5,
+    ]
+    .map(red);
+    assert!(
+        row_of == [false, true, true, true, false],
+        "the square spans the wrong part of the tile: {row_of:?}"
     );
 }

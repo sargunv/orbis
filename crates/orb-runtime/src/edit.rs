@@ -227,7 +227,7 @@ impl Map {
     /// shown or hidden fades, and the root's light, sky and terrain ease
     /// from what the last frame showed.
     fn start_transitions(&mut self, patch: &Patch, old_plan: &StylePlan, plan: &StylePlan) {
-        let (now, zoom) = (self.frame_time, self.zoom());
+        let (now, zoom) = (self.frame_time, self.frame_zoom());
         if patch.changes.contains(&Change::Root) {
             self.root.start(&plan.style, zoom);
         }
