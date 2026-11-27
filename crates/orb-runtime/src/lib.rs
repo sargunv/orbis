@@ -76,8 +76,8 @@ pub use jobs::{
 };
 pub use loader::TileLocation;
 pub use map::{
-    Activity, FrameReport, FrameTimes, GridTile, Images, JobCounts, Map, Memory, MissingTiles,
-    RenderMode, Services, TerrainProbe,
+    Activity, Awaiting, FrameReport, FrameTimes, GridTile, Images, JobCounts, Map, Memory,
+    MissingTiles, RenderMode, Services, TerrainProbe,
 };
 pub use options::MapOptions;
 pub use orb_camera::input::{Button, Input};

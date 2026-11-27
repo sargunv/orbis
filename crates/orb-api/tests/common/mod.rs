@@ -43,8 +43,10 @@ pub(crate) fn tokyo_json() -> String {
         .replace("\"./", &format!("\"file://{}/", data.display()))
 }
 
-/// How long a test waits for what it waits on before it fails: long past
-/// anything a loaded machine takes, so that reaching it means a hang.
+/// How long a test waits for what it waits on before it fails, or, given
+/// to `render_until_idle`, how long the map may go with nothing arriving:
+/// long past anything a loaded machine takes, so that reaching it means a
+/// hang.
 pub(crate) const DEADLINE: Duration = Duration::from_secs(60);
 
 /// Draws until the map is loaded and idle.

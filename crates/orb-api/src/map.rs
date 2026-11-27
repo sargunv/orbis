@@ -37,8 +37,11 @@ pub enum Event {
 
 type WakeHook = Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>;
 
-/// How long still output waits for its data: a minute.
-pub const STILL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long still output waits with nothing arriving before it gives up:
+/// a minute without a wake (no fetch, job, placement or compile coming
+/// back). Work that is only slow, on a loaded machine, keeps arriving and
+/// never reaches it; a stall does.
+pub const STILL_STALL: Duration = Duration::from_secs(60);
 
 /// A picture: premultiplied RGBA8, rows top to bottom.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,8 +91,10 @@ pub struct Map {
     _device_wake: Arc<dyn Fn() + Send + Sync>,
     /// Where the last frame, or the last try at one, left the map.
     shown: Shown,
-    /// Notified with `woken`, for still output to wait on.
-    signal: Arc<(Mutex<()>, Condvar)>,
+    /// Notified with `woken` and `device_woken`, for still output to
+    /// wait on, counting the wakes of each: what still output takes as
+    /// progress.
+    signal: Arc<(Mutex<Wakes>, Condvar)>,
     /// What still output last drew into: a snapshot or a tile.
     offscreen: Option<Target>,
     hook: WakeHook,
@@ -115,6 +120,9 @@ pub struct Map {
     /// itself (still output, [`render_until_idle`](Self::render_until_idle))
     /// go on from it, on the host's clock.
     last_frame: Option<(f64, Instant)>,
+    /// The tiles the last frame drawn waited for, for still output to name
+    /// when it stalls.
+    tiles_loading: u32,
 }
 
 /// Where a map's last frame, or its last try at one, left it: what of
@@ -144,7 +152,7 @@ impl Shown {
 /// Waits for a map's wakes ([`Map::waiter`]).
 #[derive(Clone, Debug)]
 pub struct Waiter {
-    signal: Arc<(Mutex<()>, Condvar)>,
+    signal: Arc<(Mutex<Wakes>, Condvar)>,
     woken: Arc<AtomicBool>,
     device_woken: Arc<AtomicBool>,
 }
@@ -163,6 +171,24 @@ impl Waiter {
             );
         }
     }
+}
+
+/// A map's wakes so far: its own (its fetches, jobs, placements and
+/// alarm) and the device's, which every map on the runtime shares.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Wakes {
+    own: u64,
+    device: u64,
+}
+
+/// When still output gives up: once its stall passes with no new wake of
+/// its own, however long the map takes while its data keeps arriving.
+struct Patience {
+    stall: Duration,
+    /// The map's wakes so far, as last seen.
+    seen: Wakes,
+    /// When the map was last seen to make progress, or the wait began.
+    since: Instant,
 }
 
 impl std::fmt::Debug for Map {
@@ -197,17 +223,19 @@ impl Drop for Map {
 }
 
 /// A wake and the flag it sets: called from any thread, it sets the flag,
-/// notifies `signal`'s waiters and calls the host's hook.
+/// counts itself in `signal` (in the count `count` picks) and notifies its
+/// waiters, and calls the host's hook.
 fn wake_setting(
-    signal: &Arc<(Mutex<()>, Condvar)>,
+    signal: &Arc<(Mutex<Wakes>, Condvar)>,
     hook: &WakeHook,
+    count: fn(&mut Wakes) -> &mut u64,
 ) -> (Arc<AtomicBool>, Arc<dyn Fn() + Send + Sync>) {
     let flag = Arc::new(AtomicBool::new(false));
     let (woken, signal, hook) = (flag.clone(), signal.clone(), hook.clone());
     let wake = Arc::new(move || {
         woken.store(true, Ordering::Release);
         {
-            let _waiting = signal.0.lock().expect("signal poisoned");
+            *count(&mut signal.0.lock().expect("signal poisoned")) += 1;
             signal.1.notify_all();
         }
         if let Some(hook) = hook.lock().expect("wake hook poisoned").as_ref() {
@@ -219,10 +247,10 @@ fn wake_setting(
 
 impl Map {
     pub fn new(runtime: &Runtime, options: MapOptions) -> Self {
-        let signal: Arc<(Mutex<()>, Condvar)> = Arc::default();
+        let signal: Arc<(Mutex<Wakes>, Condvar)> = Arc::default();
         let hook: WakeHook = Arc::default();
-        let (woken, wake) = wake_setting(&signal, &hook);
-        let (device_woken, device_wake) = wake_setting(&signal, &hook);
+        let (woken, wake) = wake_setting(&signal, &hook, |w| &mut w.own);
+        let (device_woken, device_wake) = wake_setting(&signal, &hook, |w| &mut w.device);
         runtime.add_wake(&device_wake);
         let clock = orb_host_native::NativeClock::default();
         let services = runtime.services(clock, wake.clone());
@@ -252,6 +280,7 @@ impl Map {
             dirty: true,
             mode: RenderMode::Continuous,
             last_frame: None,
+            tiles_loading: 0,
         }
     }
 
@@ -958,14 +987,15 @@ impl Map {
     /// ([`FrameReport::rests`]), waiting for data between frames, and
     /// returns the last frame's report. Frames are timed on the runtime's
     /// clock. For tools and tests: hosts draw on their display link. An
-    /// error after `timeout`.
+    /// error once `stall` passes with nothing arriving ([`STILL_STALL`]).
     pub fn render_until_idle(
         &mut self,
         target: &mut Target,
-        timeout: Duration,
+        stall: Duration,
     ) -> Result<FrameReport, Error> {
+        let mut patience = self.patience(stall);
         self.set_mode(RenderMode::Continuous);
-        self.settle(target, Instant::now() + timeout)
+        self.settle(target, &mut patience)
     }
 
     /// Draws what the camera shows in a `width × height` view (logical
@@ -973,17 +1003,17 @@ impl Map {
     /// and nothing fades, and returns the picture (still output): labels
     /// place as if nothing had been placed before, so the same style, data
     /// and camera always draw the same bytes. Renders as many frames as that
-    /// takes, waiting for data in between; an error after [`STILL_TIMEOUT`].
-    /// Tiles that failed before are requested again first; one that fails
-    /// again has its ancestors stand in.
+    /// takes, waiting for data in between; an error once nothing has
+    /// arrived for [`STILL_STALL`]. Tiles that failed before are requested
+    /// again first; one that fails again has its ancestors stand in.
     pub fn snapshot(&mut self, width: u32, height: u32, scale: f64) -> Result<Image, Error> {
-        let deadline = Instant::now() + STILL_TIMEOUT;
+        let mut patience = self.patience(STILL_STALL);
         self.retry_failed_tiles();
         loop {
             if let Some(image) = self.snapshot_step(width, height, scale)? {
                 return Ok(image);
             }
-            self.wait(deadline)?;
+            self.wait(&mut patience)?;
         }
     }
 
@@ -1022,14 +1052,14 @@ impl Map {
     /// ([`RenderMode::Tile`]): tiles drawn apart agree on the labels that
     /// cross their edges, those smaller than half a tile at least, and the
     /// same tile always draws the same bytes. The map's camera is left as it
-    /// was. An error after [`STILL_TIMEOUT`]. Failed tiles are retried
-    /// first, as for [`snapshot`](Self::snapshot).
+    /// was. An error once nothing has arrived for [`STILL_STALL`]. Failed
+    /// tiles are retried first, as for [`snapshot`](Self::snapshot).
     pub fn render_tile(&mut self, tile: &TileRequest) -> Result<Image, Error> {
-        let deadline = Instant::now() + STILL_TIMEOUT;
+        let mut patience = self.patience(STILL_STALL);
         let (index, px) = Self::tile_pixels(tile)?;
         self.retry_failed_tiles();
         let mut target = self.offscreen(px, px, tile.scale);
-        let drawn = self.draw_tile(&mut target, tile, index, deadline);
+        let drawn = self.draw_tile(&mut target, tile, index, &mut patience);
         let pixels = drawn.and_then(|()| target.read_pixels());
         self.offscreen = Some(target);
         Ok(Image {
@@ -1114,16 +1144,16 @@ impl Map {
         target: &mut Target,
         tile: &TileRequest,
         index: TileIndex,
-        deadline: Instant,
+        patience: &mut Patience,
     ) -> Result<(), Error> {
         while !self.tile_style_in(target)? {
-            self.wait(deadline)?;
+            self.wait(patience)?;
         }
         let (camera, tiles) = self.tile_scene(tile, index)?;
         let interactive = *self.map.camera();
         self.map.jump_to_state(camera);
         self.set_mode(RenderMode::Tile(tiles));
-        let drawn = self.settle(target, deadline).map(|_| ());
+        let drawn = self.settle(target, patience).map(|_| ());
         self.map.jump_to_state(interactive);
         drawn
     }
@@ -1236,12 +1266,16 @@ impl Map {
 
     /// Renders until two frames in a row are idle, the second drawing what
     /// the first's messages brought, waiting for data between frames.
-    fn settle(&mut self, target: &mut Target, deadline: Instant) -> Result<FrameReport, Error> {
+    fn settle(
+        &mut self,
+        target: &mut Target,
+        patience: &mut Patience,
+    ) -> Result<FrameReport, Error> {
         loop {
             if let Some(report) = self.settle_step(target)? {
                 return Ok(report);
             }
-            self.wait(deadline)?;
+            self.wait(patience)?;
         }
     }
 
@@ -1279,17 +1313,82 @@ impl Map {
     }
 
     /// Waits for data, a frame's time at most (fades and transitions run
-    /// on the clock), or fails at `deadline`.
-    fn wait(&self, deadline: Instant) -> Result<(), Error> {
-        let now = Instant::now();
-        if now >= deadline {
+    /// on the clock), or fails once `patience` has seen no progress for
+    /// its stall, naming what the map waited for. Progress is a wake of
+    /// the map's own, or the device's while the last frame waited for it:
+    /// the device wakes every map on the runtime when any one's pipeline
+    /// compiles or a region downloads, which is no news to the others.
+    fn wait(&self, patience: &mut Patience) -> Result<(), Error> {
+        let wakes = self.wakes();
+        let device_news = matches!(
+            self.shown,
+            Shown::AwaitingDevice
+                | Shown::Drew {
+                    activity: Activity::Compiling,
+                    ..
+                }
+        );
+        if wakes.own != patience.seen.own || (device_news && wakes.device != patience.seen.device) {
+            patience.since = Instant::now();
+        }
+        patience.seen = wakes;
+        let quiet = patience.since.elapsed();
+        if quiet >= patience.stall {
             return Err(Error::InvalidState(format!(
-                "the map didn't settle in time: {:?}",
-                self.map.job_counts()
+                "the map stalled: nothing arrived for {:?}, and {}",
+                patience.stall,
+                self.waiting_for()
             )));
         }
-        self.wait_woken((deadline - now).min(Duration::from_millis(16)));
+        self.wait_woken((patience.stall - quiet).min(Duration::from_millis(16)));
         Ok(())
+    }
+
+    /// Still output's patience from now: it gives up once `stall` passes
+    /// with no wake.
+    fn patience(&self, stall: Duration) -> Patience {
+        Patience {
+            stall,
+            seen: self.wakes(),
+            since: Instant::now(),
+        }
+    }
+
+    /// How many times the map has been woken.
+    fn wakes(&self) -> Wakes {
+        *self.signal.0.lock().expect("signal poisoned")
+    }
+
+    /// What the map waited for when its last frame drew, in words.
+    fn waiting_for(&self) -> String {
+        let activity = match self.shown {
+            Shown::Drew { activity, .. } => activity,
+            Shown::AwaitingDevice => return "it waits for a lost device's replacement".into(),
+            Shown::GaveUp => return "it has no device".into(),
+        };
+        match activity {
+            Activity::Loading => {
+                let awaiting = self.map.awaiting();
+                let mut what = Vec::new();
+                if awaiting.style {
+                    what.push("the style".to_owned());
+                }
+                if !awaiting.sources.is_empty() {
+                    what.push(format!("sources {}", awaiting.sources.join(", ")));
+                }
+                if self.tiles_loading > 0 {
+                    what.push(format!("{} tiles", self.tiles_loading));
+                }
+                if what.is_empty() {
+                    "it was loading labels or the drape".into()
+                } else {
+                    format!("it was loading {}", what.join(", "))
+                }
+            }
+            Activity::Busy => "its frames were still changing".into(),
+            Activity::Compiling => "it was waiting for pipelines to compile".into(),
+            Activity::Animating | Activity::Idle => "its last frame was complete".into(),
+        }
     }
 
     /// Blocks until the map is woken (data arrived, or a pipeline a frame
@@ -1376,6 +1475,7 @@ impl Map {
             activity: report.activity,
             busy: report.needs_frame(),
         };
+        self.tiles_loading = report.tiles_loading;
         self.alarm.set(report.wake_at);
         if report.idle() {
             // A failed write costs the next run its warm start, nothing else.

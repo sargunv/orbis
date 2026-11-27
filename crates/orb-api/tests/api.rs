@@ -1835,6 +1835,97 @@ fn failed_tiles_wake_an_idle_map_for_their_retry() {
     assert_eq!(report.wake_at, None, "nothing left to retry");
 }
 
+/// Still output waits as long as its data keeps arriving, however long
+/// that takes in all, and gives up once nothing has arrived for its stall,
+/// saying what it waited for.
+#[test]
+fn stills_wait_while_data_arrives_and_give_up_on_a_stall() {
+    use std::io::{Read, Write};
+    use std::time::Instant;
+
+    // Answers one tile at a time, each `delay` after it's asked for, or
+    // with no delay, never: it holds every request.
+    fn serve(delay: Option<Duration>) -> std::net::SocketAddr {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = server.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in server.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut request = [0; 2048];
+                let _ = stream.read(&mut request);
+                let Some(delay) = delay else {
+                    held.push(stream);
+                    continue;
+                };
+                std::thread::sleep(delay);
+                let body = covering_tile(false);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        address
+    }
+    // The four tiles of zoom 1, which a 512-pixel view at zoom 1 shows.
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, 512, 512, 1.0);
+    let still = |address| {
+        let mut map = Map::new(&runtime, MapOptions::default());
+        map.set_style_json(&format!(
+            r##"{{"version": 8, "center": [0, 0], "zoom": 1,
+                "sources": {{"v": {{"type": "vector",
+                    "tiles": ["http://{address}/{{z}}/{{x}}/{{y}}.mvt"], "maxzoom": 1}}}},
+                "layers": [{{"id": "shapes", "type": "fill", "source": "v",
+                    "source-layer": "shapes", "paint": {{"fill-color": "#0000ff"}}}}]}}"##
+        ))
+        .expect("style");
+        map
+    };
+    let stall = Duration::from_secs(2);
+    let mut slow = still(serve(Some(Duration::from_millis(700))));
+    let started = Instant::now();
+    slow.render_until_idle(&mut target, stall)
+        .expect("a still whose tiles keep coming settles");
+    assert!(
+        started.elapsed() > stall,
+        "the tiles came in {:?}, within one stall",
+        started.elapsed()
+    );
+    let mut stalled = still(serve(None));
+    let started = Instant::now();
+    let error = stalled
+        .render_until_idle(&mut target, stall)
+        .expect_err("a still whose tiles never come gives up");
+    assert!(started.elapsed() >= stall);
+    let Error::InvalidState(message) = error else {
+        panic!("{error:?}")
+    };
+    assert!(
+        message.contains("stalled") && message.contains("loading 4 tiles"),
+        "{message}"
+    );
+    // A source whose TileJSON never comes has no tiles to count, and is
+    // named instead.
+    let mut unresolved = Map::new(&runtime, MapOptions::default());
+    unresolved
+        .set_style_json(&format!(
+            r##"{{"version": 8, "center": [0, 0], "zoom": 1,
+                "sources": {{"v": {{"type": "vector", "url": "http://{}/v.json"}}}},
+                "layers": [{{"id": "shapes", "type": "fill", "source": "v",
+                    "source-layer": "shapes"}}]}}"##,
+            serve(None)
+        ))
+        .expect("style");
+    let error = unresolved
+        .render_until_idle(&mut target, stall)
+        .expect_err("a still whose TileJSON never comes gives up");
+    assert!(error.message().contains("loading sources v"), "{error:?}");
+}
+
 /// A continuous map draws a tile its HTTP cache holds stale at once and
 /// revalidates it behind, drawing the server's answer once it comes; a
 /// still waits for the server.

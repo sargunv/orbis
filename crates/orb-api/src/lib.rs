@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-pub use map::{Event, Image, Map, STILL_TIMEOUT, TileRequest, Waiter};
+pub use map::{Event, Image, Map, STILL_STALL, TileRequest, Waiter};
 pub use orb_camera::input::{
     Axis, Button, Fling, GestureOptions, GesturePhase, Input, InteractEvent, Interaction, Key,
     Modes, Modifiers, Move, Movement, Notch, PointerKind, Reading, Thresholds, Tick, WheelDelta,

@@ -1184,7 +1184,7 @@ fn run_query_test(
                     let (width, height) = test.physical_size();
                     let mut target =
                         orb_api::Target::texture(runtime, width, height, test.pixel_ratio);
-                    match map.render_until_idle(&mut target, orb_api::STILL_TIMEOUT) {
+                    match map.render_until_idle(&mut target, orb_api::STILL_STALL) {
                         Ok(_) => Some(crate::query::query_native(&mut map, query)?),
                         Err(e) => {
                             diagnostics.push(format!("render: {e}"));

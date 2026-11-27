@@ -247,8 +247,8 @@ fn a_style_that_fails_to_load_fails_a_snapshot_at_once() {
     .unwrap();
     let mut map = Map::new(&runtime, MapOptions::default());
     map.load_style_url(&format!("file://{}", path.display()));
-    // Waiting out the snapshot's deadline would fail it with "didn't
-    // settle in time" instead of the style's error.
+    // Waiting out the snapshot's stall would fail it with "the map
+    // stalled" instead of the style's error.
     let error = map.snapshot(64, 64, 1.0).unwrap_err();
     assert!(
         error

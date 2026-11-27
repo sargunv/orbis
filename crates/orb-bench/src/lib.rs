@@ -113,8 +113,8 @@ pub enum Buildings {
 /// OpenFreeMap Liberty's extrusion layer, which the reduced style leaves
 /// out, added before the labels.
 const BUILDINGS_3D: &str = r#"{"id": "building-3d", "type": "fill-extrusion", "source": "openmaptiles", "source-layer": "building", "minzoom": 14, "filter": ["!", ["has", "hide_3d"]], "paint": {"fill-extrusion-base": ["get", "render_min_height"], "fill-extrusion-color": "hsl(35,8%,85%)", "fill-extrusion-height": ["get", "render_height"], "fill-extrusion-opacity": 0.8}}"#;
-/// How long a view may take to load.
-const LOAD_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long a view's load may go with nothing arriving.
+const LOAD_STALL: Duration = Duration::from_secs(120);
 /// The zoom step a nudged frame takes, as mln-rs's still bench.
 const NUDGE: f64 = 0.001;
 
@@ -743,7 +743,7 @@ pub(crate) fn settle(
     target: &mut Target,
     warnings: &mut Vec<String>,
 ) -> Result<(), String> {
-    map.render_until_idle(target, LOAD_TIMEOUT)
+    map.render_until_idle(target, LOAD_STALL)
         .map_err(|e| format!("loading: {e}"))?;
     warnings.extend(take_warnings(map));
     Ok(())

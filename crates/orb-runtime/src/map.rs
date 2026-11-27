@@ -371,6 +371,16 @@ pub struct JobCounts {
     pub state_rows: u64,
 }
 
+/// What a map waits for before its tiles can load ([`Map::awaiting`]),
+/// for a tool to name when it gives up on the map.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Awaiting {
+    /// The style asked for last: its document, sprites or feature modules.
+    pub style: bool,
+    /// Sources whose TileJSON or archive header hasn't come, by id.
+    pub sources: Vec<String>,
+}
+
 pub(crate) enum Message {
     /// A placement committed, or failed, for the labels of `epoch`.
     Placed {
@@ -1399,6 +1409,25 @@ impl Map {
             state_rows: self.style.as_ref().map_or(0, |s| s.states.rows_written),
             ..self.counts
         }
+    }
+
+    /// What the map waits for before its tiles can load.
+    pub fn awaiting(&self) -> Awaiting {
+        let style = matches!(self.style_load, StyleLoad::Fetching { .. })
+            || self.waiting_style.is_some()
+            || !self.for_modules.is_empty()
+            || self
+                .style
+                .as_ref()
+                .is_none_or(|s| s.sprites.loading > 0 || s.sprites.pixels_loading > 0);
+        let sources = self.style.as_ref().map_or_else(Vec::new, |style| {
+            let plan = style.worker.plan();
+            (style.sources.iter().enumerate())
+                .filter(|(_, source)| matches!(source.state, SourceState::Resolving))
+                .map(|(index, _)| plan.source_def(index).id.clone())
+                .collect()
+        });
+        Awaiting { style, sources }
     }
 
     /// The style document, as edits have left it: the one asked for last,
