@@ -2,7 +2,7 @@
 //! WebGL 2 in core-gl.wasm (the `gl` feature).
 
 use orb_hal::{Gpu, TextureId};
-use orb_hal_wgpu::WgpuGpu;
+use orb_hal_wgpu::{Lost, WgpuGpu};
 use orb_runtime::TargetFormat;
 
 /// Whether this build draws with WebGL 2 (core-gl.wasm).
@@ -23,7 +23,8 @@ macro_rules! api {
 }
 
 /// A frame's pixels, once read back.
-pub(crate) type Pixels = std::pin::Pin<Box<dyn std::future::Future<Output = Vec<u8>>>>;
+pub(crate) type Pixels =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, Lost>>>>;
 
 /// A submission's times, milliseconds: per pass and in all on the GPU,
 /// and the CPU's.
@@ -265,18 +266,18 @@ impl Canvas {
     /// them: its passes' GPU milliseconds by label, and its CPU ones.
     pub(crate) fn take_timings(
         &mut self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<Timed>>>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Timed>, Lost>>>> {
         let timings = self.gpu.take_timings();
         let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
         Box::pin(async move {
-            timings
-                .await
+            Ok(timings
+                .await?
                 .into_iter()
                 .map(|t| {
                     let passes = t.passes.into_iter().map(|(l, d)| (l, ms(d))).collect();
                     (passes, ms(t.span), ms(t.cpu))
                 })
-                .collect()
+                .collect())
         })
     }
 

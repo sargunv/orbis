@@ -5,13 +5,13 @@
 //! Readback is async on both targets. Natively the futures block on
 //! `Device::poll` and are ready when first polled (drive them with any
 //! executor, such as `pollster`); in the browser they resolve from the
-//! event loop.
+//! event loop. Each resolves to [`Lost`] if the device goes first.
 
 use std::future::Future;
 
 use orb_hal::{BufferId, TextureId};
 
-use crate::WgpuGpu;
+use crate::{Lost, WgpuGpu};
 
 /// Readbacks' buffers not in use, each readback's bands together, shared
 /// with the readbacks' futures.
@@ -120,7 +120,7 @@ impl WgpuGpu {
     }
 
     /// Resolves when the GPU has finished all work submitted so far.
-    pub(crate) fn work_done(&mut self) -> impl Future<Output = ()> + use<> {
+    pub(crate) fn work_done(&mut self) -> impl Future<Output = Result<(), Lost>> + use<> {
         // Gathered writes are work submitted too.
         let mut encoder = self
             .device
@@ -133,28 +133,8 @@ impl WgpuGpu {
         self.queue.on_submitted_work_done(move || {
             let _ = sender.send(());
         });
-        let device = self.device.clone();
-        async move {
-            #[cfg(webgl)]
-            {
-                let _ = index;
-                let mut receiver = receiver;
-                polled(&device, || {
-                    receiver.try_recv().expect("work-done callback dropped")
-                })
-                .await;
-            }
-            #[cfg(not(webgl))]
-            {
-                device
-                    .poll(wgpu::PollType::Wait {
-                        submission_index: Some(index),
-                        timeout: None,
-                    })
-                    .expect("device lost");
-                receiver.await.expect("work-done callback dropped");
-            }
-        }
+        let waiter = self.waiter();
+        async move { waiter.done(index, receiver).await }
     }
 
     /// Copies the pixels of a 4-byte-per-texel texture out, row by row
@@ -162,7 +142,10 @@ impl WgpuGpu {
     /// submission made it ([`read_with_next_submit`](Self::read_with_next_submit));
     /// the future holds no borrow of the device, so the texture may go
     /// before it resolves.
-    pub fn read_texture(&mut self, id: TextureId) -> impl Future<Output = Vec<u8>> + use<> {
+    pub fn read_texture(
+        &mut self,
+        id: TextureId,
+    ) -> impl Future<Output = Result<Vec<u8>, Lost>> + use<> {
         let copy = match self.copied.take() {
             Some((texture, copy)) if texture == id => copy,
             _ => {
@@ -178,7 +161,7 @@ impl WgpuGpu {
     pub fn read_wgpu_texture(
         &mut self,
         texture: &wgpu::Texture,
-    ) -> impl Future<Output = Vec<u8>> + use<> {
+    ) -> impl Future<Output = Result<Vec<u8>, Lost>> + use<> {
         let copy = self.copy_now(texture);
         self.finish_read(copy)
     }
@@ -282,8 +265,8 @@ impl WgpuGpu {
     }
 
     /// Maps a copy's buffer once the GPU has made it, and unpads its rows.
-    fn finish_read(&self, copy: Readback) -> impl Future<Output = Vec<u8>> + use<> {
-        let (device, readbacks) = (self.device.clone(), self.readbacks.clone());
+    fn finish_read(&self, copy: Readback) -> impl Future<Output = Result<Vec<u8>, Lost>> + use<> {
+        let (waiter, readbacks) = (self.waiter(), self.readbacks.clone());
         async move {
             let Readback {
                 bands,
@@ -294,7 +277,7 @@ impl WgpuGpu {
             let bytes: u64 = bands.iter().map(wgpu::Buffer::size).sum();
             let mut pixels = Vec::with_capacity(bytes as usize / padded_row * row);
             for band in &bands {
-                let mapped = map_read(&device, band).await;
+                let mapped = waiter.map_read(band).await?;
                 for padded in mapped.chunks_exact(padded_row) {
                     pixels.extend_from_slice(&padded[..row]);
                 }
@@ -302,13 +285,16 @@ impl WgpuGpu {
                 band.unmap();
             }
             keep(&readbacks, bands);
-            pixels
+            Ok(pixels)
         }
     }
 
     /// Copies a buffer's bytes out. The buffer needs `COPY_SRC`. The
     /// future holds no borrow of the device.
-    pub fn read_buffer(&mut self, id: BufferId) -> impl Future<Output = Vec<u8>> + use<> {
+    pub fn read_buffer(
+        &mut self,
+        id: BufferId,
+    ) -> impl Future<Output = Result<Vec<u8>, Lost>> + use<> {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -324,8 +310,8 @@ impl WgpuGpu {
         });
         encoder.copy_buffer_to_buffer(source, 0, &buffer, 0, source.size());
         self.queue.submit([encoder.finish()]);
-        let device = self.device.clone();
-        async move { map_read(&device, &buffer).await.to_vec() }
+        let waiter = self.waiter();
+        async move { Ok(waiter.map_read(&buffer).await?.to_vec()) }
     }
 }
 
@@ -336,55 +322,6 @@ fn keep(readbacks: &Readbacks, bands: Vec<wgpu::Buffer>) {
         kept.remove(0);
     }
     kept.push(bands);
-}
-
-/// What `ready` gives once it gives something, the device polled before
-/// each try: WebGL 2 can't wait for its fence, so each task polls it once
-/// until the callback that `ready` watches has run.
-#[cfg(webgl)]
-async fn polled<T>(device: &wgpu::Device, mut ready: impl FnMut() -> Option<T>) -> T {
-    loop {
-        let _ = device.poll(wgpu::PollType::Poll);
-        if let Some(value) = ready() {
-            return value;
-        }
-        let tick = js_sys::Promise::new(&mut |resolve, _| {
-            let global = js_sys::global();
-            let set_timeout = js_sys::Reflect::get(&global, &"setTimeout".into())
-                .ok()
-                .and_then(|f| wasm_bindgen::JsCast::dyn_into::<js_sys::Function>(f).ok())
-                .expect("setTimeout");
-            let _ = set_timeout.call2(&global, &resolve, &1.into());
-        });
-        let _ = wasm_bindgen_futures::JsFuture::from(tick).await;
-    }
-}
-
-pub(crate) async fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> wgpu::BufferView {
-    #[cfg_attr(not(webgl), allow(unused_mut))]
-    let (sender, mut receiver) = futures_channel::oneshot::channel();
-    buffer
-        .slice(..)
-        .map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
-    #[cfg(webgl)]
-    let mapped = polled(device, || {
-        receiver.try_recv().expect("mapping callback dropped")
-    })
-    .await;
-    #[cfg(not(webgl))]
-    let mapped = {
-        device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .expect("device lost during readback");
-        receiver.await.expect("mapping callback dropped")
-    };
-    mapped.expect("readback mapping failed");
-    buffer
-        .slice(..)
-        .get_mapped_range()
-        .expect("readback buffer is mapped")
 }
 
 /// Picks the backends a native device may run on, over wgpu's own
@@ -496,8 +433,11 @@ mod tests {
                 texels,
             );
         }
-        assert_eq!(pollster::block_on(gpu.read_texture(texture)), texels);
+        assert_eq!(
+            pollster::block_on(gpu.read_texture(texture)),
+            Ok(texels.clone())
+        );
         // Again into the kept buffers.
-        assert_eq!(pollster::block_on(gpu.read_texture(texture)), texels);
+        assert_eq!(pollster::block_on(gpu.read_texture(texture)), Ok(texels));
     }
 }

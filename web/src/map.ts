@@ -483,7 +483,7 @@ export class OrbisMap {
    * pixels each (the map's by default), drawn offscreen once everything
    * in it has loaded and nothing fades: the same style, data and camera
    * always draw the same pixels. The map draws no frames of its own
-   * meanwhile. Rejects after a minute.
+   * meanwhile. Rejects after a minute, or if the GPU is lost first.
    */
   async snapshot(
     width = this.#size[0] / this.#size[2],
@@ -533,7 +533,8 @@ export class OrbisMap {
    * RGBA, or with `premultiplied` the canvas's own bytes. Light added over
    * transparency (the globe's atmosphere in space) has more colour than
    * alpha there; straight, its alpha rises to its brightest channel, so
-   * it shows as the canvas does over black. */
+   * it shows as the canvas does over black. Rejects if the GPU is lost
+   * first. */
   async readPixels({
     premultiplied = false,
   }: { premultiplied?: boolean } = {}): Promise<ImageData> {
@@ -557,7 +558,8 @@ export class OrbisMap {
 
   /** Each GPU submission's times since the last call, once the GPU has
    * finished them, in order: its passes' GPU milliseconds by label (where
-   * the device has timestamp queries) and the CPU's to submit them. */
+   * the device has timestamp queries) and the CPU's to submit them.
+   * Rejects if the GPU is lost first. */
   gpuTimings(): Promise<GpuSubmission[]> {
     return this.#call("gpuTimings");
   }

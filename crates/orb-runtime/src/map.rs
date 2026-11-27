@@ -4156,7 +4156,7 @@ mod gpu_tests {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
-            let pixels = pollster::block_on(gpu.read_texture(target));
+            let pixels = pollster::block_on(gpu.read_texture(target)).expect("a readback");
             let at = (32 * 64 + 32) * 4;
             (idle, [pixels[at], pixels[at + 1], pixels[at + 2]])
         };
@@ -4250,7 +4250,7 @@ mod gpu_tests {
             for _ in 0..200 {
                 let idle = map.render(gpu, renderer, target, viewport, 1.0, 0.0).idle();
                 if idle && was_idle {
-                    return pollster::block_on(gpu.read_texture(target));
+                    return pollster::block_on(gpu.read_texture(target)).expect("a readback");
                 }
                 was_idle = idle;
             }

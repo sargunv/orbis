@@ -177,6 +177,10 @@ orb-wire-derive = { path = "crates/orb-wire-derive" }
 # untyped ones as double, which the Adreno X1's D3D12 driver refused in
 # debug builds (`-Od`) and whose `dot` failed DXIL validation everywhere;
 # orb-shaders' `hlsl_compiles_for_d3d12` checks every stage.
+# And `Device::poll` reporting a device lost as it waits as
+# `PollError::DeviceLost`, not a panic, and GLES's fence taking
+# `WAIT_FAILED` as a loss rather than a timeout to wait on again forever:
+# orb-hal-wgpu's waits (`wait.rs`) turn both into `Lost`.
 # Every crate of wgpu's workspace comes from the fork, since its path
 # dependencies resolve there. #35 tracks sending it upstream.
 naga = { git = "https://github.com/sargunv/wgpu", branch = "dx12-render-passes" }

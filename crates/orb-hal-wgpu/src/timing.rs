@@ -7,8 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::WgpuGpu;
-use crate::offscreen::map_read;
+use crate::{Lost, WgpuGpu};
 
 /// Timestamp queries in one set, WebGPU's most: two per pass. Submissions
 /// between two [`WgpuGpu::take_timings`] that need more write further sets.
@@ -172,8 +171,9 @@ impl WgpuGpu {
     /// submission, once the GPU has finished them; none unless
     /// [`set_timing`](Self::set_timing) is on. The future holds no borrow
     /// of the device: frames may go on meanwhile, into the next call's.
-    pub fn take_timings(&mut self) -> impl Future<Output = Vec<SubmitTimes>> + use<> {
+    pub fn take_timings(&mut self) -> impl Future<Output = Result<Vec<SubmitTimes>, Lost>> + use<> {
         let done = self.work_done();
+        let waiter = self.waiter();
         let (device, queue) = (self.device.clone(), self.queue.clone());
         let period = f64::from(self.timestamp_period_ns());
         let (submissions, used, step, spare, last_end) = match &mut self.timing {
@@ -198,7 +198,7 @@ impl WgpuGpu {
             // finishes: on tiled GPUs a pass's fragment work can outlast a
             // resolve submitted right after it, which then reads the old
             // value.
-            done.await;
+            done.await?;
             let mut ticks = Vec::new();
             if let Some(Queries { sets, next: used }) = used.filter(|q| q.next > 0) {
                 let size = u64::from(used) * 8;
@@ -223,8 +223,9 @@ impl WgpuGpu {
                 }
                 encoder.copy_buffer_to_buffer(&resolve, 0, &readback, 0, size);
                 queue.submit([encoder.finish()]);
-                ticks = map_read(&device, &readback)
-                    .await
+                ticks = waiter
+                    .map_read(&readback)
+                    .await?
                     .as_chunks::<8>()
                     .0
                     .iter()
@@ -238,7 +239,7 @@ impl WgpuGpu {
                 step.store(gcd_step, Ordering::Relaxed);
                 spare.lock().expect("spare sets poisoned").extend(sets);
             }
-            submissions
+            Ok(submissions
                 .into_iter()
                 .map(|(passes, cpu, draws)| {
                     let ns = |ticks: u64| Duration::from_nanos((ticks as f64 * period) as u64);
@@ -264,7 +265,7 @@ impl WgpuGpu {
                         draws,
                     }
                 })
-                .collect()
+                .collect())
         }
     }
 }
@@ -326,7 +327,7 @@ mod tests {
                 .collect();
             gpu.submit(&passes);
         }
-        let times = pollster::block_on(gpu.take_timings());
+        let times = pollster::block_on(gpu.take_timings()).expect("timings");
         assert_eq!(times.len(), submissions);
         let timed = gpu
             .device
@@ -338,6 +339,11 @@ mod tests {
         }
         // Timing goes on after a take.
         gpu.submit(&[pass("a")]);
-        assert_eq!(pollster::block_on(gpu.take_timings()).len(), 1);
+        assert_eq!(
+            pollster::block_on(gpu.take_timings())
+                .expect("timings")
+                .len(),
+            1
+        );
     }
 }

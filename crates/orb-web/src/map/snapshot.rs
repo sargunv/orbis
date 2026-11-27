@@ -92,7 +92,8 @@ impl OrbisMap {
     }
 
     /// Ends the snapshot: resolves to its pixels, straight (not
-    /// premultiplied) RGBA8 rows top to bottom, as `ImageData` holds them.
+    /// premultiplied) RGBA8 rows top to bottom, as `ImageData` holds them;
+    /// rejects if the GPU is lost first.
     #[wasm_bindgen(js_name = endSnapshot)]
     pub fn end_snapshot(&mut self) -> Result<js_sys::Promise, JsError> {
         let snapshot = self
@@ -106,7 +107,10 @@ impl OrbisMap {
         gpu.destroy_texture(snapshot.texture);
         self.map.set_mode(RenderMode::Continuous);
         Ok(wasm_bindgen_futures::future_to_promise(async move {
-            Ok(rgba(pixels.await, bgra, true).into())
+            let pixels = pixels
+                .await
+                .map_err(|lost| JsValue::from_str(&lost.to_string()))?;
+            Ok(rgba(pixels, bgra, true).into())
         }))
     }
 

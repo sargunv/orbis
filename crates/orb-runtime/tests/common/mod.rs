@@ -353,7 +353,7 @@ impl Offscreen {
     }
 
     pub(crate) fn pixels(&mut self) -> Vec<u8> {
-        pollster::block_on(self.gpu.read_texture(self.target))
+        pollster::block_on(self.gpu.read_texture(self.target)).expect("a readback")
     }
 }
 

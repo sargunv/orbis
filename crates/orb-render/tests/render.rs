@@ -114,7 +114,7 @@ impl Harness {
     fn render(&mut self) -> Vec<u8> {
         let stats = self.render_stats();
         assert!(stats.draws > 0 || !self.gpu_driven());
-        pollster::block_on(self.gpu.read_texture(self.target))
+        pollster::block_on(self.gpu.read_texture(self.target)).expect("a readback")
     }
 
     fn render_stats(&mut self) -> FrameStats {
@@ -892,7 +892,7 @@ fn nodes_wait_for_their_pipelines_without_blocking_the_frame() {
     // that draws every placement while its other variant compiles.
     let first = h.render_stats();
     if first.pipelines_pending > 0 {
-        let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+        let pixels = pollster::block_on(h.gpu.read_texture(h.target)).expect("a readback");
         match first.nodes_waiting {
             0 => assert_eq!((first.draws, pixel(&pixels, 4, 32)), (1, RED)),
             _ => assert_eq!((first.draws, pixel(&pixels, 4, 32)), (0, CLEAR)),
@@ -903,7 +903,7 @@ fn nodes_wait_for_their_pipelines_without_blocking_the_frame() {
     let next = h.render_stats();
     assert_eq!((next.pipelines_pending, next.nodes_waiting), (0, 0));
     assert!(next.bundle_recorded || first.pipelines_pending == 0);
-    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target)).expect("a readback");
     assert_eq!(pixel(&pixels, 4, 32), RED);
     assert_eq!(h.gpu.counters().pipelines_compiled, pipelines);
 }
@@ -968,7 +968,7 @@ fn bundles_record_again_only_for_what_they_waited_for() {
     let drawn = h.render_stats();
     assert!(drawn.bundle_recorded);
     assert_eq!(drawn.nodes_waiting, 0);
-    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target)).expect("a readback");
     assert_eq!(pixel(&pixels, 4, 32), RED);
 }
 
@@ -1289,16 +1289,16 @@ fn margins_and_visibility_change_without_laying_candidates_out() {
     assert!(!h.render_stats().candidates_rebuilt);
     h.renderer.set_paint(&mut h.gpu, 0, &translated(16.0));
     assert!(!h.render_stats().candidates_rebuilt);
-    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target)).expect("a readback");
     assert_eq!(pixel(&pixels, 8, 32), CLEAR);
     assert_eq!(pixel(&pixels, 44, 32), RED);
     h.renderer.set_visible(0, false);
     assert!(!h.render_stats().candidates_rebuilt);
-    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target)).expect("a readback");
     assert_eq!(pixel(&pixels, 44, 32), CLEAR);
     h.renderer.set_visible(0, true);
     assert!(!h.render_stats().candidates_rebuilt);
-    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target)).expect("a readback");
     assert_eq!(pixel(&pixels, 44, 32), RED);
 }
 
@@ -1331,7 +1331,7 @@ fn compacted_slots_follow_the_view_without_recording() {
     let dispatches = u32::from(h.gpu_driven());
     assert_eq!((first.draws, first.dispatches), (1, dispatches));
     assert!(first.bundle_recorded);
-    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target)).expect("a readback");
     // The whole copy's left half, and the clipped copy's corner.
     assert_eq!(pixel(&pixels, 8, 32), RED);
     assert_eq!(pixel(&pixels, 40, 32), CLEAR);
@@ -1350,7 +1350,10 @@ fn compacted_slots_follow_the_view_without_recording() {
         (second.dispatches, second.bundle_recorded),
         (dispatches, false)
     );
-    assert_eq!(pollster::block_on(h.gpu.read_texture(h.target)), pixels);
+    assert_eq!(
+        pollster::block_on(h.gpu.read_texture(h.target)).expect("a readback"),
+        pixels
+    );
     assert_eq!(cull_counters(&mut h), [2, 0, 2 * mesh_indices]);
     // The first copy leaves the view and the third enters it: their slots
     // are rewritten, without recording commands on the GPU (the CPU's
@@ -1364,7 +1367,10 @@ fn compacted_slots_follow_the_view_without_recording() {
         .unwrap();
     let swapped = h.render_stats();
     assert_eq!(swapped.bundle_recorded, !h.gpu_driven());
-    assert_eq!(pollster::block_on(h.gpu.read_texture(h.target)), pixels);
+    assert_eq!(
+        pollster::block_on(h.gpu.read_texture(h.target)).expect("a readback"),
+        pixels
+    );
     assert_eq!(
         cull_counters(&mut h),
         [2, 2 * mesh_indices, 2 * mesh_indices]
@@ -1413,7 +1419,7 @@ fn keeping_every_candidate_draws_the_same_pixels() {
 /// second stream's.
 fn cull_counters(h: &mut Harness) -> [u32; 3] {
     let (args, _) = h.renderer.draw_args();
-    let bytes = pollster::block_on(h.gpu.read_buffer(args));
+    let bytes = pollster::block_on(h.gpu.read_buffer(args)).expect("a readback");
     let words: &[u32] = bytemuck::cast_slice(&bytes);
     let (rows, _) = words.as_chunks::<{ orb_render::ARGS_WORDS }>();
     rows.iter()
@@ -1885,7 +1891,7 @@ fn heatmap_composites_in_layer_order_and_hides_without_recording() {
     let stats = h.render_stats_at_ratio(2.0);
     assert_eq!(stats.bundle_recorded, !h.gpu_driven());
     assert_eq!(stats.paints_written, 0);
-    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target)).expect("a readback");
     assert_eq!(pixel(&pixels, 48, 32), CLEAR);
     // Replacing nodes after offscreen work releases the density bindings;
     // the next frame can reuse the scene safely.
@@ -2337,7 +2343,11 @@ fn render_at(h: &mut Harness, time: f32) -> [u8; 4] {
     h.renderer.request_pipelines(&mut h.gpu);
     h.renderer
         .render(&mut h.gpu, &frame, h.target, [0.0; 4], &|| 0.0);
-    pixel(&pollster::block_on(h.gpu.read_texture(h.target)), 16, 16)
+    pixel(
+        &pollster::block_on(h.gpu.read_texture(h.target)).expect("a readback"),
+        16,
+        16,
+    )
 }
 
 #[test]
@@ -2618,7 +2628,7 @@ fn sky_gradient_composites_over_the_host_backing() {
         .renderer
         .render(&mut h.gpu, &frame, h.target, clear, &|| 0.0);
     assert_eq!(report.draws, 1);
-    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target)).expect("a readback");
     // At row 15, GL JS's squared horizon weight is (1 - 16.5/32)^2.
     let horizon_weight = (1.0f32 - 16.5 / 32.0).powi(2);
     let actual = pixel(&pixels, 32, 15);
@@ -2636,7 +2646,7 @@ fn sky_gradient_composites_over_the_host_backing() {
     h.renderer.set_atmosphere(&mut h.gpu, None, view);
     h.renderer
         .render(&mut h.gpu, &frame, h.target, clear, &|| 0.0);
-    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target)).expect("a readback");
     assert_eq!(pixel(&pixels, 32, 15), CLEAR);
 }
 

@@ -60,7 +60,7 @@ pub struct OrbisMap {
     /// Where the next frame's pixels go ([`read_next_frame`]).
     ///
     /// [`read_next_frame`]: OrbisMap::read_next_frame
-    read_next: Option<futures_channel::oneshot::Sender<Vec<u8>>>,
+    read_next: Option<futures_channel::oneshot::Sender<Result<Vec<u8>, orb_hal_wgpu::Lost>>>,
     /// Whether a pipeline the device failed to make was said on the
     /// console: the layers drawing with it are missing.
     said_failed: bool,
@@ -1161,7 +1161,7 @@ impl OrbisMap {
     /// The next frame's pixels, RGBA8 rows top to bottom: straight, as
     /// `ImageData` holds them, or premultiplied, as the canvas holds them.
     /// What the canvas shows, for screenshots and tests. Resolves once that
-    /// frame is drawn.
+    /// frame is drawn; rejects if the GPU is lost first.
     #[wasm_bindgen(js_name = readNextFrame)]
     pub fn read_next_frame(&mut self, premultiplied: bool) -> js_sys::Promise {
         let (sender, receiver) = futures_channel::oneshot::channel();
@@ -1170,7 +1170,8 @@ impl OrbisMap {
         wasm_bindgen_futures::future_to_promise(async move {
             let pixels = receiver
                 .await
-                .map_err(|_| JsValue::from_str("the map went before its next frame"))?;
+                .map_err(|_| JsValue::from_str("the map went before its next frame"))?
+                .map_err(|lost| JsValue::from_str(&lost.to_string()))?;
             Ok(snapshot::rgba(pixels, bgra, !premultiplied).into())
         })
     }
@@ -1185,13 +1186,16 @@ impl OrbisMap {
     /// Each submission's times since the last call, once the GPU has
     /// finished them: `{ passes: [label, ms][], span: ms, cpu: ms }`,
     /// passes and their span (first start to last end) timed where the
-    /// device has timestamp queries.
+    /// device has timestamp queries. Rejects if the GPU is lost first.
     #[wasm_bindgen(js_name = gpuTimings)]
     pub fn gpu_timings(&mut self) -> js_sys::Promise {
         let timings = self.canvas.take_timings();
         wasm_bindgen_futures::future_to_promise(async move {
             let out = js_sys::Array::new();
-            for (passes, span, cpu) in timings.await {
+            let timings = timings
+                .await
+                .map_err(|lost| JsValue::from_str(&lost.to_string()))?;
+            for (passes, span, cpu) in timings {
                 let pairs = js_sys::Array::new();
                 for (label, ms) in passes {
                     pairs.push(&js_sys::Array::of2(&label.into(), &ms.into()));

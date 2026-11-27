@@ -132,7 +132,7 @@ fn samples_written_layers_of_a_texture_array() {
             },
         ],
     })]);
-    let pixels = pollster::block_on(gpu.read_texture(target));
+    let pixels = pollster::block_on(gpu.read_texture(target)).expect("a readback");
     assert_eq!(&pixels[..4], [255, 0, 0, 255], "layer 0");
     assert_eq!(&pixels[12..], [0, 0, 255, 255], "layer 1");
 }

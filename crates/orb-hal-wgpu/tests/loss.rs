@@ -2,7 +2,7 @@
 //! fail as part of the loss, not as errors that stop the process.
 
 use orb_hal::*;
-use orb_hal_wgpu::WgpuGpu;
+use orb_hal_wgpu::{Lost, WgpuGpu};
 
 #[test]
 fn a_frame_goes_on_after_a_loss_in_it() {
@@ -127,4 +127,64 @@ fn the_host_hears_of_a_loss_it_didnt_make() {
         "{heard:?}"
     );
     assert_eq!(losses(WgpuGpu::lose), Vec::<String>::new());
+}
+
+/// What waits on the GPU resolves to `Lost` once the device goes, whether
+/// the HAL lost it (`lose`) or the host destroyed it under the HAL:
+/// readback and timings, which in the browser are a page's promises, and
+/// the frame's wait.
+#[test]
+fn waits_on_a_lost_device_resolve_to_lost() {
+    let waits = |lose: fn(&WgpuGpu)| {
+        let mut gpu = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
+        let texture = gpu.create_texture(&TextureDesc {
+            label: "read",
+            width: 4,
+            height: 4,
+            array_layers: 1,
+            dimension: TextureViewDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            sample_count: 1,
+            mip_levels: 1,
+        });
+        let buffer = gpu.create_buffer(&BufferDesc {
+            label: "read",
+            size: 256,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        });
+        gpu.set_timing(true);
+        let clear = |gpu: &mut WgpuGpu| {
+            gpu.submit(&[Pass::Render(RenderPass {
+                label: "clear",
+                colors: vec![ColorAttachment {
+                    target: texture,
+                    resolve: None,
+                    store: StoreOp::Store,
+                    load: LoadOp::Clear([1.0; 4]),
+                }],
+                depth: None,
+                commands: Vec::new(),
+            })]);
+        };
+        clear(&mut gpu);
+        assert_eq!(
+            pollster::block_on(gpu.read_texture(texture)),
+            Ok(vec![255; 64])
+        );
+        assert!(pollster::block_on(gpu.take_timings()).is_ok());
+        clear(&mut gpu);
+        lose(&gpu);
+        // Each read on its own submission, the device's last before the
+        // readback's included.
+        let pixels = pollster::block_on(gpu.read_texture(texture));
+        let bytes = pollster::block_on(gpu.read_buffer(buffer));
+        let timings = pollster::block_on(gpu.take_timings()).map(|t| t.len());
+        gpu.end_frame(0);
+        assert!(gpu.lost());
+        (pixels, bytes, timings)
+    };
+    let lost = (Err(Lost), Err(Lost), Err(Lost));
+    assert_eq!(waits(WgpuGpu::lose), lost);
+    assert_eq!(waits(|gpu| gpu.device().destroy()), lost);
 }

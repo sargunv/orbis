@@ -97,7 +97,7 @@ fn a_flat_varying_takes_the_vertex_the_caps_name() {
             },
         ],
     })]);
-    let pixels = pollster::block_on(gpu.read_texture(target));
+    let pixels = pollster::block_on(gpu.read_texture(target)).expect("a readback");
     let expected = if gpu.caps().flat_from_last { 11 } else { 3 };
     assert_eq!(
         pixels[..2],

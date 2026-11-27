@@ -98,7 +98,8 @@ impl Checked {
         let check = (self.renderer.driver_check()).expect("the CPU driver, with a twin");
         let gpu = &mut self.gpu;
         let mut read = |buffer| -> Vec<u32> {
-            bytemuck::cast_slice(&pollster::block_on(gpu.read_buffer(buffer))).to_vec()
+            bytemuck::cast_slice(&pollster::block_on(gpu.read_buffer(buffer)).expect("a readback"))
+                .to_vec()
         };
         match check.compare(&mut read) {
             Ok(compared) => self.last = compared,

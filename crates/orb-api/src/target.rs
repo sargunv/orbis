@@ -174,14 +174,11 @@ impl Target {
             ),
             Kind::Texture(id) => {
                 let mut device = self.shared.opened().expect("a texture's device");
-                // wgpu panics when a lost device's wait fails.
-                if device.lost() {
-                    return Err(Error::InvalidState(
-                        "the GPU was lost: draw a frame on its replacement first".into(),
-                    ));
-                }
+                let pixels = pollster::block_on(device.read_texture(id)).map_err(|lost| {
+                    Error::InvalidState(format!("{lost}: draw a frame on its replacement first"))
+                })?;
                 self.read_back.store(true, Ordering::Relaxed);
-                Ok(pollster::block_on(device.read_texture(id)))
+                Ok(pixels)
             }
             Kind::Unmade => Err(Error::InvalidState(
                 "nothing was drawn into the target yet".into(),

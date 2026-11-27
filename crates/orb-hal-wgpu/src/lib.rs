@@ -28,6 +28,7 @@ mod staging;
 mod surface;
 mod texture_writes;
 mod timing;
+mod wait;
 mod writes;
 
 pub use convert::from_texture_format;
@@ -38,6 +39,7 @@ use slots::Slots;
 #[cfg(not(target_arch = "wasm32"))]
 pub use surface::{RawSurface, Surface, SurfaceError};
 pub use timing::SubmitTimes;
+pub use wait::Lost;
 /// The wgpu this HAL is built on, for hosts that hand it windows.
 pub use wgpu;
 
@@ -1057,10 +1059,7 @@ impl WgpuGpu {
                 .as_ref()
                 .is_some_and(|c| self.frames_started >= c.end)
         {
-            let _ = self.device.poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            });
+            let _ = self.wait(None);
             // SAFETY: the capture `start_frame` started runs.
             unsafe { self.device.stop_graphics_debugger_capture() };
             self.capturing = false;
@@ -1308,7 +1307,8 @@ impl WgpuGpu {
     }
 
     /// Whether the device is lost: the host needs another. Calls on a lost
-    /// device do nothing, and none panics.
+    /// device do nothing, and none panics; what waits on the GPU, such as
+    /// a readback, resolves to [`Lost`].
     pub fn lost(&self) -> bool {
         self.lost.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -1567,16 +1567,12 @@ impl WgpuGpu {
     /// `in_flight` frames are unfinished, as a swapchain does.
     pub fn end_frame(&mut self, in_flight: usize) {
         self.frames.extend(self.last.take());
-        // wgpu panics when a wait fails, as it does on a lost device.
-        if self.lost() {
-            self.frames.clear();
-        }
         while self.frames.len() > in_flight {
             let index = self.frames.pop_front();
-            let _ = self.device.poll(wgpu::PollType::Wait {
-                submission_index: index,
-                timeout: None,
-            });
+            // A lost device has no frames in flight.
+            if self.wait(index).is_err() {
+                self.frames.clear();
+            }
         }
     }
 

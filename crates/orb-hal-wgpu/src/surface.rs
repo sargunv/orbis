@@ -202,10 +202,8 @@ impl WgpuGpu {
         if let Some((_, id)) = surface.frame.take() {
             self.destroy_texture(id);
         }
-        // A lost device holds nothing, and wgpu panics when its wait fails.
-        if !self.lost() {
-            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-        }
+        // A lost device holds nothing.
+        let _ = self.wait(None);
     }
 
     /// Shows the frame started with [`acquire`](Self::acquire).

@@ -432,11 +432,11 @@ impl Runtime {
     /// Each submission's times since the last call, in order, once the GPU
     /// has finished them: its CPU time, and its passes' GPU times where
     /// the device has timestamp queries. Blocks until the GPU is done. None
-    /// from a lost device, whose wait wgpu would panic on.
+    /// from a lost device.
     pub fn gpu_timings(&self) -> Vec<SubmitTimes> {
         match self.shared.opened() {
-            Some(mut gpu) if !gpu.lost() => pollster::block_on(gpu.take_timings()),
-            _ => Vec::new(),
+            Some(mut gpu) => pollster::block_on(gpu.take_timings()).unwrap_or_default(),
+            None => Vec::new(),
         }
     }
 
