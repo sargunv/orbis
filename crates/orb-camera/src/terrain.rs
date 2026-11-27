@@ -112,19 +112,9 @@ impl View {
     /// coordinates: the terrain must have DEM data there too, though it
     /// lies outside the view.
     pub fn near_footprint(&self) -> WorldRect {
-        let mut points = self
-            .near_points()
-            .map(|p| p.truncate() + self.camera_world());
-        let first = points.next().expect("the eye");
-        points.fold(
-            WorldRect {
-                min: first,
-                max: first,
-            },
-            |r, p| WorldRect {
-                min: r.min.min(p),
-                max: r.max.max(p),
-            },
+        WorldRect::around(
+            self.near_points()
+                .map(|p| p.truncate() + self.camera_world()),
         )
     }
 
@@ -251,9 +241,9 @@ impl CameraState {
     }
 
     /// Raises the camera until the eye and its near plane clear the
-    /// terrain by a few tens of metres ([`View::clearance`]). Raising moves
-    /// them straight up, over the same ground, so one step suffices, and
-    /// the lift follows the ground continuously as the camera moves.
+    /// terrain by `CLEARANCE`, two metres ([`View::clearance`]). Raising
+    /// moves them straight up, over the same ground, so one step suffices,
+    /// and the lift follows the ground continuously as the camera moves.
     /// Returns whether it moved.
     pub fn keep_above(
         &mut self,

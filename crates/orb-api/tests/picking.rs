@@ -4,7 +4,7 @@
 mod common;
 
 use glam::DVec2;
-use orb_api::{Map, MapOptions, Runtime, RuntimeOptions, Target};
+use orb_api::{Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target};
 
 /// The centre of the red pixels.
 fn red_centre(target: &Target) -> DVec2 {
@@ -584,5 +584,56 @@ fn composite_sizes_pick_at_the_cameras_zoom() {
             assert!(map.hit_test(inside).is_some(), "{trace}: picks");
             assert!(map.hit_test(outside).is_none(), "{trace}: doesn't pick");
         }
+    }
+}
+
+/// At zoom 22 a square's corner draws where the CPU projects it, to a
+/// pixel: rows' origins and the camera subtract as hi and lo parts on the
+/// GPU.
+#[test]
+fn zoom_22_draws_to_the_pixel() {
+    const WIDTH: u32 = 512;
+    const HEIGHT: u32 = 384;
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    // A square far from the world's origin, its south-west corner near
+    // the view's centre.
+    let (lon, lat) = (139.767_123_4, 35.681_234_5);
+    let style = format!(
+        r##"{{"version": 8, "sources": {{"square": {{"type": "geojson", "data":
+            {{"type": "Polygon", "coordinates": [[[{lon}, {lat}], [{e}, {lat}], [{e}, {n}],
+            [{lon}, {n}], [{lon}, {lat}]]]}}}}}},
+          "layers": [{{"id": "bg", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+            {{"id": "square", "type": "fill", "source": "square",
+              "paint": {{"fill-color": "#000000", "fill-antialias": false}}}}]}}"##,
+        e = lon + 0.01,
+        n = lat + 0.01,
+    );
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).unwrap();
+    // A few metres apart: tens of pixels at zoom 22.
+    for (dlon, dlat) in [(0.0, 0.0), (2.37e-6, -1.13e-6), (-3.11e-6, 0.9e-6)] {
+        let center = Geodetic::new(lon + dlon, lat + dlat);
+        map.jump_to(&common::camera((center, 22.0, 0.0, 0.0)));
+        common::settle(&mut map, &mut target);
+        let pixels = target.read_pixels().unwrap();
+        let corner = map.project(Geodetic::new(lon, lat)).expect("in view");
+        let dark = |x: u32, y: u32| pixels[((y * WIDTH + x) * 4) as usize] < 128;
+        // A row just inside the square, and a column just inside it.
+        let row = (corner.y - 4.0) as u32;
+        let column = (corner.x + 4.0) as u32;
+        let left = (0..WIDTH)
+            .find(|&x| dark(x, row))
+            .expect("the square shows");
+        let bottom = (0..HEIGHT)
+            .rev()
+            .find(|&y| dark(column, y))
+            .expect("the square shows")
+            + 1;
+        assert!(
+            (f64::from(left) - corner.x).abs() <= 1.0
+                && (f64::from(bottom) - corner.y).abs() <= 1.0,
+            "the corner draws at ({left}, {bottom}), not at {corner}"
+        );
     }
 }

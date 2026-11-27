@@ -352,20 +352,23 @@ fn checks(selection: &affected::Selection) -> Result<(), String> {
     boundaries::check()
 }
 
-/// The renderer's tests, `orb-runtime`'s frame tests and `orb-api`'s path
-/// tests again on the CPU frame driver with its tables in data textures,
-/// WebGL 2's path (#140), run natively (`ORB_DRIVER=cpu-tex`), for the
-/// selected packages among them, then the path tests once more on the
-/// whole of WebGL 2's stand-in (`ORB_DRIVER=webgl2`: no compute either, so
-/// drawn mip levels, and GL's texture layers), where the drape draws
-/// otherwise than on any other native device (#204). `orb-runtime`'s
-/// `drivers` test holds the CPU driver to the GPU's word for word in every
-/// run.
+/// The renderer's tests, `orb-runtime`'s frame tests and `orb-api`'s path,
+/// terrain and picking tests again on the CPU frame driver with its tables
+/// in data textures, WebGL 2's path (#140), run natively
+/// (`ORB_DRIVER=cpu-tex`), for the selected packages among them, then
+/// `orb-api`'s once more on the whole of WebGL 2's stand-in
+/// (`ORB_DRIVER=webgl2`: no compute either, so drawn mip levels, and GL's
+/// texture layers), where the drape draws otherwise than on any other
+/// native device (#204). `orb-runtime`'s `drivers` test holds the CPU
+/// driver to the GPU's word for word in every run.
 fn cpu_driver_tests(selection: &affected::Selection) -> Result<(), String> {
     let runs = [
         ("orb-render", "package(orb-render)"),
         ("orb-runtime", "package(orb-runtime) & binary(frames)"),
-        ("orb-api", "package(orb-api) & binary(path)"),
+        (
+            "orb-api",
+            "package(orb-api) & (binary(path) | binary(terrain) | binary(picking))",
+        ),
     ];
     let mut test = nextest();
     let mut filters = Vec::new();
@@ -385,7 +388,9 @@ fn cpu_driver_tests(selection: &affected::Selection) -> Result<(), String> {
         return Ok(());
     }
     run(nextest()
-        .args(["-p", "orb-api", "--test", "path"])
+        .args([
+            "-p", "orb-api", "--test", "path", "--test", "terrain", "--test", "picking",
+        ])
         .env("ORB_DRIVER", "webgl2"))
 }
 
