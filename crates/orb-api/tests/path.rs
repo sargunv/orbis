@@ -1858,11 +1858,20 @@ fn terrain_switched_by_edits_ends_as_a_fresh_map_does() {
     assert_eq!(on.1, fresh_camera, "the camera on the risen terrain");
     assert_same("terrain-on", (on.0, fresh));
     map.edit(&restyle(&flat)).unwrap();
+    // Each step's tiles are in before the next, so the path is the same
+    // however fast this machine loads them.
     for step in 0..30 {
         let s = f64::from(step);
         map.jump_to(&camera((STATION, 13.0 + s * 0.03, 30.0 + s, 60.0)));
-        map.render(&mut target, 0.0).unwrap();
-        std::thread::sleep(Duration::from_millis(10));
+        let started = Instant::now();
+        while map
+            .render(&mut target, 0.0)
+            .unwrap()
+            .is_none_or(|r| r.tiles_loading > 0)
+        {
+            assert!(started.elapsed() < Duration::from_secs(60), "step {step}");
+            map.wait_woken(Duration::from_millis(4));
+        }
     }
     map.jump_to(&camera(at));
     common::settle(&mut map, &mut target);

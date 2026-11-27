@@ -19,7 +19,7 @@ use orb_runtime::{
     MapOptions, RenderMode, StyleImage, Transaction, Value, VideoRequest, Viewport,
 };
 
-use crate::{Activity, Error, GestureMotion, Move, Runtime, Skew, Target};
+use crate::{Activity, Error, GestureMotion, Move, Runtime, Skew, Target, lock};
 use commanded::Commanded;
 
 /// Something a map, its camera or a gesture did.
@@ -36,7 +36,7 @@ pub enum Event {
     },
 }
 
-type WakeHook = Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>;
+type WakeHook = Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
 
 /// How long still output waits with nothing arriving before it gives up:
 /// a minute without a wake (no fetch, job, placement or compile coming
@@ -165,14 +165,10 @@ impl Waiter {
     /// Blocks until the map is woken or `timeout` passes, as
     /// [`Map::wait_woken`].
     pub fn wait(&self, timeout: Duration) {
-        let (lock, condvar) = &*self.signal;
-        let guard = lock.lock().expect("signal poisoned");
+        let (signal, condvar) = &*self.signal;
+        let guard = lock(signal);
         if !self.woken.load(Ordering::Acquire) && !self.device_woken.load(Ordering::Acquire) {
-            drop(
-                condvar
-                    .wait_timeout(guard, timeout)
-                    .expect("signal poisoned"),
-            );
+            drop(condvar.wait_timeout(guard, timeout));
         }
     }
 }
@@ -206,16 +202,10 @@ impl std::fmt::Debug for Map {
 
 impl Drop for Map {
     /// Fetches and jobs the map started keep its wake closure, and may
-    /// finish after it: the host's callback is dropped first. The closure
-    /// holds the hook's mutex while calling it, so this also waits out a
-    /// call under way on another thread.
+    /// finish after it: the host's callback goes first, so none of theirs
+    /// reaches it but one already under way.
     fn drop(&mut self) {
-        let hook = self
-            .hook
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        drop(hook);
+        drop(lock(&self.hook).take());
         // What the map drew with goes with it, on the device that made it.
         if let Some(renderer) = self.renderer.take()
             && self.device == self.runtime.shared.generation()
@@ -228,7 +218,8 @@ impl Drop for Map {
 
 /// A wake and the flag it sets: called from any thread, it sets the flag,
 /// counts itself in `signal` (in the count `count` picks) and notifies its
-/// waiters, and calls the host's hook.
+/// waiters, and calls the host's hook, holding no lock, so a hook that
+/// panics leaves later wakes working.
 fn wake_setting(
     signal: &Arc<(Mutex<Wakes>, Condvar)>,
     hook: &WakeHook,
@@ -238,11 +229,10 @@ fn wake_setting(
     let (woken, signal, hook) = (flag.clone(), signal.clone(), hook.clone());
     let wake = Arc::new(move || {
         woken.store(true, Ordering::Release);
-        {
-            *count(&mut signal.0.lock().expect("signal poisoned")) += 1;
-            signal.1.notify_all();
-        }
-        if let Some(hook) = hook.lock().expect("wake hook poisoned").as_ref() {
+        *count(&mut lock(&signal.0)) += 1;
+        signal.1.notify_all();
+        let hook = lock(&hook).clone();
+        if let Some(hook) = hook {
             hook();
         }
     });
@@ -308,7 +298,7 @@ impl Map {
     /// map is idle resume on it. Commands and input on the host's thread
     /// don't call it; check [`needs_frame`](Self::needs_frame) after them.
     pub fn set_wake(&mut self, wake: impl Fn() + Send + Sync + 'static) {
-        *self.hook.lock().expect("wake hook poisoned") = Some(Box::new(wake));
+        *lock(&self.hook) = Some(Arc::new(wake));
     }
 
     /// Moves to `camera` at once, exactly, as [`jump_to`](Self::jump_to)
@@ -908,10 +898,7 @@ impl Map {
         let finished = self.finished.clone();
         let wake = self.wake.clone();
         let done = Box::new(move |result| {
-            finished
-                .lock()
-                .expect("queries poisoned")
-                .push((id, result));
+            lock(&finished).push((id, result));
             wake();
         });
         (id, done)
@@ -1306,6 +1293,12 @@ impl Map {
         }
     }
 
+    /// Why the latest style request failed, if it did: the message of its
+    /// [`MapEvent::Error`]. Nothing draws until another style replaces it.
+    pub fn style_error(&self) -> Option<&str> {
+        self.map.style_error()
+    }
+
     /// Whether the latest style request failed because its text didn't
     /// parse as a style, not because its fetch brought none
     /// ([`orb_runtime::Map::style_unparsed`]).
@@ -1315,7 +1308,7 @@ impl Map {
 
     /// The latest style request's failure, as an error.
     fn style_failed(&self) -> Result<(), Error> {
-        match self.map.style_error() {
+        match self.style_error() {
             Some(message) => Err(Error::InvalidArgument(message.to_string())),
             None => Ok(()),
         }
@@ -1365,7 +1358,7 @@ impl Map {
 
     /// How many times the map has been woken.
     fn wakes(&self) -> Wakes {
-        *self.signal.0.lock().expect("signal poisoned")
+        *lock(&self.signal.0)
     }
 
     /// What the map waited for when its last frame drew, in words.
@@ -1558,7 +1551,7 @@ impl Map {
     /// The oldest event not yet taken. What the map did between frames
     /// (an animation a command stopped) comes out without one.
     pub fn poll_event(&mut self) -> Option<Event> {
-        let finished = std::mem::take(&mut *self.finished.lock().expect("queries poisoned"));
+        let finished = std::mem::take(&mut *lock(&self.finished));
         self.events.extend(
             finished
                 .into_iter()

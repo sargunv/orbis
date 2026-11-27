@@ -1,15 +1,14 @@
-//! Offline regions on a runtime with a state directory (`regions/` in it):
-//! downloads through the HTTP cache, and maps that fetch through
-//! [`RegionFetch`], so a downloaded area opens with no network.
+//! Offline regions on a runtime with a state directory (`regions/` in it),
+//! merged in from other stores, and maps that fetch through
+//! [`RegionFetch`], so a region's area opens with no network.
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use orb_host::Storage;
 use orb_host_native::{FileStorage, NativeFetch};
 use orb_runtime::modules;
-use orb_runtime::offline::{self, Download, RegionFetch};
-pub use orb_runtime::offline::{RegionDefinition, RegionEvent, RegionInfo};
+use orb_runtime::offline::{self, RegionFetch};
+pub use orb_runtime::offline::{RegionDefinition, RegionInfo};
 
 use crate::Error;
 
@@ -18,11 +17,8 @@ pub(crate) struct Regions {
     /// The state directory.
     dir: std::path::PathBuf,
     storage: Arc<FileStorage>,
-    network: Arc<NativeFetch>,
     /// What maps fetch through.
     pub(crate) fetch: Arc<RegionFetch>,
-    events: Arc<Mutex<VecDeque<RegionEvent>>>,
-    downloads: Mutex<HashMap<u32, Download>>,
 }
 
 /// Waits for a storage call (the file storage answers at once).
@@ -35,48 +31,9 @@ impl Regions {
         let storage = Arc::new(FileStorage::new(dir));
         Self {
             dir: dir.to_owned(),
-            fetch: RegionFetch::new(network.clone(), storage.clone(), modules::every()),
+            fetch: RegionFetch::new(network, storage.clone(), modules::every()),
             storage,
-            network,
-            events: Arc::default(),
-            downloads: Mutex::default(),
         }
-    }
-
-    /// Starts a download; `wake` is called with each event.
-    pub(crate) fn download(
-        &self,
-        definition: RegionDefinition,
-        wake: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<u32, Error> {
-        let (events, fetch) = (self.events.clone(), self.fetch.clone());
-        let on_event: offline::RegionEvents = Arc::new(move |event| {
-            if matches!(event, RegionEvent::Complete { .. }) {
-                fetch.reload();
-            }
-            events
-                .lock()
-                .expect("region events poisoned")
-                .push_back(event);
-            wake();
-        });
-        let storage: Arc<dyn Storage> = self.storage.clone();
-        let download = wait(|done| {
-            offline::download(
-                &modules::every(),
-                self.network.clone(),
-                storage,
-                definition,
-                on_event,
-                done,
-            )
-        })?;
-        let id = download.id();
-        self.downloads
-            .lock()
-            .expect("downloads poisoned")
-            .insert(id, download);
-        Ok(id)
     }
 
     pub(crate) fn create(&self, definition: RegionDefinition) -> Result<RegionInfo, Error> {
@@ -108,7 +65,7 @@ impl Regions {
                     merged.push(found);
                     continue;
                 }
-                merged.push(self.copy_dir(source, region)?);
+                merged.push(self.copy(source, region)?);
             }
         } else {
             merged = self.merge_database(source, &same)?;
@@ -117,33 +74,33 @@ impl Regions {
         Ok(merged)
     }
 
-    /// Copies region `region` of the state directory `source` in, under
-    /// a new id.
-    fn copy_dir(&self, source: &std::path::Path, region: RegionInfo) -> Result<RegionInfo, Error> {
-        let fail = |e: std::io::Error| Error::Native(format!("merging regions: {e}"));
-        let regions = self.dir.join("regions");
-        std::fs::create_dir_all(&regions).map_err(fail)?;
-        let id = std::fs::read_dir(&regions)
-            .map_err(fail)?
-            .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok())
-            .max()
-            .map_or(1, |n| n + 1);
+    /// Copies region `region` of the state directory `source` in, under an
+    /// id the store picks: listed incomplete until its manifest, copied
+    /// last, lands, and removed if any of it fails. Files stream across, as
+    /// a region's extracts can outgrow a phone's memory.
+    fn copy(&self, source: &std::path::Path, region: RegionInfo) -> Result<RegionInfo, Error> {
+        let id = self.create(region.definition.clone())?.id;
         let (from, to) = (
             source.join("regions").join(region.id.to_string()),
-            regions.join(id.to_string()),
+            self.dir.join("regions").join(id.to_string()),
         );
-        // Written beside, then moved in whole: a half-copied region never lists.
-        let partial = regions.join(format!(".{id}.merging"));
-        let _ = std::fs::remove_dir_all(&partial);
-        std::fs::create_dir_all(&partial).map_err(fail)?;
-        for entry in std::fs::read_dir(&from).map_err(fail)? {
-            let entry = entry.map_err(fail)?;
-            if entry.file_type().map_err(fail)?.is_file() {
-                std::fs::copy(entry.path(), partial.join(entry.file_name())).map_err(fail)?;
+        let copied = (|| {
+            let fail = |e: std::io::Error| Error::Native(format!("merging regions: {e}"));
+            for entry in std::fs::read_dir(&from).map_err(fail)? {
+                let entry = entry.map_err(fail)?;
+                let name = entry.file_name();
+                if entry.file_type().map_err(fail)?.is_file() && name != "manifest.json" {
+                    std::fs::copy(entry.path(), to.join(name)).map_err(fail)?;
+                }
             }
+            let manifest = std::fs::read(from.join("manifest.json")).map_err(fail)?;
+            let key = format!("regions/{id}/manifest.json");
+            wait(|done| self.storage.write(&key, manifest, false, done))
+        })();
+        if copied.is_err() {
+            let _ = wait(|done| offline::delete(&*self.storage, id, done));
         }
-        std::fs::rename(&partial, &to).map_err(fail)?;
-        Ok(RegionInfo { id, ..region })
+        copied.map(|()| RegionInfo { id, ..region })
     }
 
     #[cfg(feature = "sqlite")]
@@ -155,7 +112,7 @@ impl Regions {
         let file = std::fs::File::open(source)
             .map_err(|e| Error::InvalidArgument(format!("{}: {e}", source.display())))?;
         let pages = FilePages {
-            file: Mutex::new(file),
+            file: std::sync::Mutex::new(file),
             page_size: std::sync::OnceLock::new(),
         };
         let native = orb_runtime::native_db::NativeDatabase::open(&pages)
@@ -168,7 +125,7 @@ impl Regions {
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let events: offline::RegionEvents = Arc::new(move |event| {
-                if !matches!(event, RegionEvent::Progress { .. }) {
+                if !matches!(event, offline::RegionEvent::Progress { .. }) {
                     let _ = tx.send(event);
                 }
             });
@@ -183,13 +140,15 @@ impl Regions {
             }
             import.finish();
             match rx.recv() {
-                Ok(RegionEvent::Complete { bytes, .. }) => merged.push(RegionInfo {
+                Ok(offline::RegionEvent::Complete { bytes, .. }) => merged.push(RegionInfo {
                     id,
                     definition,
                     complete: true,
                     bytes,
                 }),
-                Ok(RegionEvent::Failed { message, .. }) => return Err(Error::Native(message)),
+                Ok(offline::RegionEvent::Failed { message, .. }) => {
+                    return Err(Error::Native(message));
+                }
                 _ => return Err(Error::Native("the merge stopped".into())),
             }
         }
@@ -209,14 +168,6 @@ impl Regions {
     }
 
     pub(crate) fn delete(&self, id: u32) -> Result<(), Error> {
-        if let Some(download) = self
-            .downloads
-            .lock()
-            .expect("downloads poisoned")
-            .remove(&id)
-        {
-            download.cancel();
-        }
         wait(|done| offline::delete(&*self.storage, id, done))?;
         self.fetch.reload();
         Ok(())
@@ -226,19 +177,12 @@ impl Regions {
         let storage: Arc<dyn Storage> = self.storage.clone();
         wait(|done| offline::list(storage, done))
     }
-
-    pub(crate) fn poll_event(&self) -> Option<RegionEvent> {
-        self.events
-            .lock()
-            .expect("region events poisoned")
-            .pop_front()
-    }
 }
 
 /// A database file's pages, read as the merge wants them.
 #[cfg(feature = "sqlite")]
 struct FilePages {
-    file: Mutex<std::fs::File>,
+    file: std::sync::Mutex<std::fs::File>,
     page_size: std::sync::OnceLock<u32>,
 }
 
@@ -247,7 +191,7 @@ impl orb_runtime::orb_sqlite::Pages for FilePages {
     fn page(&self, number: u32, _: u32) -> orb_runtime::orb_sqlite::Result<Arc<[u8]>> {
         use orb_runtime::orb_sqlite::{Error, HEADER_LEN, Header};
         use std::io::{Read, Seek, SeekFrom};
-        let mut file = self.file.lock().expect("database file poisoned");
+        let mut file = crate::lock(&self.file);
         let io = |e: std::io::Error| Error::Corrupt(e.to_string());
         let size = match self.page_size.get() {
             Some(&size) => size,

@@ -1,15 +1,18 @@
-//! A map's alarm: a wake at the time it last set.
+//! An alarm: a wake at the time it last set.
 
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Instant;
 
 use orb_host_native::NativeClock;
 
-/// Wakes a map once at the time it last set: when the data a tile it
-/// draws shows expires or a failed load is due to be tried again
+use crate::lock;
+
+/// Calls its wake once at the time it last set: a map's when the data a
+/// tile it draws shows expires or a failed load is due to be tried again
 /// ([`orb_runtime::FrameReport::wake_at`]), so that a host drawing only
-/// when woken draws the frame that loads it. Its
-/// thread starts with the first time set and ends with the alarm.
+/// when woken draws the frame that loads it; the runtime's when a lost
+/// device's replacement is due. Its thread starts with the first time set
+/// and ends with the alarm.
 ///
 /// It waits on the monotonic clock, which on macOS and Linux doesn't
 /// count the system's sleep, so an expiry rings that much late on an idle
@@ -20,6 +23,14 @@ pub(crate) struct Alarm {
     clock: NativeClock,
     shared: Arc<Shared>,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl std::fmt::Debug for Alarm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Alarm")
+            .field("due", &lock(&self.shared.state).due)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Default)]
@@ -99,10 +110,6 @@ fn ring(shared: &Shared, wake: &(dyn Fn() + Send + Sync)) {
             }
         };
     }
-}
-
-fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
-    state.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 #[cfg(test)]

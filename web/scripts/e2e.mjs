@@ -130,8 +130,7 @@
 // - `offline` (only when asked for: it needs the network): downloads the
 //   live map's view at `--at` from the Offline areas dialog, then reloads
 //   with every request but the demo server's failing and checks the map
-//   draws without errors. `cargo test -p orb-api --test regions --
-//   --ignored` does the same natively.
+//   draws without errors.
 //
 // - `android`: the map app in Chrome on this worktree's Android emulator
 //   (`scripts/android-serial`, booted on demand; `--android=physical` the

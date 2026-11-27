@@ -48,7 +48,7 @@ pub use orb_runtime::{
     MissingTiles, Op, PoolMemory, Preview, Previews, Progress, Resized, StyleDoc, StyleImage,
     Transaction, Value, VideoRequest, json,
 };
-pub use regions::{RegionDefinition, RegionEvent, RegionInfo};
+pub use regions::{RegionDefinition, RegionInfo};
 pub use target::Target;
 
 use orb_hal_wgpu::WgpuGpu;
@@ -148,7 +148,7 @@ struct Shared {
     /// Counts devices made, from 0 before the first: maps and targets of
     /// an older one rebuild.
     generation: AtomicU64,
-    /// Device losses in a row, and how the next is answered.
+    /// How device losses are answered.
     recovery: Mutex<Recovery>,
     /// Fetches, through the HTTP cache with a state directory.
     fetch: Arc<NativeFetch>,
@@ -210,58 +210,75 @@ pub struct RuntimeStats {
     pub live_resources: usize,
 }
 
-/// How the runtime answers device losses.
+/// How the runtime answers device losses, on its clock's milliseconds.
 #[derive(Debug)]
 struct Recovery {
-    /// The clock losses are timed on.
     clock: orb_host_native::NativeClock,
     /// Losses in a row, and how long the next waits.
     runs: orb_host::loss::LossRuns,
-    /// When the loss being answered gets its new device.
-    due: Option<std::time::Instant>,
-    /// Why the runtime stopped making devices.
-    failed: Option<String>,
+    state: RecoveryState,
+    /// Wakes every map when a lost device's replacement is due.
+    alarm: alarm::Alarm,
+}
+
+#[derive(Debug)]
+enum RecoveryState {
+    /// The device in use, if any, is the one to draw on.
+    Running,
+    /// The device was lost; its replacement is made from `due` on.
+    Waiting { due: f64 },
+    /// The runtime makes no more devices, for this reason.
+    GaveUp(String),
 }
 
 impl Recovery {
-    fn new() -> Self {
+    fn new(wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let clock = orb_host_native::NativeClock::default();
         Self {
             runs: orb_host::loss::LossRuns::new(orb_host::Clock::now(&clock)),
             clock,
-            due: None,
-            failed: None,
+            state: RecoveryState::Running,
+            alarm: alarm::Alarm::new(clock, wake),
         }
     }
 
-    /// The device was lost: how long until another is made, or why none is.
-    fn lost(&mut self) -> Result<std::time::Duration, orb_host::loss::GaveUp> {
-        let now = orb_host::Clock::now(&self.clock);
-        self.runs.lost(now)
+    fn now(&self) -> f64 {
+        orb_host::Clock::now(&self.clock)
     }
 
     /// Another device was made.
     fn made(&mut self) {
-        let now = orb_host::Clock::now(&self.clock);
+        let now = self.now();
         self.runs.made(now);
+        self.state = RecoveryState::Running;
+        self.alarm.set(None);
     }
 
     /// Stops making devices, for `why`.
-    fn fail(&mut self, why: String) -> Error {
-        self.failed = Some(why.clone());
+    fn give_up(&mut self, why: String) -> Error {
+        self.state = RecoveryState::GaveUp(why.clone());
+        self.alarm.set(None);
         Error::Native(why)
+    }
+
+    /// Why the runtime stopped making devices, if it did.
+    fn gave_up(&self) -> Result<(), Error> {
+        match &self.state {
+            RecoveryState::GaveUp(why) => Err(Error::Native(why.clone())),
+            _ => Ok(()),
+        }
     }
 }
 
 /// Every map's wake, held weakly: a dropped map's goes.
-type Wakes = Arc<std::sync::Mutex<Vec<std::sync::Weak<dyn Fn() + Send + Sync>>>>;
+type Wakes = Arc<Mutex<Vec<std::sync::Weak<dyn Fn() + Send + Sync>>>>;
 
 /// A wake for the device that wakes every map still alive.
 fn wake_all(wakes: &Wakes) -> Arc<dyn Fn() + Send + Sync> {
     let wakes = wakes.clone();
     Arc::new(move || {
         let live: Vec<_> = {
-            let mut wakes = wakes.lock().expect("wakes poisoned");
+            let mut wakes = lock(&wakes);
             wakes.retain(|w| w.strong_count() > 0);
             wakes.iter().filter_map(std::sync::Weak::upgrade).collect()
         };
@@ -289,6 +306,7 @@ impl Runtime {
             .ok()
             .and_then(|n| n.parse::<u64>().ok())
             .map(|frame| (frame.saturating_sub(1), u64::from(frame > 0)));
+        let wakes = Wakes::default();
         Ok(Self {
             shared: Arc::new(Shared {
                 gpu: Mutex::new(None),
@@ -299,7 +317,7 @@ impl Runtime {
                 options: options.clone(),
                 adapter: Mutex::new(String::new()),
                 generation: AtomicU64::new(0),
-                recovery: Mutex::new(Recovery::new()),
+                recovery: Mutex::new(Recovery::new(wake_all(&wakes))),
                 fetch: fetch.clone(),
                 regions: options
                     .state_dir
@@ -309,7 +327,7 @@ impl Runtime {
                 executor,
                 images: Default::default(),
                 cache: Mutex::new(None),
-                wakes: Arc::default(),
+                wakes,
                 timing: AtomicBool::new(false),
             }),
         })
@@ -460,52 +478,45 @@ impl Runtime {
     /// would do the same in.
     pub(crate) fn recovery_due(&self) -> Result<bool, Error> {
         let mut recovery = lock(&self.shared.recovery);
-        if let Some(failed) = &recovery.failed {
-            return Err(Error::Native(failed.clone()));
-        }
+        let waiting = match recovery.state {
+            RecoveryState::GaveUp(ref why) => return Err(Error::Native(why.clone())),
+            RecoveryState::Waiting { due } => Some(due),
+            RecoveryState::Running => None,
+        };
         // A compile that lost the device names its pipeline. Running
         // compiles get a second to finish when the loss is first seen, not
         // on each check while the backoff runs.
-        let wait = if recovery.due.is_none() {
-            std::time::Duration::from_secs(1)
-        } else {
-            std::time::Duration::ZERO
+        let settle = match waiting {
+            Some(_) => std::time::Duration::ZERO,
+            None => std::time::Duration::from_secs(1),
         };
         let fault = self.shared.opened().and_then(|mut gpu| {
-            gpu.settle_loss(wait);
+            gpu.settle_loss(settle);
             gpu.fault().cloned()
         });
         if let Some(fault) = fault {
-            return Err(recovery.fail(format!("the GPU driver {fault}")));
+            return Err(recovery.give_up(format!("the GPU driver {fault}")));
         }
-        let now = std::time::Instant::now();
-        let due = match recovery.due {
+        let now = recovery.now();
+        let due = match waiting {
             Some(due) => due,
-            None => {
-                let wait = match recovery.lost() {
-                    Ok(wait) => wait,
-                    Err(gave_up) => {
-                        let reason = (self.shared.opened())
-                            .and_then(|gpu| gpu.lost_reason())
-                            .map(|r| format!("; the last: {r}"))
-                            .unwrap_or_default();
-                        return Err(recovery.fail(format!("{gave_up}{reason}")));
+            None => match recovery.runs.lost(now) {
+                Ok(wait) => {
+                    let due = now + wait.as_secs_f64() * 1000.0;
+                    recovery.state = RecoveryState::Waiting { due };
+                    if due > now {
+                        recovery.alarm.set(Some(due));
                     }
-                };
-                let due = now + wait;
-                recovery.due = Some(due);
-                if !wait.is_zero() {
-                    let wake = wake_all(&self.shared.wakes);
-                    std::thread::Builder::new()
-                        .name("orbis device backoff".into())
-                        .spawn(move || {
-                            std::thread::sleep(wait);
-                            wake();
-                        })
-                        .map_err(|e| recovery.fail(format!("a backoff timer: {e}")))?;
+                    due
                 }
-                due
-            }
+                Err(gave_up) => {
+                    let reason = (self.shared.opened())
+                        .and_then(|gpu| gpu.lost_reason())
+                        .map(|r| format!("; the last: {r}"))
+                        .unwrap_or_default();
+                    return Err(recovery.give_up(format!("{gave_up}{reason}")));
+                }
+            },
         };
         Ok(now >= due)
     }
@@ -515,16 +526,12 @@ impl Runtime {
     /// again on their next frame from cached data; texture targets are
     /// made again, window targets fail with [`Error::TargetLost`].
     pub(crate) fn recover(&self) -> Result<(), Error> {
-        let made = self.shared.make_device(&Pending::default());
-        let mut recovery = lock(&self.shared.recovery);
-        recovery.due = None;
-        let gpu = made.map_err(|e| {
-            recovery.fail(format!(
+        let gpu = self.shared.make_device(&Pending::default()).map_err(|e| {
+            lock(&self.shared.recovery).give_up(format!(
                 "the GPU was lost and no other could be made: {}",
                 e.message()
             ))
         })?;
-        drop(recovery);
         let old = lock(&self.shared.gpu).replace(gpu);
         drop(old);
         // The maps' images were on the old device.
@@ -556,16 +563,6 @@ impl Runtime {
         Ok(())
     }
 
-    /// Downloads a style's map of an area between two zooms into the state
-    /// directory, for maps to open with no network: its style, sources'
-    /// tiles, glyphs and sprites. Progress, completion and failure arrive
-    /// from [`poll_region_event`](Self::poll_region_event), with every
-    /// map's wake. Returns the region's id.
-    pub fn download_region(&self, definition: RegionDefinition) -> Result<u32, Error> {
-        self.region_store()?
-            .download(definition, wake_all(&self.shared.wakes))
-    }
-
     /// Adds a region to the state directory without downloading it: listed
     /// incomplete, and served by no map.
     pub fn create_region(&self, definition: RegionDefinition) -> Result<RegionInfo, Error> {
@@ -581,7 +578,7 @@ impl Runtime {
         self.region_store()?.merge(source)
     }
 
-    /// Deletes a region, stopping its download.
+    /// Deletes a region.
     pub fn delete_region(&self, id: u32) -> Result<(), Error> {
         self.region_store()?.delete(id)
     }
@@ -589,11 +586,6 @@ impl Runtime {
     /// The regions in the state directory.
     pub fn regions(&self) -> Result<Vec<RegionInfo>, Error> {
         self.region_store()?.list()
-    }
-
-    /// The oldest region download event not yet taken.
-    pub fn poll_region_event(&self) -> Option<RegionEvent> {
-        self.shared.regions.as_ref()?.poll_event()
     }
 
     fn region_store(&self) -> Result<&regions::Regions, Error> {
@@ -651,11 +643,7 @@ impl Runtime {
 
     /// Wakes `wake` when a pipeline compiles, while it lives.
     fn add_wake(&self, wake: &Arc<dyn Fn() + Send + Sync>) {
-        self.shared
-            .wakes
-            .lock()
-            .expect("wakes poisoned")
-            .push(Arc::downgrade(wake));
+        lock(&self.shared.wakes).push(Arc::downgrade(wake));
     }
 
     fn services(
@@ -726,12 +714,10 @@ impl Shared {
         if let Some(gpu) = self.opened() {
             return Ok(gpu);
         }
-        if let Some(failed) = &lock(&self.recovery).failed {
-            return Err(Error::Native(failed.clone()));
-        }
+        lock(&self.recovery).gave_up()?;
         let gpu = self
             .make_device(&pending)
-            .map_err(|e| lock(&self.recovery).fail(e.message().to_owned()))?;
+            .map_err(|e| lock(&self.recovery).give_up(e.message().to_owned()))?;
         let mut slot = lock(&self.gpu);
         *slot = Some(gpu);
         Ok(Gpu(slot))
@@ -795,9 +781,8 @@ impl Shared {
 }
 
 /// Locks `mutex`, past a panic that poisoned it: a caller that catches
-/// a panic (a C boundary) goes on with the state as the panic left it,
-/// as `RefCell` did.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+/// a panic (a C boundary) goes on with the state as the panic left it.
+fn lock<T: ?Sized>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
