@@ -2,21 +2,27 @@
 //! the CSS family list GL JS would hand a canvas, falling back per code
 //! point as a browser does (on Apple platforms to the fonts CoreText
 //! falls back to for the user's languages, on Android to its fallback
-//! chain for the app's), and `orb-text` draws it as TinySDF draws a
-//! canvas glyph.
+//! chain for the app's, on Windows to DirectWrite's for the user's
+//! locale), and `orb-text` draws it as TinySDF draws a canvas glyph.
 
 #[cfg(target_os = "android")]
 mod android;
 #[cfg(target_vendor = "apple")]
 mod apple;
+#[cfg(windows)]
+mod windows;
 
 /// The fonts the system itself falls back to.
 #[cfg(target_os = "android")]
-use android::Fallbacks;
+use self::android::Fallbacks;
 #[cfg(target_vendor = "apple")]
-use apple::Fallbacks;
+use self::apple::Fallbacks;
+#[cfg(windows)]
+use self::windows::Fallbacks;
 
 use std::collections::HashMap;
+#[cfg(any(target_os = "android", windows))]
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use orb_host::{LocalFace, LocalGlyphs, TextMetrics};
@@ -31,10 +37,11 @@ pub struct SystemFonts {
 
 /// Families a browser falls back to for scripts the requested ones lack,
 /// tried before every installed face; Apple platforms ask CoreText
-/// instead, and Android its font matcher, which takes these only before
-/// the app gave its JVM or below API level 29. On Windows its own faces
-/// for those scripts, installed with every language: without them every
-/// CJK code point would scan the installed faces.
+/// instead, Android its font matcher, which takes these only before the
+/// app gave its JVM or below API level 29, and Windows DirectWrite, which
+/// takes these only where it fails. On Windows its own faces for those
+/// scripts, installed with every language: without them every CJK code
+/// point would scan the installed faces.
 #[cfg(windows)]
 const FALLBACKS: &[&str] = &[
     "Yu Gothic UI",
@@ -69,7 +76,7 @@ struct State {
     /// Per code point, the face a search of every installed face found.
     fallback: HashMap<char, Option<fontdb::ID>>,
     /// The fonts the system falls back to for the user's languages.
-    #[cfg(any(target_vendor = "apple", target_os = "android"))]
+    #[cfg(any(target_vendor = "apple", target_os = "android", windows))]
     system: Fallbacks,
     /// Per family, weight and style, the face the database matched: each
     /// query scans every installed face.
@@ -103,7 +110,7 @@ impl State {
             faces: HashMap::new(),
             weighted: HashMap::new(),
             fallback: HashMap::new(),
-            #[cfg(any(target_vendor = "apple", target_os = "android"))]
+            #[cfg(any(target_vendor = "apple", target_os = "android", windows))]
             system: Fallbacks::default(),
             queries: HashMap::new(),
             last: None,
@@ -151,7 +158,7 @@ impl State {
                 return Some(id);
             }
         }
-        #[cfg(any(target_vendor = "apple", target_os = "android"))]
+        #[cfg(any(target_vendor = "apple", target_os = "android", windows))]
         {
             let italic = style != fontdb::Style::Normal;
             let faces = &mut self.faces;
@@ -235,6 +242,41 @@ impl State {
         }
         self.last.as_ref().map(|(_, _, d)| d)
     }
+}
+
+/// The face of the file at `path` that is its collection's `index`, where
+/// `same` says a path of the database's is that file; loaded into the
+/// database if its scan missed the file (a font installed outside the
+/// directories it scans), nameless then so that no family query matches
+/// it and a face queried by name doesn't depend on what fell back before.
+#[cfg(any(target_os = "android", windows))]
+fn resolve(
+    db: &mut fontdb::Database,
+    path: &Path,
+    index: u32,
+    same: impl Fn(&Path) -> bool,
+) -> Option<fontdb::ID> {
+    let find = |db: &fontdb::Database| {
+        db.faces()
+            .find(|face| {
+                face.index == index
+                    && matches!(&face.source,
+                        fontdb::Source::File(p) | fontdb::Source::SharedFile(p, _) if same(p))
+            })
+            .map(|face| face.id)
+    };
+    if let Some(id) = find(db) {
+        return Some(id);
+    }
+    for id in db.load_font_source(fontdb::Source::File(path.to_path_buf())) {
+        let Some(mut info) = db.face(id).cloned() else {
+            continue;
+        };
+        db.remove_face(id);
+        info.families.clear();
+        db.push_face_info(info);
+    }
+    find(db)
 }
 
 /// The face `id` of `db` at its default instance, opened once into
@@ -366,6 +408,43 @@ mod tests {
             faces.push(regular);
         }
         assert_ne!(faces[0], faces[1], "Japanese and Korean forms differ");
+    }
+
+    /// Han ideographs take the forms of the user's locale: the font
+    /// DirectWrite falls back to for it (Microsoft YaHei for Chinese, Yu
+    /// Gothic for Japanese, where both are installed).
+    #[cfg(windows)]
+    #[test]
+    fn ideographs_take_the_users_locale_on_windows() {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let mut faces = HashMap::new();
+        let mut families = Vec::new();
+        for locale in ["zh-CN", "ja-JP"] {
+            let id = windows::Fallbacks::with_locale(locale)
+                .face(
+                    &mut db,
+                    "Open Sans Regular,sans-serif",
+                    '直',
+                    400,
+                    false,
+                    |db, id| open(&mut faces, db, id).is_some_and(|f| f.covers('直')),
+                )
+                .unwrap_or_else(|| panic!("{locale}: a face for 直"));
+            let family = db.face(id).unwrap().families[0].0.clone();
+            eprintln!("{locale}: {family}");
+            families.push(family);
+        }
+        let installed = |name: &str| {
+            db.faces()
+                .any(|f| f.families.iter().any(|(n, _)| n == name))
+        };
+        if installed("Microsoft YaHei") && installed("Yu Gothic") {
+            assert_ne!(
+                families[0], families[1],
+                "Chinese and Japanese forms differ"
+            );
+        }
     }
 
     /// A fallback font the database lacks (every system font on iOS,

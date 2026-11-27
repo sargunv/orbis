@@ -53,7 +53,7 @@ pub(in crate::locale) fn open() -> Option<Box<dyn Backend>> {
 
 /// The user's locale's name, a BCP 47 tag (`de-CH`) or one with a sort
 /// order after an underscore (`de-DE_phoneb`), which the seam drops.
-fn user_locale() -> Option<String> {
+pub(crate) fn user_locale() -> Option<String> {
     let mut name = [0u16; LOCALE_NAME_MAX_LENGTH];
     // SAFETY: the buffer holds `LOCALE_NAME_MAX_LENGTH` units.
     let len = unsafe { GetUserDefaultLocaleName(name.as_mut_ptr(), name.len() as i32) };

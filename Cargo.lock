@@ -2983,6 +2983,8 @@ dependencies = [
  "orb-text",
  "rustls",
  "ureq",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

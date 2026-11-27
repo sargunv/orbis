@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_void};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::ptr::NonNull;
 
 use jni::errors::Error as JniError;
@@ -58,7 +58,11 @@ impl Fallbacks {
         let matcher = self.matcher()?;
         let id = matcher
             .font(key.0, c, weight, italic)
-            .and_then(|(path, index)| resolve(db, &path, index))
+            .and_then(|(path, index)| {
+                // The scan holds a symlinked file under its target's path.
+                let target = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                super::resolve(db, &target, index, |p| p == path || p == target)
+            })
             .filter(|&id| draws(db, id));
         self.found.insert(key, id);
         id
@@ -89,37 +93,6 @@ fn generic(families: &str) -> &'static str {
             _ => None,
         })
         .unwrap_or("sans-serif")
-}
-
-/// The face of the file at `path` that is its collection's `index`, loaded
-/// into the database if its scan missed the file (a font updated outside
-/// `/system/fonts`), nameless then so that no family query matches it and
-/// a face queried by name doesn't depend on what fell back before. The
-/// scan holds a symlinked file under its target's path.
-fn resolve(db: &mut fontdb::Database, path: &Path, index: u32) -> Option<fontdb::ID> {
-    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let find = |db: &fontdb::Database| {
-        db.faces()
-            .find(|face| {
-                face.index == index
-                    && matches!(&face.source,
-                        fontdb::Source::File(p) | fontdb::Source::SharedFile(p, _)
-                            if p == path || *p == target)
-            })
-            .map(|face| face.id)
-    };
-    if let Some(id) = find(db) {
-        return Some(id);
-    }
-    for id in db.load_font_source(fontdb::Source::File(target.clone())) {
-        let Some(mut info) = db.face(id).cloned() else {
-            continue;
-        };
-        db.remove_face(id);
-        info.families.clear();
-        db.push_face_info(info);
-    }
-    find(db)
 }
 
 /// The app's languages, most preferred first, as comma-separated BCP 47

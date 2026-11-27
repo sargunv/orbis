@@ -61,6 +61,10 @@ mod linux;
 #[cfg(windows)]
 mod windows;
 
+/// The user's locale, which DirectWrite's font fallback also takes.
+#[cfg(windows)]
+pub(crate) use self::windows::user_locale;
+
 /// This platform's backend.
 mod platform {
     #[cfg(target_os = "android")]

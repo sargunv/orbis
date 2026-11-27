@@ -1,6 +1,6 @@
 [package]
 name = "orb-host-native"
-description = "Host services on native platforms: HTTP via ureq, or HttpURLConnection on Android, files, system fonts (through the system's own fallbacks on Apple platforms and Android), and locale expressions through the system ICU"
+description = "Host services on native platforms: HTTP via ureq, or HttpURLConnection on Android, files, system fonts (through the system's own fallbacks on Apple platforms, Android and Windows), and locale expressions through the system ICU"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -54,6 +54,12 @@ objc2-core-text = { version = "0.3.2", default-features = false, features = [
   "CTFontDescriptor",
   "CTFontTraits",
 ] }
+
+# DirectWrite's system font fallback. wgpu's D3D12 back end already
+# builds this crate; its Win32 features stay as they are.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Graphics_DirectWrite"] }
+windows-core = "0.62.2"
 
 # On Android HTTP goes through the app's HttpURLConnection, and locale
 # expressions through android.icu, in the JVM the app hands in
