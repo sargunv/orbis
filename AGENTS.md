@@ -135,13 +135,14 @@ session in each browser and natively. The rest are diagnostics.
 Environment knobs for any native run: `ORB_BACKEND=vulkan|metal|dx12|gl` picks
 wgpu's back end (`gl` where wgpu has GLES, as on Android); `ORB_DRIVER=cpu` or
 `cpu-tex` puts the device on WebGL 2's CPU frame driver, its tables in storage
-buffers or data textures, and `webgl2` on everything else WebGL 2 lacks too
-(compute, so drawn mips, and its gaps); `ORB_TEXTURE_SIDE=4096` stands in for a
-device whose 2D textures stop at that side; `ORB_COMPILES_HOLD_PRESENTS=1`
-stands in for Firefox's WebGPU, whose compiles hold its presents, so a map
-compiles its whole set at once and draws nothing while one runs;
-`ORB_GPU_CAPTURE=n` captures frame n in the graphics debugger the process runs
-under.
+buffers or data textures (`cpu-tex` on a device offering Vulkan's least storage
+bindings, 4 a stage, as a device short of the GPU driver's 8 runs), and `webgl2`
+on everything else WebGL 2 lacks too (compute, so drawn mips, storage bindings,
+and its gaps); `ORB_TEXTURE_SIDE=4096` stands in for a device whose 2D textures
+stop at that side; `ORB_COMPILES_HOLD_PRESENTS=1` stands in for Firefox's
+WebGPU, whose compiles hold its presents, so a map compiles its whole set at
+once and draws nothing while one runs; `ORB_GPU_CAPTURE=n` captures frame n in
+the graphics debugger the process runs under.
 
 ## Changing a dependency
 

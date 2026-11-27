@@ -324,14 +324,16 @@ pub struct Caps {
     /// Clip distances in vertex shaders (`clip-distances`): a placement's
     /// clip rectangle as planes, where a fragment would otherwise discard.
     pub clip_distances: bool,
-    /// Compute passes. WebGPU has them; WebGL 2 doesn't, and frames there
-    /// cull and make mips without them.
+    /// Compute passes, with the storage bindings the CPU frame driver's
+    /// take (Vulkan's least). WebGPU has them; WebGL 2 doesn't, and frames
+    /// there cull and make mips without them.
     pub compute: bool,
     /// Indirect draws (`DrawIndirect*`), whose arguments a compute pass
     /// writes.
     pub indirect: bool,
-    /// Storage buffers the vertex stage reads; without them, tables are
-    /// data textures.
+    /// Storage buffers the vertex stage reads, as many a stage as the
+    /// GPU frame driver binds (WebGPU's 8); short of them, tables are data
+    /// textures.
     pub vertex_storage: bool,
     /// Blendable `Rgba16Float` and renderable `R32Float` targets: heatmap
     /// density, high-precision render targets and the terrain's depth for

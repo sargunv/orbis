@@ -68,10 +68,86 @@ const CHECKED_TEXTURE_BYTES: u64 = 64 << 20;
 const PASSES_PER_ENCODER: usize = 1024;
 
 /// The frame driver a native device's renderers take: `gpu` (the default
-/// where the device has it), or `cpu` and `cpu-tex`
-/// ([`WgpuGpu::force_cpu_driver`]).
+/// where the device has it), `cpu` and `cpu-tex`
+/// ([`WgpuGpu::force_cpu_driver`]) or `webgl2`
+/// ([`WgpuGpu::force_webgl2`]). `cpu-tex` and `webgl2` also have the
+/// device offer only the storage bindings their path fits in
+/// ([`TEXTURE_TABLES`], [`NO_COMPUTE`]), so their runs hold its pipelines
+/// to them.
 #[cfg(not(target_arch = "wasm32"))]
 const DRIVER: &str = "ORB_DRIVER";
+
+/// The storage bindings a stage of Orbis's pipelines takes at most with
+/// the scene's tables in storage buffers (the GPU frame driver's cull and
+/// fetches, the compute placement): WebGPU's defaults, 8 storage buffers
+/// a stage, the most [`device_limits`] asks for, so every test holds the
+/// pipelines to them. A device short of them keeps the tables in data
+/// textures.
+const STORAGE_TABLES: wgpu::Limits = wgpu::Limits::defaults();
+
+/// The storage bindings a stage takes at most with the tables in data
+/// textures, on the CPU frame driver with compute: downlevel's, Vulkan's
+/// least (4 storage buffers and 4 storage textures a stage). A device
+/// short of them takes WebGL 2's path, which binds none
+/// ([`NO_COMPUTE`]).
+const TEXTURE_TABLES: wgpu::Limits = wgpu::Limits::downlevel_defaults();
+
+/// WebGL 2's storage bindings: none.
+#[cfg(not(target_arch = "wasm32"))]
+const NO_COMPUTE: wgpu::Limits = wgpu::Limits::downlevel_webgl2_defaults();
+
+/// Whether a device with `limits` runs compute passes, and whether it
+/// keeps the scene's tables in storage buffers, `(compute,
+/// storage_tables)`: each where its pipelines' storage bindings fit
+/// ([`TEXTURE_TABLES`], [`STORAGE_TABLES`]). Neither on GL, which runs
+/// the CPU frame driver as WebGL 2 does even where it offers compute
+/// (#140).
+fn compute_and_storage_tables(limits: &wgpu::Limits, gl: bool) -> (bool, bool) {
+    let fits = |floor: &wgpu::Limits| {
+        limits.max_storage_buffers_per_shader_stage >= floor.max_storage_buffers_per_shader_stage
+            && limits.max_storage_textures_per_shader_stage
+                >= floor.max_storage_textures_per_shader_stage
+    };
+    let compute = !gl && limits.max_compute_invocations_per_workgroup > 0 && fits(&TEXTURE_TABLES);
+    (compute, compute && fits(&STORAGE_TABLES))
+}
+
+/// What `ORB_DRIVER` asks of a native device.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Driver {
+    Gpu,
+    Cpu,
+    CpuTex,
+    Webgl2,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Driver {
+    fn from_env() -> Self {
+        match std::env::var(DRIVER).as_deref() {
+            Ok("" | "gpu") | Err(_) => Self::Gpu,
+            Ok("cpu") => Self::Cpu,
+            Ok("cpu-tex") => Self::CpuTex,
+            Ok("webgl2") => Self::Webgl2,
+            Ok(other) => panic!("{DRIVER}={other}: expected gpu, cpu, cpu-tex or webgl2"),
+        }
+    }
+
+    /// `limits` lowered to the storage bindings its path fits in, where it
+    /// keeps the tables in textures.
+    fn lower_storage(self, limits: &mut wgpu::Limits) {
+        let floor = match self {
+            Self::Gpu | Self::Cpu => return,
+            Self::CpuTex => &TEXTURE_TABLES,
+            Self::Webgl2 => &NO_COMPUTE,
+        };
+        let buffers = &mut limits.max_storage_buffers_per_shader_stage;
+        *buffers = (*buffers).min(floor.max_storage_buffers_per_shader_stage);
+        let textures = &mut limits.max_storage_textures_per_shader_stage;
+        *textures = (*textures).min(floor.max_storage_textures_per_shader_stage);
+    }
+}
 
 /// A native device's 2D texture side, lowered to this to stand in for a
 /// device that offers no more ([`Limits::max_texture_dimension_2d`]): at
@@ -528,16 +604,29 @@ impl WgpuGpu {
         adapter: &wgpu::Adapter,
         on_lost: impl Fn(&str) + Send + 'static,
     ) -> Result<Self, wgpu::RequestDeviceError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let driver = Driver::from_env();
+        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+        let mut required_limits = device_limits(adapter);
+        #[cfg(not(target_arch = "wasm32"))]
+        driver.lower_storage(&mut required_limits);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("orbis"),
                 required_features: device_features(adapter),
-                required_limits: device_limits(adapter),
+                required_limits,
                 ..Default::default()
             })
             .await?;
         #[cfg_attr(webgpu, allow(unused_mut))]
         let mut gpu = Self::new(device, queue);
+        #[cfg(not(target_arch = "wasm32"))]
+        match driver {
+            Driver::Gpu => {}
+            Driver::Cpu => gpu.force_cpu_driver(false),
+            Driver::CpuTex => gpu.force_cpu_driver(true),
+            Driver::Webgl2 => gpu.force_webgl2(),
+        }
         #[cfg(not(webgpu))]
         gpu.read_formats(adapter);
         gpu.watch_loss(on_lost);
@@ -545,13 +634,12 @@ impl WgpuGpu {
     }
 
     fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
-        // GLES runs the CPU frame driver, as WebGL 2 does, even where it
-        // offers compute (#140); WebGL 2's limits already say so.
         #[cfg(not(target_arch = "wasm32"))]
         let gl = device.adapter_info().backend == wgpu::Backend::Gl;
         #[cfg(target_arch = "wasm32")]
         let gl = cfg!(webgl);
         let limits = device.limits();
+        let (compute, storage_tables) = compute_and_storage_tables(&limits, gl);
         let caps = Caps {
             limits: Limits {
                 max_buffer_size: limits.max_buffer_size,
@@ -566,12 +654,9 @@ impl WgpuGpu {
             // Not on GL: its shaders are WebGL 2's, which has none, though
             // native GLES (Mesa's) offers them.
             clip_distances: !gl && device.features().contains(wgpu::Features::CLIP_DISTANCES),
-            // WebGPU and the native back ends have all of these; a
-            // downlevel device (wgpu's GL back end) reports no compute
-            // and no vertex-stage storage in its limits.
-            compute: !gl && limits.max_compute_invocations_per_workgroup > 0,
-            indirect: !gl && limits.max_compute_invocations_per_workgroup > 0,
-            vertex_storage: !gl && limits.max_storage_buffers_per_shader_stage > 0,
+            compute,
+            indirect: compute,
+            vertex_storage: storage_tables,
             // WebGPU guarantees both; elsewhere `read_formats` asks the
             // adapter (WebGL 2 has them with `EXT_color_buffer_float`).
             float_targets: cfg!(webgpu),
@@ -654,14 +739,6 @@ impl WgpuGpu {
             shader_compiler: None,
         };
         #[cfg(not(target_arch = "wasm32"))]
-        match std::env::var(DRIVER).as_deref() {
-            Ok("cpu") => gpu.force_cpu_driver(false),
-            Ok("cpu-tex") => gpu.force_cpu_driver(true),
-            Ok("webgl2") => gpu.force_webgl2(),
-            Ok("" | "gpu") | Err(_) => {}
-            Ok(other) => panic!("{DRIVER}={other}: expected gpu, cpu, cpu-tex or webgl2"),
-        }
-        #[cfg(not(target_arch = "wasm32"))]
         if let Ok(side) = std::env::var(TEXTURE_SIDE) {
             let side: u32 = (side.parse()).unwrap_or_else(|e| panic!("{TEXTURE_SIDE}={side}: {e}"));
             let limits = &mut gpu.caps.limits;
@@ -674,7 +751,9 @@ impl WgpuGpu {
     /// distances too ([`force_cpu_driver`](Self::force_cpu_driver) with
     /// textures keeps them): WebGL 2's whole path on a native device, its
     /// drawn mips and its gaps included, short of GL itself.
-    /// `ORB_DRIVER=webgl2` sets it for every native device.
+    /// `ORB_DRIVER=webgl2` sets it for every native device, and only it
+    /// also has the device offer no storage bindings, so validation holds
+    /// the pipelines to WebGL 2's none.
     pub fn force_webgl2(&mut self) {
         self.force_cpu_driver(true);
         self.caps.compute = false;
@@ -694,7 +773,9 @@ impl WgpuGpu {
     /// draws) and, with `textures`, keep their tables in data textures (no
     /// vertex-stage storage): the WebGL 2 path's logic on a native device,
     /// for tests that hold it to the GPU-driven one (#140).
-    /// `ORB_DRIVER=cpu` or `cpu-tex` sets it for every native device.
+    /// `ORB_DRIVER=cpu` or `cpu-tex` sets it for every native device, and
+    /// only `cpu-tex` also has the device offer just the storage bindings
+    /// the texture path fits in, so validation holds the pipelines to them.
     pub fn force_cpu_driver(&mut self, textures: bool) {
         self.caps.indirect = false;
         self.caps.vertex_storage &= !textures;
@@ -2625,6 +2706,31 @@ fn joined_compute(passes: &[Pass], groups: bool) -> Vec<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_device_short_of_storage_bindings_takes_the_path_that_fits() {
+        let paths = |limits: &wgpu::Limits| compute_and_storage_tables(limits, false);
+        assert_eq!(paths(&wgpu::Limits::defaults()), (true, true));
+        // Vulkan's least: 4 storage buffers a stage, short of the GPU
+        // frame driver's cull, so the CPU driver over data textures.
+        let downlevel = wgpu::Limits::downlevel_defaults();
+        assert_eq!(paths(&downlevel), (true, false));
+        let seven = wgpu::Limits {
+            max_storage_buffers_per_shader_stage: 7,
+            ..wgpu::Limits::defaults()
+        };
+        assert_eq!(paths(&seven), (true, false));
+        let three = wgpu::Limits {
+            max_storage_buffers_per_shader_stage: 3,
+            ..downlevel
+        };
+        assert_eq!(paths(&three), (false, false));
+        assert_eq!(paths(&NO_COMPUTE), (false, false));
+        assert_eq!(
+            compute_and_storage_tables(&wgpu::Limits::defaults(), true),
+            (false, false)
+        );
+    }
 
     #[test]
     fn a_shader_nonce_reaches_every_entry_point() {
