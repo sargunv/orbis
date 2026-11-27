@@ -36,18 +36,20 @@ struct SymbolOut {
     @location(0) @interpolate(flat, either) layer: u32,
     @location(1) @interpolate(perspective, centroid) tex: vec2<f32>,
     @location(7) @interpolate(flat, either) origin: vec2<f32>,
-    // Gamma scale, size and total opacity.
-    @location(2) data: vec3<f32>,
+    // Gamma scale (the corner's clip w, the one part of an SDF edge's
+    // width that varies across the quad) and total opacity.
+    @location(2) data: vec2<f32>,
     @location(3) @interpolate(flat, either) fill: vec4<f32>,
     @location(4) @interpolate(flat, either) halo: vec4<f32>,
-    // Halo width, halo blur; whether the quad is an SDF (1), an image (2),
-    // sampled linearly (4), text (`K_TEXT`) and pitched with the map
-    // (`K_PITCH`).
-    @location(5) @interpolate(flat, either) halo_params: vec2<f32>,
+    // An SDF quad's edges, constant over it: the fill's and the halo's
+    // gamma before the gamma scale, and where the halo's outer edge lies.
+    @location(5) @interpolate(flat, either) edges: vec3<f32>,
+    // Whether the quad is an SDF (1), an image (2), sampled linearly (4),
+    // text (`K_TEXT`) and has a halo (`K_HALO`).
     @location(6) @interpolate(flat, either) kind: u32,
 };
 const K_TEXT: u32 = 8u;
-const K_PITCH: u32 = 16u;
+const K_HALO: u32 = 16u;
 // Paint slots 3 and 4, the halo's width and blur.
 const HALO_SLOTS: u32 = 0x18u;
 
@@ -168,14 +170,23 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
             out.position = discarded_vertex();
         }
     }
-    out.data = vec3<f32>(final_pos.w, size, visible_opacity);
+    out.data = vec2<f32>(final_pos.w, visible_opacity);
     out.fill = unpack4x8unorm(paint.z);
     out.halo = unpack4x8unorm(paint.w);
-    out.halo_params = halo_params;
+    // An SDF edge's gamma (0.105 of the distance over a device pixel, as
+    // GL JS and Native have it), widened by the blur for the halo's, at the
+    // quad's font scale and, pitched with the map, the camera's distance;
+    // the fragment scales it by the corner's clip w.
+    let edge_gamma = 0.105 / frame.pixel_ratio;
+    let edge_scale = font_scale * select(1.0, cos(frame.pitch) * frame.camera_to_center, pitch);
+    out.edges = vec3<f32>(edge_gamma / edge_scale,
+        (halo_params.y * 1.19 / SDF_PX + edge_gamma) / edge_scale,
+        (6.0 - halo_params.x / font_scale) / SDF_PX);
+    let has_halo = halo_params.x != 0.0 && paint.w != 0u;
     let linear = (halves[half].flags & LINEAR_ICONS) != 0u || (mesh_flags & H_LINEAR_IMAGES) != 0u
         || abs(frame.pitch) > 0.0;
     out.kind = select(0u, 1u, (flags & Q_SDF) != 0u) | select(0u, 2u, image)
-        | select(0u, 4u, linear) | select(0u, K_TEXT, is_text) | select(0u, K_PITCH, pitch);
+        | select(0u, 4u, linear) | select(0u, K_TEXT, is_text) | select(0u, K_HALO, has_halo);
     return out;
 }
 
@@ -204,7 +215,7 @@ fn atlas_uv(in: SymbolOut, page: f32) -> vec2<f32> {
 fn fs_symbol(in: SymbolOut) -> @location(0) vec4<f32> {
     let image = (in.kind & 2u) != 0u;
     let sdf = (in.kind & 1u) != 0u;
-    let total_opacity = in.data.z;
+    let total_opacity = in.data.y;
     let is_text = (in.kind & K_TEXT) != 0u;
     // The pages' sizes, as the quad's half has them.
     let h = select(0u, 1u, is_text);
@@ -222,29 +233,20 @@ fn fs_symbol(in: SymbolOut) -> @location(0) vec4<f32> {
         dist = glyph_distance(uv, in.layer);
     }
     let mode = select(symbol_pass.x, symbol_pass.y, is_text);
-    let size = in.data.y;
     let gamma_scale = in.data.x;
-    let font_scale = select(size, size / 24.0, is_text);
-    let edge_gamma = 0.105 / frame.pixel_ratio;
-    let u_gamma_scale = select(1.0, cos(frame.pitch) * frame.camera_to_center, (in.kind & K_PITCH) != 0u);
-    let gamma = edge_gamma / (font_scale * u_gamma_scale);
     let inner_edge = (256.0 - 64.0) / 256.0;
 
     var text = vec4<f32>(0.0);
     var halo = vec4<f32>(0.0);
-    let halo_width = in.halo_params.x;
-    let halo_blur = in.halo_params.y;
     if mode != PASS_HALO {
-        let g = gamma * gamma_scale;
+        let g = in.edges.x * gamma_scale;
         text = total_opacity * smoothstep(inner_edge - g, inner_edge + g, dist) * in.fill;
     }
-    let has_halo = halo_width != 0.0 && dot(in.halo, in.halo) != 0.0;
-    if mode != PASS_FILL && has_halo {
-        let gamma_halo = (halo_blur * 1.19 / SDF_PX + edge_gamma) / (font_scale * u_gamma_scale);
-        let inner_edge_halo = inner_edge + gamma_halo * gamma_scale;
-        let g = gamma_halo * gamma_scale;
+    if mode != PASS_FILL && (in.kind & K_HALO) != 0u {
+        let g = in.edges.y * gamma_scale;
+        let inner_edge_halo = inner_edge + g;
         var alpha = smoothstep(inner_edge_halo - g, inner_edge_halo + g, dist);
-        let halo_edge = (6.0 - halo_width / font_scale) / SDF_PX;
+        let halo_edge = in.edges.z;
         alpha = min(smoothstep(halo_edge - g, halo_edge + g, dist), 1.0 - alpha);
         halo = total_opacity * alpha * in.halo;
     }
