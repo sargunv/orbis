@@ -746,10 +746,6 @@ export class Engine {
   setGpuTiming(on: boolean): void {
     this.#core.setGpuTiming(on);
   }
-  setKeepAllCull(on: boolean): void {
-    this.#core.setKeepAllCull(on);
-    this.#request();
-  }
   setTileLod(lod: TileLod): void {
     this.#core.setTileLod(lod);
     const options = this.#options;

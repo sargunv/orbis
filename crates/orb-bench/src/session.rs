@@ -611,7 +611,7 @@ fn run_session(
                 opening = false;
             }
         }
-        if map.has_news() || frames.is_empty() {
+        if map.needs_frame() || frames.is_empty() {
             let started = clock::now();
             let report = map
                 .render(&mut target, t)

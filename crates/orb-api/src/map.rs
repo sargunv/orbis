@@ -73,16 +73,6 @@ pub struct TileRequest {
 }
 type Finished = Arc<Mutex<Vec<(u64, Result<String, String>)>>>;
 
-/// A render node's candidates and those its cull kept
-/// ([`Map::cull_counts`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CullCount {
-    /// The node's family, as `orb-render` names it.
-    pub family: String,
-    pub candidates: u32,
-    pub kept: u32,
-}
-
 /// A map: style, camera, gestures and events. Draw it with
 /// [`render`](Self::render) whenever [`needs_frame`](Self::needs_frame).
 pub struct Map {
@@ -205,42 +195,33 @@ impl Drop for Map {
     }
 }
 
+/// A wake and the flag it sets: called from any thread, it sets the flag,
+/// notifies `signal`'s waiters and calls the host's hook.
+fn wake_setting(
+    signal: &Arc<(Mutex<()>, Condvar)>,
+    hook: &WakeHook,
+) -> (Arc<AtomicBool>, Arc<dyn Fn() + Send + Sync>) {
+    let flag = Arc::new(AtomicBool::new(false));
+    let (woken, signal, hook) = (flag.clone(), signal.clone(), hook.clone());
+    let wake = Arc::new(move || {
+        woken.store(true, Ordering::Release);
+        {
+            let _waiting = signal.0.lock().expect("signal poisoned");
+            signal.1.notify_all();
+        }
+        if let Some(hook) = hook.lock().expect("wake hook poisoned").as_ref() {
+            hook();
+        }
+    });
+    (flag, wake)
+}
+
 impl Map {
     pub fn new(runtime: &Runtime, options: MapOptions) -> Self {
-        let woken = Arc::new(AtomicBool::new(false));
         let signal: Arc<(Mutex<()>, Condvar)> = Arc::default();
         let hook: WakeHook = Arc::default();
-        let wake: Arc<dyn Fn() + Send + Sync> = {
-            let woken = woken.clone();
-            let signal = signal.clone();
-            let hook = hook.clone();
-            Arc::new(move || {
-                woken.store(true, Ordering::Release);
-                {
-                    let _waiting = signal.0.lock().expect("signal poisoned");
-                    signal.1.notify_all();
-                }
-                if let Some(hook) = hook.lock().expect("wake hook poisoned").as_ref() {
-                    hook();
-                }
-            })
-        };
-        let device_woken = Arc::new(AtomicBool::new(false));
-        let device_wake: Arc<dyn Fn() + Send + Sync> = {
-            let woken = device_woken.clone();
-            let signal = signal.clone();
-            let hook = hook.clone();
-            Arc::new(move || {
-                woken.store(true, Ordering::Release);
-                {
-                    let _waiting = signal.0.lock().expect("signal poisoned");
-                    signal.1.notify_all();
-                }
-                if let Some(hook) = hook.lock().expect("wake hook poisoned").as_ref() {
-                    hook();
-                }
-            })
-        };
+        let (woken, wake) = wake_setting(&signal, &hook);
+        let (device_woken, device_wake) = wake_setting(&signal, &hook);
         runtime.add_wake(&device_wake);
         let mut map = orb_runtime::Map::new(runtime.services(wake.clone()), options.camera);
         // Phones and tablets do less a frame than desktops.
@@ -248,9 +229,6 @@ impl Map {
             map.set_frame_budget(orb_runtime::Budget::MOBILE);
         }
         map.set_options(&options);
-        // Measurements and the fixtures' cull check draw with nothing
-        // culled.
-        map.set_keep_all_cull(std::env::var_os("ORB_CULL").is_some_and(|v| v == "keep-all"));
         Self {
             runtime: runtime.clone(),
             map,
@@ -274,15 +252,6 @@ impl Map {
         }
     }
 
-    /// Has the cull keep every candidate, culling nothing, from the next
-    /// frame (`ORB_CULL=keep-all` sets it for every map): what the cull
-    /// saves, for measurements, and that it drops only what draws nothing,
-    /// for tests.
-    pub fn set_keep_all_cull(&mut self, keep_all: bool) {
-        self.map.set_keep_all_cull(keep_all);
-        self.dirty = true;
-    }
-
     /// Draws frames upside down into their targets when `flipped`, as
     /// maplibre-native-ffi's flipped viewport asks, still output too; off
     /// by default. The picture is the upright one mirrored top to bottom:
@@ -291,26 +260,6 @@ impl Map {
     pub fn set_flip_y(&mut self, flipped: bool) {
         self.map.set_flip_y(flipped);
         self.dirty = true;
-    }
-
-    /// Per render node of the last frame, its family and the candidates
-    /// (chunks in tile placements) its cull considered and kept: what the
-    /// cull drops. Reads the cull's counters back from the GPU, so it
-    /// waits for the frame.
-    pub fn cull_counts(&self) -> Vec<CullCount> {
-        let (Some(renderer), Some(mut device)) = (&self.renderer, self.runtime.shared.opened())
-        else {
-            return Vec::new();
-        };
-        let bytes = pollster::block_on(device.read_buffer(renderer.draw_args().0));
-        drop(device);
-        (renderer.cull_counts(&bytes).into_iter())
-            .map(|(family, candidates, kept)| CullCount {
-                family: format!("{family:?}"),
-                candidates,
-                kept,
-            })
-            .collect()
     }
 
     /// The terrain as the last frame drew it, for measuring how still its
@@ -364,20 +313,15 @@ impl Map {
         self.map.is_animating()
     }
 
-    /// Whether the map wants a frame: one that shows something new
-    /// ([`has_news`](Self::has_news)). An idle map needs no frames.
+    /// Whether the map wants a frame, one that would show something new:
+    /// data arrived, the camera moves, a gesture or animation runs, loads
+    /// and fades are under way, a pipeline the last frame waited for
+    /// compiled, or the device was lost or replaced. While a lost device's
+    /// replacement waits out its backoff only the device's wake when it's
+    /// due is news, and once the runtime has stopped replacing lost devices
+    /// nothing is, as no frame can draw: the frame that found it failed
+    /// with the reason. An idle map needs no frames.
     pub fn needs_frame(&self) -> bool {
-        self.has_news()
-    }
-
-    /// Whether drawing a frame would show something new: data arrived, the
-    /// camera moves, a gesture or animation runs, loads and fades are under
-    /// way, a pipeline the last frame waited for compiled, or the device
-    /// was lost or replaced. While a lost device's replacement waits out
-    /// its backoff only the device's wake when it's due is news, and once
-    /// the runtime has stopped replacing lost devices nothing is, as no
-    /// frame can draw: the frame that found it failed with the reason.
-    pub fn has_news(&self) -> bool {
         match self.shown {
             Shown::GaveUp => false,
             Shown::AwaitingDevice => self.device_news(),
@@ -408,7 +352,7 @@ impl Map {
             || (self.device_woken.load(Ordering::Acquire) && (waiting || self.runtime.lost()))
     }
 
-    /// As [`has_news`](Self::has_news), but for the camera: data arrived,
+    /// As [`needs_frame`](Self::needs_frame), but for the camera: data arrived,
     /// or loads, fades or style transitions go on (MapLibre Native's
     /// `needsRepaint`). A moving camera alone leaves it false.
     pub fn needs_repaint(&self) -> bool {

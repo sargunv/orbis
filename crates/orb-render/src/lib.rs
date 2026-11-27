@@ -1003,8 +1003,7 @@ impl Renderer {
 
     /// Has the cull keep every candidate when `on` (`cull.wgsl`'s
     /// `keep_all`): it culls nothing, as a driver without it draws. For
-    /// tests and measurements: what the cull saves, and that it only drops
-    /// what draws nothing.
+    /// tests that the cull only drops what draws nothing.
     pub fn set_keep_all(&mut self, gpu: &mut dyn Gpu, on: bool) {
         if self.driver.set_keep_all(gpu, on) {
             self.invalidate_bundle(gpu);
@@ -1043,46 +1042,13 @@ impl Renderer {
         }
     }
 
-    /// The scene's per-row draw arguments and cull counters, for
-    /// diagnostics: [`ARGS_WORDS`] words per cull row, as `cull.wgsl`
-    /// writes them, block by block, and the number of rows.
+    /// The scene's per-row draw arguments and cull counters, for tests:
+    /// [`ARGS_WORDS`] words per cull row, as `cull.wgsl` writes them,
+    /// block by block, and the number of rows.
+    #[doc(hidden)]
     pub fn draw_args(&self) -> (BufferId, u32) {
         let rows = self.scene.rows() * self.scene.block_slots();
         (self.scene.buffers().args, rows)
-    }
-
-    /// Per node, its family, the candidates its cull considers (as last
-    /// laid out, none for a hidden node, which draws nothing) and those
-    /// the cull kept, from the bytes of [`draw_args`](Self::draw_args)'
-    /// buffer read back after a frame.
-    pub fn cull_counts(&self, args: &[u8]) -> Vec<(Family, u32, u32)> {
-        let word = |i: usize| {
-            let at = 4 * (i * ARGS_WORDS + 5);
-            args.get(at..at + 4)
-                .map_or(0, |w| u32::from_le_bytes(w.try_into().expect("a word")))
-        };
-        // A node's counts take in its second stream's, and every block's.
-        let blocks = self.scene.block_slots();
-        (self.nodes.iter().enumerate())
-            .map(|(i, n)| {
-                let rows = std::iter::once(i as u32).chain(self.scene.second_row(i as u32));
-                let (candidates, kept) = rows.fold((0, 0), |(c, k), row| {
-                    let kept: u32 = (0..blocks)
-                        .map(|b| word(self.scene.row(row, b) as usize))
-                        .sum();
-                    (c + self.scene.node_candidates(row), k + kept)
-                });
-                (
-                    n.family,
-                    if self.scene_cull(i).visible {
-                        candidates
-                    } else {
-                        0
-                    },
-                    kept,
-                )
-            })
-            .collect()
     }
 
     /// Replaces the render nodes, in draw order, none of them drawing a

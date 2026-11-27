@@ -550,11 +550,6 @@ export class OrbisMap {
   setGpuTiming(on: boolean): void {
     this.#send(this.#call("setGpuTiming", on));
   }
-  /** Has the cull keep every candidate, for measurements of what it saves:
-   * the map draws the same, only slower. */
-  setKeepAllCull(on: boolean): void {
-    this.#send(this.#call("setKeepAllCull", on));
-  }
   /** Sets how tiles coarsen with distance in pitched views; fields left out stay as they were. */
   setTileLod(lod: TileLod): void {
     this.#send(this.#call("setTileLod", lod));

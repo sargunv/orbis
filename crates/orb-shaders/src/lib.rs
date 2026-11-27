@@ -227,7 +227,7 @@ mod tests {
     use super::*;
 
     /// The override constants pipelines set (orb-render's plane variants,
-    /// `ORB_CULL=keep-all`, an `ExtrusionShape`), each stage taking those
+    /// the cull's `keep_all`, an `ExtrusionShape`), each stage taking those
     /// it reads.
     const VARIANTS: &[&[(&str, f64)]] = &[
         &[],

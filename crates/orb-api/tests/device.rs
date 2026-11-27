@@ -228,7 +228,7 @@ fn a_map_at_rest_draws_again_on_a_replaced_device() {
     runtime.lose_device();
     let [(first, first_target), (second, second_target)] = &mut maps;
     settle(first, first_target).unwrap();
-    assert!(second.has_news(), "the replaced device is news");
+    assert!(second.needs_frame(), "the replaced device is news");
     settle(second, second_target).unwrap();
     assert!(
         second_target.read_pixels().unwrap() == before,

@@ -1145,8 +1145,8 @@ impl Map {
     }
 
     /// Has the renderer's cull keep every candidate, culling nothing
-    /// ([`Renderer::set_keep_all`]): for tests and measurements of what
-    /// the cull saves. Off by default.
+    /// ([`Renderer::set_keep_all`]): for tests that the cull drops only
+    /// what draws nothing. Off by default.
     pub fn set_keep_all_cull(&mut self, keep_all: bool) {
         self.keep_all_cull = keep_all;
     }

@@ -1448,7 +1448,7 @@ fn step<'a>(
     let continuous = map.mode == MLN_MAP_MODE_CONTINUOUS;
     if continuous
         && !held
-        && map.map.has_news()
+        && map.map.needs_frame()
         && map.render_update_generation <= entry.drawn_update
     {
         map.render_update_generation = entry.drawn_update + 1;
@@ -1456,7 +1456,7 @@ fn step<'a>(
     if entry.handle.tick.swap(false, Ordering::AcqRel)
         && entry.demands.is_empty()
         && !held
-        && map.map.has_news()
+        && map.map.needs_frame()
     {
         entry.demands.push_back(mln_frame_demand {
             size: 0,
@@ -1611,7 +1611,7 @@ fn step<'a>(
         && entry.demands.is_empty()
         && !entry.redraw_signaled
         && !held
-        && map.map.has_news()
+        && map.map.needs_frame()
         && let Some(wake) = &entry.redraw_wake
     {
         entry.redraw_signaled = true;
