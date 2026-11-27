@@ -159,6 +159,11 @@ pub(crate) fn clip_segment(
     min: i32,
     max: i32,
 ) -> Option<([i32; 2], [i32; 2], bool, bool)> {
+    // Most segments lie inside: they come out as they are.
+    let range = i64::from(min)..=i64::from(max);
+    if [a, b].iter().flatten().all(|v| range.contains(v)) {
+        return Some((a.map(|v| v as i32), b.map(|v| v as i32), false, false));
+    }
     let mut enter: f64 = 0.0;
     let mut exit: f64 = 1.0;
     for axis in 0..2 {

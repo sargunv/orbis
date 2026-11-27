@@ -144,6 +144,8 @@ pub struct MeshBuilder {
     /// Position of every vertex, for chunk bounds.
     positions: Vec<[i16; 2]>,
     open: TileBox,
+    /// Where the open chunk starts in `indices`.
+    open_start: u32,
     sort_key: Option<f32>,
     owner: Owner,
     /// Where the open chunk's primitives lie against `focus`: meeting it,
@@ -161,6 +163,7 @@ impl MeshBuilder {
             indices: Vec::new(),
             positions: Vec::new(),
             open: TileBox::EMPTY,
+            open_start: 0,
             sort_key: None,
             owner: Owner::Every,
             focus: None,
@@ -208,28 +211,23 @@ impl MeshBuilder {
     }
 
     pub fn push_triangle(&mut self, a: u32, b: u32, c: u32) {
-        self.push_primitive(&[a, b, c], CHUNK_INDICES);
+        self.push_primitive([a, b, c], CHUNK_INDICES);
     }
 
     /// Adds a line segment, for meshes drawn as line lists. A mesh holds
     /// triangles or segments, not both.
     pub(crate) fn push_segment(&mut self, a: u32, b: u32) {
-        self.push_primitive(&[a, b], CHUNK_INDICES);
+        self.push_primitive([a, b], CHUNK_INDICES);
     }
 
     /// Adds one point instance. A mesh holds only one primitive kind.
     pub(crate) fn push_point(&mut self, vertex: u32) {
-        self.push_primitive(&[vertex], MAX_CHUNK_INSTANCES);
+        self.push_primitive([vertex], MAX_CHUNK_INSTANCES);
     }
 
-    fn push_primitive(&mut self, vertices: &[u32], limit: u32) {
-        let chunk_start = self
-            .mesh
-            .chunks
-            .last()
-            .map_or(0, |c| c.first_index + c.index_count);
+    fn push_primitive<const N: usize>(&mut self, vertices: [u32; N], limit: u32) {
         // Each primitive kind divides its limit, so none straddle chunks.
-        if self.indices.len() as u32 - chunk_start == limit {
+        if self.indices.len() as u32 - self.open_start == limit {
             self.close_chunk();
         }
         if let Some(focus) = self.focus {
@@ -246,10 +244,10 @@ impl MeshBuilder {
             }
             self.open_meets = meets;
         }
-        for &i in vertices {
+        for i in vertices {
             self.open.include(self.positions[i as usize]);
-            self.indices.push(i);
         }
+        self.indices.extend_from_slice(&vertices);
     }
 
     /// The mesh, with each chunk's indices relative to its lowest vertex.
@@ -292,11 +290,7 @@ impl MeshBuilder {
     }
 
     fn close_chunk(&mut self) {
-        let first_index = self
-            .mesh
-            .chunks
-            .last()
-            .map_or(0, |c| c.first_index + c.index_count);
+        let first_index = self.open_start;
         let index_count = self.indices.len() as u32 - first_index;
         if index_count > 0 {
             self.mesh.chunks.push(Chunk {
@@ -309,6 +303,7 @@ impl MeshBuilder {
             });
         }
         self.open = TileBox::EMPTY;
+        self.open_start = self.indices.len() as u32;
     }
 }
 

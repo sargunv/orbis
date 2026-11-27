@@ -35,31 +35,9 @@ pub struct Bend {
 /// collinear vertices that cut the rings), and the vertices on the tile's
 /// edges are its neighbours'. Edges on a pole's side extend to it.
 pub fn layout(layer: &Layer, features: &[u32], bend: Option<Bend>) -> Mesh {
-    layout_clipped(layer, features, bend, &|_| true)
-}
-
-/// [`layout`], clipping to the tile square only the features
-/// (by slot) `clip` says: the rest keep the source's buffer around it.
-pub(crate) fn layout_clipped(
-    layer: &Layer,
-    features: &[u32],
-    bend: Option<Bend>,
-    clip: &dyn Fn(u32) -> bool,
-) -> Mesh {
     let extent = i32::try_from(layer.extent()).expect("extent fits i32");
-    assert!(
-        extent <= i32::from(i16::MAX),
-        "extent {extent} exceeds i16 positions"
-    );
-
     let mut builder = MeshBuilder::new(STRIDE);
-    let mut earcut = earcut::Earcut::new();
-    let mut ring = Vec::new();
-    let mut flat: Vec<[f64; 2]> = Vec::new();
-    let mut points: Vec<[i16; 2]> = Vec::new();
-    let mut holes: Vec<u32> = Vec::new();
-    let mut triangles: Vec<u32> = Vec::new();
-
+    let mut triangulator = Triangulator::default();
     for (slot, &feature) in features.iter().enumerate() {
         let feature = feature as usize;
         if layer.geometry_type(feature) != GeometryType::Polygon {
@@ -67,50 +45,9 @@ pub(crate) fn layout_clipped(
         }
         let slot = slot as u32;
         for part in layer.geometry(feature).parts() {
-            flat.clear();
-            points.clear();
-            holes.clear();
-            for (r, source) in part.rings().enumerate() {
-                if clip(slot) {
-                    clip_ring(source, 0, extent, &mut ring);
-                } else {
-                    ring.clear();
-                    let closing = source.len() > 1 && source.first() == source.last();
-                    ring.extend_from_slice(&source[..source.len() - usize::from(closing)]);
-                }
-                if ring.is_empty() {
-                    if r == 0 {
-                        break;
-                    }
-                    continue;
-                }
-                if r > 0 {
-                    holes.push(points.len() as u32);
-                }
-                for &[x, y] in &ring {
-                    flat.push([f64::from(x), f64::from(y)]);
-                    points.push([x as i16, y as i16]);
-                }
-            }
-            if points.is_empty() {
-                continue;
-            }
-            earcut.earcut(flat.iter().copied(), &holes, &mut triangles);
-            if let Some(bend) = bend {
-                if bend.cells.iter().any(|&c| c > 1) {
-                    let step = bend.cells.map(|c| f64::from(extent) / f64::from(c));
-                    subdivide(&mut points, &mut triangles, step);
-                }
-                let edge = extent as i16;
-                let [north, south] = bend.poles;
-                for (on, y, pole) in [(north, 0, NORTH_POLE_Y), (south, edge, SOUTH_POLE_Y)] {
-                    if on {
-                        cap(&mut points, &mut triangles, y, pole);
-                    }
-                }
-            }
+            let (points, triangles) = triangulator.part(part.rings(), extent, true, bend);
             let base = builder.vertex_count();
-            for &[x, y] in &points {
+            for &[x, y] in points {
                 builder.push_vertex([x, y], &[pack_position(x, y), slot]);
             }
             for t in triangles.as_chunks::<3>().0 {
@@ -119,6 +56,92 @@ pub(crate) fn layout_clipped(
         }
     }
     builder.finish()
+}
+
+/// Triangulates polygons one part at a time, keeping its scratch between
+/// them.
+#[derive(Default)]
+pub(crate) struct Triangulator {
+    earcut: earcut::Earcut<f64>,
+    ring: Vec<[i32; 2]>,
+    flat: Vec<[f64; 2]>,
+    points: Vec<[i16; 2]>,
+    holes: Vec<u32>,
+    triangles: Vec<u32>,
+}
+
+impl Triangulator {
+    /// The triangles of the polygon `rings` (outer ring first) in a tile
+    /// of `extent` units: their points and, three to a triangle, indices
+    /// into them. With `clip` the rings are clipped to the tile square,
+    /// else they keep the source's buffer around it. With `bend`, the
+    /// triangles are cut along its grid and fanned out to its poles, as
+    /// [`layout`] says. Nothing when the outer ring has nothing in the
+    /// square.
+    pub(crate) fn part<'r>(
+        &mut self,
+        rings: impl Iterator<Item = &'r [[i32; 2]]>,
+        extent: i32,
+        clip: bool,
+        bend: Option<Bend>,
+    ) -> (&[[i16; 2]], &[u32]) {
+        assert!(
+            extent <= i32::from(i16::MAX),
+            "extent {extent} exceeds i16 positions"
+        );
+        let Self {
+            earcut,
+            ring,
+            flat,
+            points,
+            holes,
+            triangles,
+        } = self;
+        flat.clear();
+        points.clear();
+        holes.clear();
+        triangles.clear();
+        for (r, source) in rings.enumerate() {
+            if clip {
+                clip_ring(source, 0, extent, ring);
+            } else {
+                ring.clear();
+                let closing = source.len() > 1 && source.first() == source.last();
+                ring.extend_from_slice(&source[..source.len() - usize::from(closing)]);
+            }
+            if ring.is_empty() {
+                if r == 0 {
+                    break;
+                }
+                continue;
+            }
+            if r > 0 {
+                holes.push(points.len() as u32);
+            }
+            for &[x, y] in ring.iter() {
+                flat.push([f64::from(x), f64::from(y)]);
+                points.push([x as i16, y as i16]);
+            }
+        }
+        if points.is_empty() {
+            return (points, triangles);
+        }
+        earcut.earcut_slice(flat, holes, triangles);
+        if let Some(bend) = bend {
+            if bend.cells.iter().any(|&c| c > 1) {
+                let step = bend.cells.map(|c| f64::from(extent) / f64::from(c));
+                subdivide(points, triangles, step);
+            }
+            let edge = extent as i16;
+            let [north, south] = bend.poles;
+            for (on, y, pole) in [(north, 0, NORTH_POLE_Y), (south, edge, SOUTH_POLE_Y)] {
+                if on {
+                    cap(points, triangles, y, pole);
+                }
+            }
+        }
+        (points, triangles)
+    }
 }
 
 /// Lays out the outlines of the polygons among `features` as line

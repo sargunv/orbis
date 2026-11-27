@@ -3,15 +3,15 @@
 //! bottom/top in x's low bit, and in y's which end of its wall a wall
 //! vertex is), then i16 normal.z and u16 edge distance. A wall is four
 //! vertices in a row: its end's bottom and top, then its start's.
-//! Roofs reuse fill triangulation. A building whole in the tile's data, one
-//! polygon with no edge on the source's buffer clip that the tile owning
-//! its centroid keeps whole too ([`Layer::is_whole`]), keeps its roof and
-//! walls past the tile square: the placement holding its centroid draws it
-//! all (`whole`).
+//! Roofs are triangulated as fills are. A building whole in the tile's
+//! data, one polygon with no edge on the source's buffer clip that the tile
+//! owning its centroid keeps whole too ([`Layer::is_whole`]), keeps its
+//! roof and walls past the tile square: the placement holding its centroid
+//! draws it all (`whole`).
 //! A building the source cut at its buffer is clipped to the square, roof
 //! and walls; walls clip original segments independently, so clipping never
 //! introduces a wall across the tile square.
-use crate::round_corners::{rounded_layer, wall_normals};
+use crate::round_corners::{rounded_layer, scale, wall_normals};
 use crate::{EXTENT, Mesh, MeshBuilder, Owner, clip::clip_segment, fill};
 use orb_tile::{GeometryType, Layer};
 
@@ -31,7 +31,6 @@ pub fn layout(layer: &Layer, features: &[u32], rounding: f64, bend: Option<fill:
         poles: [false; 2],
         ..b
     });
-    let rounded = rounding > 0.0;
     // From the source's rings, as the property rows take them.
     let whole = whole(layer, features, bend.is_some());
     let owners: Vec<Owner> = (features.iter().zip(whole))
@@ -40,14 +39,15 @@ pub fn layout(layer: &Layer, features: &[u32], rounding: f64, bend: Option<fill:
             false => Owner::Every,
         })
         .collect();
-    if layer.extent() == EXTENT && !rounded {
-        return layout_normalized(layer, features, &owners, false, bend);
+    let rounded = rounding > 0.0;
+    if !rounded {
+        return layout_rings(layer, features, &owners, false, bend);
     }
-    layout_normalized(
+    layout_rings(
         &rounded_layer(layer, features, EXTENT, rounding),
         &(0..features.len() as u32).collect::<Vec<_>>(),
         &owners,
-        rounded,
+        true,
         bend,
     )
 }
@@ -95,8 +95,9 @@ pub fn whole(layer: &Layer, features: &[u32], bent: bool) -> Vec<bool> {
 /// roof and walls past the tile square. A chunk holds one owner's
 /// buildings, so the cull's candidates keep it only where its owner draws
 /// it: the square's first, then those every placement cuts, then each
-/// neighbour's.
-fn layout_normalized(
+/// neighbour's; roofs, then walls. `layer`'s rings are scaled to
+/// [`EXTENT`] as they are read.
+fn layout_rings(
     layer: &Layer,
     features: &[u32],
     owners: &[Owner],
@@ -108,30 +109,34 @@ fn layout_normalized(
         Owner::Every => 1,
         Owner::Neighbour(cell) => 2 + cell,
     };
-    let roof = fill::layout_clipped(layer, features, bend, &|slot| rank(slot) == 1);
-    let mut builder = MeshBuilder::new(STRIDE);
-    for v in roof.vertices.as_chunks::<2>().0 {
-        let p = [v[0] as i16, (v[0] >> 16) as i16];
-        builder.push_vertex(p, &[v[0], v[1], 1, 16384]);
-    }
-    // A roof vertex's second word is its slot.
-    let slot_of = |v: u32| roof.vertices[v as usize * fill::STRIDE + 1];
-    let mut roofs: Vec<[u32; 3]> = roof
-        .vertex_indices()
-        .collect::<Vec<_>>()
-        .as_chunks()
-        .0
-        .to_vec();
-    roofs.sort_by_key(|t| rank(slot_of(t[0])));
-    for [a, b, c] in roofs {
-        builder.set_owner(owners[slot_of(a) as usize]);
-        // Tile Y points south; world Y points north. Reverse winding
-        // so outward faces are counterclockwise after projection.
-        builder.push_triangle(a, c, b);
-    }
-    let extent = layer.extent() as i32;
     let mut slots: Vec<u32> = (0..features.len() as u32).collect();
     slots.sort_by_key(|&slot| rank(slot));
+    let extent = EXTENT as i32;
+    let mut rings = Rings::new(layer.extent());
+    let mut triangulator = fill::Triangulator::default();
+    let mut builder = MeshBuilder::new(STRIDE);
+    for &slot in &slots {
+        let feature = features[slot as usize] as usize;
+        if layer.geometry_type(feature) != GeometryType::Polygon {
+            continue;
+        }
+        let owner = owners[slot as usize];
+        builder.set_owner(owner);
+        for part in layer.geometry(feature).parts() {
+            let clip = owner == Owner::Every;
+            let (points, triangles) = triangulator.part(rings.of(part), extent, clip, bend);
+            let base = builder.vertex_count();
+            for &p in points {
+                builder.push_vertex(p, &[fill::pack_position(p[0], p[1]), slot, 1, 16384]);
+            }
+            for t in triangles.as_chunks::<3>().0 {
+                // Tile Y points south; world Y points north. Reverse
+                // winding so outward faces are counterclockwise after
+                // projection.
+                builder.push_triangle(base + t[0], base + t[2], base + t[1]);
+            }
+        }
+    }
     for slot in slots {
         builder.set_owner(owners[slot as usize]);
         let slot = slot as usize;
@@ -141,7 +146,7 @@ fn layout_normalized(
             continue;
         }
         for part in layer.geometry(feature).parts() {
-            for ring in part.rings() {
+            for ring in rings.of(part) {
                 let mut distance = 0.0f32;
                 let n = ring.len();
                 if n < 2 {
@@ -193,7 +198,7 @@ fn layout_normalized(
                                 builder.push_vertex(
                                     p,
                                     &[
-                                        u32::from(p[0] as u16) | u32::from(p[1] as u16) << 16,
+                                        fill::pack_position(p[0], p[1]),
                                         slot as u32,
                                         u32::from(nx as u16 | top) | u32::from(ny as u16) << 16,
                                         (edge.round() as u32) << 16,
@@ -210,6 +215,47 @@ fn layout_normalized(
         }
     }
     builder.finish()
+}
+
+/// A part's rings in [`EXTENT`] units, read from a layer of `from` units
+/// a side: in place at [`EXTENT`], else scaled into storage reused from
+/// part to part.
+struct Rings {
+    from: u32,
+    points: Vec<[i32; 2]>,
+    /// Where each ring ends in `points`.
+    ends: Vec<usize>,
+}
+
+impl Rings {
+    fn new(from: u32) -> Self {
+        Self {
+            from,
+            points: Vec::new(),
+            ends: Vec::new(),
+        }
+    }
+
+    fn of<'r>(&'r mut self, part: orb_tile::Part<'r>) -> impl Iterator<Item = &'r [[i32; 2]]> {
+        let direct = (self.from == EXTENT).then(|| part.rings());
+        if direct.is_none() {
+            self.points.clear();
+            self.ends.clear();
+            for ring in part.rings() {
+                (self.points).extend(ring.iter().map(|&p| scale(p, self.from, EXTENT)));
+                self.ends.push(self.points.len());
+            }
+        }
+        let Self { points, ends, .. } = &*self;
+        let scaled = direct.is_none().then(|| {
+            let starts = std::iter::once(0).chain(ends.iter().copied());
+            starts.zip(ends).map(|(a, &b)| &points[a..b])
+        });
+        direct
+            .into_iter()
+            .flatten()
+            .chain(scaled.into_iter().flatten())
+    }
 }
 
 #[cfg(test)]

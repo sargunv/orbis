@@ -9,7 +9,7 @@ use orb_tile::{GeometryType, Layer, LayerBuilder};
 type Point = [f64; 2];
 
 /// `features` of `layer` scaled to a grid of `extent` units a side, their
-/// polygons' corners rounded by `distance` grid units (none at 0): a layer
+/// polygons' corners rounded by `distance` grid units: a layer
 /// whose features are their slots, which extrusions lay out from
 /// (`fill-extrusion-rounded-corner-distance`).
 pub(crate) fn rounded_layer(layer: &Layer, features: &[u32], extent: u32, distance: f64) -> Layer {
@@ -20,11 +20,7 @@ pub(crate) fn rounded_layer(layer: &Layer, features: &[u32], extent: u32, distan
             .flat_map(|part| part.rings())
     };
     out.reserve(rings().map(<[_]>::len).sum());
-    let scale = |p: &[i32; 2]| {
-        p.map(|v| {
-            (f64::from(v) * f64::from(extent) / f64::from(layer.extent()) + 0.5).floor() as i32
-        })
-    };
+    let scale = |&p: &[i32; 2]| scale(p, layer.extent(), extent);
     let mut scaled = Vec::new();
     for &feature in features {
         let feature = feature as usize;
@@ -34,7 +30,7 @@ pub(crate) fn rounded_layer(layer: &Layer, features: &[u32], extent: u32, distan
             out.begin_part();
             for ring in part.rings() {
                 out.begin_ring();
-                if distance > 0.0 && polygon {
+                if polygon {
                     scaled.clear();
                     scaled.extend(ring.iter().map(scale));
                     for p in round_ring(&scaled, distance, extent as i32) {
@@ -49,6 +45,12 @@ pub(crate) fn rounded_layer(layer: &Layer, features: &[u32], extent: u32, distan
         }
     }
     out.finish()
+}
+
+/// `p` in a tile of `from` units a side, in one of `to` units on the
+/// integer grid, as GL JS's buckets load geometry into theirs.
+pub(crate) fn scale(p: [i32; 2], from: u32, to: u32) -> [i32; 2] {
+    p.map(|v| (f64::from(v) * f64::from(to) / f64::from(from) + 0.5).floor() as i32)
 }
 
 /// GL JS's `isBoundaryEdge`: an edge along the tile's buffer, which
