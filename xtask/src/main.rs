@@ -41,9 +41,11 @@ cargo xtask <task>
                Android (armv7, i686, with ANDROID_HOME's NDK) where those
                Rust targets are installed), tests (under nextest, which
                stops a hung one by name) and boundary rules; --affected
-               scopes them to the packages changed since <rev>'s merge
-               base with HEAD (default origin/main), the working tree and
-               untracked files, and every package depending on those
+               scopes them to the packages whose files, or files their
+               Rust names (include_str!, #[path], paths on
+               CARGO_MANIFEST_DIR), changed since <rev>'s merge base with
+               HEAD (default origin/main), in the working tree or
+               untracked, and every package depending on those
   clippy [--fix]  clippy over the workspace, native and wasm32 (WebGL 2 too), denying
                warnings; --fix applies its suggestions
   android [--run [--leakcheck]]  the Android app: orb-android as

@@ -31,14 +31,13 @@ mod tests {
     #[test]
     #[ignore = "fetches tiles over the network"]
     fn the_alps_flight_stays_above_the_terrain() {
-        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+        let data = crate::common::DEMO_DATA;
         let options = crate::common::Options {
-            style: Some(format!("file://{root}/web/demo/data/alps.json")),
+            style: Some(format!("file://{data}/alps.json")),
             at: None,
             ..tokyo(0.0)
         };
-        let flight =
-            crate::common::Flight::read(&format!("{root}/web/demo/data/alps-flight.json")).unwrap();
+        let flight = crate::common::Flight::read(&format!("{data}/alps-flight.json")).unwrap();
         {
             let mut offscreen =
                 crate::common::Offscreen::new(&options, orb_runtime::SceneCapacity::default())
