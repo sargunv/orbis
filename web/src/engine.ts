@@ -3,6 +3,7 @@
 // on the page's thread. The page's side (map.ts) calls it and hears from
 // it by reports: the map's state after each frame, with its events.
 
+import apiCalls from "../pkg/api-calls.json" with { type: "json" };
 import {
   isModuleName,
   MODULE_NAMES,
@@ -189,40 +190,24 @@ function plain<T extends object>(object: T): T {
   return out as T;
 }
 
+/** The Engine's calls that run the bindings' methods of other names. */
+export const RUN_AS = {
+  snapshot: ["beginSnapshot", "snapshotFrame", "endSnapshot", "cancelSnapshot"],
+  readPixels: ["readNextFrame"],
+} as const;
+
 /** How long a map that hasn't been idle waits to fetch its API module. */
 const API_AT_MOST = 5000;
 /** How long a feature module that failed to load waits to be asked for
  * again. */
 const MODULE_RETRY = 2000;
 
-/** The calls that run the API's module (queries, edits, the style's
- * document, images, snapshots, fitting bounds, host-fed heights, video
- * controls, GPU timings), which waits for it if it isn't in yet. */
-const API_CALLS = new Set<string>([
-  "hitTest",
-  "queryRendered",
-  "querySource",
-  "queryCluster",
-  "getStyle",
-  "getLayer",
-  "getSource",
-  "layerIds",
-  "sourceIds",
-  "hasImage",
-  "setStyleUrl",
-  "edit",
-  "addImage",
-  "updateImage",
-  "removeImage",
-  "snapshot",
-  "readPixels",
-  "cameraForBounds",
-  "hostElevations",
-  "reloadHostTiles",
-  "retryFailedTiles",
-  "controlVideo",
-  "gpuTimings",
-]);
+/** The Engine's calls that run the API's module (queries, edits, the
+ * style's document, images, snapshots, fitting bounds, host-fed heights,
+ * video controls, GPU timings), which wait for it if it isn't in yet: each
+ * of the bindings' methods whose code the module holds, as xtask's split
+ * names them, and the calls that run those under other names. */
+const API_CALLS = new Set<string>([...apiCalls, ...Object.keys(RUN_AS)]);
 
 export class Engine {
   #host: Host;

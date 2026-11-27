@@ -14,10 +14,16 @@
 //! The API's module starts at the exports JS calls for queries, edits,
 //! the style's document, images, snapshots, offline regions, fitting
 //! bounds, host-fed heights, video controls and GPU timings, which JS
-//! makes wait for the module (web/src/engine.ts), and takes what only they
+//! makes wait for the module (web/src/engine.ts, from the list `cargo xtask
+//! web` writes, [`api_calls`]), and takes what only they
 //! call, workers' reads for queries and GeoJSON diffs included: code
 //! nothing else reaches, by construction rather than by a profile of what
 //! scenes ran.
+//!
+//! Every entry of these lists names a function of core.wasm or
+//! core-gl.wasm, or `cargo xtask web` fails ([`Named`]): one that names
+//! none does nothing, as its function was renamed, moved or inlined,
+//! but an exception kept for a function inlined today ([`INLINED`]).
 //!
 //! A name is one function's alone: neither LLVM nor binaryen folds two
 //! functions with one body into one of their names here (web.rs), which
@@ -77,7 +83,7 @@ pub(crate) struct Module {
 /// names, the GeoJSON features a style's document copies.
 const BEFORE_GATE: &[&str] = &[
     "orb_style::v8::read",
-    "orb_style::v8::parse",
+    "orb_style::v8::parse_",
     "orb_style::v8::doc::StyleDoc",
     "orb_source::endpoint::resolve_style_urls",
     "orb_runtime::modules::",
@@ -96,13 +102,82 @@ enum Before {
     Gate,
 }
 
+/// Where an entry of the split's lists is: a module's [`Module::paths`]
+/// or [`Module::except`], [`BEFORE_GATE`] or [`EDITS`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum List {
+    Paths(&'static str),
+    Except(&'static str),
+    BeforeGate,
+    Edits,
+}
+
+/// Exceptions ([`Module::except`]) for functions LLVM inlines into all
+/// their callers today, so that they name none: kept for a build where it
+/// doesn't, whose core.wasm would call them in a module and trap.
+/// `GlobeWarps::new` runs as every map is made, and `Tables::unpack` from
+/// `set_data`, before any of the bidi module's code may run.
+const INLINED: &[&str] = &[
+    "orb_runtime::globe::GlobeWarps>::new",
+    "orb_text::bidi::Tables>::unpack",
+];
+
+/// The entries of the split's lists that name a function of a build, as
+/// [`seed`] and [`before_gate`] find them. One that names none does
+/// nothing: a stale path leaves its code in core.wasm, and a stale
+/// exception or gate no longer keeps code core.wasm runs out of a module,
+/// so `cargo xtask web` fails on one ([`Named::unmatched`]).
+#[derive(Default)]
+pub(crate) struct Named(HashSet<(List, &'static str)>);
+
+impl Named {
+    fn add<'a>(&mut self, list: List, entries: impl Iterator<Item = &'a &'static str>) {
+        self.0.extend(entries.map(|&entry| (list, entry)));
+    }
+
+    /// Takes in what `other` found, in another build or another stage of
+    /// one.
+    pub(crate) fn extend(&mut self, other: Self) {
+        self.0.extend(other.0);
+    }
+
+    /// The entries that named nothing, as a message for each; but those
+    /// of [`INLINED`].
+    pub(crate) fn unmatched(&self) -> Vec<String> {
+        let lists = MODULES
+            .iter()
+            .flat_map(|m| {
+                [
+                    (List::Paths(m.name), m.paths),
+                    (List::Except(m.name), m.except),
+                ]
+            })
+            .chain([(List::BeforeGate, BEFORE_GATE), (List::Edits, EDITS)]);
+        let mut out = Vec::new();
+        for (list, entries) in lists {
+            for &entry in entries {
+                let inlined = matches!(list, List::Except(_)) && INLINED.contains(&entry);
+                if !inlined && !self.0.contains(&(list, entry)) {
+                    out.push(match list {
+                        List::Paths(m) => format!("`{m}`'s paths: {entry}"),
+                        List::Except(m) => format!("`{m}`'s except: {entry}"),
+                        List::BeforeGate => format!("BEFORE_GATE: {entry}"),
+                        List::Edits => format!("EDITS: {entry}"),
+                    });
+                }
+            }
+        }
+        out
+    }
+}
+
 /// The feature modules, as orb-runtime's `Module` names them: what each
 /// holds, and when the map loads it.
 pub(crate) const MODULES: &[Module] = &[
     // A source's tiles in MLT, as its `encoding`, TileJSON or archive says.
     Module {
         name: "mlt",
-        paths: &["mlt_core::", "fastpfor::", "fsst::", "orb_tile::mlt::"],
+        paths: &["mlt_core::", "fastpfor::", "orb_tile::mlt::"],
         except: &[],
         needs: &[],
     },
@@ -116,11 +191,7 @@ pub(crate) const MODULES: &[Module] = &[
     // An `mbtiles://` source.
     Module {
         name: "sqlite",
-        paths: &[
-            "orb_sqlite::",
-            "orb_source::mbtiles::",
-            "orb_runtime::native_db::",
-        ],
+        paths: &["orb_sqlite::", "orb_source::mbtiles::"],
         except: &[],
         // MBTiles' tiles are gzipped.
         needs: &["archive"],
@@ -139,7 +210,6 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_runtime::host_heights::",
             "orb_runtime::map::Map>::load_heights",
             "orb_runtime::map::Map>::stage_heights",
-            "orb_runtime::map::Map>::show_batch",
             "orb_runtime::map::Map>::heights_layers",
             // The drape, once the style's terrain resolved.
             "orb_runtime::frame::DrapePlan",
@@ -148,7 +218,6 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_render::Renderer>::set_terrain_tiles",
             "orb_render::Renderer>::request_terrain",
             "orb_render::Renderer>::reserve_drape",
-            "orb_render::Renderer>::carry_drape",
             "orb_render::Renderer>::set_drape_paint",
             "orb_render::Renderer>::publish_dems",
             "orb_render::Renderer>::pad_dems",
@@ -160,7 +229,6 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_render::image::Images>::make_prepare",
             "orb_render::image::Images>::prepare_dem",
             "orb_render::image::Images>::make_slopes",
-            "orb_render::image::Images>::make_tables",
             "orb_render::tiles::dem_neighbours",
             // The camera over a terrain (`&dyn Elevation`).
             "orb_camera::View>::clearance",
@@ -168,7 +236,6 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_camera::View>::near_points",
             "orb_camera::View>::over",
             "orb_camera::CameraState>::settle_on",
-            "orb_camera::CameraState>::recenter_on",
             "orb_camera::CameraState>::keep_above",
         ],
         // Every map has an empty store of host heights, and turns the
@@ -188,7 +255,6 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_crs::family::datum::",
             "orb_crs::family::ellipsoid::",
             "orb_crs::family::oblique::",
-            "orb_crs::family::pseudo::",
             "orb_crs::family::tm::",
             "orb_runtime::globe::",
             // Covers of the globe, of a projection's low-zoom plane and of
@@ -204,7 +270,6 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_tile::TileFrame>::subdivided",
             "orb_tile::subdivide::",
             "orb_layout::fill::subdivide",
-            "orb_layout::fill::cap",
             "orb_layout::fill::Bend",
             "orb_layout::line::subdivide",
             // Flights over the sphere.
@@ -244,8 +309,8 @@ pub(crate) const MODULES: &[Module] = &[
     },
     // Queries, edits, the style's document, images, snapshots and offline
     // regions: on idle, or before the first call that needs it. JS calls
-    // these exports only once the module is in (web/src/engine.ts's
-    // `API_CALLS`, regions.ts's `loadCore`).
+    // these exports only once the module is in (web/src/engine.ts's gate,
+    // from the `orbismap_` ones [`api_calls`]; regions.ts's `loadCore`).
     Module {
         name: "api",
         paths: &[
@@ -300,9 +365,6 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_runtime::features::FeatureRequest",
             "orb_runtime::features::TileFeature",
             "orb_runtime::features::body",
-            "orb_runtime::features::evaluated",
-            "orb_runtime::features::parse_filter",
-            "orb_runtime::features::parse_state",
             // Images an app added, which a new device takes back only
             // when there are some.
             "orb_runtime::map::Map>::add_image",
@@ -310,19 +372,15 @@ pub(crate) const MODULES: &[Module] = &[
             "orbismap_gpuTimings",
             "orb_web::map::OrbisMap>::gpu_timings",
             "orb_web::canvas::Canvas>::take_timings",
+            // Rendered features' queries, and offline regions' downloads.
             "orb_runtime::query::Query",
             "orb_runtime::query::Scene",
             "orb_runtime::query::ScreenHit",
-            "orb_runtime::query::Picking",
             "orb_runtime::offline::download",
             "orb_runtime::offline::Job",
-            "orb_runtime::offline::Then",
-            "orb_runtime::offline::import",
-            "orb_runtime::offline::Import",
             "orb_runtime::offline::font_stacks",
             // A style loaded over another applies as an edit, which only
             // setStyleUrl (and orbismap_edit) start.
-            "orb_runtime::map::Map>::diff_document",
             "orb_runtime::map::Map>::edit",
             // A GeoJSON source's data changed by an edit's diffs, which
             // workers apply too.
@@ -333,6 +391,19 @@ pub(crate) const MODULES: &[Module] = &[
         needs: &[],
     },
 ];
+
+/// The methods of the map's bindings (`OrbisMap`, as wasm-bindgen exports
+/// them, `orbismap_<method>`) whose code the API's module holds, which JS
+/// calls only once it's in: `cargo xtask web` writes them to
+/// `web/pkg/api-calls.json` for web/src/engine.ts's gate.
+pub(crate) fn api_calls() -> Vec<&'static str> {
+    MODULES
+        .iter()
+        .filter(|m| m.name == "api")
+        .flat_map(|m| m.paths)
+        .filter_map(|p| p.strip_prefix("orbismap_"))
+        .collect()
+}
 
 /// Where core.wasm imports a module's placeholders from: this, then the
 /// module's name.
@@ -400,36 +471,46 @@ pub(crate) fn unhashed(name: &str) -> String {
 /// type's values go, which may be where the feature is off (dropping an
 /// empty `Option` of it): it goes to the module only if only the module's
 /// code calls it.
-fn seed(name: &str) -> Option<usize> {
+fn seed(name: &str, found: &mut Named) -> Option<usize> {
     // A body binaryen shares among similar functions, of any module's.
     if name.starts_with("byn$") {
         return None;
     }
     let name = unhashed(name);
-    let named = |own: &str| {
-        MODULES.iter().position(|m| {
-            m.paths.iter().any(|p| names(own, p)) && !m.except.iter().any(|p| names(own, p))
-        })
+    let mut named = |own: &str| {
+        for (m, module) in MODULES.iter().enumerate() {
+            let mut paths = module.paths.iter().filter(|p| names(own, p)).peekable();
+            if paths.peek().is_none() {
+                continue;
+            }
+            found.add(List::Paths(module.name), paths);
+            let mut except = module.except.iter().filter(|p| names(own, p)).peekable();
+            if except.peek().is_none() {
+                return Some(m);
+            }
+            found.add(List::Except(module.name), except);
+        }
+        None
     };
     if let Some(m) = named(name.trim_start_matches('<')) {
         return Some(m);
     }
     // The closures named in its generic arguments: the path before each
     // `::{closure#`, back to the `<`, `(`, `,` or space that opens it.
-    let mut found = None;
+    let mut module = None;
     for (at, _) in name.match_indices("::{closure#") {
         let Some(owner) = owner(&name[..at]) else {
             continue;
         };
-        match (found, named(owner.trim_start_matches('<'))) {
+        match (module, named(owner.trim_start_matches('<'))) {
             (_, None) => {}
-            (None, Some(m)) => found = Some(m),
+            (None, Some(m)) => module = Some(m),
             (Some(a), Some(b)) if a == b => {}
             // Closures of two modules': neither's alone.
             (Some(_), Some(_)) => return None,
         }
     }
-    found
+    module
 }
 
 /// The path that ends `text`, back to the `<`, `(`, `,` or space that
@@ -460,17 +541,20 @@ fn names(own: &str, path: &str) -> bool {
 
 /// What `name` runs before, if it's code a map runs before its gate
 /// ([`BEFORE_GATE`]) or an edit ([`EDITS`]).
-fn before_gate(name: &str) -> Option<Before> {
+fn before_gate(name: &str, found: &mut Named) -> Option<Before> {
     let name = unhashed(name);
     let own = name.strip_prefix('<').unwrap_or(&name);
-    if EDITS.iter().any(|p| names(own, p)) {
-        Some(Before::FeaturesButApi)
-    } else {
-        BEFORE_GATE
-            .iter()
-            .any(|p| own.starts_with(p))
-            .then_some(Before::Gate)
+    for (list, entries, before) in [
+        (List::Edits, EDITS, Before::FeaturesButApi),
+        (List::BeforeGate, BEFORE_GATE, Before::Gate),
+    ] {
+        let mut hits = entries.iter().filter(|p| names(own, p)).peekable();
+        if hits.peek().is_some() {
+            found.add(list, hits);
+            return Some(before);
+        }
     }
+    None
 }
 
 /// `seeds` without the functions code before the gate runs: `roots`
@@ -586,11 +670,12 @@ fn assign(functions: &Functions, seeds: &[Option<usize>]) -> Vec<Option<usize>> 
 pub(crate) fn not_to_inline(
     wasm: &[u8],
     names: &HashMap<u32, String>,
+    found: &mut Named,
 ) -> Result<HashSet<u32>, String> {
     let functions = functions(wasm)?;
     let index = |i: usize| functions.imported + i as u32;
     let seeds: Vec<Option<usize>> = (0..functions.defined.len())
-        .map(|i| seed(names.get(&index(i))?))
+        .map(|i| seed(names.get(&index(i))?, found))
         .collect();
     let mut out = HashSet::new();
     for (caller, function) in functions.defined.iter().enumerate() {
@@ -610,7 +695,8 @@ pub(crate) fn not_to_inline(
 /// `linked` is the module the linker wrote, with its relocations, and
 /// `not_inlined` the functions wasm-opt inlined nowhere ([`crate::data`]): what
 /// of its read-only data only one module's code reads moves there.
-/// Returns where each module went, by [`MODULES`]' order.
+/// Returns where each module went, by [`MODULES`]' order; `found` takes
+/// the entries of the split's lists that named a function.
 pub(crate) fn split(
     whole: &Path,
     symbols: &Path,
@@ -618,6 +704,7 @@ pub(crate) fn split(
     prefix: &str,
     features: &[&str],
     (linked, not_inlined): (&Path, &HashSet<String>),
+    found: &mut Named,
 ) -> Result<(Split, Vec<PathBuf>), String> {
     let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
     let functions = functions(&read(whole)?)?;
@@ -633,10 +720,10 @@ pub(crate) fn split(
         .collect();
     let name = |i: usize| names.get(&(functions.imported + i as u32)).copied();
     let seeds: Vec<Option<usize>> = (0..functions.defined.len())
-        .map(|i| seed(name(i)?))
+        .map(|i| seed(name(i)?, found))
         .collect();
     let roots: Vec<Option<Before>> = (0..functions.defined.len())
-        .map(|i| before_gate(name(i)?))
+        .map(|i| before_gate(name(i)?, found))
         .collect();
     let modules = assign(&functions, &ungated(&functions, &seeds, &roots));
     let undeclared = undeclared(&functions, &modules);
@@ -1019,7 +1106,7 @@ mod tests {
 
     #[test]
     fn paths_name_their_modules() {
-        let at = |name| seed(name).map(|m| MODULES[m].name);
+        let at = |name| seed(name, &mut Named::default()).map(|m| MODULES[m].name);
         assert_eq!(at("<mlt_core[0a1b]::decoder::Parser>::parse"), Some("mlt"));
         assert_eq!(at("<orb_tile::mlt::Layer as Drop>::drop"), Some("mlt"));
         assert_eq!(at("core::ptr::drop_in_place::<orb_tile::mlt::Layer>"), None);
@@ -1102,6 +1189,7 @@ mod tests {
             ungated(&functions, &seeds, &before),
             [None, None, None, None, None, None, dem, None]
         );
+        let before_gate = |name| before_gate(name, &mut Named::default());
         assert_eq!(
             before_gate("<orb_style[0a1b]::v8::doc::StyleDoc>::from_json"),
             Some(Before::Gate)
@@ -1111,6 +1199,44 @@ mod tests {
             Some(Before::FeaturesButApi)
         );
         assert_eq!(before_gate("orb_runtime::map::Map::frame"), None);
+        // An entry ends where a name does, as a module's paths do.
+        assert_eq!(
+            before_gate("orb_style::v8::parse_layer"),
+            Some(Before::Gate)
+        );
+        assert_eq!(before_gate("orb_style::v8::reader"), None);
+    }
+
+    #[test]
+    fn entries_that_name_nothing_are_found() {
+        let mut found = Named::default();
+        // A path names a function; an exception only counts where its
+        // module's paths name the function too.
+        seed("<orb_tile::mlt::Layer>::new", &mut found);
+        seed("orb_text::bidi::set_data::{closure#0}", &mut found);
+        before_gate("orb_runtime::modules::of_style", &mut found);
+        let unmatched = found.unmatched();
+        for named in [
+            "`mlt`'s paths: orb_tile::mlt::",
+            "`bidi`'s paths: orb_text::bidi::",
+            "`bidi`'s except: orb_text::bidi::set_data",
+            "BEFORE_GATE: orb_runtime::modules::",
+        ] {
+            assert!(!unmatched.iter().any(|u| u == named), "{named}");
+        }
+        for unnamed in [
+            "`mlt`'s paths: mlt_core::",
+            "`globe`'s except: orb_crs::sphere::frame",
+            "BEFORE_GATE: orb_style::v8::read",
+            "EDITS: orb_style::v8::doc::StyleDoc>::apply",
+        ] {
+            assert!(unmatched.iter().any(|u| u == unnamed), "{unnamed}");
+        }
+        // An exception for a function inlined today may name none.
+        assert!(!unmatched.iter().any(|u| u.contains("Tables>::unpack")));
+        for entry in INLINED {
+            assert!(MODULES.iter().any(|m| m.except.contains(entry)), "{entry}");
+        }
     }
 
     #[test]

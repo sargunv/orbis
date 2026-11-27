@@ -4,7 +4,9 @@
 //! which a map loads once its style declares the feature; reports their
 //! sizes, raw, brotli and by crate (twiggy); then `core-gl.wasm`, the same
 //! crates on WebGL 2 for browsers without a WebGPU adapter, split the same
-//! way, and `shaper.wasm`.
+//! way, and `shaper.wasm`. It fails on an entry of the split's lists that
+//! names no function of either build, and writes the bindings' methods
+//! the API's module holds to `api-calls.json`, for the web package's gate.
 //! Size is watched, not a gate: it warns when a module grows past its
 //! watch level, and never fails. `--names` also writes core.wasm whole,
 //! with its function names, for `pnpm -C web coverage`.
@@ -19,6 +21,9 @@ use std::process::Command;
 use crate::{data, glue, run, split};
 
 const OUT_DIR: &str = "web/pkg";
+/// The file in [`OUT_DIR`] that names the bindings' methods the API's
+/// module runs ([`write_api_calls`]).
+const API_CALLS: &str = "api-calls.json";
 /// Where `cargo xtask web --names` writes `core.wasm` whole, with its
 /// function names.
 const NAMED_CORE: &str = "target/web/core-names.wasm";
@@ -61,7 +66,8 @@ pub(crate) struct Options {
     pub(crate) names: bool,
     /// `--panics`: panics say why on the console.
     pub(crate) panics: bool,
-    /// `--gl`: core-gl.wasm alone, for work on WebGL 2.
+    /// `--gl`: core-gl.wasm alone, for work on WebGL 2. The split's lists
+    /// go unchecked: an entry may name core.wasm's code alone.
     pub(crate) gl: bool,
 }
 
@@ -69,8 +75,9 @@ pub(crate) fn build(options: Options) -> Result<(), String> {
     let Options { names, panics, gl } = options;
     let root = crate::root();
     let out = root.join(OUT_DIR);
+    write_api_calls(&out)?;
     if gl {
-        return build_gl(&root, panics);
+        return build_gl(&root, panics).map(drop);
     }
 
     // A copy from an earlier build no longer matches web/pkg's: if its
@@ -90,7 +97,20 @@ pub(crate) fn build(options: Options) -> Result<(), String> {
     );
     report_modules("core", &core.modules);
     watch("core.wasm", core.brotli, CORE_WATCH_KIB);
-    build_gl(&root, panics)?;
+    let gl = build_gl(&root, panics)?;
+    // An entry of the split's lists that names no function of either
+    // build does nothing, or no longer does what it says.
+    if let (Some(mut found), Some(gl)) = (core.found, gl) {
+        found.extend(gl);
+        let unmatched = found.unmatched();
+        if !unmatched.is_empty() {
+            return Err(format!(
+                "{} entries of xtask/src/split.rs's lists name no function of core.wasm or core-gl.wasm: delete them, or name what they meant\n  {}",
+                unmatched.len(),
+                unmatched.join("\n  "),
+            ));
+        }
+    }
     // `font-faces` drawing, loaded the first time a style declares a file.
     let shaper = module(&root, "orb-shaper", "shaper", &[], false, None)?;
     eprintln!(
@@ -102,8 +122,19 @@ pub(crate) fn build(options: Options) -> Result<(), String> {
     Ok(())
 }
 
-/// The same map on WebGL 2, fetched only where WebGPU has no adapter.
-fn build_gl(root: &Path, panics: bool) -> Result<(), String> {
+/// Writes [`API_CALLS`]: the bindings' methods whose code the API's
+/// module holds ([`split::api_calls`]), which web/src/engine.ts makes wait
+/// for the module.
+fn write_api_calls(out: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let path = out.join(API_CALLS);
+    let json = serde_json::to_string(&split::api_calls()).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json + "\n").map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The same map on WebGL 2, fetched only where WebGPU has no adapter;
+/// returns the entries of the split's lists that named its functions.
+fn build_gl(root: &Path, panics: bool) -> Result<Option<split::Named>, String> {
     let features = ["--no-default-features", "--features", "gl"];
     let gl = module(root, "orb-web", "core-gl", &features, panics, Some(false))?;
     report_crates(&gl.built);
@@ -115,7 +146,7 @@ fn build_gl(root: &Path, panics: bool) -> Result<(), String> {
     );
     report_modules("core-gl", &gl.modules);
     watch("core-gl.wasm", gl.brotli, CORE_GL_WATCH_KIB);
-    Ok(())
+    Ok(gl.found)
 }
 
 /// Warns when `name`'s brotli size passes its watch level.
@@ -162,6 +193,9 @@ struct Sizes {
     built: std::path::PathBuf,
     /// A split module's feature modules.
     modules: Vec<Feature>,
+    /// A split module's entries of the split's lists that named its
+    /// functions ([`split::Named`]).
+    found: Option<split::Named>,
 }
 
 /// A feature module of a split build.
@@ -273,6 +307,7 @@ fn module(
             brotli: brotli(&bytes)?,
             built,
             modules: Vec::new(),
+            found: None,
         });
     };
     let named = root.join(NAMED_CORE);
@@ -287,7 +322,13 @@ fn module(
     // outside its module: so what reads a module's data is what read it
     // before (data.rs).
     let bytes = read(&wasm)?;
-    let seeds = data::mark(&wasm, &split::not_to_inline(&bytes, &data::names(&bytes)?)?)?;
+    // What the split's lists name, before wasm-opt inlines some of it and
+    // after.
+    let mut found = split::Named::default();
+    let seeds = data::mark(
+        &wasm,
+        &split::not_to_inline(&bytes, &data::names(&bytes)?, &mut found)?,
+    )?;
     let whole_opt = |output: &Path| {
         let mut opt = wasm_opt(
             &wasm,
@@ -313,6 +354,7 @@ fn module(
         &format!("{name}-"),
         FEATURES,
         (&built, &seeds),
+        &mut found,
     )?;
     let bytes = read(&wasm)?;
     let mut modules = Vec::new();
@@ -332,6 +374,7 @@ fn module(
         brotli: brotli(&bytes)?,
         built,
         modules,
+        found: Some(found),
     })
 }
 
