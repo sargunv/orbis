@@ -314,22 +314,32 @@ fn mix(id: PropertyId, value: &mut Slot, prior: &Slot, zoom: f64, t: f64) {
     if per_feature(value.kind()) || per_feature(prior.kind()) {
         return;
     }
-    let lerp = |a: f64, b: f64| a + (b - a) * t;
-    let eased = match (id.value(prior, zoom), id.value(value, zoom)) {
-        (Value::Number(a), Value::Number(b)) => Value::Number(lerp(a, b)),
-        (Value::Color(a), Value::Color(b)) => Value::Color(a.mix(&b, t)),
-        (Value::Array(a), Value::Array(b)) if a.len() == b.len() => Value::Array(
-            a.iter()
-                .zip(b.iter())
-                .map(|(a, b)| match (a.as_f64(), b.as_f64()) {
-                    (Some(a), Some(b)) => Value::Number(lerp(a, b)),
-                    _ => b.clone(),
-                })
-                .collect(),
-        ),
-        _ => return,
+    let Some(eased) = lerp(&id.value(prior, zoom), &id.value(value, zoom), t) else {
+        return;
     };
     value.set_constant(eased);
+}
+
+/// `a` eased toward `b` by `t`: numbers, colours, and arrays of them item
+/// by item; `None` for values that don't ease.
+fn lerp(a: &Value<'_>, b: &Value<'_>, t: f64) -> Option<Value<'static>> {
+    let items = |a: &[Value<'static>], b: &[Value<'static>]| -> Option<Vec<_>> {
+        (a.len() == b.len()).then(|| {
+            a.iter()
+                .zip(b)
+                .map(|(a, b)| lerp(a, b, t).unwrap_or_else(|| b.clone()))
+                .collect()
+        })
+    };
+    Some(match (a, b) {
+        (Value::Number(a), Value::Number(b)) => Value::Number(a + (b - a) * t),
+        (Value::Color(a), Value::Color(b)) => Value::Color(a.mix(b, t)),
+        (Value::Array(a), Value::Array(b)) => Value::Array(items(a, b)?.into()),
+        (Value::TypedArray(ty, a), Value::TypedArray(_, b)) => {
+            Value::TypedArray(ty.clone(), items(a, b)?.into())
+        }
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

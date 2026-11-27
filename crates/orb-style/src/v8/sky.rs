@@ -18,7 +18,6 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Atmosphere {
         horizon_fog_blend: sky.read(cx, &HORIZON_FOG_BLEND),
         sky_horizon_blend: sky.read(cx, &SKY_HORIZON_BLEND),
         atmosphere_blend: sky.read(cx, &ATMOSPHERE_BLEND),
-        transitions: sky.transitions,
     }
 }
 

@@ -243,7 +243,7 @@ fn evaluated(
     let mut sections = [String::new(), String::new()];
     for (id, slot) in style_layer.slots() {
         let prop = id.prop();
-        if !slot.is_set() || prop.ramp || prop.list {
+        if !slot.is_set() || prop.ramp {
             continue;
         }
         let value: orb_expr::Value<'static> =

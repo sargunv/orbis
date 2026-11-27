@@ -13,7 +13,7 @@
 //! nothing easing does no work here beyond evaluating the values.
 
 use orb_render::AtmospherePaint;
-use orb_style::{Atmosphere, Light, Style, Transition, TransitionOverride, TranslateAnchor};
+use orb_style::{Atmosphere, Light, Style, Transition, TranslateAnchor};
 
 use crate::transitions::ease;
 
@@ -58,19 +58,32 @@ impl LightValues {
     }
 }
 
-/// The light's fields in slot order, with each one's slot count.
-const LIGHT: &[(&str, usize)] = &[("color", 4), ("position", 3), ("intensity", 1)];
+/// The light's fields in slot order: each one's slot count and how a
+/// change of it eases under the style's `transition`.
+fn light_fields(light: &Light, style: Transition) -> [(usize, Transition); 3] {
+    [
+        (4, light.color.transition(style)),
+        (3, light.position.transition(style)),
+        (1, light.intensity.transition(style)),
+    ]
+}
 
-/// The sky's fields in slot order, with each one's slot count.
-const SKY: &[(&str, usize)] = &[
-    ("sky-color", 4),
-    ("horizon-color", 4),
-    ("fog-color", 4),
-    ("fog-ground-blend", 1),
-    ("horizon-fog-blend", 1),
-    ("sky-horizon-blend", 1),
-    ("atmosphere-blend", 1),
-];
+/// The sky's fields in slot order, as [`light_fields`]; the style's
+/// transition for each of an absent sky's.
+fn sky_fields(sky: Option<&Atmosphere>, style: Transition) -> [(usize, Transition); 7] {
+    let Some(a) = sky else {
+        return [4, 4, 4, 1, 1, 1, 1].map(|n| (n, style));
+    };
+    [
+        (4, a.sky_color.transition(style)),
+        (4, a.horizon_color.transition(style)),
+        (4, a.fog_color.transition(style)),
+        (1, a.fog_ground_blend.transition(style)),
+        (1, a.horizon_fog_blend.transition(style)),
+        (1, a.sky_horizon_blend.transition(style)),
+        (1, a.atmosphere_blend.transition(style)),
+    ]
+}
 
 /// The sky's values at `zoom`; GL JS's transparent sky for none.
 fn sky_slots(sky: Option<&Atmosphere>, zoom: f64) -> [f32; SKY_SLOTS] {
@@ -118,10 +131,6 @@ fn sky_paint(s: [f32; SKY_SLOTS]) -> AtmospherePaint {
     }
 }
 
-/// The terrain's fields: how far it stands (0 flat or off, 1 on) and its
-/// exaggeration while it does.
-const TERRAIN: &[(&str, usize)] = &[("presence", 1), ("exaggeration", 1)];
-
 /// What a frame reads from the style's root, eased.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RootFrame {
@@ -145,19 +154,11 @@ impl Root {
     /// The style changed from the one the last frame showed to `style`,
     /// with the camera at `zoom`: what differs eases from what was shown.
     pub(crate) fn start(&mut self, style: &Style, zoom: f64) {
-        let lookup = |overrides: &[(String, TransitionOverride)], name: &str| {
-            (overrides.iter())
-                .find(|(n, _)| n == name)
-                .map_or(style.transition, |(_, t)| t.over(style.transition))
-        };
+        let t = style.transition;
         let light = LightValues::of(&style.light, zoom).slots();
-        self.light
-            .start(LIGHT, &light, |name| lookup(&style.light.transitions, name));
-        let sky = sky_slots(style.atmosphere.as_ref(), zoom);
-        let none = Vec::new();
-        let sky_transitions = style.atmosphere.as_ref().map_or(&none, |a| &a.transitions);
-        self.sky
-            .start(SKY, &sky, |name| lookup(sky_transitions, name));
+        self.light.start(&light_fields(&style.light, t), &light);
+        let sky = style.atmosphere.as_ref();
+        self.sky.start(&sky_fields(sky, t), &sky_slots(sky, zoom));
         let terrain = self.terrain_target(style);
         // Terrain rising from flat rises at its new exaggeration.
         if let Some(shown) = &mut self.terrain.shown
@@ -165,7 +166,9 @@ impl Root {
         {
             shown[1] = terrain[1];
         }
-        self.terrain.start(TERRAIN, &terrain, |_| style.transition);
+        // How far it stands (0 flat or off, 1 on), and its exaggeration
+        // while it does.
+        self.terrain.start(&[(1, t), (1, t)], &terrain);
     }
 
     fn terrain_target(&self, style: &Style) -> [f32; 2] {
@@ -247,26 +250,21 @@ struct Ease {
 }
 
 impl<const N: usize> Eases<N> {
-    /// The values became `target`: each field of `fields` (names and slot
-    /// counts) that differs from what was shown eases by `transition`.
-    fn start(
-        &mut self,
-        fields: &[(&str, usize)],
-        target: &[f32; N],
-        transition: impl Fn(&str) -> Transition,
-    ) {
+    /// The values became `target`: each field of `fields` (slot counts and
+    /// transitions) that differs from what was shown eases by its
+    /// transition.
+    fn start(&mut self, fields: &[(usize, Transition)], target: &[f32; N]) {
         let Some(shown) = self.shown else {
             return;
         };
         let mut at = 0;
-        for &(name, n) in fields {
+        for &(n, t) in fields {
             let slots = at..at + n;
             at += n;
             if slots.clone().all(|i| shown[i] == target[i]) {
                 continue;
             }
             self.running.retain(|e| !slots.contains(&e.slot));
-            let t = transition(name);
             if t.duration + t.delay <= 0.0 {
                 continue;
             }

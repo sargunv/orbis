@@ -42,8 +42,6 @@ pub struct Prop {
     pub layer: LayerType,
     /// A `paint` property, else `layout`.
     pub paint: bool,
-    /// One value per light source (`hillshade-*`), given as an array.
-    pub list: bool,
     /// A colour ramp over `heatmap-density`, `line-progress` or
     /// `elevation`, kept as an expression.
     pub ramp: bool,
@@ -201,7 +199,6 @@ pub const fn prop(name: &'static str, ty: PropertyType, default: Option<&'static
         tokens: false,
         layer: LayerType::Background,
         paint: false,
-        list: false,
         ramp: false,
         elevation: false,
         phase: None,
@@ -249,10 +246,6 @@ impl Prop {
     /// Orbis honours `inputs` beyond the spec's.
     const fn extends(mut self, inputs: Inputs) -> Self {
         self.extended = self.extended.union(inputs);
-        self
-    }
-    const fn list(mut self) -> Self {
-        self.list = true;
         self
     }
     const fn ramp(mut self) -> Self {
@@ -511,7 +504,7 @@ impl PropertyId {
     /// interpolated numbers, colours and pairs.
     pub fn transitions(self) -> bool {
         let p = self.prop();
-        p.paint && p.interpolated && !p.list && !p.ramp
+        p.paint && p.interpolated && !p.ramp
     }
 
     /// `slot`'s value at `zoom` without a feature, as this property.
@@ -553,10 +546,6 @@ impl<T> Key<T> {
 /// The type of a colour ramp, which stays an expression.
 #[derive(Debug)]
 pub enum Ramp {}
-
-/// The type of a per-light list of `T`.
-#[derive(Debug)]
-pub struct List<T>(PhantomData<T>);
 
 macro_rules! section {
     (paint) => {
@@ -683,12 +672,13 @@ properties! {
         paint RASTER_FADE_DURATION: f32 = prop("raster-fade-duration", NUMBER, Some("300")).interpolated().range(0.0, None);
     }
     Hillshade {
-        paint HILLSHADE_ILLUMINATION_DIRECTION: List<f32> = prop("hillshade-illumination-direction", NUMBER, Some("335")).interpolated().range(0.0, Some(359.0)).list();
-        paint HILLSHADE_ILLUMINATION_ALTITUDE: List<f32> = prop("hillshade-illumination-altitude", NUMBER, Some("45")).interpolated().range(0.0, Some(90.0)).list();
+        /// One value per light source, as are the altitude and colours.
+        paint HILLSHADE_ILLUMINATION_DIRECTION: Vec<f32> = prop("hillshade-illumination-direction", PropertyType::NumberArray, Some("335")).interpolated().range(0.0, Some(359.0));
+        paint HILLSHADE_ILLUMINATION_ALTITUDE: Vec<f32> = prop("hillshade-illumination-altitude", PropertyType::NumberArray, Some("45")).interpolated().range(0.0, Some(90.0));
         paint HILLSHADE_ILLUMINATION_ANCHOR: IlluminationAnchor = prop("hillshade-illumination-anchor", enumeration::<IlluminationAnchor>(), Some("\"viewport\""));
         paint HILLSHADE_EXAGGERATION: f32 = prop("hillshade-exaggeration", NUMBER, Some("0.5")).interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA);
-        paint HILLSHADE_SHADOW_COLOR: List<Color> = prop("hillshade-shadow-color", COLOR, Some("\"#000000\"")).interpolated().list();
-        paint HILLSHADE_HIGHLIGHT_COLOR: List<Color> = prop("hillshade-highlight-color", COLOR, Some("\"#FFFFFF\"")).interpolated().list();
+        paint HILLSHADE_SHADOW_COLOR: Vec<Color> = prop("hillshade-shadow-color", PropertyType::ColorArray, Some("\"#000000\"")).interpolated();
+        paint HILLSHADE_HIGHLIGHT_COLOR: Vec<Color> = prop("hillshade-highlight-color", PropertyType::ColorArray, Some("\"#FFFFFF\"")).interpolated();
         paint HILLSHADE_ACCENT_COLOR: Color = prop("hillshade-accent-color", COLOR, Some("\"#000000\"")).interpolated().extends(Inputs::CAMERA);
         /// style-spec#1661: `*-layer-blend` for every layer type.
         paint HILLSHADE_LAYER_BLEND: LayerBlend = prop("dev.sargunv.orbis:hillshade-layer-blend", enumeration::<LayerBlend>(), Some("\"normal\"")).zoom_independent().in_phase(Phase::Layer).preview(crate::Preview::HillshadeLayerBlend);

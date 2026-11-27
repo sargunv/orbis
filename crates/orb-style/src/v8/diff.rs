@@ -5,7 +5,7 @@ use crate::*;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::Arc;
 
-use crate::v8::{Diagnostic, Diagnostics};
+use crate::v8::{Diagnostic, Diagnostics, RootKey};
 use orb_expr::json::{Json, JsonValue, Member};
 
 use crate::v8::doc::{Draft, StyleDoc, Written, member, synthetic};
@@ -102,10 +102,6 @@ fn layer_changes(
     }
 }
 
-/// The root keys whose change needs a full reload: every label's glyphs
-/// load again.
-const RESTYLE_ROOT: &[&str] = &["glyphs", "font-faces", crate::v8::target::TARGETS];
-
 /// Adds `change` unless an earlier step did.
 fn add_once(changes: &mut Vec<Change>, change: Change) {
     if !changes.contains(&change) {
@@ -127,7 +123,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         let mut members: Vec<Member> = draft
             .root
             .iter()
-            .filter(|m| m.key != "terrain")
+            .filter(|m| m.key != RootKey::Terrain.name())
             .cloned()
             .collect();
         for (key, value) in [
@@ -154,13 +150,16 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
     };
     let mut root = draft.new_root.then(parse_root).transpose()?;
     if draft.new_root {
-        if RESTYLE_ROOT
-            .iter()
-            .any(|k| !same_opt(member(&doc.root, k), member(&draft.root, k)))
+        let changed = |key: RootKey| !same_opt(doc.root(key), member(&draft.root, key.name()));
+        // Every label's glyphs load again, or the render targets are
+        // planned again.
+        if [RootKey::Glyphs, RootKey::FontFaces, RootKey::Targets]
+            .into_iter()
+            .any(changed)
         {
             changes.push(Change::Restyle);
         }
-        if !same_opt(member(&doc.root, "sprite"), member(&draft.root, "sprite")) {
+        if changed(RootKey::Sprite) {
             changes.push(Change::Sprite);
         }
         // Sky, light, terrain, transition, the camera defaults: frames read
@@ -257,7 +256,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
     }
 
     // Terrain reads the new sources; switching it needs no reload.
-    if let Some(json) = member(&draft.root, "terrain") {
+    if let Some(json) = member(&draft.root, RootKey::Terrain.name()) {
         let (terrain, w) = crate::v8::parse_terrain(json, &style.sources)?;
         warnings.extend(w);
         style.terrain = Some(terrain);

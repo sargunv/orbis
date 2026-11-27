@@ -12,7 +12,8 @@ use std::collections::{HashMap, HashSet};
 use orb_api::{Op, StyleImage, Transaction};
 use orb_expr::json::{self, Json, JsonValue};
 use orb_expr::{Color, PropertyType};
-use orb_style::{LayerType, PropertyId};
+use orb_style::v8::RootKey;
+use orb_style::{Enum, LayerType, PropertyId};
 
 use crate::base::boundary;
 use crate::base::{Failure, Result, sized, text};
@@ -987,7 +988,7 @@ fn folded(json: &Json, color: bool) -> String {
 // MARK: - Light and transition
 
 /// The style's root member `key`, as its document has it now.
-fn root(entry: &MapEntry, key: &str) -> Result<Option<Json>> {
+fn root(entry: &MapEntry, key: RootKey) -> Result<Option<Json>> {
     Ok(doc(entry)?.root(key).cloned())
 }
 
@@ -998,57 +999,39 @@ fn set_light(entry: &mut MapEntry, light: Json, what: &str) -> Result {
     edit(
         entry,
         vec![Op::SetRoot {
-            key: "light".into(),
+            key: RootKey::Light,
             value: Some(light),
         }],
     )
     .map_err(|f| Failure::new(f.status, format!("the {what} is invalid: {}", f.message)))
 }
 
-/// The root properties v8 defines, but `sources` and `layers`, which the
-/// source and layer calls change.
-const ROOT_PROPERTIES: [&str; 18] = [
-    "version",
-    "name",
-    "metadata",
-    "center",
-    "centerAltitude",
-    "zoom",
-    "bearing",
-    "pitch",
-    "roll",
-    "state",
-    "light",
-    "sky",
-    "projection",
-    "terrain",
-    "sprite",
-    "glyphs",
-    "font-faces",
-    "transition",
-];
-
-fn root_property(name: &str) -> Result {
-    if ROOT_PROPERTIES.contains(&name) {
-        Ok(())
-    } else {
-        Err(Failure::argument(format!(
-            "\"{name}\" is not a style root property the C API reads or sets"
-        )))
-    }
+/// The root member `name`: one v8 defines, but `sources` and `layers`,
+/// which the source and layer calls change.
+fn root_property(name: &str) -> Result<RootKey> {
+    RootKey::from_name(name)
+        .filter(|key| *key != RootKey::Targets)
+        .ok_or_else(|| {
+            Failure::argument(format!(
+                "\"{name}\" is not a style root property the C API reads or sets"
+            ))
+        })
 }
 
 /// A root property's value as Native writes it: the style's own JSON, its
 /// members in the spec's order where Native orders them, and colors as
 /// `["rgba", …]`.
-fn write_root(out: &mut String, name: &str, json: &Json) {
-    let order: &[&str] = match name {
-        "light" => &["anchor", "position", "color", "intensity"],
-        "transition" => &["duration", "delay"],
-        _ => &[],
+fn write_root(out: &mut String, key: RootKey, json: &Json) {
+    let props = key.properties();
+    let order: Vec<&str> = match key {
+        RootKey::Light => props.iter().map(|p| p.name).collect(),
+        RootKey::Transition => vec!["duration", "delay"],
+        _ => Vec::new(),
     };
-    let colors = matches!(name, "light" | "sky");
-    let Some(members) = json.as_object().filter(|_| colors || !order.is_empty()) else {
+    let Some(members) = json
+        .as_object()
+        .filter(|_| !props.is_empty() || !order.is_empty())
+    else {
         write_json(out, json);
         return;
     };
@@ -1062,7 +1045,9 @@ fn write_root(out: &mut String, name: &str, json: &Json) {
         }
         write_string(out, &m.key);
         out.push(':');
-        let color = colors && (m.key == "color" || m.key.ends_with("-color"));
+        let color = props
+            .iter()
+            .any(|p| p.name == m.key && p.ty == PropertyType::Color);
         match (&m.value.value, color) {
             (JsonValue::String(text), true) if let Some(c) = Color::parse(text) => {
                 write_color(out, c);
@@ -1112,12 +1097,12 @@ command!(
         let name = id(name, "property_name")?;
         let value = json_text(value, "value")?;
         Ok(job(move |entry| {
-            root_property(&name)?;
+            let key = root_property(&name)?;
             loaded(entry)?;
             let what = format!("style root property \"{name}\"");
             let value = parse_json(&value, &what)?;
             let value = (!value.is_null()).then_some(value);
-            edit(entry, vec![Op::SetRoot { key: name, value }]).map_err(|f| {
+            edit(entry, vec![Op::SetRoot { key, value }]).map_err(|f| {
                 Failure::new(f.status, format!("the {what} is invalid: {}", f.message))
             })
         }))
@@ -1130,17 +1115,17 @@ command!(
     |map| {
         let name = id(name, "property_name")?;
         Ok(move |entry: &mut MapEntry| {
-            root_property(&name)?;
-            let value = match root(entry, &name)? {
+            let key = root_property(&name)?;
+            let value = match root(entry, key)? {
                 Some(value) => value,
                 // Native gives a style without a transition its default.
-                None if name == "transition" => {
+                None if key == RootKey::Transition => {
                     json::parse("{\"duration\":300}").map_err(|e| Failure::native(e.to_string()))?
                 }
                 None => return Ok(Value::None),
             };
             let mut out = String::new();
-            write_root(&mut out, &name, &value);
+            write_root(&mut out, key, &value);
             Ok(Value::Text(out))
         })
     }
@@ -1155,7 +1140,7 @@ command!(
         Ok(job(move |entry| {
             let what = format!("style light property \"{name}\"");
             let value = parse_json(&value, &what)?;
-            let mut members = root(entry, "light")?
+            let mut members = root(entry, RootKey::Light)?
                 .and_then(|l| l.as_object().map(<[_]>::to_vec))
                 .unwrap_or_default();
             members.retain(|m| m.key != name);
@@ -1182,7 +1167,7 @@ command!(
         let name = id(name, "property_name")?;
         Ok(move |entry: &mut MapEntry| {
             let color = name == "color";
-            Ok(root(entry, "light")?
+            Ok(root(entry, RootKey::Light)?
                 .and_then(|l| l.get(&name).cloned())
                 .map_or(Value::None, |v| Value::Text(native(&v, color))))
         })
@@ -1245,7 +1230,7 @@ command!(
                 edit(
                     entry,
                     vec![Op::SetRoot {
-                        key: "transition".into(),
+                        key: RootKey::Transition,
                         value: Some(Json::new(JsonValue::Object(members), json::Span::default())),
                     }],
                 )?;
@@ -1269,7 +1254,7 @@ command!(mln_map_get_style_transition_options(), query, |map| {
         o.enable_placement_transitions = entry.style.placement_transitions.unwrap_or(true);
         o.duration_ms = 300.0;
         if entry.map.style().is_some()
-            && let Some(t) = root(entry, "transition")?
+            && let Some(t) = root(entry, RootKey::Transition)?
         {
             if let Some(d) = t.get("duration").and_then(Json::as_f64) {
                 o.fields |= MLN_STYLE_TRANSITION_OPTION_DURATION;

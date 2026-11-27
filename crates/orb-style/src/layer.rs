@@ -4,7 +4,7 @@
 use orb_expr::{Filter, PropertyExpression};
 
 use crate::property::{PropertyRef, PropertyValue, Slot, Visibility};
-use crate::spec::{Key, LayerType, List, PropertyId, Ramp};
+use crate::spec::{Key, LayerType, PropertyId, Ramp};
 
 /// A style layer.
 #[derive(Clone, Debug)]
@@ -97,15 +97,6 @@ impl Layer {
     #[inline]
     pub fn get<T: PropertyValue>(&self, key: Key<T>) -> PropertyRef<'_, T> {
         PropertyRef::of(self.slot(key.id()), key.id())
-    }
-
-    /// A per-light property's values.
-    pub fn list<T: PropertyValue>(&self, key: Key<List<T>>) -> Vec<PropertyRef<'_, T>> {
-        self.slot(key.id())
-            .items()
-            .iter()
-            .map(|slot| PropertyRef::of(slot, key.id()))
-            .collect()
     }
 
     /// A colour ramp, if the layer has one.

@@ -15,6 +15,4 @@ pub struct Atmosphere {
     pub horizon_fog_blend: Property<f32>,
     pub sky_horizon_blend: Property<f32>,
     pub atmosphere_blend: Property<f32>,
-    /// Each property's own `*-transition`, by property name.
-    pub transitions: Vec<(String, crate::TransitionOverride)>,
 }

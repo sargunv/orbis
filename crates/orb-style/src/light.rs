@@ -16,6 +16,4 @@ pub struct Light {
     pub position: Property<[f32; 3]>,
     pub color: Property<Color>,
     pub intensity: Property<f32>,
-    /// Each property's own `*-transition`, by property name.
-    pub transitions: Vec<(String, crate::TransitionOverride)>,
 }

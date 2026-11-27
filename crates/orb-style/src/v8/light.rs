@@ -16,7 +16,6 @@ pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {
         position: light.read(cx, &POSITION),
         color: light.read(cx, &COLOR),
         intensity: light.read(cx, &INTENSITY),
-        transitions: light.transitions,
     }
 }
 
@@ -30,10 +29,9 @@ mod tests {
               "sources":{},"layers":[]}"#,
         )
         .unwrap();
-        let transitions: Vec<_> = (style.light.transitions.iter())
-            .map(|(name, t)| (name.as_str(), t.duration))
-            .collect();
-        assert_eq!(transitions, [("color", Some(300.0))]);
+        let light = &style.light;
+        assert_eq!(light.color.transition.and_then(|t| t.duration), Some(300.0));
+        assert!(light.intensity.transition.is_none() && light.position.transition.is_none());
         // A malformed transition; the anchor, which doesn't interpolate,
         // has none to take; a key the spec doesn't define.
         let paths: Vec<_> = style.warnings.iter().map(|w| w.path.as_str()).collect();

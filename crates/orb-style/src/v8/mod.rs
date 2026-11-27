@@ -29,6 +29,7 @@ pub use geojson::{apply_diffs, geojson_features, parse_geojson};
 pub use light::default_light;
 pub use orb_expr::json::Span;
 pub use orb_expr::{Diagnostic, Filter};
+pub use root::RootKey;
 pub use source::{EMPTY_SOURCE, tms_definition};
 pub use tx::{FeatureTarget, Op, Transaction};
 
@@ -154,32 +155,21 @@ pub(crate) fn deref_layers(doc: &mut Json) {
     }
 }
 
-/// Root keys v8 defines that Orbis does not model yet.
-const UNMODELED_ROOT: &[&str] = &["centerAltitude"];
-
 fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -> Option<Style> {
     let root = cx.object(doc, "")?;
     for m in root {
-        match m.key.as_str() {
-            "version" | "name" | "metadata" | "center" | "zoom" | "bearing" | "pitch" | "roll"
-            | "sources" | "layers" | "sprite" | "glyphs" | "font-faces" | "light" | "state"
-            | "sky" | "terrain" | "projection" | "transition" => {}
-            target::TARGETS => {
-                cx.preview(
-                    Preview::Targets,
-                    target::TARGETS,
-                    m.key_span,
-                    "\"dev.sargunv.orbis:targets\"",
-                );
+        let key = &m.key;
+        match RootKey::from_name(key) {
+            Some(RootKey::Targets) => {
+                cx.preview(Preview::Targets, key, m.key_span, format!("\"{key}\""));
             }
-            key if UNMODELED_ROOT.contains(&key) => {
-                cx.warn(
-                    key,
-                    m.key_span,
-                    format!("\"{key}\" is not supported yet and is ignored"),
-                );
+            Some(RootKey::CenterAltitude) => {
+                let message = format!("\"{key}\" is not supported yet and is ignored");
+                cx.warn(key, m.key_span, message);
             }
-            _ => cx.warn_unknown("", m),
+            Some(_) => {}
+            None if key == "sources" || key == "layers" => {}
+            None => cx.warn_unknown("", m),
         }
     }
     match doc.get("version") {
@@ -245,7 +235,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
             .map(std::sync::Arc::new)
             .collect(),
     };
-    let targets = match doc.get(target::TARGETS) {
+    let targets = match doc.get(RootKey::Targets.name()) {
         Some(json) if cx.previews.contains(Preview::Targets) => target::parse_targets(cx, json),
         _ => Vec::new(),
     };

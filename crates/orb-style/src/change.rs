@@ -63,12 +63,9 @@ impl Binding {
         }
     }
 
-    /// How a property's slot binds: a list by its first value.
+    /// How a property's slot binds.
     pub(crate) fn of_slot(slot: &Slot) -> Self {
-        slot.items()
-            .first()
-            .and_then(Slot::as_expression)
-            .map_or(Self::Constant, Self::of)
+        slot.as_expression().map_or(Self::Constant, Self::of)
     }
 
     /// Whether the value needs per-feature property rows.

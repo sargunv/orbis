@@ -86,16 +86,39 @@ fn raster_dem_sources_and_image_layers() {
     assert_eq!(dem.factors, [0.0, 1.0, 1.0, 3.5]);
     assert_eq!(dem.raster.tile_size, Some(256.0));
     let h = &s.layers[1];
-    assert_eq!(h.list(HILLSHADE_HIGHLIGHT_COLOR).len(), 2);
-    assert_eq!(h.list(HILLSHADE_ILLUMINATION_DIRECTION).len(), 3);
-    assert_eq!(h.list(HILLSHADE_SHADOW_COLOR).len(), 1);
-    assert_eq!(
-        h.list(HILLSHADE_ILLUMINATION_DIRECTION)[2].constant(),
-        Some(0.0)
-    );
+    assert_eq!(h.get(HILLSHADE_HIGHLIGHT_COLOR).evaluate(0.0).len(), 2);
+    let direction = h.get(HILLSHADE_ILLUMINATION_DIRECTION).evaluate(0.0);
+    assert_eq!(direction, [270.0, 315.0, 0.0]);
+    assert_eq!(h.get(HILLSHADE_SHADOW_COLOR).evaluate(0.0).len(), 1);
     let c = &s.layers[2];
     let ramp = c.ramp(COLOR_RELIEF_COLOR).as_ref().unwrap().expression();
     assert_eq!(ramp.interpolate_labels(), Some(&[0.0, 100.0][..]));
+}
+
+/// Per-light properties are arrays: literal, or interpolated by zoom
+/// item by item.
+#[test]
+fn hillshade_lights_are_array_expressions() {
+    for (direction, at_5) in [
+        ("300", vec![300.0]),
+        (r#"["literal", [300, 45]]"#, vec![300.0, 45.0]),
+        (
+            r#"["interpolate", ["linear"], ["zoom"], 0, ["literal", [0, 10]], 10, ["literal", [100, 20]]]"#,
+            vec![50.0, 15.0],
+        ),
+    ] {
+        let s = parse(&format!(
+            r#"{{"version": 8, "sources": {{"dem": {{"type": "raster-dem", "tiles": ["t"]}}}},
+                "layers": [{{"id": "h", "type": "hillshade", "source": "dem",
+                    "paint": {{"hillshade-illumination-direction": {direction}}}}}]}}"#
+        ))
+        .unwrap();
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        let value = s.layers[0]
+            .get(HILLSHADE_ILLUMINATION_DIRECTION)
+            .evaluate(5.0);
+        assert_eq!(value, at_5, "{direction}");
+    }
 }
 
 #[test]

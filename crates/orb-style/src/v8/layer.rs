@@ -97,33 +97,6 @@ pub(crate) fn property_at(cx: &mut Cx, json: Option<&Json>, path: &str, prop: &P
     }
 }
 
-/// The slot of a property set to `json`, or why the value doesn't fit it.
-fn value_at(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Result<Slot, Vec<Diagnostic>> {
-    if prop.ramp {
-        return PropertyExpression::parse_with_state(json, &prop.spec(), &cx.state)
-            .map(|parsed| Slot::expression_any(parsed, true))
-            .map_err(|errors| located(path, errors));
-    }
-    if prop.list
-        && let Some(items) = json.as_array().filter(|items| {
-            !items.is_empty()
-                && items.iter().all(|item| match &item.value {
-                    JsonValue::Number(_) => true,
-                    JsonValue::String(s) => orb_expr::Color::parse(s).is_some(),
-                    _ => false,
-                })
-        })
-    {
-        return items
-            .iter()
-            .enumerate()
-            .map(|(i, item)| property_at_one(cx, item, &format!("{path}[{i}]"), prop))
-            .collect::<Result<_, _>>()
-            .map(Slot::list);
-    }
-    property_at_one(cx, json, path, prop)
-}
-
 /// `orb_expr` diagnostics, whose paths are relative to `prefix`, made
 /// absolute.
 fn located(prefix: &str, diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
@@ -151,12 +124,13 @@ pub(crate) fn typed_property_at<T: PropertyValue>(
     crate::v8::Property::from_slot(property_at(cx, json, path, prop), default)
 }
 
-fn property_at_one(
-    cx: &mut Cx,
-    json: &Json,
-    path: &str,
-    prop: &Prop,
-) -> Result<Slot, Vec<Diagnostic>> {
+/// The slot of a property set to `json`, or why the value doesn't fit it.
+fn value_at(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Result<Slot, Vec<Diagnostic>> {
+    if prop.ramp {
+        return PropertyExpression::parse_with_state(json, &prop.spec(), &cx.state)
+            .map(|parsed| Slot::expression_any(parsed, true))
+            .map_err(|errors| located(path, errors));
+    }
     let parsed =
         PropertyExpression::parse_with_state(json, &prop.spec(), &cx.state).or_else(|errors| {
             // Inputs beyond the spec's that Orbis honours: drawn, with a

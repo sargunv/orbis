@@ -166,11 +166,21 @@ impl<E: Enum> PropertyValue for Vec<E> {
 
 impl PropertyValue for Vec<f32> {
     fn from_value(value: &Value<'_>) -> Option<Self> {
-        value
-            .as_array()?
+        items(value)?
             .iter()
             .map(|v| v.as_f64().map(|n| n as f32))
             .collect()
+    }
+}
+
+/// A `colorArray`, one colour or more.
+impl PropertyValue for Vec<Color> {
+    fn from_value(value: &Value<'_>) -> Option<Self> {
+        let colors: Vec<Color> = items(value)?
+            .iter()
+            .map(Value::as_color)
+            .collect::<Option<_>>()?;
+        (!colors.is_empty()).then_some(colors)
     }
 }
 
@@ -353,9 +363,8 @@ v8_enum!(
     }
 );
 
-/// A stored property value: a constant, an expression, or for properties
-/// that take one value per light (`hillshade-*`), a list of them. Its type
-/// and default come from where it is stored: a layer's
+/// A stored property value: a constant or an expression. Its type and
+/// default come from where it is stored: a layer's
 /// [`PropertyId`](crate::PropertyId), or a typed [`Property`].
 #[derive(Clone, Debug)]
 pub struct Slot {
@@ -369,7 +378,6 @@ enum Inner {
     Constant(Value<'static>),
     /// Boxed: most properties are constants and stay small.
     Expression(Box<PropertyExpression>),
-    List(Box<[Slot]>),
 }
 
 impl Slot {
@@ -400,19 +408,11 @@ impl Slot {
         }
     }
 
-    pub fn list(items: Vec<Slot>) -> Self {
-        Self {
-            value: Inner::List(items.into()),
-            set: true,
-        }
-    }
-
     #[inline]
     pub fn kind(&self) -> Kind {
         match &self.value {
             Inner::Constant(_) => Kind::Constant,
             Inner::Expression(e) => e.kind(),
-            Inner::List(items) => items.first().map_or(Kind::Constant, Slot::kind),
         }
     }
 
@@ -436,15 +436,6 @@ impl Slot {
         match &self.value {
             Inner::Expression(e) => Some(e),
             _ => None,
-        }
-    }
-
-    /// The items of a list; a single value is a list of one.
-    #[inline]
-    pub fn items(&self) -> &[Slot] {
-        match &self.value {
-            Inner::List(items) => items,
-            _ => std::slice::from_ref(self),
         }
     }
 
@@ -608,14 +599,14 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
     }
 
     /// The feature part's value for `feature` in `context`, given to
-    /// `finish`: a list by its first item, an empty one as `None`.
+    /// `finish`.
     fn read<R>(
         &self,
         context: &orb_expr::EvaluationContext<'_>,
         feature: FeatureInput<'_>,
         finish: impl FnOnce(Option<&Value<'_>>) -> R,
     ) -> R {
-        match &self.first().value {
+        match &self.slot.value {
             Inner::Constant(v) => finish(Some(v)),
             Inner::Expression(expression) => {
                 let expression = expression.expression();
@@ -629,17 +620,11 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
                 };
                 finish(value.ok().as_ref())
             }
-            Inner::List(_) => finish(None),
         }
     }
 
-    /// The slot that gives the value: a list's first item.
-    fn first(&self) -> &'a Slot {
-        self.slot.items().first().unwrap_or(self.slot)
-    }
-
     fn camera_scale(&self) -> Option<&'a orb_expr::CameraScale> {
-        self.first().as_expression()?.camera_scale()
+        self.slot.as_expression()?.camera_scale()
     }
 
     /// The default of a number property: 0 for one read with a typed
@@ -697,25 +682,33 @@ impl<T: PropertyValue + Into<f64>> PropertyRef<'_, T> {
     }
 }
 
-/// A typed property held outside a layer (the light, the sky, the
-/// terrain): a slot and its default.
+/// A typed property held outside a layer (the light, the sky): a slot,
+/// its default and its own `*-transition`.
 #[derive(Clone, Debug)]
 pub struct Property<T> {
     slot: Slot,
     default: T,
+    /// Its own `*-transition`, over the style's.
+    pub transition: Option<crate::TransitionOverride>,
 }
 
 impl<T: PropertyValue> Property<T> {
     /// The same value everywhere (held as the default of an unset slot).
     pub fn constant(value: T) -> Self {
-        Self {
-            slot: Slot::constant(Value::Null, false),
-            default: value,
-        }
+        Self::from_slot(Slot::constant(Value::Null, false), value)
     }
 
     pub fn from_slot(slot: Slot, default: T) -> Self {
-        Self { slot, default }
+        Self {
+            slot,
+            default,
+            transition: None,
+        }
+    }
+
+    /// How a change of it eases: its own transition over `style`'s.
+    pub fn transition(&self, style: crate::Transition) -> crate::Transition {
+        self.transition.map_or(style, |t| t.over(style))
     }
 
     pub fn get(&self) -> PropertyRef<'_, T> {

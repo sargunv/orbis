@@ -1,19 +1,60 @@
-//! Root objects (`light`, `sky`): their members checked against a spec
-//! table and their properties read typed.
+//! The root's members ([`RootKey`]), and its objects (`light`, `sky`):
+//! their members checked against a spec table and their properties read
+//! typed.
 
 use crate::v8::{Cx, layer::typed_property_at, paint::parse_transition};
 use crate::*;
 use orb_expr::json::Json;
 
+crate::property::v8_enum!(
+    /// A root member but `sources` and `layers`, which have edits of their
+    /// own.
+    RootKey {
+        Version = "version",
+        Name = "name",
+        Metadata = "metadata",
+        Center = "center",
+        /// Not modelled: it warns and is ignored.
+        CenterAltitude = "centerAltitude",
+        Zoom = "zoom",
+        Bearing = "bearing",
+        Pitch = "pitch",
+        Roll = "roll",
+        State = "state",
+        Light = "light",
+        Sky = "sky",
+        Projection = "projection",
+        Terrain = "terrain",
+        Sprite = "sprite",
+        Glyphs = "glyphs",
+        FontFaces = "font-faces",
+        Transition = "transition",
+        /// The render targets, behind their preview.
+        Targets = "dev.sargunv.orbis:targets",
+    }
+);
+
+impl RootKey {
+    /// The spec table of a root object's properties (`light`, `sky`), in
+    /// the spec's order; empty for other members.
+    pub fn properties(self) -> &'static [Prop] {
+        match self {
+            Self::Light => crate::spec::light::PROPS,
+            Self::Sky => crate::spec::sky::PROPS,
+            _ => &[],
+        }
+    }
+}
+
 /// A root object (`light`, `sky`) checked against its spec table: its
-/// properties read typed, and the `*-transition` of each interpolated
-/// one.
+/// properties read typed, each with its own `*-transition` where it
+/// interpolates.
 pub(crate) struct RootObject<'a> {
     json: Option<&'a Json>,
     path: &'static str,
     props: &'static [Prop],
     /// Each property's own `*-transition`, by property name.
-    pub transitions: Vec<(String, TransitionOverride)>,
+    transitions: Vec<(&'static str, TransitionOverride)>,
 }
 
 impl<'a> RootObject<'a> {
@@ -26,7 +67,7 @@ impl<'a> RootObject<'a> {
         path: &'static str,
         props: &'static [Prop],
     ) -> Self {
-        let mut transitions: Vec<(String, TransitionOverride)> = Vec::new();
+        let mut transitions: Vec<(&'static str, TransitionOverride)> = Vec::new();
         let members = json.and_then(|j| cx.object(j, path)).unwrap_or_default();
         for m in members {
             let find = |name: &str| props.iter().find(|p| p.name == name);
@@ -34,9 +75,9 @@ impl<'a> RootObject<'a> {
                 .and_then(find)
                 .filter(|p| p.interpolated);
             if let Some(prop) = transition {
-                transitions.retain(|(name, _)| name != prop.name);
+                transitions.retain(|(name, _)| *name != prop.name);
                 match parse_transition(&m.value) {
-                    Some(t) => transitions.push((prop.name.to_string(), t)),
+                    Some(t) => transitions.push((prop.name, t)),
                     None => cx.warn(
                         format!("{path}.{}", m.key),
                         m.key_span,
@@ -55,10 +96,16 @@ impl<'a> RootObject<'a> {
         }
     }
 
-    /// `prop`, one of the object's, at its value or its default.
+    /// `prop`, one of the object's, at its value or its default, with its
+    /// own transition.
     pub(crate) fn read<T: PropertyValue>(&self, cx: &mut Cx, prop: &Prop) -> Property<T> {
         debug_assert!(self.props.iter().any(|p| p.name == prop.name));
         let value = self.json.and_then(|j| j.get(prop.name));
-        typed_property_at(cx, value, &format!("{}.{}", self.path, prop.name), prop)
+        let mut property =
+            typed_property_at(cx, value, &format!("{}.{}", self.path, prop.name), prop);
+        property.transition = (self.transitions.iter())
+            .find(|(name, _)| *name == prop.name)
+            .map(|(_, t)| *t);
+        property
     }
 }

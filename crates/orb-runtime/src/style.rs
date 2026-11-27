@@ -302,13 +302,18 @@ impl StylePlan {
                 ) => {}
             }
             if layer.ty == LayerType::Hillshade {
-                let lights = [
-                    orb_style::HILLSHADE_ILLUMINATION_DIRECTION.id(),
-                    orb_style::HILLSHADE_ILLUMINATION_ALTITUDE.id(),
-                    orb_style::HILLSHADE_SHADOW_COLOR.id(),
-                    orb_style::HILLSHADE_HIGHLIGHT_COLOR.id(),
+                // The constants' lengths; an expression's shows only per frame.
+                let numbers = [
+                    orb_style::HILLSHADE_ILLUMINATION_DIRECTION,
+                    orb_style::HILLSHADE_ILLUMINATION_ALTITUDE,
                 ]
-                .map(|id| layer.slot(id).items().len());
+                .map(|key| layer.get(key).constant().map_or(1, |v| v.len()));
+                let colors = [
+                    orb_style::HILLSHADE_SHADOW_COLOR,
+                    orb_style::HILLSHADE_HIGHLIGHT_COLOR,
+                ]
+                .map(|key| layer.get(key).constant().map_or(1, |v| v.len()));
+                let lights = numbers.into_iter().chain(colors);
                 if lights.into_iter().max().unwrap_or(1) > orb_shaders::layout::MAX_LIGHTS {
                     warn(
                         index,

@@ -11,7 +11,7 @@ use orb_render::{
     ColorReliefPaint, HillshadeMethod, HillshadePaint, IMAGE_EXTENT, ImageMesh, MAX_LIGHTS,
     NodePaint, RasterPaint, Renderer,
 };
-use orb_style::{Color, IlluminationAnchor, LayerType, PropertyRef, PropertyValue, Resampling};
+use orb_style::{Color, IlluminationAnchor, LayerType, Resampling};
 
 use crate::style::{NodePlan, StylePlan};
 
@@ -251,10 +251,10 @@ pub(crate) fn paint(
             })
         }
         LayerType::Hillshade => {
-            let directions = l.list(HILLSHADE_ILLUMINATION_DIRECTION);
-            let altitudes = l.list(HILLSHADE_ILLUMINATION_ALTITUDE);
-            let shadows = l.list(HILLSHADE_SHADOW_COLOR);
-            let highlights = l.list(HILLSHADE_HIGHLIGHT_COLOR);
+            let directions = l.get(HILLSHADE_ILLUMINATION_DIRECTION).evaluate(zoom);
+            let altitudes = l.get(HILLSHADE_ILLUMINATION_ALTITUDE).evaluate(zoom);
+            let shadows = l.get(HILLSHADE_SHADOW_COLOR).evaluate(zoom);
+            let highlights = l.get(HILLSHADE_HIGHLIGHT_COLOR).evaluate(zoom);
             let lights = [
                 directions.len(),
                 altitudes.len(),
@@ -266,12 +266,14 @@ pub(crate) fn paint(
             .unwrap_or(1)
             .clamp(1, MAX_LIGHTS);
             // GL JS repeats each array's last value up to the longest.
-            fn per_light<T: PropertyValue, U>(
-                values: &[PropertyRef<'_, T>],
-                zoom: f64,
+            fn per_light<T: Copy, U>(
+                values: &[T],
+                empty: T,
                 f: impl Fn(T) -> U,
             ) -> [U; MAX_LIGHTS] {
-                std::array::from_fn(|i| f(values[i.min(values.len() - 1)].evaluate(zoom)))
+                std::array::from_fn(|i| {
+                    f(values.get(i).or(values.last()).copied().unwrap_or(empty))
+                })
             }
             let turn = if l.get(HILLSHADE_ILLUMINATION_ANCHOR).evaluate(zoom)
                 == IlluminationAnchor::Viewport
@@ -283,10 +285,10 @@ pub(crate) fn paint(
             let color = |c: Color| c.premultiplied();
             NodePaint::Hillshade(HillshadePaint {
                 accent: l.get(HILLSHADE_ACCENT_COLOR).evaluate(zoom).premultiplied(),
-                shadows: per_light(&shadows, zoom, color),
-                highlights: per_light(&highlights, zoom, color),
-                altitudes: per_light(&altitudes, zoom, f32::to_radians),
-                azimuths: per_light(&directions, zoom, |d| d.to_radians() + turn),
+                shadows: per_light(&shadows, Color::BLACK, color),
+                highlights: per_light(&highlights, Color::BLACK, color),
+                altitudes: per_light(&altitudes, 0.0, f32::to_radians),
+                azimuths: per_light(&directions, 0.0, |d| d.to_radians() + turn),
                 exaggeration: number(HILLSHADE_EXAGGERATION),
                 method: match l.get(HILLSHADE_METHOD).evaluate(zoom) {
                     orb_style::HillshadeMethod::Standard => HillshadeMethod::Standard,

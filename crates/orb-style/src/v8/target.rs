@@ -2,13 +2,11 @@
 //! of targets, and an image-process layer's operations.
 
 use crate::property::v8_enum;
-use crate::v8::{Cx, layer::typed_property_at};
+use crate::v8::{Cx, RootKey, layer::typed_property_at};
 use crate::*;
 use orb_expr::PropertyType;
 use orb_expr::json::{Json, JsonValue, Member};
 
-/// The root key that declares the targets.
-pub(crate) const TARGETS: &str = "dev.sargunv.orbis:targets";
 /// The layer key naming the target a layer draws into.
 pub(crate) const DESTINATION: &str = "dev.sargunv.orbis:destination-target";
 /// The layer key naming the target an image-process layer reads, or a fill
@@ -20,12 +18,13 @@ pub(crate) const OPERATIONS: &str = "dev.sargunv.orbis:operations";
 /// The root `dev.sargunv.orbis:targets`: `[{"id": …, "precision": …}]`,
 /// ids unique.
 pub(crate) fn parse_targets(cx: &mut Cx, json: &Json) -> Vec<RenderTarget> {
-    let Some(items) = cx.array(json, TARGETS) else {
+    let key = RootKey::Targets.name();
+    let Some(items) = cx.array(json, key) else {
         return Vec::new();
     };
     let mut targets: Vec<RenderTarget> = Vec::new();
     for (i, item) in items.iter().enumerate() {
-        let path = format!("{TARGETS}[{i}]");
+        let path = format!("{key}[{i}]");
         let Some(members) = cx.object(item, &path) else {
             continue;
         };

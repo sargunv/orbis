@@ -4,7 +4,7 @@ use crate::*;
 use rustc_hash::FxHashMap as HashMap;
 use std::sync::Arc;
 
-use crate::v8::{Diagnostic, Diagnostics};
+use crate::v8::{Diagnostic, Diagnostics, RootKey};
 use orb_expr::json::{Json, JsonValue, Member, Span};
 
 use crate::v8::diff;
@@ -73,7 +73,7 @@ pub(crate) enum Written {
         name: String,
     },
     /// A root member.
-    Root(String),
+    Root(RootKey),
 }
 
 impl Written {
@@ -93,7 +93,7 @@ impl Written {
     /// The JSON path of the root member it wrote.
     pub(crate) fn root_path(&self) -> Option<String> {
         match self {
-            Written::Root(key) => Some(key.clone()),
+            Written::Root(key) => Some(key.name().to_string()),
             _ => None,
         }
     }
@@ -301,11 +301,10 @@ impl StyleDoc {
         self.sources.iter().find(|s| s.id == id).map(|s| &*s.json)
     }
 
-    /// Root member `key` as the document has it now, but `sources` and
-    /// `layers`, which [`source`](Self::source) and [`layer`](Self::layer)
-    /// read (GL JS `getLight`, `getSky`, `getProjection`, …).
-    pub fn root(&self, key: &str) -> Option<&Json> {
-        member(&self.root, key)
+    /// Root member `key` as the document has it now (GL JS `getLight`,
+    /// `getSky`, `getProjection`, …).
+    pub fn root(&self, key: RootKey) -> Option<&Json> {
+        member(&self.root, key.name())
     }
 
     /// The global state: root defaults with transactions' values over them.
@@ -632,16 +631,9 @@ impl Draft {
             }
             Op::SetStyle { style } => self.replace(style),
             Op::SetRoot { key, value } => {
-                self.written.push(Written::Root(key.clone()));
+                self.written.push(Written::Root(*key));
                 let mut root: Vec<Member> = self.root.as_ref().clone();
-                root.retain(|m| m.key != *key);
-                if let Some(value) = value {
-                    root.push(Member {
-                        key: key.clone(),
-                        key_span: Default::default(),
-                        value: value.clone(),
-                    });
-                }
+                set_member(&mut root, key.name(), value.clone());
                 self.root = Arc::new(root);
                 self.new_root = true;
                 Ok(())
