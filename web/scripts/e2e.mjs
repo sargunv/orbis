@@ -123,7 +123,10 @@
 //   z15.5, its drape pages within what WebGL 2 allocates, each within 1% of
 //   pixels of WebGPU's and the last with no GL error in the browser's log; extrusions report
 //   `depth-precision` (`degraded`) exactly where `EXT_clip_control` is
-//   missing; and a lost GPU recovers on WebGL 2.
+//   missing; a lost GPU recovers on WebGL 2; and the extract's code takes
+//   no typed array over the map's memory, which wasm-bindgen's table of JS
+//   values could grow and detach before WebGL reads it (checked by growing
+//   the memory at each such view).
 // - `offline` (only when asked for: it needs the network): downloads the
 //   live map's view at `--at` from the Offline areas dialog, then reloads
 //   with every request but the demo server's failing and checks the map
@@ -3900,6 +3903,42 @@ async function gestures(browser, server) {
   );
 }
 
+/** Grows the memory of the map's instance in this context by a page
+ * whenever one of its imports hands its code a typed array over that
+ * memory, before its own scripts run: wasm-bindgen's table of JS values,
+ * where the view goes, can grow the memory then, which detaches the view,
+ * and WebGL handed a detached view reads or writes no bytes. Counts the
+ * views in `globalThis.detachedViews`, and is `null` until the instance
+ * is made. */
+function growMemoryOnViews() {
+  globalThis.detachedViews = null;
+  const Instance = WebAssembly.Instance;
+  WebAssembly.Instance = function (module, imports) {
+    const name = Object.keys(imports ?? {}).find((n) => n.endsWith("_bg.js"));
+    if (!name) return new Instance(module, imports);
+    let memory;
+    const glue = { ...imports[name] };
+    for (const [slot, f] of Object.entries(glue)) {
+      if (typeof f !== "function") continue;
+      glue[slot] = (...args) => {
+        const made = f(...args);
+        if (ArrayBuffer.isView(made) && made.buffer === memory?.buffer) {
+          memory.grow(1);
+          globalThis.detachedViews++;
+        }
+        return made;
+      };
+    }
+    const instance = new Instance(module, { ...imports, [name]: glue });
+    memory = Object.values(instance.exports).find(
+      (e) => e instanceof WebAssembly.Memory,
+    );
+    globalThis.detachedViews = 0;
+    return instance;
+  };
+  WebAssembly.Instance.prototype = Instance.prototype;
+}
+
 /** Hides `EXT_clip_control` from WebGL 2 in this context, before its own
  * scripts run, as Firefox lacks it. */
 function withoutClipControl() {
@@ -4090,8 +4129,9 @@ async function webgl2(webgpuBrowser, server) {
 
     // The extract's views draw as on WebGPU, give or take antialiasing.
     const size = { width: 600, height: 400 };
-    const shot = async (browser, backend, view) => {
+    const shot = async (browser, backend, view, before) => {
       const { page, errors } = await open(browser, size);
+      if (before) await page.addInitScript(`(${before})()`);
       await page.goto(
         `${server.url}?style=tokyo-mvt&backend=${backend}${view}`,
       );
@@ -4102,11 +4142,13 @@ async function webgl2(webgpuBrowser, server) {
       );
       assert.equal(await page.evaluate(() => app.map.backend), backend);
       const image = decodePng(await page.locator("#map").screenshot());
+      image.detachedViews = await page.evaluate(() => globalThis.detachedViews);
       await page.close();
       assert.deepEqual(errors, [], `${backend} ${view}`);
       return image;
     };
-    for (const view of ["#13/35.6830/139.7520", "#16/35.676/139.745/30/60"]) {
+    const views = ["#13/35.6830/139.7520", "#16/35.676/139.745/30/60"];
+    for (const view of views) {
       const [gpu, gl] = [
         await shot(webgpuBrowser, "webgpu", view),
         await shot(browser, "webgl2", view),
@@ -4124,6 +4166,17 @@ async function webgl2(webgpuBrowser, server) {
         `webgl2: the extract at ${view} as on WebGPU (${(share * 100).toFixed(2)}% of pixels differ)`,
       );
     }
+
+    // The extract loads with the memory grown wherever the map's code takes
+    // a view of it, and takes none: no view goes through wasm-bindgen's
+    // table on its way to WebGL, so every upload hands WebGL its bytes.
+    const grown = await shot(browser, "webgl2", views[0], growMemoryOnViews);
+    assert.equal(
+      grown.detachedViews,
+      0,
+      "views of the memory the map's code took",
+    );
+    console.log("webgl2: the extract takes no view of its memory");
 
     // Terrain draws as on WebGPU: pitched hills under a hillshade and a
     // box, its drape slots cleared, drawn and mipmapped without compute.

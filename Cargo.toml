@@ -208,6 +208,13 @@ mlt-core = { git = "https://github.com/sargunv/maplibre-tile-spec", branch = "lo
 # entry was 12 bytes and its size assertion failed the build (#35 tracks
 # sending it upstream).
 fsst-rs = { git = "https://github.com/sargunv/fsst", branch = "align-table-entry" }
+# glow 0.17.0 making each typed array WebGL takes over wasm memory in the
+# call that hands it to WebGL: made in an earlier call, the view could be
+# detached by the time WebGL read it, since taking it as a JS value can grow
+# the memory (wasm-bindgen's table of JS values), and an upload then wrote
+# no bytes or a readback filled none. `pnpm e2e`'s `webgl2` check grows the
+# memory at every view the map's code takes (#35 tracks sending it upstream).
+glow = { git = "https://github.com/sargunv/glow", branch = "web-views-in-call" }
 
 # Several agents build at once on one disk: line tables keep backtraces
 # readable at a fraction of full debug info, and dependencies carry none.
