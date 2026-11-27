@@ -52,8 +52,8 @@ pub(crate) fn atmosphere_view(
         fog_opacity,
         ray_inverse: ray_inverse(view, camera.target),
         // The sky over a sphere; a low-zoom plane's is a plane's.
-        globe: (view.globe().filter(|g| g.plane.is_none()))
-            .map(|g| globe_sky(g, view, camera, light)),
+        globe: (view.globe())
+            .and_then(|g| Some(globe_sky(g.amount, g.sphere()?, view, camera, light))),
     }
 }
 
@@ -61,16 +61,16 @@ pub(crate) fn atmosphere_view(
 /// (`gl_sun`), the only engine that draws `sky.atmosphere-blend`, whose
 /// fixtures hold it.
 fn globe_sky(
-    globe: &orb_camera::GlobeView,
+    amount: f64,
+    sphere: &orb_camera::SphereView,
     view: &orb_camera::View,
     camera: &orb_camera::CameraState,
     light: &LightValues,
 ) -> orb_render::GlobeSky {
-    let eye = globe.target + globe.eye;
     orb_render::GlobeSky {
-        eye: eye.as_vec3().to_array(),
+        eye: sphere.eye_ecef().as_vec3().to_array(),
         radius: orb_crs::sphere::RADIUS as f32,
-        amount: globe.amount as f32,
+        amount: amount as f32,
         eye_distance_px: view.eye_distance_px() as f32,
         sun: gl_sun(camera, light).as_vec3().to_array(),
     }
@@ -112,8 +112,8 @@ fn gl_sun(camera: &orb_camera::CameraState, light: &LightValues) -> glam::DVec3 
 /// east, north and up at the target (projected coordinates are eastings
 /// and northings), turned onto the Earth's axes there.
 fn ray_inverse(view: &orb_camera::View, target: Geodetic) -> [[f32; 4]; 4] {
-    let inverse = match view.globe().filter(|g| g.plane.is_none()) {
-        Some(globe) => globe.view_proj.inverse(),
+    let inverse = match view.sphere() {
+        Some(sphere) => sphere.view_proj.inverse(),
         None => glam::DMat4::from_mat3(orb_crs::sphere::frame(target)) * view.view_proj().inverse(),
     };
     inverse.as_mat4().to_cols_array_2d()
@@ -186,10 +186,11 @@ mod tests {
         };
         let camera = orb_camera::CameraState::new(Geodetic::new(10.0, 30.0), 1.5, &mercator);
         let view = orb_camera::View::new(&camera, viewport, &surface);
-        let globe = view.globe().unwrap();
-        let eye = (globe.target + globe.eye).normalize();
+        let sphere = view.sphere().unwrap();
+        let eye = sphere.eye_ecef().normalize();
         let light = LightValues::of(&orb_style::v8::default_light(), 0.0);
-        let haze = glam::DVec3::from(globe_sky(globe, &view, &camera, &light).sun.map(f64::from));
+        let sky = globe_sky(1.0, sphere, &view, &camera, &light);
+        let haze = glam::DVec3::from(sky.sun.map(f64::from));
         assert!(haze.angle_between(gl_sun(&camera, &light)) < 1e-6);
         assert!(haze.dot(eye) < 0.0, "{haze} {eye}");
     }

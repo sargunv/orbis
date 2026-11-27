@@ -1498,7 +1498,7 @@ impl Labels {
         // A tile's patches go to placement only with a globe to see them,
         // and a Web Mercator tile's transform only on the sphere.
         let on_globe = view.globe().is_some();
-        let on_sphere = view.globe().is_some_and(|g| g.plane.is_none());
+        let on_sphere = view.sphere().is_some();
         let viewport = view.viewport();
         let camera_inputs = crate::paint::camera_inputs(camera);
         // World units per view height, and the camera's heading in the
@@ -1594,13 +1594,13 @@ impl Labels {
                 roll: camera.roll.to_radians(),
                 camera_to_center_distance: view.camera_to_center(),
                 globe: view.globe().map(|globe| orb_symbol::GlobeCamera {
-                    target: globe.target,
-                    view_proj: globe.view_proj,
-                    surface: match globe.plane {
-                        Some(_) => orb_symbol::Surface::Plane,
-                        None => orb_symbol::Surface::Sphere {
-                            eye: globe.target + globe.eye,
+                    target: globe.target(),
+                    view_proj: globe.view_proj(),
+                    surface: match globe.sphere() {
+                        Some(sphere) => orb_symbol::Surface::Sphere {
+                            eye: sphere.eye_ecef(),
                         },
+                        None => orb_symbol::Surface::Plane,
                     },
                 }),
             },

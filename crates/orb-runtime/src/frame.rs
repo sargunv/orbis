@@ -264,12 +264,12 @@ impl Map {
     /// loaded view shows the same with it or without. MapLibre Native
     /// keeps it so (mln-rs#334, after WhirlyGlobe's `forceMinLevel`).
     fn coarse_level(&self, view: &View, tms: &TileMatrixSet, min_zoom: u8) -> Option<u8> {
-        let globe = view.globe().filter(|g| g.plane.is_none())?;
+        let sphere = view.sphere()?;
         let (cols, rows) = tms.matrix_size(min_zoom);
         let continuous = self.mode == RenderMode::Continuous;
         (continuous && min_zoom <= 1 && cols * rows <= 4).then_some(())?;
         let viewport = view.viewport();
-        let radius = orb_crs::sphere::RADIUS / globe.metres_per_px;
+        let radius = orb_crs::sphere::RADIUS / sphere.metres_per_px;
         (radius <= 2.0 * viewport.width.max(viewport.height)).then_some(min_zoom)
     }
 
@@ -862,7 +862,7 @@ impl Map {
         (view, surface): (&View, &TileMatrixSet),
         (indices, tiles): (&[TileIndex], &mut [orb_render::TerrainTile]),
     ) {
-        let Some(target) = view.globe().map(|g| g.target) else {
+        let Some(target) = view.globe().map(orb_camera::GlobeView::target) else {
             return;
         };
         for (&tile, terrain) in indices.iter().zip(tiles) {
@@ -1711,34 +1711,34 @@ pub(crate) fn mercator_projection() -> orb_crs::Projection {
 /// A globe view's frame terms: its matrix, the target, and the horizon
 /// plane that depth and the far side's clipping come from.
 pub(crate) fn frame_globe(globe: &orb_camera::GlobeView, view: &View) -> orb_render::FrameGlobe {
-    let plane = globe.plane.is_some();
-    let horizon = if plane {
+    let horizon = match globe.sphere() {
         // A plane has no horizon: everything faces the eye.
-        [0.0, 0.0, 0.0, 1.0]
-    } else {
-        let radius = orb_crs::sphere::RADIUS;
-        let eye = globe.target + globe.eye;
-        let distance = eye.length();
-        let toward = eye / distance;
-        // `facing` is 1 under the eye and 0 at the horizon circle.
-        let horizon = radius * radius / distance;
-        let scale = 1.0 / (radius - horizon).max(1e-9);
-        let n = toward * scale;
-        [
-            n.x as f32,
-            n.y as f32,
-            n.z as f32,
-            ((globe.target.dot(toward) - horizon) * scale) as f32,
-        ]
+        None => [0.0, 0.0, 0.0, 1.0],
+        Some(sphere) => {
+            let radius = orb_crs::sphere::RADIUS;
+            let eye = sphere.eye_ecef();
+            let distance = eye.length();
+            let toward = eye / distance;
+            // `facing` is 1 under the eye and 0 at the horizon circle.
+            let horizon = radius * radius / distance;
+            let scale = 1.0 / (radius - horizon).max(1e-9);
+            let n = toward * scale;
+            [
+                n.x as f32,
+                n.y as f32,
+                n.z as f32,
+                ((sphere.target.dot(toward) - horizon) * scale) as f32,
+            ]
+        }
     };
     orb_render::FrameGlobe {
-        view_proj: globe.view_proj.as_mat4().to_cols_array_2d(),
-        target: globe.target.to_array(),
+        view_proj: globe.view_proj().as_mat4().to_cols_array_2d(),
+        target: globe.target().to_array(),
         amount: globe.amount as f32,
         horizon,
-        metres_per_unit: (globe.metres_per_px / view.world_per_px()) as f32,
-        eye: globe.eye.as_vec3().to_array(),
-        plane,
+        metres_per_unit: (globe.metres_per_px() / view.world_per_px()) as f32,
+        eye: globe.eye().as_vec3().to_array(),
+        plane: globe.plane().is_some(),
     }
 }
 

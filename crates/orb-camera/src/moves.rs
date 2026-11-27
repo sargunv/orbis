@@ -4,7 +4,7 @@
 use glam::DVec2;
 use orb_crs::{Geodetic, Metres, Projection, WorldRect, sphere};
 
-use crate::{CameraState, STYLE_ZOOM_TILE_PX, View, Viewport};
+use crate::{CameraState, LowView, STYLE_ZOOM_TILE_PX, View, Viewport};
 use orb_crs::Surface;
 
 /// How many times as far as the ground at the view's centre a pan moves
@@ -221,7 +221,7 @@ impl CameraState {
                     .map(|ground| (ground, center + (to - from))),
             };
             let Some((ground, to)) = held else { return };
-            if let Some(constraints) = free_bearing.filter(|_| view.low_plane().is_none()) {
+            if let Some(constraints) = free_bearing.filter(|_| view.sphere().is_some()) {
                 let mut turned = *self;
                 turned.turn_under(surface, viewport, ground, to, plane);
                 let mut kept = turned;
@@ -413,18 +413,21 @@ impl CameraState {
         let Some(now) = view.low_ground(px, height) else {
             return;
         };
-        let sphere = view.low_plane().is_none();
-        let guess = match view.low_plane() {
-            Some(low) => {
+        let (guess, sphere) = match view.globe().map(|globe| &globe.low) {
+            Some(LowView::Plane(low)) => {
                 let plane = low.projection();
                 let moved = low.camera_world() + plane.forward(ground) - plane.forward(now);
-                plane.inverse(moved)
+                (plane.inverse(moved), false)
             }
-            None => {
+            Some(LowView::Sphere(_)) => {
                 let (now, ground) = (sphere::ecef(now, 0.0), sphere::ecef(ground, 0.0));
                 let turn = glam::DQuat::from_rotation_arc(now.normalize(), ground.normalize());
-                sphere::geodetic(turn * sphere::up(self.target.wrapped()))
+                (
+                    sphere::geodetic(turn * sphere::up(self.target.wrapped())),
+                    true,
+                )
             }
+            None => return,
         };
         let at = |target: Geodetic| {
             let mut camera = CameraState { target, ..*self };

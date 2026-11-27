@@ -185,26 +185,40 @@ impl Viewport {
     }
 }
 
-/// A view's low-zoom surface ([`orb_crs::Globe`]): its matrices in
-/// camera-relative globe space, ECEF metres (`orb_crs::sphere`) less the
-/// target's position, or on a low-zoom plane that plane's world units (z
-/// up) less the target's.
+/// A view's low-zoom surface ([`orb_crs::Globe`]) and how much of the
+/// view it is. Its accessors answer in camera-relative globe space: on the
+/// sphere ECEF metres (`orb_crs::sphere`) less the target's position, on a
+/// low-zoom plane that plane's world units (z up) less the target's.
 #[derive(Clone, Debug)]
 pub struct GlobeView {
     /// How much of the low-zoom surface the view is, in (0, 1].
     pub amount: f64,
-    /// The target's position on (or above) the surface: the origin of
+    /// The surface the camera sees.
+    pub low: LowView,
+}
+
+/// The camera's view of a globe's low-zoom surface.
+#[derive(Clone, Debug)]
+pub enum LowView {
+    /// The sphere.
+    Sphere(SphereView),
+    /// A low-zoom plane: the camera's view of it, which the view's cover,
+    /// picking and labels take.
+    Plane(Box<View>),
+}
+
+/// The camera's view of the sphere, in camera-relative globe space.
+#[derive(Clone, Debug)]
+pub struct SphereView {
+    /// The target's position on (or above) the sphere: the origin of
     /// camera-relative globe space.
     pub target: DVec3,
     /// Camera-relative globe space → clip space.
     pub view_proj: DMat4,
     /// The eye, camera-relative.
     pub eye: DVec3,
-    /// Metres (on a plane, its world units) per logical pixel at the
-    /// target.
+    /// Metres per logical pixel at the target.
     pub metres_per_px: f64,
-    /// On a low-zoom plane, the camera's view of it.
-    pub plane: Option<Box<View>>,
     /// The radius of the sphere through the lowest ground near the target
     /// (sea level's, or lower where the ground is): its horizon ends the
     /// ground.
@@ -212,14 +226,67 @@ pub struct GlobeView {
 }
 
 impl GlobeView {
-    /// Whether a camera-relative point on the surface faces the eye: on the
-    /// sphere, in front of its horizon; on a plane, always.
-    pub(crate) fn faces_eye(&self, p: DVec3) -> bool {
-        if self.plane.is_some() {
-            return true;
+    /// The camera's view of the sphere, when the surface is one.
+    pub fn sphere(&self) -> Option<&SphereView> {
+        match &self.low {
+            LowView::Sphere(sphere) => Some(sphere),
+            LowView::Plane(_) => None,
         }
-        let eye = self.target + self.eye;
-        (p + self.target).dot(eye) >= sphere::RADIUS * sphere::RADIUS
+    }
+
+    /// The camera's view of the low-zoom plane, when the surface is one.
+    pub fn plane(&self) -> Option<&View> {
+        match &self.low {
+            LowView::Sphere(_) => None,
+            LowView::Plane(low) => Some(low),
+        }
+    }
+
+    /// The target's position on the surface: the origin of
+    /// camera-relative globe space.
+    pub fn target(&self) -> DVec3 {
+        match &self.low {
+            LowView::Sphere(sphere) => sphere.target,
+            LowView::Plane(low) => low.camera_world.extend(0.0),
+        }
+    }
+
+    /// Camera-relative globe space → clip space.
+    pub fn view_proj(&self) -> DMat4 {
+        match &self.low {
+            LowView::Sphere(sphere) => sphere.view_proj,
+            LowView::Plane(low) => low.view_proj,
+        }
+    }
+
+    /// The eye, camera-relative.
+    pub fn eye(&self) -> DVec3 {
+        match &self.low {
+            LowView::Sphere(sphere) => sphere.eye,
+            LowView::Plane(low) => low.eye,
+        }
+    }
+
+    /// Metres (on a plane, its world units) per logical pixel at the
+    /// target.
+    pub fn metres_per_px(&self) -> f64 {
+        match &self.low {
+            LowView::Sphere(sphere) => sphere.metres_per_px,
+            LowView::Plane(low) => low.world_per_px,
+        }
+    }
+}
+
+impl SphereView {
+    /// The eye's position on the sphere's axes.
+    pub fn eye_ecef(&self) -> DVec3 {
+        self.target + self.eye
+    }
+
+    /// Whether a camera-relative point on the sphere faces the eye: in
+    /// front of its horizon.
+    pub(crate) fn faces_eye(&self, p: DVec3) -> bool {
+        (p + self.target).dot(self.eye_ecef()) >= sphere::RADIUS * sphere::RADIUS
     }
 
     /// How large the sphere's surface at a camera-relative point shows:
@@ -264,9 +331,7 @@ impl GlobeView {
     /// horizon, in radians.
     #[cfg(test)]
     pub(crate) fn horizon_angle(&self) -> f64 {
-        (self.floor / (self.target + self.eye).length())
-            .min(1.0)
-            .acos()
+        (self.floor / self.eye_ecef().length()).min(1.0).acos()
     }
 }
 
@@ -455,12 +520,7 @@ impl View {
                 let low = Self::on_ground(camera, viewport, &Surface::plane(plane), lowest);
                 return GlobeView {
                     amount,
-                    target: low.camera_world.extend(0.0),
-                    view_proj: low.view_proj,
-                    eye: low.eye,
-                    metres_per_px: low.world_per_px,
-                    plane: Some(Box::new(low)),
-                    floor: sphere::RADIUS,
+                    low: LowView::Plane(Box::new(low)),
                 };
             }
             // The plane's view, turned from the target's east, north and up
@@ -482,12 +542,13 @@ impl View {
                 );
             GlobeView {
                 amount,
-                target: sphere::ecef(target, camera.elevation),
-                view_proj: proj * view,
-                eye: view.inverse().transform_point3(DVec3::ZERO),
-                metres_per_px: camera.resolution,
-                plane: None,
-                floor: sphere::RADIUS + floor,
+                low: LowView::Sphere(SphereView {
+                    target: sphere::ecef(target, camera.elevation),
+                    view_proj: proj * view,
+                    eye: view.inverse().transform_point3(DVec3::ZERO),
+                    metres_per_px: camera.resolution,
+                    floor: sphere::RADIUS + floor,
+                }),
             }
         });
 
@@ -519,7 +580,11 @@ impl View {
     #[must_use]
     pub fn with_tile_lod(mut self, lod: TileLod) -> Self {
         self.lod = lod.sanitized();
-        if let Some(low) = self.globe.as_mut().and_then(|g| g.plane.as_mut()) {
+        if let Some(GlobeView {
+            low: LowView::Plane(low),
+            ..
+        }) = &mut self.globe
+        {
             low.lod = self.lod;
         }
         self
@@ -538,7 +603,13 @@ impl View {
     /// The camera's view of the low-zoom plane, when one shows at its zoom:
     /// what the view's cover, picking and labels see.
     pub fn low_plane(&self) -> Option<&View> {
-        self.globe.as_ref()?.plane.as_deref()
+        self.globe.as_ref()?.plane()
+    }
+
+    /// The camera's view of the sphere, when the view's low-zoom surface is
+    /// one and shows at its zoom.
+    pub fn sphere(&self) -> Option<&SphereView> {
+        self.globe.as_ref()?.sphere()
     }
 
     /// The projection the view's world positions are on.
@@ -639,11 +710,11 @@ impl View {
     /// [`project_3d`](Self::project_3d) with the position's depth: its clip
     /// z over w, 0 at the near plane and 1 at the far one.
     pub fn project_depth(&self, world: DVec2, height: Metres) -> Option<(DVec2, f64)> {
-        if let Some(low) = self.low_plane() {
-            return low.project_depth(self.to_low(low, world), height);
-        }
-        let clip = match &self.globe {
-            Some(globe) => {
+        let clip = match self.globe.as_ref().map(|g| &g.low) {
+            Some(LowView::Plane(low)) => {
+                return low.project_depth(self.to_low(low, world), height);
+            }
+            Some(LowView::Sphere(globe)) => {
                 let g = self.projection.inverse(world);
                 let p = sphere::ecef(g, height.0) - globe.target;
                 if !globe.faces_eye(sphere::ecef(g, 0.0) - globe.target) {
@@ -738,7 +809,7 @@ impl View {
     /// sphere `height` above it: the view ray's nearest meeting with it, or
     /// `None` where the ray misses.
     pub(crate) fn globe_ground(&self, px: DVec2, height: Metres) -> Option<DVec3> {
-        let globe = self.globe.as_ref().filter(|g| g.plane.is_none())?;
+        let globe = self.sphere()?;
         let (near, far) = self.ray(px, &globe.view_proj);
         let (origin, dir) = (near + globe.target, (far - near).normalize());
         let radius = sphere::RADIUS + height.0;
@@ -852,13 +923,14 @@ impl View {
         margin_px: f64,
         detail: Detail,
     ) -> Vec<CoveredTile> {
-        if let Some(low) = self.low_plane() {
-            return low.cover_low(tms, tile_px, max_zoom);
-        }
-        if let Some(globe) = &self.globe {
-            let metres = height * globe.metres_per_px / self.world_per_px;
-            let at = (tile_px, max_zoom);
-            return self.cover_globe(globe, tms, at, (metres, terrain), detail);
+        match self.globe.as_ref().map(|g| &g.low) {
+            Some(LowView::Plane(low)) => return low.cover_low(tms, tile_px, max_zoom),
+            Some(LowView::Sphere(globe)) => {
+                let metres = height * globe.metres_per_px / self.world_per_px;
+                let at = (tile_px, max_zoom);
+                return self.cover_globe(globe, tms, at, (metres, terrain), detail);
+            }
+            None => {}
         }
         let center_zoom = (tms.tile_span(0) / (self.world_per_px * tile_px)).log2();
         self.cover_tiles(
@@ -883,13 +955,14 @@ impl View {
         max_zoom: u8,
         mut footprint: impl FnMut(TileIndex) -> Option<Footprint>,
     ) -> Vec<CoveredTile> {
-        if let Some(low) = self.low_plane() {
-            return low.cover_low(tms, tile_px, max_zoom);
-        }
-        // Any set's tiles wrap the globe directly.
-        if let Some(globe) = &self.globe {
-            let detail = Detail::Lod(self.lod);
-            return self.cover_globe(globe, tms, (tile_px, max_zoom), (0.0, None), detail);
+        match self.globe.as_ref().map(|g| &g.low) {
+            Some(LowView::Plane(low)) => return low.cover_low(tms, tile_px, max_zoom),
+            // Any set's tiles wrap the globe directly.
+            Some(LowView::Sphere(globe)) => {
+                let detail = Detail::Lod(self.lod);
+                return self.cover_globe(globe, tms, (tile_px, max_zoom), (0.0, None), detail);
+            }
+            None => {}
         }
         let scale = self.world_per_px * tile_px;
         let detail = Detail::Lod(self.lod);
@@ -1071,13 +1144,13 @@ impl View {
     /// bottom edge, as GL JS's `expandCullingToContentElevation`.
     fn cover_globe(
         &self,
-        globe: &GlobeView,
+        globe: &SphereView,
         tms: &TileMatrixSet,
         (tile_px, max_zoom): (f64, u8),
         (height, terrain): (f64, Option<&dyn Elevation>),
         detail: Detail,
     ) -> Vec<CoveredTile> {
-        let eye = globe.target + globe.eye;
+        let eye = globe.eye_ecef();
         let eye_dir = eye.normalize();
         let height = height.max(0.0);
         let elevation = globe.target.length() - sphere::RADIUS;
@@ -1388,13 +1461,13 @@ const GLOBE_FIXED_ZOOM: f64 = 4.0;
 /// A globe view's frustum cut off where it passes the horizon, as GL JS
 /// fits its globe frustum's far plane to the horizon: its eight corners
 /// in sphere space, and the depth along the view where the sphere's
-/// ground ends (`None` on a low-zoom plane, uncut).
+/// ground ends.
 struct GlobeFrustum {
     corners: [DVec3; 8],
     eye: DVec3,
     forward: DVec3,
-    ground: Option<f64>,
-    /// The lowest ground's radius ([`GlobeView::floor`]).
+    ground: f64,
+    /// The lowest ground's radius ([`SphereView::floor`]).
     floor: f64,
 }
 
@@ -1404,21 +1477,12 @@ struct GlobeFrustumCut {
 }
 
 impl GlobeFrustum {
-    fn new(globe: &GlobeView) -> Self {
+    fn new(globe: &SphereView) -> Self {
         let inverse = globe.view_proj.inverse();
         let ndc = box_corners(DVec3::new(-1.0, -1.0, 0.0), DVec3::ONE);
         let corners = ndc.map(|c| inverse.project_point3(c) + globe.target);
-        let eye = globe.target + globe.eye;
+        let eye = globe.eye_ecef();
         let forward = -globe.eye.normalize();
-        if globe.plane.is_some() {
-            return Self {
-                corners,
-                eye,
-                forward,
-                ground: None,
-                floor: globe.floor,
-            };
-        }
         let up = eye.normalize();
         let floor = globe.floor;
         let plane = floor * floor / eye.length();
@@ -1452,7 +1516,7 @@ impl GlobeFrustum {
             corners,
             eye,
             forward,
-            ground: Some(rays.min(visible)),
+            ground: rays.min(visible),
             floor,
         }
     }
@@ -1461,14 +1525,11 @@ impl GlobeFrustum {
     /// `height` metres, which shows past the ground's horizon.
     fn reaching(&self, height: f64) -> GlobeFrustumCut {
         let mut corners = self.corners;
-        let Some(ground) = self.ground else {
-            return GlobeFrustumCut { corners };
-        };
         // Content standing on the sphere shows farther along a ray that
         // grazes it, by up to the tangent's length from it to the
         // content's top.
         let shell = (sphere::RADIUS + height).max(self.floor);
-        let far = ground + (shell * shell - self.floor * self.floor).sqrt();
+        let far = self.ground + (shell * shell - self.floor * self.floor).sqrt();
         let depth = |p: DVec3| (p - self.eye).dot(self.forward);
         for i in 0..4 {
             let (near, along) = (corners[i], corners[i + 4] - corners[i]);
@@ -2240,7 +2301,7 @@ mod tests {
             let p = view.project(view.camera_world()).unwrap();
             assert!(p.distance(center) < 1e-6, "{target:?}: {p}");
             // Points on the globe: within half its radius of the centre.
-            let radius_px = sphere::RADIUS / view.globe().unwrap().metres_per_px;
+            let radius_px = sphere::RADIUS / view.sphere().unwrap().metres_per_px;
             let reach = (radius_px / 2.0).min(300.0);
             for offset in [
                 DVec2::new(0.0, 1.0),
@@ -2286,12 +2347,12 @@ mod tests {
     fn globe_cover_keeps_tiles_under_lifted_content() {
         let tms = TileMatrixSet::web_mercator();
         let view = globe_view(Geodetic::new(0.0, 0.0), 4.5, 80.0, 0.0);
-        let globe = view.globe().unwrap();
+        let globe = view.sphere().unwrap();
         let lift = 500e3 * view.world_per_px() / globe.metres_per_px;
         let plain = view.cover_volume(tms, 512.0, 22, 0.0, None, 0.0);
         let lifted = view.cover_volume(tms, 512.0, 22, lift, None, 0.0);
         assert!(plain.iter().all(|t| lifted.contains(t)));
-        let eye = (globe.target + globe.eye).normalize();
+        let eye = globe.eye_ecef().normalize();
         let past: Vec<_> = (lifted.iter())
             .filter(|t| !plain.contains(t))
             .map(|t| {
@@ -2337,7 +2398,7 @@ mod tests {
                 globe: Some(Globe::SPHERE),
             };
             let view = View::new(&camera, viewport, &surface);
-            let globe = view.globe().unwrap();
+            let globe = view.sphere().unwrap();
             let cover = view.cover_terrain(tms, 512.0, 22, &Plateau);
             let inverse = globe.view_proj.inverse();
             let shell = sphere::RADIUS + 4000.0;
