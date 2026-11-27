@@ -1,11 +1,16 @@
-//! The map options panel's switches, as `web/demo/app/options.js` has
-//! them (which says why each is as it is): what the scene's style draws
-//! (terrain and its relief, the light's anchor, buildings, the globe and
-//! its sky, labels), and only those the style can take. Each choice edits the style JSON; the map takes it as one diffed
-//! `setStyle`, so nothing reloads. An Orbis-only option starts off,
-//! whatever the scene designs, its keys out of the style, so that by
-//! default every scene draws what GL JS and MapLibre Native could.
+//! The map options panel's switches, from `web/demo/data/options.json`,
+//! which the web demo's `web/demo/app/options.js` reads too (and which says
+//! what each field means and why each option is as it is): what the scene's
+//! style draws (terrain and its relief, the light's anchor, buildings, the
+//! globe and its sky, labels), and only those the style can take. Each
+//! choice edits the style JSON; the map takes it as one diffed `setStyle`,
+//! so nothing reloads. An Orbis-only option starts off, whatever the scene
+//! designs, its keys out of the style, so that by default every scene draws
+//! what GL JS and MapLibre Native could.
 
+use std::sync::LazyLock;
+
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::scenes::Scene;
@@ -27,37 +32,114 @@ pub(crate) struct Context {
     pub(crate) terrain: Option<Value>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Opt {
+/// The options, in the panel's order.
+pub(crate) static ALL: LazyLock<Vec<Opt>> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../../../web/demo/data/options.json"))
+        .expect("web/demo/data/options.json")
+});
+
+/// One option of the panel.
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "Entry")]
+pub(crate) struct Opt {
+    /// The name the web demo's URL and the scene's `off` use.
+    key: String,
+    pub(crate) group: String,
+    pub(crate) label: String,
+    pub(crate) note: Option<String>,
+    /// A preview of a style-spec proposal that GL JS and MapLibre Native
+    /// don't draw: off by default, and off takes its keys out of the style.
+    pub(crate) orbis_only: bool,
+    /// The option, and its value, without which this one draws nothing,
+    /// and how the panel says so.
+    needs: Option<Needs>,
+    /// `(value, label)`, or none for a switch.
+    pub(crate) choices: Option<Vec<(String, String)>>,
+    does: Does,
+}
+
+/// An entry of `options.json`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Entry {
+    key: String,
+    group: String,
+    label: String,
+    note: Option<String>,
+    #[serde(default)]
+    orbis_only: bool,
+    needs: Option<Needs>,
+    choices: Option<Vec<(String, String)>>,
+    layers: Option<String>,
+    sky: Option<SkyNumber>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Needs {
+    key: String,
+    value: Value,
+    why: String,
+}
+
+/// What an option does to the style.
+#[derive(Debug)]
+enum Does {
+    /// Shows or hides every layer of this type.
+    Layers(String),
+    Sky(SkyNumber),
     Terrain,
-    Fog,
-    Hillshade,
     Blend,
     Light,
-    Buildings,
     Projection,
-    Atmosphere,
-    Labels,
 }
 
-/// A switch, or one of a few choices: `(value, label)`.
-pub(crate) enum Kind {
-    Switch,
-    Choices(&'static [(&'static str, &'static str)]),
+impl TryFrom<Entry> for Opt {
+    type Error = String;
+
+    fn try_from(entry: Entry) -> Result<Self, String> {
+        let does = match (entry.layers, entry.sky, entry.key.as_str()) {
+            (Some(kind), None, _) => Does::Layers(kind),
+            (None, Some(sky), _) => Does::Sky(sky),
+            (None, None, "terrain") => Does::Terrain,
+            (None, None, "blend") => Does::Blend,
+            (None, None, "light") => Does::Light,
+            (None, None, "projection") => Does::Projection,
+            (None, None, key) => return Err(format!("{key}: give it code in options.rs")),
+            (Some(_), Some(_), key) => return Err(format!("{key}: both layers and sky")),
+        };
+        Ok(Self {
+            key: entry.key,
+            group: entry.group,
+            label: entry.label,
+            note: entry.note,
+            orbis_only: entry.orbis_only,
+            needs: entry.needs,
+            choices: entry.choices,
+            does,
+        })
+    }
 }
 
-/// The panel's order.
-pub(crate) const ALL: [Opt; 9] = [
-    Opt::Terrain,
-    Opt::Fog,
-    Opt::Hillshade,
-    Opt::Blend,
-    Opt::Light,
-    Opt::Buildings,
-    Opt::Projection,
-    Opt::Atmosphere,
-    Opt::Labels,
-];
+/// A number in the style's `sky`, on at any value but `off` (an
+/// expression included), with `default` standing in for an unset one; on
+/// puts back the designed value (or unsets it).
+#[derive(Debug, Deserialize)]
+struct SkyNumber {
+    name: String,
+    default: f64,
+    off: f64,
+}
+
+impl SkyNumber {
+    fn is_on(&self, sky: &Value) -> bool {
+        sky.is_object()
+            && match &sky[&self.name] {
+                Value::Null => self.default != self.off,
+                Value::Number(n) => n.as_f64() != Some(self.off),
+                _ => true,
+            }
+    }
+}
 
 fn layers<'a>(style: &'a Value, kind: &'a str) -> impl Iterator<Item = &'a Value> {
     style["layers"]
@@ -69,15 +151,6 @@ fn layers<'a>(style: &'a Value, kind: &'a str) -> impl Iterator<Item = &'a Value
 
 fn visible(layer: &Value) -> bool {
     layer["layout"]["visibility"] != "none"
-}
-
-fn number_or(value: &Value, fallback: f64) -> Option<f64> {
-    match value {
-        Value::Null => Some(fallback),
-        Value::Number(n) => n.as_f64(),
-        // An expression: on, whatever it gives.
-        _ => None,
-    }
 }
 
 fn projection_type(style: &Value) -> String {
@@ -122,155 +195,38 @@ fn with_keys(parent: &mut Value, field: &str, keys: &[&str], on: bool, from: &Va
     }
 }
 
-/// A number in the style's `sky`: `off` for off, the designed value (or
-/// unset) for on.
-struct SkyNumber {
-    name: &'static str,
-    fallback: f64,
-    off: f64,
-    /// Fog is on below 1, not at any value but its off.
-    below: bool,
-}
-
-impl SkyNumber {
-    fn is_on(&self, value: &Value) -> bool {
-        match number_or(value, self.fallback) {
-            Some(v) if self.below => v < self.off,
-            Some(v) => v != self.off,
-            None => true,
-        }
-    }
+fn projection_by_design(cx: &Context) -> String {
+    cx.scene
+        .projection
+        .as_ref()
+        .and_then(|p| p["type"].as_str())
+        .map_or_else(|| projection_type(&cx.designed), Into::into)
 }
 
 impl Opt {
-    pub(crate) fn group(self) -> &'static str {
-        match self {
-            Opt::Terrain | Opt::Fog | Opt::Hillshade | Opt::Blend | Opt::Light => {
-                "Terrain and light"
-            }
-            Opt::Buildings => "Buildings",
-            Opt::Projection | Opt::Atmosphere => "Globe and sky",
-            Opt::Labels => "Map",
-        }
-    }
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Opt::Terrain => "Terrain",
-            Opt::Hillshade => "Hillshade",
-            Opt::Blend => "Blended relief",
-            Opt::Light => "Light",
-            Opt::Buildings => "3D buildings",
-            Opt::Projection => "Projection",
-            Opt::Atmosphere => "Atmosphere",
-            Opt::Fog => "Fog",
-            Opt::Labels => "Labels",
-        }
-    }
-
-    pub(crate) fn note(self) -> Option<&'static str> {
-        match self {
-            Opt::Blend => {
-                Some("Shading multiplied into the colours beneath, which keep their saturation")
-            }
-            Opt::Light => Some("Fixed to the ground, or turning with the view"),
-            _ => None,
-        }
-    }
-
-    /// A preview of a style-spec proposal that GL JS and MapLibre Native
-    /// don't draw: off by default, and off takes its keys out of the style.
-    pub(crate) fn orbis_only(self) -> bool {
-        self == Opt::Blend
-    }
-
-    pub(crate) fn kind(self) -> Kind {
-        match self {
-            Opt::Light => Kind::Choices(&[("map", "Map"), ("viewport", "Viewport")]),
-            Opt::Projection => Kind::Choices(&[("globe", "Globe"), ("mercator", "Mercator")]),
-            _ => Kind::Switch,
-        }
-    }
-
-    /// The option, and its value, without which this one draws nothing,
-    /// and how the panel says so.
-    pub(crate) fn needs(self) -> Option<(Opt, Value, &'static str)> {
-        match self {
-            Opt::Blend => Some((Opt::Hillshade, json!(true), "With the hillshade on")),
-            Opt::Atmosphere => Some((Opt::Projection, json!("globe"), "On the globe")),
-            Opt::Fog => Some((Opt::Terrain, json!(true), "With terrain on")),
-            _ => None,
-        }
-    }
-
-    fn layer_type(self) -> Option<&'static str> {
-        match self {
-            Opt::Hillshade => Some("hillshade"),
-            Opt::Buildings => Some("fill-extrusion"),
-            Opt::Labels => Some("symbol"),
-            _ => None,
-        }
-    }
-
-    fn sky(self) -> Option<SkyNumber> {
-        let (name, fallback, off, below) = match self {
-            // The spec's defaults: atmosphere 0.8, fog over the far half.
-            Opt::Atmosphere => ("atmosphere-blend", 0.8, 0.0, false),
-            // Fog draws only over terrain; a blend of 1 puts it past the horizon.
-            Opt::Fog => ("fog-ground-blend", 0.5, 1.0, true),
-            _ => return None,
-        };
-        Some(SkyNumber {
-            name,
-            fallback,
-            off,
-            below,
-        })
-    }
-
-    fn projection_by_design(cx: &Context) -> String {
-        cx.scene
-            .projection
-            .as_ref()
-            .and_then(|p| p["type"].as_str())
-            .map_or_else(|| projection_type(&cx.designed), Into::into)
-    }
-
     /// Whether the scene's style can take this option.
-    pub(crate) fn supported(self, cx: &Context) -> bool {
+    pub(crate) fn supported(&self, cx: &Context) -> bool {
         let designed = &cx.designed;
-        if let Some(kind) = self.layer_type() {
-            return layers(designed, kind).any(visible);
-        }
-        if let Some(sky) = self.sky() {
-            return designed["sky"].is_object() && sky.is_on(&designed["sky"][sky.name]);
-        }
-        match self {
-            Opt::Terrain => cx.scene.terrain && cx.terrain.is_some(),
-            Opt::Blend => !blended(designed).is_empty(),
-            Opt::Light => cx.scene.light,
-            Opt::Projection => {
-                matches!(
-                    Self::projection_by_design(cx).as_str(),
-                    "globe" | "mercator"
-                )
-            }
-            _ => unreachable!("layer and sky options return above"),
+        match &self.does {
+            Does::Layers(kind) => layers(designed, kind).any(visible),
+            Does::Sky(sky) => sky.is_on(&designed["sky"]),
+            Does::Terrain => cx.scene.terrain && cx.terrain.is_some(),
+            Does::Blend => !blended(designed).is_empty(),
+            Does::Light => cx.scene.light,
+            Does::Projection => matches!(projection_by_design(cx).as_str(), "globe" | "mercator"),
         }
     }
 
     /// Its value in `style`.
-    pub(crate) fn read(self, style: &Value) -> Value {
-        if let Some(kind) = self.layer_type() {
-            return json!(layers(style, kind).any(visible));
-        }
-        if let Some(sky) = self.sky() {
-            return json!(style["sky"].is_object() && sky.is_on(&style["sky"][sky.name]));
-        }
-        match self {
-            Opt::Terrain => json!(!style["terrain"].is_null()),
-            Opt::Blend => json!(!blended(style).is_empty()),
-            Opt::Light => {
+    pub(crate) fn read(&self, style: &Value) -> Value {
+        match &self.does {
+            Does::Layers(kind) => json!(layers(style, kind).any(visible)),
+            Does::Sky(sky) => json!(sky.is_on(&style["sky"])),
+            Does::Terrain => json!(!style["terrain"].is_null()),
+            Does::Blend => json!(!blended(style).is_empty()),
+            // The first hillshade layer's anchor, else the light's, else
+            // the spec's default.
+            Does::Light => {
                 let hillshade = layers(style, "hillshade")
                     .next()
                     .map(|l| l["paint"][HILLSHADE_ANCHOR].clone());
@@ -279,72 +235,53 @@ impl Opt {
                     _ => json!(style["light"]["anchor"].as_str().unwrap_or("viewport")),
                 }
             }
-            Opt::Projection => json!(projection_type(style)),
-            _ => unreachable!("layer and sky options return above"),
+            Does::Projection => json!(projection_type(style)),
         }
     }
 
     /// The scene's default: off where it says so or for an Orbis-only
     /// option, else the option's own, else as designed.
-    pub(crate) fn initial(self, cx: &Context) -> Value {
-        if cx.scene.off.iter().any(|o| o == self.key()) {
+    pub(crate) fn initial(&self, cx: &Context) -> Value {
+        if cx.scene.off.contains(&self.key) {
             return json!(false);
         }
-        match self {
-            Opt::Projection => json!(Self::projection_by_design(cx)),
-            _ if self.orbis_only() => json!(false),
+        match self.does {
+            Does::Projection => json!(projection_by_design(cx)),
+            _ if self.orbis_only => json!(false),
             _ => self.read(&cx.designed),
         }
     }
 
-    /// The name the web demo's URL and the scene's `off` use.
-    fn key(self) -> &'static str {
-        match self {
-            Opt::Terrain => "terrain",
-            Opt::Hillshade => "hillshade",
-            Opt::Blend => "blend",
-            Opt::Light => "light",
-            Opt::Buildings => "buildings",
-            Opt::Projection => "projection",
-            Opt::Atmosphere => "atmosphere",
-            Opt::Fog => "fog",
-            Opt::Labels => "labels",
-        }
-    }
-
     /// Edits `style` to `value`.
-    pub(crate) fn apply(self, style: &mut Value, value: &Value, cx: &Context) {
+    pub(crate) fn apply(&self, style: &mut Value, value: &Value, cx: &Context) {
         let on = value.as_bool() == Some(true);
-        if let Some(kind) = self.layer_type() {
-            // Back to each layer's visibility as designed.
-            let shown: Vec<&Value> = layers(&cx.designed, kind)
-                .filter(|l| visible(l))
-                .map(|l| &l["id"])
-                .collect();
-            for layer in style["layers"].as_array_mut().into_iter().flatten() {
-                if layer["type"] == kind {
-                    let show = on && shown.contains(&&layer["id"]);
-                    layer["layout"]["visibility"] = json!(if show { "visible" } else { "none" });
+        match &self.does {
+            Does::Layers(kind) => {
+                // Back to each layer's visibility as designed.
+                let shown: Vec<&Value> = layers(&cx.designed, kind)
+                    .filter(|l| visible(l))
+                    .map(|l| &l["id"])
+                    .collect();
+                for layer in style["layers"].as_array_mut().into_iter().flatten() {
+                    if layer["type"] == *kind {
+                        let show = on && shown.contains(&&layer["id"]);
+                        layer["layout"]["visibility"] =
+                            json!(if show { "visible" } else { "none" });
+                    }
                 }
             }
-            return;
-        }
-        if let Some(sky) = self.sky() {
-            style["sky"][sky.name] = if on {
-                cx.designed["sky"][sky.name].clone()
-            } else {
-                json!(sky.off)
-            };
-            return;
-        }
-        match self {
-            Opt::Terrain => match (&cx.terrain, on) {
+            Does::Sky(sky) => {
+                let off = json!({ sky.name.as_str(): sky.off });
+                let from = if on { &cx.designed["sky"] } else { &off };
+                with_keys(style, "sky", &[&sky.name], true, from);
+            }
+            Does::Terrain => match (&cx.terrain, on) {
                 (Some(terrain), true) => style["terrain"] = terrain.clone(),
                 _ => remove(style, "terrain"),
             },
             // Each layer's blend with the paint designed for it, or neither
             // and the paint it takes drawn normally.
-            Opt::Blend => {
+            Does::Blend => {
                 for designed in blended(&cx.designed) {
                     let Some(layer) = layer_mut(style, &designed["id"]) else {
                         continue;
@@ -359,7 +296,7 @@ impl Opt {
                     with_keys(layer, "paint", &[key], on, &designed["paint"]);
                 }
             }
-            Opt::Light => {
+            Does::Light => {
                 for layer in style["layers"].as_array_mut().into_iter().flatten() {
                     if layer["type"] == "hillshade" {
                         layer["paint"][HILLSHADE_ANCHOR] = value.clone();
@@ -367,8 +304,7 @@ impl Opt {
                 }
                 style["light"]["anchor"] = value.clone();
             }
-            Opt::Projection => style["projection"]["type"] = value.clone(),
-            _ => unreachable!("layer and sky options return above"),
+            Does::Projection => style["projection"]["type"] = value.clone(),
         }
     }
 }
@@ -391,8 +327,8 @@ fn remove(style: &mut Value, key: &str) {
 #[derive(Default)]
 pub(crate) struct Panel {
     pub(crate) context: Option<Context>,
-    pub(crate) available: Vec<Opt>,
-    pub(crate) values: Vec<(Opt, Value)>,
+    pub(crate) available: Vec<&'static Opt>,
+    pub(crate) values: Vec<(&'static Opt, Value)>,
 }
 
 impl Panel {
@@ -404,33 +340,42 @@ impl Panel {
     /// The scene's style is in: offers what it can take, and edits `style`
     /// to each option's default.
     pub(crate) fn attach(&mut self, context: Context, style: &mut Value) {
-        self.available = ALL.into_iter().filter(|o| o.supported(&context)).collect();
-        for &option in &self.available {
+        self.available = ALL.iter().filter(|o| o.supported(&context)).collect();
+        for option in &self.available {
             let value = option.initial(&context);
             if option.read(style) != value {
                 option.apply(style, &value, &context);
             }
         }
-        self.values = self.available.iter().map(|o| (*o, o.read(style))).collect();
+        self.read(style);
         self.context = Some(context);
     }
 
-    pub(crate) fn value(&self, option: Opt) -> Option<&Value> {
+    fn read(&mut self, style: &Value) {
+        self.values = self.available.iter().map(|&o| (o, o.read(style))).collect();
+    }
+
+    /// The value of the option named `key`, if the style offers it.
+    fn value_of(&self, key: &str) -> Option<&Value> {
         self.values
             .iter()
-            .find(|(o, _)| *o == option)
+            .find(|(o, _)| o.key == key)
             .map(|(_, v)| v)
     }
 
+    pub(crate) fn value(&self, option: &Opt) -> Option<&Value> {
+        self.value_of(&option.key)
+    }
+
     /// Why `option` is disabled, if another it needs is off.
-    pub(crate) fn disabled(&self, option: Opt) -> Option<&'static str> {
-        let (needed, value, why) = option.needs()?;
-        let current = self.value(needed)?;
-        (*current != value).then_some(why)
+    pub(crate) fn disabled(&self, option: &'static Opt) -> Option<&'static str> {
+        let needs = option.needs.as_ref()?;
+        let current = self.value_of(&needs.key)?;
+        (*current != needs.value).then_some(needs.why.as_str())
     }
 
     /// Picks `value` for `option`, editing `style`; whether it changed.
-    pub(crate) fn pick(&mut self, option: Opt, value: Value, style: &mut Value) -> bool {
+    pub(crate) fn pick(&mut self, option: &Opt, value: Value, style: &mut Value) -> bool {
         let Some(context) = &self.context else {
             return false;
         };
@@ -438,7 +383,7 @@ impl Panel {
             return false;
         }
         option.apply(style, &value, context);
-        self.values = self.available.iter().map(|o| (*o, o.read(style))).collect();
+        self.read(style);
         true
     }
 }
@@ -463,6 +408,23 @@ mod tests {
         keys.sort();
         keys.dedup();
         keys
+    }
+
+    /// Every option the data names reads, and every option a `needs` or a
+    /// scene's `off` names is one.
+    #[test]
+    fn options_name_options() {
+        let named = |key: &str| ALL.iter().any(|o| o.key == key);
+        for option in ALL.iter() {
+            if let Some(needs) = &option.needs {
+                assert!(named(&needs.key), "{}: needs {}", option.key, needs.key);
+            }
+        }
+        for scene in Catalogue::read().scenes() {
+            for key in &scene.off {
+                assert!(named(key), "{}: off {key}", scene.key);
+            }
+        }
     }
 
     /// The Globe opens with none of Orbis's previews, and its switches
@@ -492,7 +454,7 @@ mod tests {
         for (name, value) in unblended.as_object().into_iter().flatten() {
             assert_eq!(&hillshade["paint"][name], value);
         }
-        for option in ALL.into_iter().filter(|o| o.orbis_only()) {
+        for option in ALL.iter().filter(|o| o.orbis_only) {
             assert!(panel.pick(option, json!(true), &mut style), "{option:?}");
         }
         assert_eq!(orbis_keys(&style), orbis_keys(&designed));

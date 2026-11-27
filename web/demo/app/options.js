@@ -11,6 +11,7 @@
 // designs, its keys out of the style, so that by default every entry draws
 // what GL JS and MapLibre Native could from the same style, Orbis's
 // previews a switch away.
+import catalogue from "../data/options.json";
 import { h } from "./dom.js";
 
 const HILLSHADE_ANCHOR = "hillshade-illumination-anchor";
@@ -47,19 +48,20 @@ const layersOf = (type) => ({
   },
 });
 
-/** An option that sets one number in the style's `sky`: `off` for off, the designed value (or unset) for on. */
-const skyNumber = (
-  name,
-  fallback,
-  off,
-  isOn = (v) => (v ?? fallback) !== off,
-) => ({
-  supported: ({ designed }) =>
-    Boolean(designed.sky) && isOn(designed.sky[name]),
-  read: (style) => Boolean(style.sky) && isOn(style.sky[name]),
-  apply: (tx, on, { style, designed }) =>
-    tx.setSky({ ...style.sky, [name]: on ? designed.sky[name] : off }),
-});
+/**
+ * An option that sets the number `name` in the style's `sky`: on at any
+ * value but `off` (an expression included), with `default` standing in
+ * for an unset one; on puts back the designed value (or unsets it).
+ */
+const skyNumber = ({ name, default: fallback, off }) => {
+  const isOn = (sky) => Boolean(sky) && (sky[name] ?? fallback) !== off;
+  return {
+    supported: ({ designed }) => isOn(designed.sky),
+    read: (style) => isOn(style.sky),
+    apply: (tx, on, { style, designed }) =>
+      tx.setSky({ ...style.sky, [name]: on ? designed.sky[name] : off }),
+  };
+};
 
 const projectionType = (style) => {
   const type = style.projection?.type;
@@ -80,52 +82,14 @@ const blended = (style) =>
     return blend !== undefined && blend !== "normal";
   });
 
-/**
- * The options, in the panel's order. Each has a `key` (its URL parameter
- * and `data-option`), a `label`, and either `kind: "switch"` or `choices`;
- * `supported(context)` says whether the entry's style can take it,
- * `read(style)` gives its value in a style, `apply(tx, value, context)`
- * edits the style to it, and `initial(context)`, where given, is the
- * entry's default when not as the style was designed. An entry's `off` lists switches its style designs that start
- * off (styles.js). `needs` names an option, and its value, without which this
- * one draws nothing, and says so: it's disabled then. `orbisOnly` marks a
- * preview GL JS and MapLibre Native don't draw: off by default (a choice's
- * `initial` is the spec's), and off takes its keys out of the style.
- */
-export const OPTIONS = [
-  {
-    key: "terrain",
-    group: "Terrain and light",
-    label: "Terrain",
-    kind: "switch",
+/** What each option data/options.json gives no `layers` or `sky` does, by its key. */
+const BESPOKE = {
+  terrain: {
     supported: ({ scene, terrain }) => Boolean(scene.terrain && terrain),
     read: (style) => Boolean(style.terrain),
     apply: (tx, on, { terrain }) => tx.setTerrain(on ? terrain : null),
   },
-  // Fog draws only over terrain; a fog-ground blend of 1 puts it past the horizon.
-  {
-    key: "fog",
-    group: "Terrain and light",
-    label: "Fog",
-    kind: "switch",
-    needs: ["terrain", true, "With terrain on"],
-    ...skyNumber("fog-ground-blend", 0.5, 1, (v) => (v ?? 0.5) < 1),
-  },
-  {
-    key: "hillshade",
-    group: "Terrain and light",
-    label: "Hillshade",
-    kind: "switch",
-    ...layersOf("hillshade"),
-  },
-  {
-    key: "blend",
-    group: "Terrain and light",
-    label: "Blended relief",
-    note: "Shading multiplied into the colours beneath, which keep their saturation",
-    kind: "switch",
-    orbisOnly: true,
-    needs: ["hillshade", true, "With the hillshade on"],
+  blend: {
     supported: ({ designed }) => blended(designed).length > 0,
     read: (style) => blended(style).length > 0,
     // Each layer's blend with the paint designed for it, or neither and
@@ -145,15 +109,7 @@ export const OPTIONS = [
       }
     },
   },
-  {
-    key: "light",
-    group: "Terrain and light",
-    label: "Light",
-    note: "Fixed to the ground, or turning with the view",
-    choices: [
-      ["map", "Map"],
-      ["viewport", "Viewport"],
-    ],
+  light: {
     supported: ({ scene }) => Boolean(scene.light),
     // The first hillshade layer's anchor, else the light's, else the spec's default.
     read: (style) =>
@@ -166,21 +122,7 @@ export const OPTIONS = [
       tx.setLight({ ...style.light, anchor });
     },
   },
-  {
-    key: "buildings",
-    group: "Buildings",
-    label: "3D buildings",
-    kind: "switch",
-    ...layersOf("fill-extrusion"),
-  },
-  {
-    key: "projection",
-    group: "Globe and sky",
-    label: "Projection",
-    choices: [
-      ["globe", "Globe"],
-      ["mercator", "Mercator"],
-    ],
+  projection: {
     supported: (context) =>
       ["globe", "mercator"].includes(projectionByDesign(context)),
     read: projectionType,
@@ -188,28 +130,44 @@ export const OPTIONS = [
       tx.setProjection({ ...style.projection, type }),
     initial: projectionByDesign,
   },
-  // The spec's default atmosphere, 0.8.
-  {
-    key: "atmosphere",
-    group: "Globe and sky",
-    label: "Atmosphere",
-    kind: "switch",
-    needs: ["projection", "globe", "On the globe"],
-    ...skyNumber("atmosphere-blend", 0.8, 0),
-  },
-  {
-    key: "labels",
-    group: "Map",
-    label: "Labels",
-    kind: "switch",
-    ...layersOf("symbol"),
-  },
-];
-const encode = (option, value) =>
-  option.kind === "switch" ? (value ? "1" : "0") : value;
+};
+
+/**
+ * The options, in the panel's order, from data/options.json, which
+ * orb-demo's panel reads too. Each has a `key` (its URL parameter and
+ * `data-option`), a `group` and a `label`, an optional `note`, and
+ * `choices`, `[value, label]` pairs, or none for a switch. `needs` names
+ * an option, its `value` without which this one draws nothing, and `why`:
+ * it's disabled then, saying so (fog draws only over terrain, the
+ * atmosphere only around the globe). `orbisOnly` marks a preview GL JS and
+ * MapLibre Native don't draw: off by default (a choice's `initial` is the
+ * spec's), and off takes its keys out of the style. An entry's `off` lists
+ * switches its style designs that start off (styles.js).
+ *
+ * What an option does is `layers` (a layer type it shows and hides), `sky`
+ * (a number in the sky it turns off, `skyNumber`: `default` is the spec's,
+ * and fog's `off` is 1 because a fog-ground blend of 1 puts the fog past
+ * the horizon), or else code here and
+ * in orb-demo's options.rs under its key (BESPOKE): `supported(context)`
+ * says whether the entry's style can take it, `read(style)` gives its
+ * value in a style, `apply(tx, value, context)` edits the style to it, and
+ * `initial(context)`, where given, is the entry's default when not as the
+ * style was designed.
+ */
+export const OPTIONS = catalogue.map((option) => {
+  const does = option.layers
+    ? layersOf(option.layers)
+    : option.sky
+      ? skyNumber(option.sky)
+      : BESPOKE[option.key];
+  if (!does)
+    throw new Error(`data/options.json: give ${option.key} code in BESPOKE`);
+  return { ...option, ...does };
+});
+const encode = (option, value) => (option.choices ? value : value ? "1" : "0");
 function decode(option, text) {
   if (text === null) return undefined;
-  if (option.kind === "switch")
+  if (!option.choices)
     return text === "1" ? true : text === "0" ? false : undefined;
   return option.choices.some(([value]) => value === text) ? text : undefined;
 }
@@ -329,7 +287,7 @@ export function mapOptions({ params, setParam, onBackend }) {
   const wanted = (option) => wantedOf(option, context, params());
   const disabled = (option) => {
     if (!ready) return true;
-    const [key, value] = option.needs ?? [];
+    const { key, value } = option.needs ?? {};
     return Boolean(key && controls.has(key) && values[key] !== value);
   };
 
@@ -392,7 +350,7 @@ export function mapOptions({ params, setParam, onBackend }) {
     );
 
   function control(option) {
-    if (option.kind === "switch") {
+    if (!option.choices) {
       const row = h(
         "button",
         {
@@ -412,7 +370,7 @@ export function mapOptions({ params, setParam, onBackend }) {
         show(value, off) {
           row.setAttribute("aria-checked", String(value === true));
           row.disabled = off;
-          row.title = off && ready ? option.needs[2] : "";
+          row.title = off && ready ? option.needs.why : "";
         },
       });
       return row;
@@ -459,7 +417,7 @@ export function mapOptions({ params, setParam, onBackend }) {
     );
     controls.set(option.key, {
       show(value, off) {
-        row.title = off && ready ? (option.needs?.[2] ?? "") : "";
+        row.title = off && ready ? (option.needs?.why ?? "") : "";
         for (const button of buttons) {
           const on = button.dataset.value === value;
           button.setAttribute("aria-checked", String(on));

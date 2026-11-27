@@ -1,0 +1,60 @@
+[
+  {
+    "key": "terrain",
+    "group": "Terrain and light",
+    "label": "Terrain"
+  },
+  {
+    "key": "fog",
+    "group": "Terrain and light",
+    "label": "Fog",
+    "needs": { "key": "terrain", "value": true, "why": "With terrain on" },
+    "sky": { "name": "fog-ground-blend", "default": 0.5, "off": 1 }
+  },
+  {
+    "key": "hillshade",
+    "group": "Terrain and light",
+    "label": "Hillshade",
+    "layers": "hillshade"
+  },
+  {
+    "key": "blend",
+    "group": "Terrain and light",
+    "label": "Blended relief",
+    "note": "Shading multiplied into the colours beneath, which keep their saturation",
+    "orbisOnly": true,
+    "needs": { "key": "hillshade", "value": true, "why": "With the hillshade on" }
+  },
+  {
+    "key": "light",
+    "group": "Terrain and light",
+    "label": "Light",
+    "note": "Fixed to the ground, or turning with the view",
+    "choices": [["map", "Map"], ["viewport", "Viewport"]]
+  },
+  {
+    "key": "buildings",
+    "group": "Buildings",
+    "label": "3D buildings",
+    "layers": "fill-extrusion"
+  },
+  {
+    "key": "projection",
+    "group": "Globe and sky",
+    "label": "Projection",
+    "choices": [["globe", "Globe"], ["mercator", "Mercator"]]
+  },
+  {
+    "key": "atmosphere",
+    "group": "Globe and sky",
+    "label": "Atmosphere",
+    "needs": { "key": "projection", "value": "globe", "why": "On the globe" },
+    "sky": { "name": "atmosphere-blend", "default": 0.8, "off": 0 }
+  },
+  {
+    "key": "labels",
+    "group": "Map",
+    "label": "Labels",
+    "layers": "symbol"
+  }
+]

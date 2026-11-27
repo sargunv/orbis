@@ -18,7 +18,7 @@ use orb_api::{
 use serde_json::{Value, json};
 
 use crate::host::Trackpad;
-use crate::options::{Context, Kind, Opt, Panel};
+use crate::options::{Context, Opt, Panel};
 use crate::scenes::{Catalogue, Flight, Group, Scene};
 
 /// What the command line asks for.
@@ -936,12 +936,12 @@ fn switch(ui: &mut Ui, palette: &Palette, on: bool) -> Response {
 }
 
 /// A row of choices; the one picked, if it changed.
-fn segmented(
+fn segmented<'a>(
     ui: &mut Ui,
     palette: &Palette,
-    choices: &[(&'static str, &'static str)],
+    choices: &'a [(String, String)],
     current: &str,
-) -> Option<&'static str> {
+) -> Option<&'a str> {
     let mut picked = None;
     Frame::new()
         .fill(palette.well)
@@ -950,7 +950,7 @@ fn segmented(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                for &(value, label) in choices {
+                for (value, label) in choices {
                     let on = value == current;
                     let text = RichText::new(label).size(13.0).color(if on {
                         palette.accent_ink
@@ -966,7 +966,7 @@ fn segmented(
                         .corner_radius(CornerRadius::same(8))
                         .min_size(vec2(64.0, 26.0));
                     if ui.add(button).clicked() && !on {
-                        picked = Some(value);
+                        picked = Some(value.as_str());
                     }
                 }
             });
@@ -1135,8 +1135,8 @@ impl Demo {
                     .show(ui, |ui| {
                         let mut group = "";
                         for &option in &self.panel.available {
-                            if option.group() != group {
-                                group = option.group();
+                            if option.group != group {
+                                group = &option.group;
                                 group_heading(ui, palette, group);
                             }
                             let value = self.panel.value(option).cloned().unwrap_or(Value::Null);
@@ -1386,7 +1386,7 @@ fn picker_row(
 fn option_row(
     ui: &mut Ui,
     palette: &Palette,
-    option: Opt,
+    option: &Opt,
     value: &Value,
     disabled: Option<&str>,
 ) -> Option<Value> {
@@ -1398,13 +1398,13 @@ fn option_row(
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
                 ui.horizontal(|ui| {
-                    let label = RichText::new(option.label()).size(15.0);
+                    let label = RichText::new(&option.label).size(15.0);
                     ui.label(if disabled.is_some() {
                         label.color(palette.muted)
                     } else {
                         label
                     });
-                    if option.orbis_only() {
+                    if option.orbis_only {
                         tag(
                             ui,
                             palette,
@@ -1415,21 +1415,21 @@ fn option_row(
                         );
                     }
                 });
-                if let Some(note) = option.note() {
+                if let Some(note) = &option.note {
                     ui.label(RichText::new(note).size(12.0).color(palette.muted));
                 }
             })
             .response
         },
         |ui| {
-            ui.add_enabled_ui(disabled.is_none(), |ui| match option.kind() {
-                Kind::Switch => {
+            ui.add_enabled_ui(disabled.is_none(), |ui| match &option.choices {
+                None => {
                     let on = value.as_bool() == Some(true);
                     if switch(ui, palette, on).clicked() {
                         picked = Some(json!(!on));
                     }
                 }
-                Kind::Choices(choices) => {
+                Some(choices) => {
                     let current = value.as_str().unwrap_or_default();
                     if let Some(choice) = segmented(ui, palette, choices, current) {
                         picked = Some(json!(choice));
