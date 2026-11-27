@@ -51,7 +51,7 @@ fn middle(source: &str, layer: &str, missing_tiles: MissingTiles) -> [u8; 4] {
             ..MapOptions::default()
         },
     );
-    map.set_viewport(64.0, 64.0);
+    map.set_viewport(64.0, 64.0, 1.0);
     map.set_style_json(&style).unwrap();
     let image = map.snapshot(64, 64, 1.0).unwrap();
     let i = (32 * 64 + 32) * 4;
@@ -157,7 +157,7 @@ fn a_still_requests_tiles_that_failed_before_again() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     runtime.set_network_hook(Some(std::sync::Arc::new(FlakyNetwork(Default::default()))));
     let mut map = Map::new(&runtime, MapOptions::default());
-    map.set_viewport(64.0, 64.0);
+    map.set_viewport(64.0, 64.0, 1.0);
     map.set_style_json(
         r##"{"version": 8, "center": [10, 10], "zoom": 0,
             "sources": {"s": {"type": "vector", "maxzoom": 0,

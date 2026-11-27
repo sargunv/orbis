@@ -968,7 +968,11 @@ pub unsafe extern "C" fn mln_runtime_create_map(
                     },
                 );
                 let extent = options.initial_extent;
-                map.set_viewport(f64::from(extent.width), f64::from(extent.height));
+                map.set_viewport(
+                    f64::from(extent.width),
+                    f64::from(extent.height),
+                    extent.scale_factor,
+                );
                 // Native's limits, not orb-camera's GL JS ones (zoom from
                 // -2 to 22), which a map whose bounds were never set would
                 // otherwise keep.
@@ -1315,12 +1319,15 @@ command!(mln_map_resize(extent: mln_logical_extent), change, |map| {
             (was.width, was.height, was.scale_factor)
                 != (extent.width, extent.height, extent.scale_factor),
         );
-        // The scale factor is what the map's next session renders at.
+        // The scale factor is what the map's next session renders at, and
+        // what its sprites load at meanwhile.
         entry.extent = extent;
         let before = entry.map.camera();
-        entry
-            .map
-            .set_viewport(f64::from(extent.width), f64::from(extent.height));
+        entry.map.set_viewport(
+            f64::from(extent.width),
+            f64::from(extent.height),
+            extent.scale_factor,
+        );
         // A resize that moves the camera back within its limits
         // cancels its transitions, as in Native.
         if entry.map.camera() != before {

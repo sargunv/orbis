@@ -872,7 +872,8 @@ impl Renderer {
         self.image_bindings = bindings;
     }
 
-    /// The format of the targets it draws into.
+    /// The format of the targets it draws into
+    /// ([`set_format`](Self::set_format)).
     pub fn format(&self) -> TargetFormat {
         self.host
     }
@@ -964,13 +965,32 @@ impl Renderer {
             t.retarget(&self.pipeline_cache, terrain, self.extrusions.format());
         }
         self.fit_target(gpu);
-        // Nothing draws at the other sample count now: the host's target
-        // and every format are the renderer's for its life, so
-        // antialiasing alone changes what its passes draw into, and what
-        // draws at one sample (terrain's depth for what it hides) draws
-        // there either way.
+        // Nothing draws at the other sample count now: what draws at one
+        // sample (terrain's depth for what it hides) draws there either
+        // way.
         let samples = [1, self.host.sample_count, self.extrusions.samples];
         (self.pipeline_cache).retain(gpu, |a| samples.contains(&a.sample_count));
+    }
+
+    /// Draws into host targets of `format` from now on, keeping its tiles
+    /// and everything else it holds: what draws into the host's target
+    /// takes pipelines of the new format, made as the set and the nodes
+    /// ask for them, as for antialiasing. Those of the old format stay in
+    /// the cache, for a host that goes back to it.
+    pub fn set_format(&mut self, gpu: &mut dyn Gpu, format: TargetFormat) {
+        if self.host == format {
+            return;
+        }
+        self.host = format;
+        if let Some(flip) = self.flip.take() {
+            flip.release(gpu);
+            self.flip = Some(flip::Flip::new(gpu, &self.composites, format.into()));
+        }
+        let terrain = self.terrain_target();
+        if let Some(t) = &mut self.terrain {
+            t.retarget(&self.pipeline_cache, terrain, self.extrusions.format());
+        }
+        self.fit_target(gpu);
     }
 
     /// Draws the map upside down into the host's target when `flipped`, or

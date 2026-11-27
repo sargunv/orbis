@@ -218,7 +218,7 @@ fn render(
             ..MapOptions::default()
         },
     );
-    map.set_viewport(width, height);
+    map.set_viewport(width, height, scale);
     map.load_style_url(style);
     let started = Instant::now();
     let image = map

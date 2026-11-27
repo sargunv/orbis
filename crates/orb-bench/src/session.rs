@@ -565,6 +565,13 @@ fn run_session(
     let mut target = Target::texture(&runtime, width, height, f64::from(settings.ratio));
     let camera = session.camera(style)?;
     let mut map = crate::new_map(&runtime, &style.url, camera, settings.antialias);
+    // The style arrives before the first frame: its sprites load at the
+    // ratio the frames draw at.
+    map.set_viewport(
+        f64::from(settings.width),
+        f64::from(settings.height),
+        f64::from(settings.ratio),
+    );
     // Whether the style has yet to arrive for its opening edits.
     let mut opening = true;
     let gpu_timestamps = runtime.stats().gpu_timestamps;

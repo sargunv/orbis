@@ -97,6 +97,13 @@ pub struct Map {
     signal: Arc<(Mutex<Wakes>, Condvar)>,
     /// What still output last drew into: a snapshot or a tile.
     offscreen: Option<Target>,
+    /// The format of the target the map's last frame began in, which its
+    /// renderer draws in and still output draws into where it's 8-bit.
+    format: orb_runtime::TargetFormat,
+    /// The pixel ratio the host declared ([`Map::set_viewport`]) or its
+    /// last live frame drew at, which a map applying arrivals without a
+    /// target loads its sprites at.
+    scale: f64,
     hook: WakeHook,
     /// Marks the map woken and calls the hook, from any thread.
     wake: Arc<dyn Fn() + Send + Sync>,
@@ -269,6 +276,8 @@ impl Map {
             shown: Shown::FRESH,
             signal,
             offscreen: None,
+            format: crate::target::DEFAULT_FORMAT,
+            scale: 1.0,
             hook,
             alarm: crate::alarm::Alarm::new(clock, wake.clone()),
             wake,
@@ -697,11 +706,15 @@ impl Map {
         self.map.viewport()
     }
 
-    /// Sets the viewport, in logical pixels, before a target draws (each
+    /// Sets the viewport, in logical pixels, and the pixel ratio
+    /// (`scale` physical pixels each) before a target draws (each live
     /// frame sets its target's): fits, projections and constraints made
-    /// before the first frame use the size the map will have.
-    pub fn set_viewport(&mut self, width: f64, height: f64) {
+    /// before the first frame use the size the map will have, and a style
+    /// that arrives before it ([`apply_arrivals`](Self::apply_arrivals))
+    /// loads its sprites at the ratio it will draw at.
+    pub fn set_viewport(&mut self, width: f64, height: f64, scale: f64) {
         self.map.set_viewport(Viewport { width, height });
+        self.scale = crate::target::sane_scale(scale);
         self.dirty = true;
     }
 
@@ -955,8 +968,9 @@ impl Map {
     /// Draws the frame shown at `frame_time` (milliseconds, on the clock
     /// input times use: the display link's): applies arrived data,
     /// advances gestures and animations to it and renders into `target`.
-    /// Every frame of a map uses targets of one format (all surfaces of a
-    /// platform share one). Returns `None` when the surface had nothing to
+    /// A target of another format than the last frame's has the map's
+    /// renderer draw in it from then on, its tiles kept and its pipelines
+    /// made again for it. Returns `None` when the surface had nothing to
     /// draw into this time.
     pub fn render(
         &mut self,
@@ -964,6 +978,7 @@ impl Map {
         frame_time: f64,
     ) -> Result<Option<FrameReport>, Error> {
         self.set_mode(RenderMode::Continuous);
+        self.scale = target.scale();
         self.frame(target, frame_time)
     }
 
@@ -995,6 +1010,7 @@ impl Map {
     ) -> Result<FrameReport, Error> {
         let mut patience = self.patience(stall);
         self.set_mode(RenderMode::Continuous);
+        self.scale = target.scale();
         self.settle(target, &mut patience)
     }
 
@@ -1121,23 +1137,56 @@ impl Map {
     /// Applies what has arrived, the style among it, without drawing: a
     /// host with nothing to draw into yet (a map before its first target)
     /// still gets its style in and its events ([`MapEvent::StyleLoad`]),
-    /// and the requests the style starts go out. Hosts that draw frames
-    /// needn't call it. It keeps the renderer of the map's last frame: only
-    /// a map that has drawn none gets one for still output's format (an
-    /// RGBA8 texture), so that its first frame into a window of another
-    /// format lays the tiles out again.
+    /// and the requests the style starts go out, its sprites at the pixel
+    /// ratio [`set_viewport`](Self::set_viewport) declared. Hosts that
+    /// draw frames needn't call it. It keeps the renderer of the map's
+    /// last frame; a map that has drawn none gets one its first frame
+    /// takes on, in whatever format that frame's target has.
     pub fn apply_arrivals(&mut self) -> Result<(), Error> {
-        let mut target = self.offscreen(1, 1, 1.0);
-        let applied = self.arrive(&mut target);
-        self.offscreen = Some(target);
-        applied
+        self.arrive(self.scale)
     }
 
-    /// The texture still output draws into, of this size.
+    /// Applies what has arrived without drawing a frame
+    /// ([`orb_runtime::Map::apply_arrivals`]), starting sprites at
+    /// `scale`.
+    fn arrive(&mut self, scale: f64) -> Result<(), Error> {
+        if !self.ready_for(None)? {
+            return Ok(());
+        }
+        {
+            let mut device = self.runtime.shared.gpu()?;
+            self.woken.store(false, Ordering::Release);
+            let gpu: &mut dyn orb_hal::Gpu = &mut *device;
+            let map = &mut self.map;
+            let format = self.format;
+            let renderer = self
+                .renderer
+                .get_or_insert_with(|| map.create_renderer(gpu, format));
+            map.apply_arrivals(gpu, renderer, scale as f32);
+        }
+        self.events
+            .extend(self.map.take_events().into_iter().map(Event::Map));
+        Ok(())
+    }
+
+    /// The texture still output draws into, of this size, in the format
+    /// the map draws in, so still output doesn't retarget its renderer;
+    /// RGBA8 where that isn't an 8-bit format pixels read back in (a float
+    /// window or host texture).
     fn offscreen(&mut self, width: u32, height: u32, scale: f64) -> Target {
+        let format = match self.format.color {
+            f @ (orb_hal::TextureFormat::Rgba8Unorm | orb_hal::TextureFormat::Bgra8Unorm) => f,
+            _ => crate::target::DEFAULT_FORMAT.color,
+        };
         match self.offscreen.take() {
-            Some(t) if t.size() == (width, height) && t.scale() == scale => t,
-            _ => Target::texture(&self.runtime, width, height, scale),
+            Some(t)
+                if t.size() == (width, height)
+                    && t.scale() == scale
+                    && t.format().color == format =>
+            {
+                t
+            }
+            _ => Target::texture_of(&self.runtime, (width, height), scale, format),
         }
     }
 
@@ -1178,7 +1227,7 @@ impl Map {
             return Ok(true);
         }
         self.set_mode(RenderMode::Still);
-        self.arrive(target)?;
+        self.arrive(target.scale())?;
         self.style_failed()?;
         Ok(self.map.style_doc().is_some())
     }
@@ -1416,20 +1465,10 @@ impl Map {
         frame_time: f64,
     ) -> Result<Option<FrameReport>, Error> {
         self.last_frame = Some((frame_time, Instant::now()));
-        if !self.ready_for(target)? {
+        if !self.ready_for(Some(target))? {
             return Ok(None);
         }
         let format = target.format();
-        // A target of another format than the map drew last (a BGRA8
-        // window after an RGBA8 still, say) takes a renderer of its own,
-        // which lays the tiles out again. Applying arrivals draws nothing,
-        // so it keeps whichever renderer the map has.
-        if self.renderer.as_ref().is_some_and(|r| r.format() != format)
-            && let Some(renderer) = self.renderer.take()
-        {
-            renderer.destroy(&mut *self.runtime.shared.gpu()?);
-            self.dirty = true;
-        }
         let viewport = target.viewport();
         // The frame borrows the device once: the target begins and ends
         // with it, and it's let go before anything else here borrows it.
@@ -1438,6 +1477,9 @@ impl Map {
             let Some(texture) = target.begin(&mut device)? else {
                 return Ok(None);
             };
+            // Only a target that began says what the map draws in: a
+            // released window reports a texture's format.
+            self.format = format;
             device.start_frame();
             self.woken.store(false, Ordering::Release);
             self.device_woken.store(false, Ordering::Release);
@@ -1446,6 +1488,7 @@ impl Map {
             let renderer = self
                 .renderer
                 .get_or_insert_with(|| map.create_renderer(gpu, format));
+            renderer.set_format(gpu, format);
             let report = map.render(
                 gpu,
                 renderer,
@@ -1477,11 +1520,15 @@ impl Map {
         Ok(Some(report))
     }
 
-    /// Checks that this map can draw into `target`, after bringing it to
-    /// the runtime's current device: `false` while a lost device's
-    /// replacement waits out its backoff (the map is woken when it's due).
-    fn ready_for(&mut self, target: &mut Target) -> Result<bool, Error> {
-        if !target.same_runtime(&self.runtime.shared) {
+    /// Checks that this map can draw into `target` (or, without one,
+    /// apply arrivals), after bringing it to the runtime's current device:
+    /// `false` while a lost device's replacement waits out its backoff
+    /// (the map is woken when it's due).
+    fn ready_for(&mut self, mut target: Option<&mut Target>) -> Result<bool, Error> {
+        if target
+            .as_ref()
+            .is_some_and(|t| !t.same_runtime(&self.runtime.shared))
+        {
             return Err(Error::InvalidArgument(
                 "the target belongs to another runtime".into(),
             ));
@@ -1500,7 +1547,7 @@ impl Map {
             self.device_woken.store(false, Ordering::Release);
             let recovered = self.runtime.recovery_due().and_then(|due| {
                 if due {
-                    if target.is_window() {
+                    if let Some(target) = target.as_mut().filter(|t| t.is_window()) {
                         target.release();
                     }
                     self.runtime.recover()?;
@@ -1536,29 +1583,6 @@ impl Map {
             self.dirty = true;
         }
         Ok(true)
-    }
-
-    /// Applies what has arrived without drawing a frame
-    /// ([`orb_runtime::Map::apply_arrivals`]), with the renderer of
-    /// `target`'s format.
-    fn arrive(&mut self, target: &mut Target) -> Result<(), Error> {
-        if !self.ready_for(target)? {
-            return Ok(());
-        }
-        let format = target.format();
-        {
-            let mut device = self.runtime.shared.gpu()?;
-            self.woken.store(false, Ordering::Release);
-            let gpu: &mut dyn orb_hal::Gpu = &mut *device;
-            let map = &mut self.map;
-            let renderer = self
-                .renderer
-                .get_or_insert_with(|| map.create_renderer(gpu, format));
-            map.apply_arrivals(gpu, renderer, target.scale() as f32);
-        }
-        self.events
-            .extend(self.map.take_events().into_iter().map(Event::Map));
-        Ok(())
     }
 
     /// The oldest event not yet taken. What the map did between frames

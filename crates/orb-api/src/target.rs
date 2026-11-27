@@ -34,18 +34,26 @@ const IN_FLIGHT: usize = 2;
 #[derive(Debug)]
 enum Kind {
     Surface(Box<Surface>),
-    Texture(TextureId),
-    /// A texture target whose device couldn't be made yet: a frame that
-    /// makes it makes the texture.
-    Unmade,
+    /// A texture the runtime owns, and its format (RGBA8 or BGRA8).
+    Texture(TextureId, TextureFormat),
+    /// A texture target whose device couldn't be made yet, and the format
+    /// it will have: a frame that makes it makes the texture.
+    Unmade(TextureFormat),
     /// A texture the host made on the runtime's device, and its format.
     Borrowed(TextureId, TextureFormat),
     /// Its resources are gone ([`Target::release`]).
     Released,
 }
 
-/// The format of texture targets.
+/// The format of texture targets hosts make.
 const TEXTURE_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
+
+/// The format of the targets a map that has drawn no frame takes its
+/// renderer in: a texture's.
+pub(crate) const DEFAULT_FORMAT: TargetFormat = TargetFormat {
+    color: TEXTURE_FORMAT,
+    sample_count: 1,
+};
 
 impl Target {
     /// Draws into a window surface made with the same runtime.
@@ -66,10 +74,28 @@ impl Target {
     /// device if it isn't made. One that can't be made fails the target's
     /// frames.
     pub fn texture(runtime: &Runtime, width: u32, height: u32, scale: f64) -> Self {
+        Self::texture_of(runtime, (width, height), scale, TEXTURE_FORMAT)
+    }
+
+    /// [`texture`](Self::texture) in `format`, RGBA8 or BGRA8: still
+    /// output draws into one of its map's renderer's format, which
+    /// [`read_pixels`](Self::read_pixels) reads as RGBA8 either way.
+    pub(crate) fn texture_of(
+        runtime: &Runtime,
+        (width, height): (u32, u32),
+        scale: f64,
+        format: TextureFormat,
+    ) -> Self {
+        debug_assert!(matches!(
+            format,
+            TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm
+        ));
         let (width, height) = (width.max(1), height.max(1));
         let kind = match runtime.shared.gpu() {
-            Ok(mut device) => Kind::Texture(create_texture(&mut device, width, height)),
-            Err(_) => Kind::Unmade,
+            Ok(mut device) => {
+                Kind::Texture(create_texture(&mut device, (width, height), format), format)
+            }
+            Err(_) => Kind::Unmade(format),
         };
         Self {
             shared: runtime.shared.clone(),
@@ -140,13 +166,13 @@ impl Target {
         match &mut self.kind {
             Kind::Surface(surface) => device.resize_surface(surface, width, height),
             // The host gives it new textures instead.
-            Kind::Released | Kind::Borrowed(..) | Kind::Unmade => {}
-            Kind::Texture(id) => {
+            Kind::Released | Kind::Borrowed(..) | Kind::Unmade(_) => {}
+            Kind::Texture(id, format) => {
                 // A texture of a replaced device went with it.
                 if self.generation == self.shared.generation() {
                     device.destroy_texture(*id);
                 }
-                *id = create_texture(&mut device, width, height);
+                *id = create_texture(&mut device, (width, height), *format);
                 self.generation = self.shared.generation();
             }
         }
@@ -157,7 +183,7 @@ impl Target {
     /// target, or once the GPU was replaced until the next frame.
     pub fn wgpu_texture(&self) -> Option<orb_hal_wgpu::wgpu::Texture> {
         match self.kind {
-            Kind::Texture(id) if self.generation == self.shared.generation() => {
+            Kind::Texture(id, _) if self.generation == self.shared.generation() => {
                 Some(self.shared.opened()?.texture(id).clone())
             }
             _ => None,
@@ -169,18 +195,23 @@ impl Target {
     /// replaced GPU went with it: draw a frame first.
     pub fn read_pixels(&self) -> Result<Vec<u8>, Error> {
         match self.kind {
-            Kind::Texture(_) if self.generation != self.shared.generation() => Err(
+            Kind::Texture(..) if self.generation != self.shared.generation() => Err(
                 Error::InvalidState("the GPU was replaced since the last frame".into()),
             ),
-            Kind::Texture(id) => {
+            Kind::Texture(id, format) => {
                 let mut device = self.shared.opened().expect("a texture's device");
-                let pixels = pollster::block_on(device.read_texture(id)).map_err(|lost| {
+                let mut pixels = pollster::block_on(device.read_texture(id)).map_err(|lost| {
                     Error::InvalidState(format!("{lost}: draw a frame on its replacement first"))
                 })?;
                 self.read_back.store(true, Ordering::Relaxed);
+                if format == TextureFormat::Bgra8Unorm {
+                    for pixel in pixels.as_chunks_mut::<4>().0 {
+                        pixel.swap(0, 2);
+                    }
+                }
                 Ok(pixels)
             }
-            Kind::Unmade => Err(Error::InvalidState(
+            Kind::Unmade(_) => Err(Error::InvalidState(
                 "nothing was drawn into the target yet".into(),
             )),
             Kind::Surface(_) | Kind::Borrowed(..) => Err(Error::Unsupported(
@@ -194,8 +225,10 @@ impl Target {
         TargetFormat {
             color: match &self.kind {
                 Kind::Surface(surface) => surface.format(),
-                Kind::Borrowed(_, format) => *format,
-                Kind::Texture(_) | Kind::Unmade | Kind::Released => TEXTURE_FORMAT,
+                Kind::Borrowed(_, format) | Kind::Texture(_, format) | Kind::Unmade(format) => {
+                    *format
+                }
+                Kind::Released => TEXTURE_FORMAT,
             },
             sample_count: 1,
         }
@@ -216,8 +249,10 @@ impl Target {
         // windows need the host.
         if self.generation != self.shared.generation() {
             match &mut self.kind {
-                Kind::Texture(_) | Kind::Unmade => {
-                    self.kind = Kind::Texture(create_texture(device, self.width, self.height));
+                Kind::Texture(_, format) | Kind::Unmade(format) => {
+                    let format = *format;
+                    let id = create_texture(device, (self.width, self.height), format);
+                    self.kind = Kind::Texture(id, format);
                     self.generation = self.shared.generation();
                 }
                 Kind::Surface(_) | Kind::Borrowed(..) | Kind::Released => {
@@ -226,7 +261,7 @@ impl Target {
             }
         }
         match &mut self.kind {
-            Kind::Texture(id) => {
+            Kind::Texture(id, _) => {
                 // A host reading frames back reads the next one too.
                 if self.read_back.swap(false, Ordering::Relaxed) {
                     device.read_with_next_submit(*id);
@@ -234,7 +269,7 @@ impl Target {
                 Ok(Some(*id))
             }
             Kind::Borrowed(id, _) => Ok(Some(*id)),
-            Kind::Unmade => unreachable!("made above: its generation is the first device's"),
+            Kind::Unmade(_) => unreachable!("made above: its generation is the first device's"),
             Kind::Released => Err(Error::TargetLost("the GPU was replaced".into())),
             Kind::Surface(surface) => match device.acquire(surface) {
                 Ok(id) => Ok(Some(id)),
@@ -268,8 +303,8 @@ impl Target {
             return;
         }
         match kind {
-            Kind::Released | Kind::Unmade => {}
-            Kind::Texture(id) | Kind::Borrowed(id, _) => device.destroy_texture(id),
+            Kind::Released | Kind::Unmade(_) => {}
+            Kind::Texture(id, _) | Kind::Borrowed(id, _) => device.destroy_texture(id),
             Kind::Surface(mut surface) => device.retire_surface(&mut surface),
         }
     }
@@ -281,14 +316,14 @@ impl Drop for Target {
     }
 }
 
-fn texture_desc(width: u32, height: u32) -> TextureDesc<'static> {
+fn texture_desc((width, height): (u32, u32), format: TextureFormat) -> TextureDesc<'static> {
     TextureDesc {
         label: "target",
         width,
         height,
         array_layers: 1,
         dimension: orb_hal::TextureViewDimension::D2,
-        format: TEXTURE_FORMAT,
+        format,
         usage: TextureUsages::RENDER_ATTACHMENT
             | TextureUsages::COPY_SRC
             | TextureUsages::TEXTURE_BINDING,
@@ -297,11 +332,11 @@ fn texture_desc(width: u32, height: u32) -> TextureDesc<'static> {
     }
 }
 
-fn create_texture(device: &mut WgpuGpu, width: u32, height: u32) -> TextureId {
-    device.create_texture(&texture_desc(width, height))
+fn create_texture(device: &mut WgpuGpu, size: (u32, u32), format: TextureFormat) -> TextureId {
+    device.create_texture(&texture_desc(size, format))
 }
 
-fn sane_scale(scale: f64) -> f64 {
+pub(crate) fn sane_scale(scale: f64) -> f64 {
     if scale.is_finite() && scale > 0.0 {
         scale
     } else {

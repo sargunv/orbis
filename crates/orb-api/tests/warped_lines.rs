@@ -32,7 +32,7 @@ fn snapshot(style: &str, size: u32) -> Vec<u8> {
             ..MapOptions::default()
         },
     );
-    map.set_viewport(f64::from(size), f64::from(size));
+    map.set_viewport(f64::from(size), f64::from(size), 1.0);
     map.set_style_json(style).unwrap();
     map.snapshot(size, size, 1.0).unwrap().pixels
 }

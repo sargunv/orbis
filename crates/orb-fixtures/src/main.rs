@@ -320,7 +320,11 @@ pub(crate) fn map(runtime: &Runtime, metadata: &Metadata) -> Map {
     );
     // GL JS's map starts at its container's size, so the style's camera
     // keeps to the world in the test's viewport, not a default one.
-    map.set_viewport(f64::from(metadata.width), f64::from(metadata.height));
+    map.set_viewport(
+        f64::from(metadata.width),
+        f64::from(metadata.height),
+        metadata.pixel_ratio,
+    );
     // GL JS's transform keeps to the world and the test's pitch limit as
     // the harness moves it.
     map.set_constraints(orb_api::Constraints {

@@ -455,7 +455,11 @@ fn map(runtime: &Runtime, test: &Test) -> Map {
             ..MapOptions::default()
         },
     );
-    map.set_viewport(f64::from(test.width), f64::from(test.height));
+    map.set_viewport(
+        f64::from(test.width),
+        f64::from(test.height),
+        test.pixel_ratio,
+    );
     // Native's defaults: zoom 0 to 25.5, pitch up to 60 degrees.
     map.set_constraints(orb_api::Constraints {
         min_zoom: 0.0,

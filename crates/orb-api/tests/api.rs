@@ -1503,7 +1503,7 @@ fn image_sources_without_a_url_draw_nothing_and_idle() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
     let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
-    map.set_viewport(f64::from(SIZE), f64::from(SIZE));
+    map.set_viewport(f64::from(SIZE), f64::from(SIZE), 1.0);
     map.set_style_json(
         r##"{"version": 8, "center": [0, 0], "zoom": 2,
             "sources": {"i": {"type": "image",
@@ -2197,6 +2197,41 @@ fn request_transforms_rewrite_what_the_map_fetches() {
 }
 
 #[test]
+fn a_style_in_before_the_first_frame_loads_sprites_at_the_declared_ratio() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let fetched = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = fetched.clone();
+    runtime.set_request_transform(Some(std::sync::Arc::new(move |url: &str| {
+        seen.lock().unwrap().push(url.to_owned());
+        Some(orb_api::Request {
+            url: url.to_owned(),
+            headers: Vec::new(),
+        })
+    })));
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_viewport(256.0, 256.0, 2.0);
+    map.load_style_url(&common::tokyo_url());
+    // A host with nothing to draw into yet takes the style in.
+    let deadline = std::time::Instant::now() + common::DEADLINE;
+    let sprites = loop {
+        map.apply_arrivals().expect("arrivals");
+        let sprites: Vec<String> = (fetched.lock().unwrap().iter())
+            .filter(|url| url.contains("/sprites/"))
+            .cloned()
+            .collect();
+        if sprites.len() == 2 {
+            break sprites;
+        }
+        assert!(std::time::Instant::now() < deadline, "{sprites:?}");
+        map.wait_woken(Duration::from_millis(100));
+    };
+    assert!(
+        sprites.iter().all(|url| url.contains("ofm@2x.")),
+        "{sprites:?}"
+    );
+}
+
+#[test]
 fn the_style_reads_back_with_its_edits() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
     let mut map = Map::new(&runtime, MapOptions::default());
@@ -2236,7 +2271,7 @@ fn fits_before_the_first_frame_use_the_viewport_set() {
     };
     // 20 degrees span 2⁹ × 20 / 360 pixels at zoom 0: 64 pixels fit them
     // at zoom log2(64 / 28.4) ≈ 1.17.
-    map.set_viewport(64.0, 64.0);
+    map.set_viewport(64.0, 64.0, 1.0);
     assert!(
         (fit(&map) - (64.0f64 / (512.0 * 20.0 / 360.0)).log2()).abs() < 0.05,
         "{}",
