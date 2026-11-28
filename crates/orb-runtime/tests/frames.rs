@@ -1064,21 +1064,9 @@ mod tests {
             "nothing placed yet"
         );
         // The commit comes from the placement thread.
-        let started = std::time::Instant::now();
-        let mut shown = 0.0;
-        while shown < 1.0 && started.elapsed() < std::time::Duration::from_secs(10) {
-            let report = offscreen.frame();
-            if report.idle() && report.tiles_drawn > 0 {
-                shown = offscreen
-                    .map
-                    .shown_labels()
-                    .get("n")
-                    .copied()
-                    .unwrap_or(0.0);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        assert_eq!(shown, 1.0, "the label was placed and faded in");
+        offscreen.settle().unwrap();
+        let shown = offscreen.map.shown_labels().get("n").copied();
+        assert_eq!(shown, Some(1.0), "the label was placed and faded in");
     }
 
     /// Placement paces itself: whenever the lane is free and the camera

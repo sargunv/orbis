@@ -36,8 +36,7 @@ mod tests;
 
 pub use bucket::{
     AnchorOffset, BucketMeta, NONE, PlacedSymbol, Quad, SizeKind, SortKeyRange, SymbolBucket,
-    SymbolInstance, SymbolStream, SymbolWritingMode, Warnings, instance_flags, justification,
-    quad_flags,
+    SymbolInstance, SymbolStream, SymbolWritingMode, Warnings, quad_flags,
 };
 pub use geometry::EXTENT;
 pub use icon::{IconImage, IconTextFit, TextFit};

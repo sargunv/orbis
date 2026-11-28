@@ -37,7 +37,7 @@ pub enum SymbolWritingMode {
 }
 
 /// Bits of [`SymbolInstance::flags`]: which collision features exist.
-pub mod instance_flags {
+pub(crate) mod instance_flags {
     pub(crate) const TEXT_BOX: u32 = 1 << 0;
     pub(crate) const VERTICAL_TEXT_BOX: u32 = 1 << 1;
     pub(crate) const ICON_BOX: u32 = 1 << 2;
@@ -52,9 +52,9 @@ pub mod instance_flags {
 }
 
 /// Index of a justification in [`SymbolInstance::text`].
-pub mod justification {
+pub(crate) mod justification {
     pub(crate) const RIGHT: usize = 0;
-    pub const CENTER: usize = 1;
+    pub(crate) const CENTER: usize = 1;
     pub(crate) const LEFT: usize = 2;
     pub(crate) const VERTICAL: usize = 3;
 }
