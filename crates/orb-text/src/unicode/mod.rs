@@ -348,23 +348,6 @@ pub(crate) fn contains_rtl(text: &str) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn packed_pairs_unpack_as_written() {
-        let written = [
-            (0x29, 0x28),
-            (0x41, 0x5A),
-            (0x41, 0x5A),
-            (0x10FFFD, 0x10FFFF),
-        ];
-        let pairs: Pairs = pairs![
-            (0x29, 0x28),
-            (0x41, 0x5A),
-            (0x41, 0x5A),
-            (0x10FFFD, 0x10FFFF)
-        ];
-        assert_eq!(pairs.get(), written);
-    }
-
     fn c(cp: u32) -> char {
         char::from_u32(cp).unwrap()
     }

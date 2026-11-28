@@ -19,7 +19,7 @@ pub trait PlacementLane: Send + Sync {
     fn ingest(&self, bucket: u64, tables: Arc<PlacementTables>);
     fn remove(&self, bucket: u64);
     /// Places against `frame`; buckets ingested before the call are seen.
-    fn place(&self, frame: Frame, done: PlaceDone);
+    fn place(&self, frame: Arc<Frame>, done: PlaceDone);
     /// Whether the lane started afresh, without the buckets it had, since
     /// last asked: its placer failed (a trap, a panic) and was replaced.
     /// The map ingests every bucket again before it places.
@@ -31,7 +31,7 @@ pub trait PlacementLane: Send + Sync {
 enum Message {
     Ingest(u64, Arc<PlacementTables>),
     Remove(u64),
-    Place(Box<Frame>, PlaceDone),
+    Place(Arc<Frame>, PlaceDone),
 }
 
 fn run(placer: &mut Placer, message: Message) {
@@ -145,8 +145,8 @@ impl PlacementLane for ThreadPlacement {
         self.send(Message::Remove(bucket));
     }
 
-    fn place(&self, frame: Frame, done: PlaceDone) {
-        self.send(Message::Place(Box::new(frame), done));
+    fn place(&self, frame: Arc<Frame>, done: PlaceDone) {
+        self.send(Message::Place(frame, done));
     }
 
     fn restarted(&self) -> bool {
@@ -175,7 +175,7 @@ impl PlacementLane for InlinePlacement {
         );
     }
 
-    fn place(&self, frame: Frame, done: PlaceDone) {
+    fn place(&self, frame: Arc<Frame>, done: PlaceDone) {
         let committed = self.placer.lock().expect("lane poisoned").place(&frame);
         done(Ok(committed));
     }

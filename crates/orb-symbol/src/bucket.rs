@@ -257,18 +257,10 @@ impl Warnings {
     }
 }
 
-/// One symbol layer's layout of one tile (GL JS `SymbolBucket`).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct SymbolBucket {
-    pub instances: Vec<SymbolInstance>,
-    pub text: SymbolStream,
-    pub icon: SymbolStream,
-    /// Line vertices labels ride on, tile units. Instances on one line share
-    /// one copy.
-    pub lines: Vec<[i16; 2]>,
-    pub anchor_offsets: Vec<AnchorOffset>,
-    /// Empty unless the layer sorts by `symbol-sort-key`.
-    pub sort_key_ranges: Vec<SortKeyRange>,
+/// A bucket's scalars, which travel with its tables from layout to the
+/// GPU pass and placement.
+#[derive(Clone, Copy, Debug, Default, PartialEq, orb_wire::Wire)]
+pub struct BucketMeta {
     pub text_size: SizeKind,
     pub icon_size: SizeKind,
     /// Whether the layer's icons are SDFs; `None` with no icons.
@@ -281,8 +273,24 @@ pub struct SymbolBucket {
     /// The largest `symbol-height-offset`, meters, at least 0.
     pub max_height_offset: f64,
     /// For an overzoom slice laid out in its ancestor, the ancestor's size
-    /// in slices; 1 otherwise.
+    /// in slices; 1 otherwise. Slices of one ancestor place merged, in its
+    /// instance order.
     pub ancestor_scale: u32,
+}
+
+/// One symbol layer's layout of one tile (GL JS `SymbolBucket`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SymbolBucket {
+    pub instances: Vec<SymbolInstance>,
+    pub text: SymbolStream,
+    pub icon: SymbolStream,
+    /// Line vertices labels ride on, tile units. Instances on one line share
+    /// one copy.
+    pub lines: Vec<[i16; 2]>,
+    pub anchor_offsets: Vec<AnchorOffset>,
+    /// Empty unless the layer sorts by `symbol-sort-key`.
+    pub sort_key_ranges: Vec<SortKeyRange>,
+    pub meta: BucketMeta,
     pub warnings: Warnings,
 }
 

@@ -147,7 +147,7 @@ fn new_data_shows_its_labels_at_once() {
         .unwrap();
     let feature = |name: &str| {
         format!(
-            r#"{{"type":"Feature","properties":{{"name":"{name}"}},"geometry":{{"type":"Point","coordinates":[0,0]}}}}"#
+            r#"{{"type":"Feature","id":"{name}","properties":{{"name":"{name}"}},"geometry":{{"type":"Point","coordinates":[0,0]}}}}"#
         )
     };
     let style = format!(

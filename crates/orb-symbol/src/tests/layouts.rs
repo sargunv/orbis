@@ -514,14 +514,18 @@ impl Case<'_> {
                 "{name} sort range end"
             );
         }
-        assert_eq!(b.sdf_icons, out["sdfIcons"].as_bool(), "{name}: sdfIcons");
         assert_eq!(
-            b.icons_need_linear,
+            b.meta.sdf_icons,
+            out["sdfIcons"].as_bool(),
+            "{name}: sdfIcons"
+        );
+        assert_eq!(
+            b.meta.icons_need_linear,
             out["iconsNeedLinear"].as_bool().unwrap(),
             "{name}: iconsNeedLinear"
         );
         assert_same(
-            b.max_height_offset,
+            b.meta.max_height_offset,
             num(&out["maxHeightOffset"]),
             &format!("{name}: maxHeightOffset"),
         );

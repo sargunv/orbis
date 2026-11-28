@@ -36,7 +36,7 @@ fn crowd(avoid_edges: bool) -> (String, Vec<Anchor>) {
         .iter()
         .map(|(name, lon, lat)| {
             format!(
-                r#"{{"type":"Feature","properties":{{"name":"{name}"}},"geometry":{{"type":"Point","coordinates":[{lon},{lat}]}}}}"#
+                r#"{{"type":"Feature","id":"{name}","properties":{{"name":"{name}"}},"geometry":{{"type":"Point","coordinates":[{lon},{lat}]}}}}"#
             )
         })
         .collect();
@@ -246,7 +246,7 @@ fn labels_across_edges(avoid_edges: bool) -> (usize, Vec<String>) {
     for row in center.row - 1..=center.row + 1 {
         for col in center.col - 1..=center.col + 1 {
             render_tile(&mut map, Z, col, row);
-            let shown: std::collections::HashSet<Box<str>> = map
+            let shown: std::collections::HashSet<String> = map
                 .shown_labels()
                 .into_iter()
                 .filter(|&(_, opacity)| opacity > 0.5)

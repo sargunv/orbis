@@ -92,9 +92,6 @@ pub(crate) struct Prepared {
     /// `text-color`: per section layout keeps, its premultiplied colour as
     /// a property row packs it.
     pub(crate) section_colors: HashMap<u32, Vec<Option<u32>>>,
-    /// By feature index, what its symbol reads as: its text sections
-    /// before `text-transform` and shaping, or its icon.
-    pub(crate) names: HashMap<u32, String>,
     pub(crate) requests: GlyphRequests,
 }
 
@@ -111,9 +108,6 @@ pub(crate) struct SymbolBuild {
     /// Per text quad with [`quad_flags::COLOR`], its colour; empty when no
     /// quad has one.
     pub(crate) text_colors: Vec<u32>,
-    /// Per symbol instance, the byte range of its name in `name_bytes`.
-    pub(crate) name_ranges: Vec<u32>,
-    pub(crate) name_bytes: Vec<u8>,
     /// Images features name that the style doesn't have.
     pub(crate) missing_images: Vec<String>,
     /// Where the layer's filter has camera conditions that read the
@@ -184,9 +178,8 @@ pub(crate) fn placement(symbol: &orb_style::Layer, zoom: f64) -> Placement {
 }
 
 /// The layer-wide layout, after GL JS's `SymbolStyleLayer.recalculate`.
-fn layer_layout(symbol: &orb_style::Layer, zoom: f64) -> LayerLayout {
-    let l = symbol;
-    let placement = placement(symbol, zoom);
+fn layer_layout(l: &orb_style::Layer, zoom: f64) -> LayerLayout {
+    let placement = placement(l, zoom);
     let text_rotation_alignment = match l.get(orb_style::TEXT_ROTATION_ALIGNMENT).evaluate(zoom) {
         orb_style::TextRotationAlignment::Map => orb_symbol::Alignment::Map,
         orb_style::TextRotationAlignment::Viewport => orb_symbol::Alignment::Viewport,
@@ -269,7 +262,7 @@ fn label(sections: &[FormattedSection], transform: orb_text::TextTransform) -> L
 /// `tile` locates the layer for expressions that read geometry; `ancestor`
 /// is where an overzoom slice laid out in its ancestor is in it.
 pub(crate) fn prepare(
-    symbol: &orb_style::Layer,
+    l: &orb_style::Layer,
     layer: &Layer,
     features: &[u32],
     zoom: f64,
@@ -277,8 +270,7 @@ pub(crate) fn prepare(
     images: &[String],
     (tile, ancestor): (Option<orb_expr::CanonicalTile>, Option<orb_tile::Ancestor>),
 ) -> Prepared {
-    let style = layer_layout(symbol, zoom);
-    let l = symbol;
+    let style = layer_layout(l, zoom);
     // GL JS `populate`'s hasText.
     let has_text = l
         .get(orb_style::TEXT_FIELD)
@@ -288,12 +280,7 @@ pub(crate) fn prepare(
             || l.get(orb_style::TEXT_FONT)
                 .constant()
                 .is_some_and(|f| !f.is_empty()));
-    let sort_by_key = l.get(orb_style::SYMBOL_Z_ORDER).evaluate(zoom)
-        != orb_style::SymbolZOrder::ViewportY
-        && matches!(
-            l.get(orb_style::SYMBOL_SORT_KEY).kind(),
-            Kind::Source | Kind::Composite
-        );
+    let sort_by_key = crate::labels::draws_by_key(l, zoom);
 
     let text_field = l
         .get(orb_style::TEXT_FIELD)
@@ -382,7 +369,6 @@ pub(crate) fn prepare(
 
     let mut prepared = Vec::with_capacity(features.len());
     let mut section_colors = HashMap::default();
-    let mut names = HashMap::default();
     for &index in features {
         let row = index as usize;
         let text = has_text.then(|| {
@@ -392,14 +378,6 @@ pub(crate) fn prepare(
                 orb_style::TextTransform::Lowercase => orb_text::TextTransform::Lowercase,
             };
             let sections = text_field.evaluate(zoom, row);
-            let name: String = sections
-                .iter()
-                .filter(|s| s.image.is_none())
-                .map(|s| s.text.as_str())
-                .collect();
-            if !name.trim().is_empty() {
-                names.insert(index, name);
-            }
             if sections.iter().any(|s| s.text_color.is_some()) {
                 // Layout drops image sections without a name.
                 let colors = sections
@@ -421,9 +399,6 @@ pub(crate) fn prepare(
             .map(Into::into);
         if text.is_none() && icon.is_none() {
             continue;
-        }
-        if let Some(icon) = &icon {
-            names.entry(index).or_insert_with(|| icon.to_string());
         }
         let layout = FeatureLayout {
             text_font: FontStack::new(&text_font.evaluate(zoom, row)),
@@ -495,7 +470,6 @@ pub(crate) fn prepare(
         style,
         features: prepared,
         section_colors,
-        names,
         requests,
     }
 }
@@ -575,22 +549,11 @@ pub(crate) fn layout(
         })
         .collect();
     let text_colors = override_colors(&mut bucket, &prepared.section_colors);
-    let (mut name_ranges, mut name_bytes) = (Vec::new(), Vec::new());
-    for instance in &bucket.instances {
-        let name = prepared
-            .names
-            .get(&instance.feature)
-            .map_or("", String::as_str);
-        name_ranges.extend([name_bytes.len() as u32, name.len() as u32]);
-        name_bytes.extend_from_slice(name.as_bytes());
-    }
     SymbolBuild {
         glyphs: glyph_keys,
         images: images.names().map(str::to_string).collect(),
         instance_rows,
         text_colors,
-        name_ranges,
-        name_bytes,
         bucket,
         missing_images,
         filter_data: Vec::new(),
@@ -939,27 +902,10 @@ pub enum SymbolTable {
     InstanceRows,
     /// Per text quad, its `format` colour override (empty if none has one).
     TextColors,
-    /// Per instance, the start and length of its name in [`NameBytes`](Self::NameBytes).
-    NameRanges,
-    /// The instances' names, UTF-8, padded to a word.
-    NameBytes,
 }
 
 /// How many [`SymbolTable`]s a layer's tile has.
-pub(crate) const SYMBOL_TABLES: usize = 14;
-
-/// The scalars of a layer's bucket ([`orb_symbol::SymbolBucket`] without
-/// its tables).
-#[derive(Clone, Copy, Debug, Default, PartialEq, orb_wire::Wire)]
-pub struct SymbolMeta {
-    pub text_size: SizeKind,
-    pub icon_size: SizeKind,
-    pub sdf_icons: Option<bool>,
-    pub icons_need_linear: bool,
-    pub allow_vertical_placement: bool,
-    pub max_height_offset: f64,
-    pub ancestor_scale: u32,
-}
+pub(crate) const SYMBOL_TABLES: usize = 12;
 
 /// A group of symbol layers' share of a finished tile: their bucket's
 /// tables as word streams, the glyph keys its quads name by tile-local
@@ -969,7 +915,7 @@ pub struct ResultSymbols {
     /// The keys of the layers that lay out alike and share the bucket,
     /// leader first.
     pub layers: Vec<u32>,
-    pub meta: SymbolMeta,
+    pub meta: orb_symbol::BucketMeta,
     pub tables: [crate::jobs::Stream; SYMBOL_TABLES],
     /// By glyph id; `None` for requests nothing could draw.
     pub glyphs: Vec<Option<GlyphKey>>,
@@ -1004,20 +950,10 @@ impl ResultSymbols {
             arena.push_pod(&b.sort_key_ranges),
             arena.push(&build.instance_rows),
             arena.push(&build.text_colors),
-            arena.push(&build.name_ranges),
-            arena.push_pod(&build.name_bytes),
         ];
         Self {
             layers,
-            meta: SymbolMeta {
-                text_size: b.text_size,
-                icon_size: b.icon_size,
-                sdf_icons: b.sdf_icons,
-                icons_need_linear: b.icons_need_linear,
-                allow_vertical_placement: b.allow_vertical_placement,
-                max_height_offset: b.max_height_offset,
-                ancestor_scale: b.ancestor_scale,
-            },
+            meta: b.meta,
             tables,
             glyphs: build.glyphs.clone(),
             images: build.images.clone(),

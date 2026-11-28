@@ -308,9 +308,9 @@ impl Map {
         self.map.command().jump_to_state(camera);
     }
 
-    /// Per label text, the greatest opacity it drew with in the last
-    /// frame: for benches that watch labels across gestures.
-    pub fn shown_labels(&self) -> std::collections::HashMap<Box<str>, f32> {
+    /// Per feature id, the greatest opacity a label or icon of it drew
+    /// with in the last frame: for tests that watch labels.
+    pub fn shown_labels(&self) -> std::collections::HashMap<String, f32> {
         self.map.shown_labels().into_iter().collect()
     }
 

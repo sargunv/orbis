@@ -8,8 +8,8 @@ use std::sync::Arc;
 use orb_text::{Anchor, WritingMode};
 
 use crate::bucket::{
-    AnchorOffset, NONE, PlacedSymbol, SizeKind, SortKeyRange, SymbolInstance, instance_flags,
-    justification,
+    AnchorOffset, BucketMeta, NONE, PlacedSymbol, SizeKind, SortKeyRange, SymbolInstance,
+    instance_flags, justification,
 };
 use crate::geometry::Point;
 use crate::layout::{anchor_justification, justification_slot};
@@ -33,8 +33,7 @@ pub struct PlacementTables {
     pub lines: Vec<[i16; 2]>,
     pub anchor_offsets: Vec<AnchorOffset>,
     pub sort_key_ranges: Vec<SortKeyRange>,
-    pub text_size: SizeKind,
-    pub allow_vertical_placement: bool,
+    pub meta: BucketMeta,
     /// The bucket's tile was laid out again (a data or style change): its
     /// symbols show without fading in the first time it is placed (GL JS
     /// and MapLibre Native `justReloaded`). A tile's first load fades its
@@ -45,10 +44,6 @@ pub struct PlacementTables {
     /// the tile's zoom and the next, blended by
     /// [`PlacedTile::translate_t`]. Empty where the layer's apply.
     pub translates: [Vec<[[f32; 2]; 2]>; 2],
-    /// For an overzoom slice laid out in its ancestor, the ancestor's size
-    /// in slices ([`crate::SymbolBucket::ancestor_scale`]): slices of one
-    /// ancestor place merged, in its instance order.
-    pub ancestor_scale: u32,
 }
 
 impl PlacementTables {
@@ -289,16 +284,24 @@ pub struct LayerFrame {
     pub tiles: Vec<PlacedTile>,
 }
 
-/// What a placement runs against.
-#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
+/// A placement's request: what it places against, and the clock its fades
+/// run on.
+#[derive(Clone, Debug, orb_wire::Wire)]
 pub struct Frame {
-    pub camera: Camera,
-    /// Symbol layers in style order.
-    pub layers: Vec<LayerFrame>,
+    pub inputs: PlacementInputs,
     /// Milliseconds on the scene's clock.
     pub now: f64,
     /// `fadeDuration`, milliseconds.
     pub fade_duration: f64,
+}
+
+/// What a placement places against: equal inputs place alike, so a frame
+/// whose inputs equal the last placed needs no placement.
+#[derive(Clone, Debug, PartialEq, orb_wire::Wire)]
+pub struct PlacementInputs {
+    pub camera: Camera,
+    /// Symbol layers in style order.
+    pub layers: Vec<LayerFrame>,
     pub cross_source_collisions: bool,
     /// The camera's longitude, degrees, for world copies.
     pub lng: f64,
@@ -635,54 +638,136 @@ fn render_shift(o: &VariableOffset) -> Point {
     )
 }
 
-/// The collision circles of a line label `frame` shows, as placement
-/// places them for its camera, each `[dx, dy, radius]` in viewport pixels
-/// from the label's projected anchor: GL JS's queries test a line label
-/// by these. Empty for labels without collision circles.
-pub fn label_circles(
-    frame: &Frame,
+/// What a query tests a shown label by: the shapes placement placed it
+/// with (GL JS's `queryRenderedSymbols`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LabelShapes {
+    /// Its shown text's and icon's boxes, in the orientation each shows in
+    /// and moved by the variable anchor it shows at.
+    pub boxes: Vec<LabelBox>,
+    /// A line label's collision circles, `[dx, dy, radius]` in viewport
+    /// pixels from its projected anchor.
+    pub circles: Vec<[f64; 3]>,
+}
+
+/// A shown text or icon box.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LabelBox {
+    /// `[x1, y1, x2, y2]` in tile units around the anchor.
+    pub rect: [f64; 4],
+    /// Its part's `*-translate` in pixels, and whether that turns with the
+    /// viewport.
+    pub translate: ([f64; 2], bool),
+}
+
+/// The shapes of instance `index` of a tile's `tables` as its committed
+/// `states` show it at `inputs`; `None` when it shows nothing.
+pub fn label_shapes(
+    inputs: &PlacementInputs,
+    params: &LayerParams,
+    tile: &PlacedTile,
+    tables: &PlacementTables,
+    states: &BucketStates,
+    index: usize,
+) -> Option<LabelShapes> {
+    let instance = &tables.instances[index];
+    // The first of `placed` drawn fading in, and its state word's index.
+    let shown = |words: &[u32], placed: &[u32]| {
+        placed.iter().enumerate().find_map(|(k, &p)| {
+            let at = (p != NONE).then_some(p as usize * state::WORDS)?;
+            let w = *words.get(at)?;
+            (w & state::HIDDEN == 0 && w & state::PLACED != 0).then_some((k, at))
+        })
+    };
+    let text = shown(&states.text, &instance.text);
+    let icon = shown(&states.icon, &instance.icon);
+    if text.is_none() && icon.is_none() {
+        return None;
+    }
+    let translates = label_translates(params, tile, tables, index);
+    let scale = f64::from(instance.text_box_scale);
+    let mut boxes = Vec::new();
+    // Box `i` (text 0, icon 2), or the vertical one after it.
+    let mut add = |words: &[u32], at: usize, vertical: bool, i: usize, translate| {
+        const FLAGS: [u32; 4] = [
+            instance_flags::TEXT_BOX,
+            instance_flags::VERTICAL_TEXT_BOX,
+            instance_flags::ICON_BOX,
+            instance_flags::VERTICAL_ICON_BOX,
+        ];
+        let i = i + usize::from(vertical && instance.flags & FLAGS[i + 1] != 0);
+        let Some(b) = collision_box(instance, i, FLAGS[i]) else {
+            return;
+        };
+        if b.x1 == b.x2 && b.y1 == b.y2 {
+            return;
+        }
+        let [dx, dy] = if words[at] & state::SHIFTED != 0 {
+            [1, 2].map(|k| f64::from(f32::from_bits(words[at + k])) * scale)
+        } else {
+            [0.0; 2]
+        };
+        boxes.push(LabelBox {
+            rect: [b.x1 + dx, b.y1 + dy, b.x2 + dx, b.y2 + dy],
+            translate,
+        });
+    };
+    if let Some((slot, at)) = text {
+        add(
+            &states.text,
+            at,
+            slot == justification::VERTICAL,
+            0,
+            translates[0],
+        );
+    }
+    if let Some((k, at)) = icon {
+        let vertical = k == 1 || states.icon[at] & state::QUARTER_TURN != 0;
+        add(&states.icon, at, vertical, 2, translates[1]);
+    }
+    let circles = match text {
+        Some(_) => line_circles(inputs, params, tile, tables, index),
+        None => Vec::new(),
+    };
+    (!boxes.is_empty() || !circles.is_empty()).then_some(LabelShapes { boxes, circles })
+}
+
+/// A line label's collision circles as placement places them at
+/// `inputs`, from its projected anchor; empty for labels without them.
+fn line_circles(
+    inputs: &PlacementInputs,
     params: &LayerParams,
     tile: &PlacedTile,
     tables: &PlacementTables,
     index: usize,
 ) -> Vec<[f64; 3]> {
     let instance = &tables.instances[index];
-    let center = instance.text[justification::CENTER];
-    if instance.flags & instance_flags::RUNTIME_COLLISION_CIRCLES == 0 || center == NONE {
-        return Vec::new();
-    }
-    let symbol = &tables.text_placed[center as usize];
-    let view = Viewport::new(frame.camera);
-    let ground = frame.ground.as_ref().map(|g| &*g.0);
-    let anchor = view.anchor_px(&tile.view, instance.anchor, ground);
-    let placement = BoxPlacement {
-        tile: &tile.view,
-        overlap: Overlap::Always,
-        pitch_with_map: params.pitch_with_map,
-        rotate_with_map: params.rotate_with_map,
-        translation: translation(
-            &frame.camera,
+    let ground = inputs.ground.as_ref().map(|g| &*g.0);
+    let c = Candidate {
+        p: params,
+        tile,
+        t: tables,
+        instance,
+        id: 0,
+        f: params.flags_of(instance),
+        group: None,
+        text_translation: translation(
+            &inputs.camera,
             &tile.view,
             label_translates(params, tile, tables, index)[0],
         ),
-        group: None,
-        height_offset: f64::from(instance.height_offset),
-        height_anchor_ground: params.height_anchor_ground,
+        icon_translation: [0.0; 2],
         ground,
-        within_view: false,
+        tile_scope: false,
     };
-    let label = LineLabel {
-        symbol,
-        lines: &tables.lines,
-        glyph_offsets: &tables.text_glyph_offsets,
-        font_size: feature_size(tables.text_size, tile.text_size, symbol),
-        circle_diameter: f64::from(instance.collision_circle_diameter),
-        padding: params.text_padding,
+    let Some(label) = c.line_label() else {
+        return Vec::new();
     };
+    let view = Viewport::new(inputs.camera);
+    let anchor = view.anchor_px(&tile.view, instance.anchor, ground);
+    let placement = c.base(Overlap::Always, c.text_translation);
     let placed = view.place_circles(&placement, &label, &mut Scratch::default(), |_, _, _| false);
-    placed
-        .circles
-        .into_iter()
+    (placed.circles.into_iter())
         .map(|[x, y, r]| [x - anchor.x, y - anchor.y, r])
         .collect()
 }
@@ -712,7 +797,7 @@ fn quads(placed: &[PlacedSymbol], index: u32) -> u32 {
 /// tables: pixels, and whether each turns with the viewport. The layer's,
 /// or beyond the spec the instance's own, which the tables hold for the
 /// layer that places them alone.
-pub fn label_translates(
+fn label_translates(
     params: &LayerParams,
     tile: &PlacedTile,
     tables: &PlacementTables,
@@ -773,7 +858,7 @@ impl Placer {
     /// world (GL JS `handleWrapJump`), and adds the new ones. Returns the
     /// copies it dropped, by the wrap they were drawn at, with their
     /// labels' cross-tile ids.
-    fn update_copies(&mut self, frame: &Frame) -> Vec<(u64, i32, Vec<u32>)> {
+    fn update_copies(&mut self, frame: &PlacementInputs) -> Vec<(u64, i32, Vec<u32>)> {
         let delta = ((frame.lng - self.lng) / 360.0).round() as i32;
         self.lng = frame.lng;
         if delta != 0 {
@@ -835,7 +920,8 @@ impl Placer {
 
     /// Places every layer of `frame` and commits, returning the buckets
     /// whose states changed. Tiles of buckets not ingested are skipped.
-    pub fn place(&mut self, frame: &Frame) -> Committed {
+    pub fn place(&mut self, request: &Frame) -> Committed {
+        let frame = &request.inputs;
         if frame.scope != Scope::Viewport {
             // Still output places as if nothing had been placed before.
             self.buckets.clear();
@@ -891,8 +977,8 @@ impl Placer {
         let mut now = commit(
             placed,
             self.prev.as_ref(),
-            frame.now,
-            frame.fade_duration,
+            request.now,
+            request.fade_duration,
             camera.zoom,
         );
 
@@ -912,8 +998,8 @@ impl Placer {
         }
         let committed = Committed {
             changed,
-            commit_time: frame.now,
-            fade_duration: frame.fade_duration,
+            commit_time: request.now,
+            fade_duration: request.fade_duration,
             zoom_adjustment: now.zoom_adjustment,
             last_change_time: now.last_change_time,
             partway: now.partway,
@@ -925,7 +1011,7 @@ impl Placer {
 
     /// Tile scope (see [`Scope::Tiles`]): each tile's own placement, then
     /// the labels that overlap a higher-ranked one of another tile dropped.
-    fn place_tiles(&mut self, frame: &Frame, tiles: &[ScopeTile]) -> Placements {
+    fn place_tiles(&mut self, frame: &PlacementInputs, tiles: &[ScopeTile]) -> Placements {
         let ground = frame.ground.as_ref().map(|g| &*g.0);
         let mut now = Placements::default();
         let mut records = Vec::with_capacity(tiles.len());
@@ -1012,7 +1098,7 @@ struct Pass<'a> {
     /// The layer being placed, topmost first, and its part's sort key.
     layer: u32,
     sort_key: f64,
-    /// Labels keep their place ([`Frame::stable_labels`]).
+    /// Labels keep their place ([`PlacementInputs::stable_labels`]).
     stable: bool,
 }
 
@@ -1084,7 +1170,7 @@ impl<'a> Pass<'a> {
             let mut merges: Vec<Vec<usize>> = Vec::with_capacity(parts.len());
             let mut ancestors: HashMap<_, usize> = HashMap::default();
             for (i, &(key, t, b, _)) in parts.iter().enumerate() {
-                let scale = b.tables.ancestor_scale;
+                let scale = b.tables.meta.ancestor_scale;
                 let id = t.view.id;
                 if scale > 1 && !params.z_order_viewport_y {
                     let ancestor = (key.to_bits(), id.z, id.x / scale, id.y / scale, id.wrap);
@@ -1264,7 +1350,7 @@ impl<'a> Pass<'a> {
         let icon_box = c.collision_box(2, instance_flags::ICON_BOX);
         let vertical_icon_box = c.collision_box(3, instance_flags::VERTICAL_ICON_BOX);
         let vertical_glyphs = quads(&t.text_placed, instance.text[justification::VERTICAL]);
-        let allow_vertical = t.allow_vertical_placement && vertical_glyphs > 0;
+        let allow_vertical = t.meta.allow_vertical_placement && vertical_glyphs > 0;
         let offsets = &t.anchor_offsets
             [instance.anchor_offsets[0] as usize..instance.anchor_offsets[1] as usize];
         // Modes in order; the first that fits wins.
@@ -1309,7 +1395,7 @@ impl<'a> Pass<'a> {
                 if text.placeable() {
                     // GL JS records the orientation only when the bucket
                     // may place vertically.
-                    if t.allow_vertical_placement {
+                    if t.meta.allow_vertical_placement {
                         text.orientation = Some(mode);
                     }
                     break;
@@ -1321,7 +1407,7 @@ impl<'a> Pass<'a> {
             }
         }
         // GL JS `updatePreviousOrientationIfNotPlaced`.
-        if t.allow_vertical_placement && !text.placeable() {
+        if t.meta.allow_vertical_placement && !text.placeable() {
             text.orientation = prev.and_then(|l| l.orientation);
         }
         text
@@ -1329,20 +1415,7 @@ impl<'a> Pass<'a> {
 
     /// A line label's collision circles, if it has them.
     fn place_line_circles(&mut self, c: &Candidate<'_>) -> Option<PlacedCircles> {
-        let (t, instance) = (c.t, c.instance);
-        let center = instance.text[justification::CENTER];
-        if instance.flags & instance_flags::RUNTIME_COLLISION_CIRCLES == 0 || center == NONE {
-            return None;
-        }
-        let symbol = &t.text_placed[center as usize];
-        let label = LineLabel {
-            symbol,
-            lines: &t.lines,
-            glyph_offsets: &t.text_glyph_offsets,
-            font_size: feature_size(t.text_size, c.tile.text_size, symbol),
-            circle_diameter: f64::from(instance.collision_circle_diameter),
-            padding: c.p.text_padding,
-        };
+        let label = c.line_label()?;
         let placement = c.base(c.f.text_overlap, c.text_translation);
         Some(self.index.place_circles(&placement, &label))
     }
@@ -1532,6 +1605,24 @@ impl<'b> Candidate<'b> {
     /// The instance's `i`th collision box, if `flag` says it has one.
     fn collision_box(&self, i: usize, flag: u32) -> Option<CollisionBox> {
         collision_box(self.instance, i, flag)
+    }
+
+    /// A line label's line and circle sizes, if it collides as circles.
+    fn line_label(&self) -> Option<LineLabel<'b>> {
+        let (t, instance) = (self.t, self.instance);
+        let center = instance.text[justification::CENTER];
+        if instance.flags & instance_flags::RUNTIME_COLLISION_CIRCLES == 0 || center == NONE {
+            return None;
+        }
+        let symbol = &t.text_placed[center as usize];
+        Some(LineLabel {
+            symbol,
+            lines: &t.lines,
+            glyph_offsets: &t.text_glyph_offsets,
+            font_size: feature_size(t.meta.text_size, self.tile.text_size, symbol),
+            circle_diameter: f64::from(instance.collision_circle_diameter),
+            padding: self.p.text_padding,
+        })
     }
 
     /// Whether text and icon show, from whether each was placed: each
@@ -1744,7 +1835,7 @@ fn bucket_states(
             if params.variable_placement {
                 // Drawn only where placement chose an anchor, and in the
                 // chosen orientation (GL JS `skipOrientation`).
-                let skip_orientation = t.allow_vertical_placement && orientation.is_none();
+                let skip_orientation = t.meta.allow_vertical_placement && orientation.is_none();
                 match offset {
                     Some(o) if !skip_orientation => {
                         let s = render_shift(&o);
@@ -1876,24 +1967,26 @@ mod tests {
     /// no perspective.
     fn frame(layers: Vec<LayerFrame>, now: f64, fade: f64) -> Frame {
         Frame {
-            camera: Camera {
-                width: 512.0,
-                height: 512.0,
-                zoom: 0.0,
-                bearing: 0.0,
-                pitch: 0.0,
-                roll: 0.0,
-                camera_to_center_distance: 1.0,
-                globe: None,
+            inputs: PlacementInputs {
+                camera: Camera {
+                    width: 512.0,
+                    height: 512.0,
+                    zoom: 0.0,
+                    bearing: 0.0,
+                    pitch: 0.0,
+                    roll: 0.0,
+                    camera_to_center_distance: 1.0,
+                    globe: None,
+                },
+                layers,
+                cross_source_collisions: true,
+                lng: 0.0,
+                ground: None,
+                scope: Scope::Viewport,
+                stable_labels: false,
             },
-            layers,
             now,
             fade_duration: fade,
-            cross_source_collisions: true,
-            lng: 0.0,
-            ground: None,
-            scope: Scope::Viewport,
-            stable_labels: false,
         }
     }
 
@@ -2324,13 +2417,40 @@ mod tests {
         assert_eq!(f32::from_bits(s.text[1]), 0.0);
     }
 
+    /// A label placed vertically answers queries by its vertical box.
+    #[test]
+    fn vertical_labels_answer_by_their_vertical_box() {
+        let mut t = labels(&[(1, [4096, 4096])]);
+        t.meta.allow_vertical_placement = true;
+        t.text_placed.push(PlacedSymbol {
+            quads: [1, 1],
+            ..t.text_placed[0]
+        });
+        let instance = &mut t.instances[0];
+        instance.text[justification::VERTICAL] = 1;
+        instance.boxes[1] = [-8, -32, 8, 32];
+        instance.flags |= instance_flags::VERTICAL_TEXT_BOX;
+        let mut p = params(7);
+        p.writing_modes = vec![WritingMode::Vertical, WritingMode::Horizontal];
+        let mut placer = Placer::default();
+        placer.ingest(1, t.clone());
+        let layers = vec![LayerFrame {
+            params: p.clone(),
+            tiles: vec![tile(1, 0)],
+        }];
+        let f = frame(layers, 0.0, 0.0);
+        let c = placer.place(&f);
+        let shapes = label_shapes(&f.inputs, &p, &tile(1, 0), &t, &c.changed[0].2, 0);
+        let boxes: Vec<[f64; 4]> = shapes.unwrap().boxes.iter().map(|b| b.rect).collect();
+        assert_eq!(boxes, [[-8.0, -32.0, 8.0, 32.0]]);
+    }
+
     #[test]
     fn line_labels_collide_as_circles() {
         // Two labels on one horizontal line, 62.5 px apart; each spans
         // glyphs from -60 to +60 layout px at 24 px.
         let mut t = PlacementTables {
             lines: vec![[0, 4096], [8192, 4096]],
-            text_size: SizeKind::Constant,
             ..PlacementTables::default()
         };
         for (i, x) in [3000i16, 4000].into_iter().enumerate() {
@@ -2402,7 +2522,7 @@ mod tests {
             camera: Camera {
                 width: 256.0,
                 height: 256.0,
-                ..frame(Vec::new(), 0.0, 0.0).camera
+                ..frame(Vec::new(), 0.0, 0.0).inputs.camera
             },
             layers: layers
                 .iter()
@@ -2447,7 +2567,7 @@ mod tests {
             0.0,
             0.0,
         );
-        f.scope = Scope::Tiles(
+        f.inputs.scope = Scope::Tiles(
             owners
                 .iter()
                 .map(|&(c, r)| quadrant(c, r, &layers))
@@ -2506,7 +2626,7 @@ mod tests {
                 0.0,
                 0.0,
             );
-            f.scope = Scope::Tiles(
+            f.inputs.scope = Scope::Tiles(
                 [(0, 0), (1, 0), (0, 1), (1, 1)]
                     .iter()
                     .map(|&(c, r)| quadrant(c, r, &layers))
@@ -2637,7 +2757,7 @@ mod tests {
         let slice = |ordinal: u32, key: u64, scale: u32| {
             let mut t = labels(&[(key, [4096, 4096])]);
             t.instances[0].ordinal = ordinal;
-            t.ancestor_scale = scale;
+            t.meta.ancestor_scale = scale;
             t
         };
         let tile_at = |bucket: u64, x: u32| PlacedTile {
@@ -2692,7 +2812,7 @@ mod tests {
         // A fading placement, then a still one: it shows fully at once.
         placer.place(&frame(layer(Overlap::Always), 0.0, 300.0));
         let mut f = frame(layer(Overlap::Never), 10.0, 0.0);
-        f.scope = Scope::Still;
+        f.inputs.scope = Scope::Still;
         let c = placer.place(&f);
         let states = &c.changed[0].2;
         assert!(shown(word(states, 0)));
@@ -2746,8 +2866,8 @@ mod tests {
                 now,
                 300.0,
             );
-            f.camera.pitch = pitch;
-            f.stable_labels = stable;
+            f.inputs.camera.pitch = pitch;
+            f.inputs.stable_labels = stable;
             placer.place(&f);
         };
         place(&mut placer, 2, 0.0);
@@ -2795,13 +2915,13 @@ mod tests {
                 0.0,
                 300.0,
             );
-            both.camera.pitch = pitch;
-            both.stable_labels = stable;
+            both.inputs.camera.pitch = pitch;
+            both.inputs.stable_labels = stable;
             placer.place(&both);
             let states = &placer.buckets[&(1, 0)].states;
             assert!(!shown(word(states, 0)) && shown(word(states, 1)));
             let mut alone = both.clone();
-            alone.layers.pop();
+            alone.inputs.layers.pop();
             alone.now = 1000.0;
             placer.place(&alone);
             let states = &placer.buckets[&(1, 0)].states;

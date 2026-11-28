@@ -7,12 +7,10 @@ use std::sync::{Arc, Mutex};
 
 use orb_hal::Gpu;
 use orb_render::{
-    GlyphAtlas, ImageAtlas, MeshId, OutOfSpace, PLACED_WORDS, Renderer, SymbolMeshData, Words,
-    pack_image_rect,
+    GlyphAtlas, ImageAtlas, MeshId, OutOfSpace, Renderer, SymbolMeshData, Words, pack_image_rect,
 };
 use orb_symbol::{
-    AnchorOffset, Committed, PlacedSymbol, PlacementTables, Quad, SizeKind, SortKeyRange,
-    SymbolInstance,
+    AnchorOffset, Committed, PlacedSymbol, PlacementTables, SizeKind, SortKeyRange, SymbolInstance,
 };
 use orb_text::GlyphKey;
 
@@ -202,17 +200,6 @@ impl GlyphRows {
     }
 }
 
-/// Whether two placement frames place the same, clock aside: the camera,
-/// the drawn buckets, the settings and the terrain the labels stand on.
-fn same_inputs(a: &orb_symbol::Frame, b: &orb_symbol::Frame) -> bool {
-    a.camera == b.camera
-        && a.layers == b.layers
-        && a.cross_source_collisions == b.cross_source_collisions
-        && a.ground == b.ground
-        && a.scope == b.scope
-        && a.stable_labels == b.stable_labels
-}
-
 /// Per bucket, the world copies a placement draws.
 type WorldCopies = HashMap<u64, Vec<i32>>;
 
@@ -222,15 +209,14 @@ type WorldCopies = HashMap<u64, Vec<i32>>;
 struct BucketMeshes {
     text: Vec<MeshId>,
     icon: Vec<MeshId>,
-    text_size: SizeKind,
     tile_zoom: f64,
     /// The states last written, per drawn world copy, to write again when
     /// the meshes make room for more copies.
     written: HashMap<i32, orb_symbol::BucketStates>,
-    /// The bucket's placement tables and, per instance, what it reads as
-    /// (for [`shown`](Labels::shown)).
     tables: Arc<PlacementTables>,
-    names: Vec<Box<str>>,
+    /// The leader's picking records, which name each instance's feature
+    /// (for [`shown`](Labels::shown)).
+    hits: Option<Arc<crate::query::MeshHits>>,
     /// What the layer's filter's camera conditions read of each
     /// instance's feature, by feature index, sorted
     /// ([`ResultSymbols::filter_data`]).
@@ -329,9 +315,7 @@ fn layer_params(
     zoom: f64,
     camera: orb_style::CameraInputs,
 ) -> orb_symbol::LayerParams {
-    let layer = &plan.style.layers[node.layer];
-    let symbol = layer;
-    let l = symbol;
+    let l = &plan.style.layers[node.layer];
     let z_order = l.get(orb_style::SYMBOL_Z_ORDER).evaluate(zoom);
     let point =
         l.get(orb_style::SYMBOL_PLACEMENT).evaluate(zoom) == orb_style::SymbolPlacement::Point;
@@ -367,9 +351,9 @@ fn layer_params(
     orb_symbol::LayerParams {
         layer: crate::style::layer_key(node.key),
         source: plan.sources[node.source].key,
-        minzoom: layer.minzoom,
-        maxzoom: if layer.maxzoom.is_finite() {
-            layer.maxzoom
+        minzoom: l.minzoom,
+        maxzoom: if l.maxzoom.is_finite() {
+            l.maxzoom
         } else {
             0.0
         },
@@ -400,25 +384,21 @@ fn layer_params(
                 .get(orb_style::SYMBOL_AVOID_EDGES)
                 .evaluate_camera(zoom, camera),
         },
-        own_flags: own_symbol_flags(symbol),
-        rotate_with_map: text_rotates_with_map(symbol, zoom),
-        pitch_with_map: text_pitches_with_map(symbol, zoom),
+        own_flags: own_symbol_flags(l),
+        rotate_with_map: text_rotates_with_map(l, zoom),
+        pitch_with_map: text_pitches_with_map(l, zoom),
         icon_text_fit: l.get(orb_style::ICON_TEXT_FIT).evaluate(zoom)
             != orb_style::IconTextFit::None,
         z_order_viewport_y: z_order == orb_style::SymbolZOrder::ViewportY,
-        draw_by_viewport_y: draws_by_viewport_y(symbol, zoom),
-        sort_across_tiles: z_order != orb_style::SymbolZOrder::ViewportY
-            && matches!(
-                l.get(orb_style::SYMBOL_SORT_KEY).kind(),
-                orb_style::Kind::Source | orb_style::Kind::Composite
-            ),
+        draw_by_viewport_y: draws_by_viewport_y(l, zoom),
+        sort_across_tiles: draws_by_key(l, zoom),
         height_anchor_ground: l.get(orb_style::SYMBOL_HEIGHT_ANCHOR).evaluate(zoom)
             == orb_style::HeightAnchor::Ground,
         text_padding: l.get(orb_style::TEXT_PADDING).evaluate(zoom),
         text_translate: translate(orb_style::TEXT_PART),
         icon_translate: translate(orb_style::ICON_PART),
         writing_modes,
-        variable_placement: has_variable_placement(symbol),
+        variable_placement: has_variable_placement(l),
     }
 }
 
@@ -470,11 +450,8 @@ fn filtered_instances(
     words
 }
 
-/// GL JS `sortFeaturesByY`: symbols that may overlap draw ordered by
-/// viewport y, unless the layer sorts by key.
 /// GL JS `sortFeaturesByKey`.
-fn draws_by_key(symbol: &orb_style::Layer, zoom: f64) -> bool {
-    let l = symbol;
+pub(crate) fn draws_by_key(l: &orb_style::Layer, zoom: f64) -> bool {
     l.get(orb_style::SYMBOL_Z_ORDER).evaluate(zoom) != orb_style::SymbolZOrder::ViewportY
         && matches!(
             l.get(orb_style::SYMBOL_SORT_KEY).kind(),
@@ -482,10 +459,11 @@ fn draws_by_key(symbol: &orb_style::Layer, zoom: f64) -> bool {
         )
 }
 
-fn draws_by_viewport_y(symbol: &orb_style::Layer, zoom: f64) -> bool {
-    let l = symbol;
+/// GL JS `sortFeaturesByY`: symbols that may overlap draw ordered by
+/// viewport y, unless the layer sorts by key.
+fn draws_by_viewport_y(l: &orb_style::Layer, zoom: f64) -> bool {
     let z_order = l.get(orb_style::SYMBOL_Z_ORDER).evaluate(zoom);
-    let by_key = draws_by_key(symbol, zoom);
+    let by_key = draws_by_key(l, zoom);
     let by_y = z_order == orb_style::SymbolZOrder::ViewportY
         || (z_order == orb_style::SymbolZOrder::Auto && !by_key);
     let can_overlap = overlap(
@@ -499,7 +477,7 @@ fn draws_by_viewport_y(symbol: &orb_style::Layer, zoom: f64) -> bool {
         || l.get(orb_style::TEXT_IGNORE_PLACEMENT).evaluate(zoom)
         || l.get(orb_style::ICON_IGNORE_PLACEMENT).evaluate(zoom)
         // Per feature or following the camera, any symbol may.
-        || symbol_flag_values(symbol)
+        || symbol_flag_values(l)
             .any(|e| e.reads().contains(orb_style::Inputs::CAMERA) || matches!(e.kind(), orb_style::Kind::Source | orb_style::Kind::Composite));
     by_y && can_overlap
 }
@@ -563,8 +541,7 @@ fn symbol_flag_values(
 }
 
 /// The layer sets `text-variable-anchor` or `text-variable-anchor-offset`.
-pub(crate) fn has_variable_placement(symbol: &orb_style::Layer) -> bool {
-    let l = symbol;
+pub(crate) fn has_variable_placement(l: &orb_style::Layer) -> bool {
     l.get(orb_style::TEXT_VARIABLE_ANCHOR).constant() != Some(None)
         || l.get(orb_style::TEXT_VARIABLE_ANCHOR_OFFSET).constant() != Some(None)
 }
@@ -642,8 +619,6 @@ pub(crate) struct Labels {
     /// out from there (GL JS `holdingForFade`): what replaced them shows
     /// its labels by then.
     held: HashMap<u64, Held>,
-    /// The layers, buckets and tiles the last frame drew.
-    drawn: Vec<(u32, u64, orb_symbol::TileId)>,
 }
 
 impl std::fmt::Debug for Labels {
@@ -745,7 +720,6 @@ impl Labels {
             requests: 0,
             committed_request: 0,
             held: HashMap::default(),
-            drawn: Vec::new(),
         }
     }
 
@@ -820,22 +794,6 @@ impl Labels {
         if instances.is_empty() {
             return Ok(());
         }
-        let name_ranges = table(SymbolTable::NameRanges);
-        let name_bytes = table(SymbolTable::NameBytes);
-        let name_bytes: &[u8] = bytemuck::cast_slice(&name_bytes);
-        let names: Vec<Box<str>> = name_ranges
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|&[start, len]| {
-                let (start, len) = (start as usize, len as usize);
-                name_bytes
-                    .get(start..start + len)
-                    .and_then(|b| std::str::from_utf8(b).ok())
-                    .unwrap_or_default()
-                    .into()
-            })
-            .collect();
 
         let template = plan.style.glyphs.as_deref();
         self.next_bucket += 1;
@@ -914,39 +872,16 @@ impl Labels {
             }
         }
 
-        let mut meshes = BucketMeshes::default();
-        // Each layer draws the bucket with its own rows.
-        let streams = s.layers.iter().flat_map(|&layer| {
-            let (icon_key, text_key) = node_keys(layer);
-            [
-                (
-                    text_key,
-                    &text_placed,
-                    SymbolTable::TextQuads,
-                    SymbolTable::TextGlyphOffsets,
-                    text_params,
-                    &[][..],
-                ),
-                (
-                    icon_key,
-                    &icon_placed,
-                    SymbolTable::IconQuads,
-                    SymbolTable::IconGlyphOffsets,
-                    icon_params,
-                    &icon_text_sizes[..],
-                ),
-            ]
-        });
-        // Each stream's chunks and placed symbols' quads, then their rows'
-        // states: they go up together, in one block of the scene.
-        let (mut pending, mut pending_rows) = (Vec::new(), Vec::new());
-        for (key, placed, quads, offsets, params, text_sizes) in streams {
-            if placed.is_empty() || plan.node(key).is_none() {
-                continue;
-            }
-            let node = plan.node(key).expect("checked") as u32;
+        // What every layer drawing the bucket shares of its text and its
+        // icons: chunks of quads and the tables, but for its own rows.
+        let by_viewport_y = draws_by_viewport_y(symbol, tile_zoom);
+        let shared = [
+            (&text_placed, SymbolTable::TextQuads),
+            (&icon_placed, SymbolTable::IconQuads),
+        ]
+        .map(|(placed, quads)| {
             let mut chunks = quad_chunks(placed, &sort_key_ranges);
-            if draws_by_viewport_y(symbol, tile_zoom) {
+            if by_viewport_y {
                 // Placement reorders the quads: every chunk may hold any.
                 let mut all = orb_layout::TileBox {
                     min: [i16::MAX; 2],
@@ -960,92 +895,99 @@ impl Labels {
                     c.bounds = all;
                 }
             }
-            let quads_words = s.table(quads).words(bytes);
-            if quads_words.len() / (std::mem::size_of::<Quad>() as u32 / 4) == 0 {
-                continue;
-            }
-            let rows_mesh = result.meshes.iter().find(|m| m.node == key);
             let placed_quads: Vec<[u32; 2]> = placed.iter().map(|p| p.quads).collect();
-            debug_assert_eq!(
-                s.table(if is_text(key) {
-                    SymbolTable::TextPlaced
-                } else {
-                    SymbolTable::IconPlaced
-                })
-                .words(bytes)
-                .len(),
-                placed.len() as u32 * PLACED_WORDS
-            );
-            // Symbol rows name no images: only their features' states.
-            let mut warnings = Vec::new();
-            let rows = rows_mesh.map(|m| {
-                crate::resident::resolve_rows(
-                    gpu,
-                    plan,
-                    result,
-                    m,
-                    images,
-                    namespace,
-                    states,
-                    &mut warnings,
-                )
-            });
-            debug_assert!(
-                rows.as_ref().is_none_or(|r| r.ramps.is_empty()) && warnings.is_empty(),
-                "symbol rows name no images"
-            );
-            let indices = rows.map(|r| r.states).unwrap_or_default();
-            pending.push((
-                key,
-                node,
-                chunks,
-                placed_quads,
-                (quads_words, offsets),
+            let drawn = !placed.is_empty() && s.table(quads).len() > 0;
+            (chunks, placed_quads, drawn)
+        });
+        use SymbolTable::{
+            IconGlyphOffsets, IconPlaced, IconQuads, InstanceRows, Lines, TextColors,
+            TextGlyphOffsets, TextPlaced, TextQuads,
+        };
+        let words = |t| s.table(t).words(bytes);
+        let [text_data, icon_data] = [
+            (
+                &shared[0],
+                [TextQuads, TextPlaced, TextGlyphOffsets].map(words),
+                text_params,
+                &[][..],
+                words(TextColors),
+            ),
+            (
+                &shared[1],
+                [IconQuads, IconPlaced, IconGlyphOffsets].map(words),
+                icon_params,
+                &icon_text_sizes[..],
+                Words::Core(&[]),
+            ),
+        ]
+        .map(
+            |(
+                (chunks, placed_quads, _),
+                [quads, placed, glyph_offsets],
                 params,
-            ));
-            pending_rows.push((rows_mesh, indices, text_sizes));
+                text_sizes,
+                colors,
+            )| {
+                SymbolMeshData {
+                    quads,
+                    placed,
+                    glyph_offsets,
+                    lines: words(Lines),
+                    glyphs: &owner.rows,
+                    images: &image_rects,
+                    instance_rows: words(InstanceRows),
+                    text_sizes,
+                    colors,
+                    placed_quads,
+                    props: Words::Core(&[]),
+                    params,
+                    chunks,
+                }
+            },
+        );
+        // Each layer draws them with its own rows; they go up together, in
+        // one block of the scene.
+        let mut streams = Vec::new();
+        for &layer in &s.layers {
+            let (icon_key, text_key) = node_keys(layer);
+            for (key, data, (.., drawn)) in [
+                (text_key, &text_data, &shared[0]),
+                (icon_key, &icon_data, &shared[1]),
+            ] {
+                let Some(node) = plan.node(key).filter(|_| *drawn) else {
+                    continue;
+                };
+                let rows_mesh = result.meshes.iter().find(|m| m.node == key);
+                // Symbol rows name no images: only their features' states.
+                let indices = rows_mesh.map_or_else(Vec::new, |m| {
+                    let mut warnings = Vec::new();
+                    let rows = crate::resident::resolve_rows(
+                        gpu,
+                        plan,
+                        result,
+                        m,
+                        images,
+                        namespace,
+                        states,
+                        &mut warnings,
+                    );
+                    debug_assert!(rows.ramps.is_empty() && warnings.is_empty());
+                    rows.states
+                });
+                let data = SymbolMeshData {
+                    props: rows_mesh.map_or(Words::Core(&[]), |m| m.props.words(bytes)),
+                    ..*data
+                };
+                streams.push((key, node as u32, rows_mesh, indices, data));
+            }
         }
-        let datas: Vec<SymbolMeshData<'_>> = (pending.iter().zip(&pending_rows))
-            .map(
-                |(
-                    (key, _, chunks, placed_quads, (quads_words, offsets), params),
-                    (rows_mesh, _, text_sizes),
-                )| {
-                    let text = is_text(*key);
-                    SymbolMeshData {
-                        quads: *quads_words,
-                        placed: s
-                            .table(match text {
-                                true => SymbolTable::TextPlaced,
-                                false => SymbolTable::IconPlaced,
-                            })
-                            .words(bytes),
-                        glyph_offsets: s.table(*offsets).words(bytes),
-                        lines: s.table(SymbolTable::Lines).words(bytes),
-                        glyphs: &owner.rows,
-                        images: &image_rects,
-                        instance_rows: s.table(SymbolTable::InstanceRows).words(bytes),
-                        text_sizes,
-                        colors: match text {
-                            true => s.table(SymbolTable::TextColors).words(bytes),
-                            false => Words::Core(&[]),
-                        },
-                        placed_quads,
-                        props: rows_mesh.map_or(Words::Core(&[]), |m| m.props.words(bytes)),
-                        params: *params,
-                        chunks,
-                    }
-                },
-            )
+        let uploads: Vec<(u32, &SymbolMeshData<'_>, &[u32])> = (streams.iter())
+            .map(|(_, node, _, indices, data)| (*node, data, &indices[..]))
             .collect();
-        let streams: Vec<(u32, &SymbolMeshData<'_>, &[u32])> = (pending.iter().zip(&datas))
-            .zip(&pending_rows)
-            .map(|(((_, node, ..), data), (_, indices, _))| (*node, data, &indices[..]))
-            .collect();
-        let ids = match renderer.add_symbol_meshes(gpu, resident.gpu, &streams) {
+        let ids = match renderer.add_symbol_meshes(gpu, resident.gpu, &uploads) {
             Ok(ids) => ids,
             Err(e) => {
-                for (_, indices, _) in pending_rows {
+                for (_, _, _, indices, _) in streams {
                     for index in indices {
                         states.release(index);
                     }
@@ -1053,9 +995,8 @@ impl Labels {
                 return Err(e);
             }
         };
-        for ((&(key, ..), (rows_mesh, indices, _)), mesh) in
-            pending.iter().zip(pending_rows).zip(ids)
-        {
+        let mut meshes = BucketMeshes::default();
+        for ((key, _, rows_mesh, indices, _), mesh) in streams.into_iter().zip(ids) {
             resident.meshes.push(Resident {
                 node: key,
                 mesh,
@@ -1098,7 +1039,6 @@ impl Labels {
                 .collect()
         });
         let bucket = owner.bucket;
-        meshes.text_size = meta.text_size;
         meshes.tile_zoom = tile_zoom;
         meshes.tables = Arc::new(PlacementTables {
             instances,
@@ -1108,13 +1048,14 @@ impl Labels {
             lines,
             anchor_offsets,
             sort_key_ranges,
-            text_size: meta.text_size,
-            allow_vertical_placement: meta.allow_vertical_placement,
+            meta: *meta,
             reloaded,
             translates,
-            ancestor_scale: meta.ancestor_scale,
         });
-        meshes.names = names;
+        meshes.hits = [text_key, icon_key]
+            .iter()
+            .find_map(|&key| result.meshes.iter().find(|m| m.node == key))
+            .map(|m| Arc::clone(&m.hits));
         meshes.filter_data.clone_from(&s.filter_data);
         self.lane.ingest(bucket, Arc::clone(&meshes.tables));
         self.buckets.insert(bucket, meshes);
@@ -1239,32 +1180,25 @@ impl Labels {
     /// on is placed in full, as a fresh map's is.
     pub(crate) fn wants_placement(&self, frame: &orb_symbol::Frame) -> bool {
         self.in_flight.is_none()
-            && self
-                .last_frame
-                .as_ref()
-                .is_none_or(|last| !same_inputs(last, frame))
+            && (self.last_frame.as_ref()).is_none_or(|last| last.inputs != frame.inputs)
     }
 
     /// Whether the last placement asked was of `frame`'s inputs, and has
     /// committed.
     pub(crate) fn is_placed(&self, frame: &orb_symbol::Frame) -> bool {
         self.in_flight.is_none()
-            && self
-                .last_frame
-                .as_ref()
-                .is_some_and(|last| same_inputs(last, frame))
+            && (self.last_frame.as_ref()).is_some_and(|last| last.inputs == frame.inputs)
     }
 
     /// Records a placement asked of the lane.
-    pub(crate) fn placing(&mut self, frame: &orb_symbol::Frame) {
+    pub(crate) fn placing(&mut self, frame: &Arc<orb_symbol::Frame>) {
         let mut drawn: HashMap<u64, Vec<i32>> = HashMap::default();
-        for t in frame.layers.iter().flat_map(|l| &l.tiles) {
+        for t in frame.inputs.layers.iter().flat_map(|l| &l.tiles) {
             drawn.entry(t.bucket).or_default().push(t.view.id.wrap);
         }
-        let frame = Arc::new(frame.clone());
         self.requests += 1;
-        self.in_flight = Some((Arc::clone(&frame), drawn, self.requests));
-        self.last_frame = Some(frame);
+        self.in_flight = Some((Arc::clone(frame), drawn, self.requests));
+        self.last_frame = Some(Arc::clone(frame));
     }
 
     /// The lane couldn't place the frame asked of it: the next frame asks
@@ -1408,44 +1342,36 @@ impl Labels {
             .map_or(1.0, |c| c.fade_change(now) as f32)
     }
 
-    /// Records the buckets `frame` draws, for [`shown`](Self::shown).
-    pub(crate) fn drawing(&mut self, frame: &orb_symbol::Frame) {
-        self.drawn.clear();
-        for layer in &frame.layers {
-            for tile in &layer.tiles {
-                self.drawn
-                    .push((layer.params.layer, tile.bucket, tile.view.id));
-            }
-        }
-    }
-
-    /// Per text, the greatest opacity a label of it drew with in the last
-    /// frame at `now`: what the symbol shader computes, for benches.
-    pub(crate) fn shown(&self, now: f64) -> HashMap<Box<str>, f32> {
+    /// Per feature id, the greatest opacity a label of it drew with at
+    /// `now` in the last placement's tiles or the held ones: what the
+    /// symbol shader computes, for tests.
+    pub(crate) fn shown(&self, now: f64) -> HashMap<String, f32> {
         use orb_symbol::state;
         let change = self.fade_change(now);
-        let mut shown: HashMap<Box<str>, f32> = HashMap::default();
+        let mut shown: HashMap<String, f32> = HashMap::default();
         let held = self.held.keys().flat_map(|&bucket| {
             let wraps = self.buckets.get(&bucket).map(|m| m.written.keys().copied());
             wraps.into_iter().flatten().map(move |wrap| (bucket, wrap))
         });
-        let drawn = self
-            .drawn
-            .iter()
-            .map(|&(_, bucket, tile)| (bucket, tile.wrap));
-        for (bucket, wrap) in drawn.chain(held) {
+        let placed = self.placed.iter().flat_map(|f| &f.inputs.layers);
+        let placed = placed
+            .flat_map(|l| &l.tiles)
+            .map(|t| (t.bucket, t.view.id.wrap));
+        for (bucket, wrap) in placed.chain(held) {
             let Some(meshes) = self.buckets.get(&bucket) else {
                 continue;
             };
-            let states = meshes.written.get(&wrap);
-            for (instance, name) in meshes.tables.instances.iter().zip(&meshes.names) {
-                if name.is_empty() {
+            let (Some(states), Some(hits)) = (meshes.written.get(&wrap), &meshes.hits) else {
+                continue;
+            };
+            for instance in &meshes.tables.instances {
+                let Some(id) = hits.label_id(instance.feature) else {
                     continue;
-                }
-                let opacity = instance
-                    .text
-                    .iter()
-                    .filter_map(|&p| states?.text.get(p as usize * state::WORDS).copied())
+                };
+                let opacity = (instance.text.iter().chain(&instance.icon))
+                    .zip([&states.text; 4].into_iter().chain([&states.icon; 2]))
+                    .filter(|&(&p, _)| p != orb_symbol::NONE)
+                    .filter_map(|(&p, words)| words.get(p as usize * state::WORDS).copied())
                     .filter(|w| w & state::HIDDEN == 0)
                     .map(|w| {
                         let from = (w & state::OPACITY) as f32 / 127.0;
@@ -1453,7 +1379,7 @@ impl Labels {
                         (from + sign * change).clamp(0.0, 1.0)
                     })
                     .fold(0.0, f32::max);
-                let best = shown.entry(name.clone()).or_default();
+                let best = shown.entry(id).or_default();
                 *best = best.max(opacity);
             }
         }
@@ -1566,7 +1492,7 @@ impl Labels {
                             },
                             text_size: zoom_size(
                                 &symbol.get(orb_style::TEXT_SIZE),
-                                b.text_size,
+                                b.tables.meta.text_size,
                                 b.tile_zoom,
                                 zoom,
                             ),
@@ -1583,7 +1509,7 @@ impl Labels {
                 }
             })
             .collect();
-        orb_symbol::Frame {
+        let inputs = orb_symbol::PlacementInputs {
             camera: orb_symbol::Camera {
                 width: viewport.width,
                 height: viewport.height,
@@ -1604,13 +1530,16 @@ impl Labels {
                 }),
             },
             layers,
-            now,
-            fade_duration: options.fade_duration,
             cross_source_collisions: options.cross_source_collisions,
             lng: camera.target.lon,
             ground: None,
             scope: orb_symbol::Scope::Viewport,
             stable_labels: options.stable_labels,
+        };
+        orb_symbol::Frame {
+            inputs,
+            now,
+            fade_duration: options.fade_duration,
         }
     }
 
@@ -1625,113 +1554,62 @@ impl Labels {
     }
 
     /// Picking hits for the labels and icons the last commit shows: their
-    /// anchors in world space and their collision boxes in pixels at the
-    /// anchor's scale, for any camera to project. Boxes are
-    /// viewport-aligned, without variable-anchor shifts; a line label is
-    /// its anchor's collision circle's square.
+    /// anchors in world space and the shapes placement placed them with,
+    /// for any camera to project.
     pub(crate) fn label_hits(
         &self,
         plan: &StylePlan,
         planes: &BucketPlanes,
     ) -> Vec<crate::query::LabelHit> {
-        use orb_symbol::state;
         let Some(frame) = self.placed.as_deref() else {
             return Vec::new();
         };
-        let shown = |words: &[u32], placed: u32| {
-            placed != orb_symbol::NONE
-                && words
-                    .get(placed as usize * state::WORDS)
-                    .is_some_and(|&w| w & state::HIDDEN == 0 && w & state::PLACED != 0)
-        };
-        let period = planes.period;
+        let inputs = &frame.inputs;
         let mut hits = Vec::new();
-        for layer in &frame.layers {
+        for layer in &inputs.layers {
             let key = crate::style::node_key(layer.params.layer, 0);
             let Some(node) = plan.node(key) else {
                 continue;
             };
-            let node = &plan.nodes[node];
+            let source = plan.sources[plan.nodes[node].source].key;
             for tile in &layer.tiles {
-                let Some(meshes) = self.buckets.get(&tile.bucket) else {
+                let id = tile.view.id;
+                let (Some(meshes), Some(&to_world)) = (
+                    self.buckets.get(&tile.bucket),
+                    planes.to_world.get(&tile.bucket),
+                ) else {
                     continue;
                 };
-                let id = tile.view.id;
                 let Some(states) = meshes.written.get(&id.wrap) else {
                     continue;
                 };
-                let Some(&to_world) = planes.to_world.get(&tile.bucket) else {
-                    continue;
-                };
-                let shift = glam::DVec2::new(f64::from(id.wrap) * period, 0.0);
+                let shift = glam::DVec2::new(f64::from(id.wrap) * planes.period, 0.0);
                 // Where each feature's first instance draws, when the
                 // layer draws by viewport y; else by feature index.
-                let sorted: HashMap<u32, u32> = if layer.params.draw_by_viewport_y {
+                let mut sorted: HashMap<u32, u32> = HashMap::default();
+                if layer.params.draw_by_viewport_y {
                     let order =
-                        orb_symbol::feature_sort_order(&meshes.tables, frame.camera.bearing);
-                    let mut at = HashMap::default();
+                        orb_symbol::feature_sort_order(&meshes.tables, inputs.camera.bearing);
                     for (i, feature) in order.into_iter().enumerate() {
-                        at.entry(feature).or_insert(i as u32);
+                        sorted.entry(feature).or_insert(i as u32);
                     }
-                    at
-                } else {
-                    HashMap::default()
-                };
+                }
                 for (index, instance) in meshes.tables.instances.iter().enumerate() {
-                    let text = instance.text.iter().find(|&&p| shown(&states.text, p));
-                    let icon = instance.icon.iter().find(|&&p| shown(&states.icon, p));
-                    if text.is_none() && icon.is_none() {
+                    let Some(shapes) = orb_symbol::label_shapes(
+                        inputs,
+                        &layer.params,
+                        tile,
+                        &meshes.tables,
+                        states,
+                        index,
+                    ) else {
                         continue;
-                    }
-                    // A variable anchor's shift, in the boxes' units (GL JS
-                    // `calculateVariableLayoutShift`), for the text and an
-                    // icon shifted with it.
-                    let anchor_shift = |words: &[u32], placed: u32| {
-                        let at = placed as usize * state::WORDS;
-                        (words[at] & state::SHIFTED != 0).then(|| {
-                            let scale = f64::from(instance.text_box_scale);
-                            [1, 2].map(|i| f64::from(f32::from_bits(words[at + i])) * scale)
-                        })
                     };
-                    // Each part where its translate draws it.
-                    let [text_translate, icon_translate] =
-                        orb_symbol::label_translates(&layer.params, tile, &meshes.tables, index);
-                    let boxes: Vec<crate::query::LabelBox> = [
-                        (
-                            text.map(|&p| anchor_shift(&states.text, p)),
-                            0,
-                            text_translate,
-                        ),
-                        (
-                            icon.map(|&p| anchor_shift(&states.icon, p)),
-                            2,
-                            icon_translate,
-                        ),
-                    ]
-                    .into_iter()
-                    .filter_map(|(shown, i, (translate, viewport))| {
-                        let [dx, dy] = shown?.unwrap_or([0.0; 2]);
-                        let b = instance.boxes[i].map(f64::from);
-                        (!(b[0] == b[2] && b[1] == b[3])).then_some(crate::query::LabelBox {
-                            rect: [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy],
-                            translate: translate.map(|v| v as f32),
-                            viewport,
-                        })
-                    })
-                    .collect();
-                    let circles = if text.is_some() {
-                        orb_symbol::label_circles(frame, &layer.params, tile, &meshes.tables, index)
-                    } else {
-                        Vec::new()
-                    };
-                    if boxes.is_empty() && circles.is_empty() {
-                        continue;
-                    }
                     let [ax, ay] = instance.anchor.map(f64::from);
                     hits.push(crate::query::LabelHit {
                         node: key,
                         key: crate::query::FeatureKey {
-                            source: plan.sources[node.source].key,
+                            source,
                             tile: orb_crs::TileIndex::new(id.z, id.x, id.y),
                             feature: instance.feature,
                         },
@@ -1741,8 +1619,7 @@ impl Labels {
                             .copied()
                             .unwrap_or(instance.feature),
                         anchor: to_world.transform_point2(glam::DVec2::new(ax, ay)) + shift,
-                        boxes,
-                        circles,
+                        shapes,
                     });
                 }
             }
@@ -1831,7 +1708,7 @@ pub(crate) fn paint(
     maxima: &[f32],
     state: orb_render::StateLookup,
 ) -> Option<orb_render::SymbolPaint> {
-    let symbol = &plan.style.layers[node.layer];
+    let l = &plan.style.layers[node.layer];
     let is_text = node.family == orb_render::Family::SymbolText;
     let part = if is_text {
         orb_style::TEXT_PART
@@ -1839,16 +1716,15 @@ pub(crate) fn paint(
         orb_style::ICON_PART
     };
     // GL JS skips a part whose constant opacity is 0.
-    if symbol.get(part.opacity).constant() == Some(0.0) {
+    if l.get(part.opacity).constant() == Some(0.0) {
         return None;
     }
-    let l = symbol;
     let point =
         l.get(orb_style::SYMBOL_PLACEMENT).evaluate(zoom) == orb_style::SymbolPlacement::Point;
     let (rotate, pitch, keep_upright) = if is_text {
         (
-            text_rotates_with_map(symbol, zoom),
-            text_pitches_with_map(symbol, zoom),
+            text_rotates_with_map(l, zoom),
+            text_pitches_with_map(l, zoom),
             l.get(orb_style::TEXT_KEEP_UPRIGHT).evaluate(zoom),
         )
     } else {
@@ -1914,7 +1790,7 @@ pub(crate) fn paint(
             == orb_style::HeightAnchor::Ground,
         // GL JS draws halos, then fills, per sort-key segment of a tile;
         // a layer sorted by key draws them per quad instead.
-        separate_halo: !draws_by_key(symbol, zoom)
+        separate_halo: !draws_by_key(l, zoom)
             && (l
                 .get(orb_style::TEXT_LETTER_SPACING)
                 .constant()
@@ -2073,7 +1949,7 @@ mod tests {
         }
 
         /// A frame placing `bucket`'s tile at `wraps`.
-        fn frame(&self, bucket: u64, wraps: &[i32]) -> Frame {
+        fn frame(&self, bucket: u64, wraps: &[i32]) -> Arc<Frame> {
             let tile = |wrap| PlacedTile {
                 bucket,
                 view: TileView {
@@ -2101,35 +1977,37 @@ mod tests {
                 14.0,
                 camera,
             );
-            Frame {
-                camera: Camera {
-                    width: 512.0,
-                    height: 512.0,
-                    zoom: 14.0,
-                    bearing: 0.0,
-                    pitch: 0.0,
-                    roll: 0.0,
-                    camera_to_center_distance: 1.0,
-                    globe: None,
+            Arc::new(Frame {
+                inputs: orb_symbol::PlacementInputs {
+                    camera: Camera {
+                        width: 512.0,
+                        height: 512.0,
+                        zoom: 14.0,
+                        bearing: 0.0,
+                        pitch: 0.0,
+                        roll: 0.0,
+                        camera_to_center_distance: 1.0,
+                        globe: None,
+                    },
+                    layers: vec![LayerFrame {
+                        params,
+                        tiles: wraps.iter().map(|&w| tile(w)).collect(),
+                    }],
+                    cross_source_collisions: true,
+                    lng: 0.0,
+                    ground: None,
+                    scope: orb_symbol::Scope::Viewport,
+                    stable_labels: false,
                 },
-                layers: vec![LayerFrame {
-                    params,
-                    tiles: wraps.iter().map(|&w| tile(w)).collect(),
-                }],
                 now: 0.0,
                 fade_duration: 0.0,
-                cross_source_collisions: true,
-                lng: 0.0,
-                ground: None,
-                scope: orb_symbol::Scope::Viewport,
-                stable_labels: false,
-            }
+            })
         }
 
         /// A commit showing every text symbol of `bucket` at `wraps`.
         fn commit(&self, bucket: u64, wraps: &[i32]) -> Committed {
             let placed = self.result.symbols[0].table(SymbolTable::TextPlaced);
-            let count = placed.len() as usize / PLACED_WORDS as usize;
+            let count = placed.len() as usize / orb_render::PLACED_WORDS as usize;
             let states = BucketStates {
                 text: [orb_symbol::state::PLACED | 127, 0, 0].repeat(count),
                 ..BucketStates::default()

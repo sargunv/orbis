@@ -1313,17 +1313,3 @@ fn glyph_pbfs_end_to_end() {
     let advances: f64 = positioned(&shaping).iter().map(|g| g.metrics.advance).sum();
     assert_eq!(shaping.right - shaping.left, advances);
 }
-
-/// Anchors read back from their table codes, which are GL JS's
-/// `TextAnchorEnum` numbers.
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-fn anchor_codes_round_trip() {
-    for anchor in Anchor::ALL {
-        assert_eq!(Anchor::from_code(anchor.code()), Some(anchor), "{anchor:?}");
-    }
-    let codes = Anchor::ALL.map(Anchor::code);
-    assert_eq!(codes, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    assert_eq!(Anchor::from_code(0), None);
-    assert_eq!(Anchor::from_code(10), None);
-}

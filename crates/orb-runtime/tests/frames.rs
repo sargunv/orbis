@@ -1055,7 +1055,8 @@ mod tests {
     fn placement_commits_show_labels() {
         let mut offscreen = null_island(
             r#"{"version":8,
-            "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
+            "sources":{"s":{"type":"geojson","data":{"type":"Feature","id":"n","properties":{},
+                "geometry":{"type":"Point","coordinates":[0,0]}}}},
             "layers":[{"id":"label","type":"symbol","source":"s","layout":{"text-field":"Null Island"}}]}"#,
         );
         assert!(
@@ -1071,7 +1072,7 @@ mod tests {
                 shown = offscreen
                     .map
                     .shown_labels()
-                    .get("Null Island")
+                    .get("n")
                     .copied()
                     .unwrap_or(0.0);
             }
@@ -1127,7 +1128,7 @@ mod tests {
         let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let point = |name: &str, lon: f64| {
             format!(
-                r#"{{"type":"Feature","properties":{{"name":"{name}"}},"geometry":{{"type":"Point","coordinates":[{lon},20]}}}}"#
+                r#"{{"type":"Feature","id":"{name}","properties":{{"name":"{name}"}},"geometry":{{"type":"Point","coordinates":[{lon},20]}}}}"#
             )
         };
         let style = format!(

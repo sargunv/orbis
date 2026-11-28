@@ -1366,9 +1366,9 @@ impl Map {
         (self.services.wake)();
     }
 
-    /// Per label text, the greatest opacity it drew with at the last
-    /// frame's time: for benches that watch labels across gestures.
-    pub fn shown_labels(&self) -> HashMap<Box<str>, f32> {
+    /// Per feature id, the greatest opacity a label or icon of it drew
+    /// with at the last frame's time: for tests that watch labels.
+    pub fn shown_labels(&self) -> HashMap<String, f32> {
         self.labels.shown(self.frame_time)
     }
 
@@ -3202,14 +3202,14 @@ impl Map {
         if self.mode != RenderMode::Continuous || !self.events.idled {
             frame.fade_duration = 0.0;
         }
-        frame.scope = match &self.mode {
+        frame.inputs.scope = match &self.mode {
             RenderMode::Continuous => orb_symbol::Scope::Viewport,
             RenderMode::Still => orb_symbol::Scope::Still,
             RenderMode::Tile { grid, .. } => orb_symbol::Scope::Tiles(
                 grid.iter()
                     .map(|t| {
                         let view = View::new(&t.camera, t.viewport, &self.surface());
-                        let f = frame_at(&view, t.center, &t.camera);
+                        let f = frame_at(&view, t.center, &t.camera).inputs;
                         orb_symbol::ScopeTile {
                             col: t.col,
                             row: t.row,
@@ -3220,19 +3220,19 @@ impl Map {
                     .collect(),
             ),
         };
-        self.labels.drawing(&frame);
         // Symbols stand on the terrain as drawn.
-        frame.ground = style
+        frame.inputs.ground = style
             .terrain
             .get()
             .map(|t| orb_symbol::GroundRef(t.snapshot() as Arc<dyn orb_symbol::Ground>));
         // Without symbol tiles there is nothing to place.
-        if frame.layers.iter().all(|l| l.tiles.is_empty()) {
+        if frame.inputs.layers.iter().all(|l| l.tiles.is_empty()) {
             self.labels.nothing_to_place();
             self.placement_ms += self.services.clock.now() - started;
             return !self.labels.settling();
         }
         self.labels.resend_if_restarted();
+        let frame = Arc::new(frame);
         let settled = self.labels.is_placed(&frame);
         // Still output shows one placement, of everything it shows: one of
         // what has arrived so far is work no picture keeps. Tile mode

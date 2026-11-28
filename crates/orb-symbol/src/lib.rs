@@ -35,8 +35,9 @@ mod variable;
 mod tests;
 
 pub use bucket::{
-    AnchorOffset, NONE, PlacedSymbol, Quad, SizeKind, SortKeyRange, SymbolBucket, SymbolInstance,
-    SymbolStream, SymbolWritingMode, Warnings, instance_flags, justification, quad_flags,
+    AnchorOffset, BucketMeta, NONE, PlacedSymbol, Quad, SizeKind, SortKeyRange, SymbolBucket,
+    SymbolInstance, SymbolStream, SymbolWritingMode, Warnings, instance_flags, justification,
+    quad_flags,
 };
 pub use geometry::EXTENT;
 pub use icon::{IconImage, IconTextFit, TextFit};
@@ -46,10 +47,10 @@ pub use layout::{
     retain_line_labels_in_tile,
 };
 pub use placement::{
-    BucketStates, Camera, Committed, Frame, GlobeCamera, Ground, GroundRef, LayerFrame,
-    LayerParams, Mat4, Overlap, PlacedTile, PlacementTables, Placer, Scope, ScopeTile, Surface,
-    SymbolFlags, TileGlobe, TileId, TileView, ZoomSize, feature_sort_order, label_circles,
-    label_translates, state,
+    BucketStates, Camera, Committed, Frame, GlobeCamera, Ground, GroundRef, LabelBox, LabelShapes,
+    LayerFrame, LayerParams, Mat4, Overlap, PlacedTile, PlacementInputs, PlacementTables, Placer,
+    Scope, ScopeTile, Surface, SymbolFlags, TileGlobe, TileId, TileView, ZoomSize,
+    feature_sort_order, label_shapes, state,
 };
 pub use quads::GLYPH_PADDING;
 

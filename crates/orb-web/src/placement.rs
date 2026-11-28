@@ -136,12 +136,13 @@ impl PlacementLane for WorkerPlacement {
         self.post(&js::object(&[("remove", (bucket as f64).into())]), None);
     }
 
-    fn place(&self, frame: Frame, done: PlaceDone) {
-        let pyramid = frame.ground.as_ref().map(|g| g.0.pyramid());
+    fn place(&self, frame: Arc<Frame>, done: PlaceDone) {
+        let ground = &frame.inputs.ground;
+        let pyramid = ground.as_ref().map(|g| g.0.pyramid());
         let sent = with_lane(self.0, |lane| {
             lane.owed.push_back(done);
-            let changed = lane.ground != frame.ground;
-            lane.ground.clone_from(&frame.ground);
+            let changed = lane.ground != *ground;
+            lane.ground.clone_from(ground);
             changed.then(|| std::mem::replace(&mut lane.pyramid, pyramid.clone()))
         })
         .flatten();
@@ -158,7 +159,7 @@ impl PlacementLane for WorkerPlacement {
                 Some(&buffer),
             );
         }
-        let buffer = Uint8Array::from(wire::encode(&frame).as_slice());
+        let buffer = Uint8Array::from(wire::encode(&*frame).as_slice());
         self.post(
             &js::object(&[("place", buffer.clone().into())]),
             Some(&buffer),
@@ -230,11 +231,11 @@ impl PlacementWorker {
             return Ok(JsValue::UNDEFINED);
         }
         let mut frame: Frame = wire::decode(&bytes(get("place"))?).map_err(|e| JsError::new(&e))?;
-        frame.ground = self.ground.as_ref().map(|(ground, _)| ground.clone());
+        frame.inputs.ground = self.ground.as_ref().map(|(ground, _)| ground.clone());
         let reply = Arc::new(Mutex::new(None));
         let sink = Arc::clone(&reply);
         self.lane.place(
-            frame,
+            Arc::new(frame),
             Box::new(move |committed| {
                 if let Ok(committed) = committed {
                     *sink.lock().expect("reply poisoned") = Some(wire::encode(&committed));

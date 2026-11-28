@@ -14,8 +14,8 @@ mod view;
 
 pub use grid::Overlap;
 pub use place::{
-    BucketStates, Committed, Frame, GroundRef, LayerFrame, LayerParams, PlacedTile,
-    PlacementTables, Placer, Scope, ScopeTile, SymbolFlags, ZoomSize, feature_sort_order,
-    label_circles, label_translates, state,
+    BucketStates, Committed, Frame, GroundRef, LabelBox, LabelShapes, LayerFrame, LayerParams,
+    PlacedTile, PlacementInputs, PlacementTables, Placer, Scope, ScopeTile, SymbolFlags, ZoomSize,
+    feature_sort_order, label_shapes, state,
 };
 pub use view::{Camera, GlobeCamera, Ground, Mat4, Surface, TileGlobe, TileId, TileView};

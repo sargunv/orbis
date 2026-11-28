@@ -349,7 +349,7 @@ fn tilted_maps_drop_far_labels_by_their_filter() {
     let shown = |map: &Map| {
         let mut shown: Vec<String> = (map.shown_labels().into_iter())
             .filter(|&(_, opacity)| opacity > 0.0)
-            .map(|(name, _)| name.into())
+            .map(|(id, _)| id)
             .collect();
         shown.sort();
         shown

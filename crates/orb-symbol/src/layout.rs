@@ -14,8 +14,8 @@ use orb_tile::{Ancestor, GeometryType, Layer, Value};
 
 use crate::anchors::{self, Anchor as SymbolAnchor, LabelExtent, Square};
 use crate::bucket::{
-    AnchorOffset, NONE, PlacedSymbol, Quad, SizeKind, SortKeyRange, SymbolBucket, SymbolInstance,
-    SymbolStream, SymbolWritingMode, instance_flags, justification, quad_flags,
+    AnchorOffset, BucketMeta, NONE, PlacedSymbol, Quad, SizeKind, SortKeyRange, SymbolBucket,
+    SymbolInstance, SymbolStream, SymbolWritingMode, instance_flags, justification, quad_flags,
 };
 use crate::collision::{CollisionFeature, Shape, collision_feature};
 use crate::geometry::{EXTENT, Point, js_max, js_min, js_round, to_i16, to_u16};
@@ -768,10 +768,13 @@ struct Builder<'a> {
 impl<'a> Builder<'a> {
     fn new(style: &'a LayerLayout, tile: TileParams<'a>, context: LayoutContext<'a>) -> Self {
         let bucket = SymbolBucket {
-            text_size: style.text_size,
-            icon_size: style.icon_size,
-            allow_vertical_placement: style.allow_vertical_placement(),
-            ancestor_scale: tile.ancestor.map_or(1, |a| a.scale),
+            meta: BucketMeta {
+                text_size: style.text_size,
+                icon_size: style.icon_size,
+                allow_vertical_placement: style.allow_vertical_placement(),
+                ancestor_scale: tile.ancestor.map_or(1, |a| a.scale),
+                ..BucketMeta::default()
+            },
             ..SymbolBucket::default()
         };
         Self {
@@ -936,15 +939,15 @@ impl<'a> Builder<'a> {
         let name = feature.icon.as_deref().filter(|n| !n.is_empty())?;
         let (index, image) = self.context.images.get(name)?;
         let sdf = image.sdf;
-        match self.bucket.sdf_icons {
-            None => self.bucket.sdf_icons = Some(sdf),
+        match self.bucket.meta.sdf_icons {
+            None => self.bucket.meta.sdf_icons = Some(sdf),
             Some(other) if other != sdf => self.bucket.warnings.mixed_sdf_icons = true,
             Some(_) => {}
         }
         if image.pixel_ratio != self.tile.pixel_ratio
             || self.style.icon_rotate_constant.is_none_or(|r| r != 0.0)
         {
-            self.bucket.icons_need_linear = true;
+            self.bucket.meta.icons_need_linear = true;
         }
         Some(FeatureIcon {
             image: index,
@@ -1206,8 +1209,8 @@ impl<'a> Builder<'a> {
             (anchor, self.line_range(anchor, line, shared_line))
         };
         let elevation = s.feature.layout.height_offset;
-        if elevation > self.bucket.max_height_offset {
-            self.bucket.max_height_offset = elevation;
+        if elevation > self.bucket.meta.max_height_offset {
+            self.bucket.meta.max_height_offset = elevation;
         }
         let instance = self.bucket.instances.len() as u32;
         let at = (anchor, line_range, instance);

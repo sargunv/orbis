@@ -1662,7 +1662,7 @@ fn stable_labels_converge_and_stay_put() {
     }
     clock.settle(&mut map, &mut target);
     let shown = |map: &Map| {
-        let mut names: Vec<Box<str>> = map
+        let mut names: Vec<String> = map
             .shown_labels()
             .into_iter()
             .filter(|&(_, opacity)| opacity > 0.5)
