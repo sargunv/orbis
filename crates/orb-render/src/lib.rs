@@ -217,10 +217,10 @@ pub struct TargetFormat {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameStats {
     pub dispatches: u32,
-    /// Draws issued: the main bundles' (a node with candidates, a
-    /// layer's composite), and other passes'.
+    /// Draws issued: the main recording's (a node with candidates, a
+    /// composite, a stack, a blend), and other passes'.
     pub draws: u32,
-    /// Whether the bundle was re-recorded this frame.
+    /// Whether the main pass was recorded again this frame.
     pub bundle_recorded: bool,
     pub candidates: u32,
     /// The cull's candidates were laid out again: tiles or placements came

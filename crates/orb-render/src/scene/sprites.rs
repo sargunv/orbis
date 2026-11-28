@@ -43,24 +43,63 @@ pub struct ImageBindings {
     pub size: u32,
 }
 
+/// A table row: its style's namespace and what it holds.
 #[derive(Debug)]
 struct Entry {
     namespace: u64,
-    page: Option<usize>,
-    metadata: Option<ImageMetadata>,
-    size: Option<[u32; 2]>,
-    dash_rows: Option<[u32; 2]>,
-    /// The padded rectangle's origin.
+    kind: Kind,
+}
+
+#[derive(Debug)]
+enum Kind {
+    /// An image's pixels, once uploaded.
+    Image(Option<Placed>),
+    /// A dash pattern's rows of the line atlas, and its size there.
+    Dash { rows: [u32; 2], size: [u32; 2] },
+    /// A gradient ramp's pixels, held while tiles lease it (`refs`).
+    Ramp { refs: u32, placed: Option<Placed> },
+}
+
+/// An uploaded image's place on a page.
+#[derive(Debug)]
+struct Placed {
+    page: usize,
+    /// The image's rectangle's origin, inside its padding.
     origin: [u32; 2],
     /// Transparent texels allocated around the padded rectangle.
     margin: u32,
-    ramp_refs: Option<u32>,
+    size: [u32; 2],
+    metadata: ImageMetadata,
+}
+
+impl Entry {
+    fn placed(&self) -> Option<&Placed> {
+        match &self.kind {
+            Kind::Image(placed) | Kind::Ramp { placed, .. } => placed.as_ref(),
+            Kind::Dash { .. } => None,
+        }
+    }
+
+    /// Its pixels' slot, which an upload fills and a vacate empties.
+    fn pixels(&mut self) -> Option<&mut Option<Placed>> {
+        match &mut self.kind {
+            Kind::Image(placed) | Kind::Ramp { placed, .. } => Some(placed),
+            Kind::Dash { .. } => None,
+        }
+    }
+
+    /// Whether what it holds is there: pixels uploaded, or dash rows.
+    fn materialised(&self) -> bool {
+        matches!(self.kind, Kind::Dash { .. }) || self.placed().is_some()
+    }
 }
 
 /// Shelf-packed RGBA8 array pages. Row zero is a transparent missing image.
 /// Names and rows remain stable until their style namespace is released.
 /// Pages are reset when their last image leaves; no camera work touches them.
-/// An image that finds no room adds a page, up to `max_pages`.
+/// An image that finds no room adds a page, up to `max_pages`: the texture
+/// is made one page larger and every page copied into it, in a submit of
+/// its own.
 #[derive(Debug)]
 pub struct ImageAtlas {
     bindings: ImageBindings,
@@ -182,16 +221,14 @@ impl ImageAtlas {
             self.entries.push(None);
             self.entries.len() as u32 - 1
         };
-        self.entries[id as usize] = Some(Entry {
-            namespace,
-            page: None,
-            metadata: None,
-            size: None,
-            dash_rows: None,
-            origin: [0; 2],
-            margin: 0,
-            ramp_refs: matches!(slot, Slot::Image(ImageKey::Ramp { .. })).then_some(0),
-        });
+        let kind = match slot {
+            Slot::Image(ImageKey::Ramp { .. }) => Kind::Ramp {
+                refs: 0,
+                placed: None,
+            },
+            _ => Kind::Image(None),
+        };
+        self.entries[id as usize] = Some(Entry { namespace, kind });
         self.names.insert((namespace, slot), id);
         Ok(id)
     }
@@ -207,7 +244,7 @@ impl ImageAtlas {
             return self.resolve(namespace, name);
         }
         let id = self.reserve(namespace, Slot::Image(key.clone()))?;
-        if self.entries[id as usize].as_ref().unwrap().size.is_some() {
+        if self.entries[id as usize].as_ref().unwrap().materialised() {
             return Ok(id);
         }
         match key {
@@ -224,9 +261,8 @@ impl ImageAtlas {
                     0,
                 ];
                 self.bindings.table.write(gpu, id * RECT_WORDS, &words);
-                let entry = self.entries[id as usize].as_mut().unwrap();
-                entry.size = Some([crate::scene::line::WIDTH, rows[1]]);
-                entry.dash_rows = Some(rows);
+                let size = [crate::scene::line::WIDTH, rows[1]];
+                self.entries[id as usize].as_mut().unwrap().kind = Kind::Dash { rows, size };
             }
             ImageKey::Ramp { colors, nearest } => {
                 // Fold long ramps into 256-wide rectangles. Shader addressing
@@ -252,19 +288,26 @@ impl ImageAtlas {
         Ok(id)
     }
 
+    fn entry(&self, id: u32) -> Option<&Entry> {
+        self.entries.get(id as usize)?.as_ref()
+    }
+
     pub fn metadata(&self, id: u32) -> Option<&ImageMetadata> {
-        self.entries.get(id as usize)?.as_ref()?.metadata.as_ref()
+        Some(&self.entry(id)?.placed()?.metadata)
     }
 
     /// An uploaded image's padded rectangle origin and page layer.
     pub fn rect(&self, id: u32) -> Option<[u32; 3]> {
-        let entry = self.entries.get(id as usize)?.as_ref()?;
-        let layer = entry.page?;
-        Some([entry.origin[0], entry.origin[1], layer as u32])
+        let placed = self.entry(id)?.placed()?;
+        Some([placed.origin[0], placed.origin[1], placed.page as u32])
     }
 
     pub fn size(&self, id: u32) -> Option<[u32; 2]> {
-        self.entries.get(id as usize)?.as_ref()?.size
+        let entry = self.entry(id)?;
+        match entry.kind {
+            Kind::Dash { size, .. } => Some(size),
+            _ => entry.placed().map(|p| p.size),
+        }
     }
 
     /// Uploads straight RGBA8, premultiplying once. Pattern padding wraps
@@ -308,12 +351,8 @@ impl ImageAtlas {
         {
             return Err("invalid atlas image");
         }
-        let entry = self
-            .entries
-            .get(id as usize)
-            .and_then(Option::as_ref)
-            .ok_or("unknown image")?;
-        if entry.size.is_some() {
+        let entry = self.entry(id).ok_or("unknown image")?;
+        if entry.materialised() {
             return Err("image already uploaded");
         }
         let w = width + border;
@@ -356,11 +395,13 @@ impl ImageAtlas {
         ];
         self.bindings.table.write(gpu, id * RECT_WORDS, &words);
         let entry = self.entries[id as usize].as_mut().expect("checked above");
-        entry.page = Some(layer);
-        entry.origin = [x, y];
-        entry.margin = margin;
-        entry.metadata = Some(metadata);
-        entry.size = Some([width, height]);
+        *entry.pixels().expect("a dash is materialised") = Some(Placed {
+            page: layer,
+            origin: [x, y],
+            margin,
+            size: [width, height],
+            metadata,
+        });
         Ok(())
     }
 
@@ -388,12 +429,14 @@ impl ImageAtlas {
 
     /// Holds a generated ramp while a resident tile references its row.
     pub fn retain_ramp(&mut self, id: u32) {
-        *self.entries[id as usize]
-            .as_mut()
-            .unwrap()
-            .ramp_refs
-            .as_mut()
-            .expect("gradient ramp") += 1;
+        let Some(Entry {
+            kind: Kind::Ramp { refs, .. },
+            ..
+        }) = &mut self.entries[id as usize]
+        else {
+            panic!("gradient ramp");
+        };
+        *refs += 1;
     }
 
     /// Releases a tile's ramp leases. Its exact atlas rectangles and table ids
@@ -403,7 +446,9 @@ impl ImageAtlas {
             let Some(entry) = self.entries.get_mut(id as usize).and_then(Option::as_mut) else {
                 continue;
             };
-            let refs = entry.ramp_refs.as_mut().expect("gradient ramp");
+            let Kind::Ramp { refs, .. } = &mut entry.kind else {
+                panic!("gradient ramp");
+            };
             assert!(*refs > 0, "unbalanced ramp lease");
             *refs -= 1;
             if *refs == 0 {
@@ -416,7 +461,7 @@ impl ImageAtlas {
     fn erase(&mut self, gpu: &mut dyn Gpu, id: u32) {
         self.vacate(gpu, id);
         let entry = self.entries[id as usize].take().unwrap();
-        if let Some(rows) = entry.dash_rows {
+        if let Kind::Dash { rows, .. } = entry.kind {
             self.lines.release(rows);
         }
         self.free.push(id);
@@ -426,22 +471,19 @@ impl ImageAtlas {
     fn vacate(&mut self, gpu: &mut dyn Gpu, id: u32) {
         self.revision += 1;
         let entry = self.entries[id as usize].as_mut().unwrap();
-        if let Some(page) = entry.page.take() {
-            let p = &mut self.pages[page];
+        if let Some(placed) = entry.pixels().and_then(Option::take) {
+            let p = &mut self.pages[placed.page];
             p.live -= 1;
-            let [w, h] = entry.size.unwrap();
-            let m = entry.margin;
+            let ([w, h], m) = (placed.size, placed.margin);
             p.free.push((
-                [entry.origin[0] - m, entry.origin[1] - m],
+                [placed.origin[0] - m, placed.origin[1] - m],
                 [w + 2 + 2 * m, h + 2 + 2 * m],
             ));
             if p.live == 0 {
                 *p = Shelves::default();
-                self.texels.forget(page as u32);
+                self.texels.forget(placed.page as u32);
             }
         }
-        entry.size = None;
-        entry.metadata = None;
         self.bindings
             .table
             .write(gpu, id * RECT_WORDS, &[0; RECT_WORDS as usize]);
