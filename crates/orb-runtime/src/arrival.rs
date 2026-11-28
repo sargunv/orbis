@@ -1018,7 +1018,8 @@ impl Map {
                         _ => None,
                     }
                 }
-                Err(NoRoom) => evict_unused(&mut style.sources, source),
+                // The least recently used tile the view doesn't use.
+                Err(NoRoom) => evict_first(&mut style.sources, source, |p, _| p.evict_lru()),
             };
             let victim = match victim {
                 Some(victim) => Some(victim),
@@ -1028,9 +1029,16 @@ impl Map {
                 }
                 None if others_loading => None,
                 None => match &mut style.sources[source].state {
-                    SourceState::Ready { pyramid, .. } if pyramid.covers(tile) => pyramid
-                        .evict_within(tile)
-                        .or_else(|| evict_stand_in(&mut style.sources, source, tile)),
+                    // Its descendants, then a tile that only stands in, the
+                    // ancestors of `tile` first.
+                    SourceState::Ready { pyramid, .. } if pyramid.covers(tile) => {
+                        pyramid.evict_within(tile).or_else(|| {
+                            let near = |own: bool| own.then_some(tile);
+                            evict_first(&mut style.sources, source, |p, own| {
+                                p.evict_stand_in(near(own))
+                            })
+                        })
+                    }
                     _ => None,
                 },
             };

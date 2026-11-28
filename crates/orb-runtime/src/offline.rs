@@ -133,60 +133,25 @@ pub fn download(
     load(
         Modules::SQLITE | Modules::ARCHIVE,
         Box::new(move |loaded| match loaded {
-            Ok(()) => start(fetch, storage, definition, events, done),
+            Ok(()) => Job::begin(
+                fetch,
+                storage,
+                definition,
+                events,
+                Box::new(move |job| {
+                    done(job.map(|job| {
+                        job.enqueue(Task::Resource {
+                            url: job.definition.style_url.clone(),
+                            range: None,
+                            then: Then::Style,
+                        });
+                        Download(job)
+                    }))
+                }),
+            ),
             Err(e) => done(Err(e)),
         }),
     );
-    // Within `download`, so the web's split puts it in the API's module.
-    fn start(
-        fetch: Arc<dyn Fetch>,
-        storage: Arc<dyn Storage>,
-        definition: RegionDefinition,
-        events: RegionEvents,
-        done: StorageDone<Download>,
-    ) {
-        let listed = storage.clone();
-        listed.list(
-            "regions",
-            Box::new(move |names| {
-                let names = match names {
-                    Ok(names) => names,
-                    Err(e) => return done(Err(e)),
-                };
-                let id = next_id(&names);
-                let job = Arc::new(Job {
-                    id,
-                    fetch,
-                    storage,
-                    definition,
-                    events,
-                    state: Mutex::new(State::default()),
-                    abort: Abort::new(),
-                });
-                let download = Download(job.clone());
-                // The manifest goes first, so an interrupted download is listed
-                // (and can be deleted).
-                let manifest = job.manifest(false);
-                let storage = job.storage.clone();
-                storage.write(
-                    &format!("{}/manifest.json", region_dir(id)),
-                    manifest.into_bytes(),
-                    false,
-                    Box::new(move |written| match written {
-                        Ok(()) => {
-                            job.enqueue(Task::Resource {
-                                url: job.definition.style_url.clone(),
-                                range: None,
-                                then: Then::Style,
-                            });
-                            done(Ok(download));
-                        }
-                        Err(e) => done(Err(e)),
-                    }),
-                );
-            }),
-        );
-    }
 }
 
 /// A download in progress.
@@ -265,45 +230,16 @@ pub fn import(
     load(
         Modules::ARCHIVE,
         Box::new(move |loaded| match loaded {
-            Ok(()) => start(storage, definition, events, done),
+            Ok(()) => Job::begin(
+                Arc::new(NoFetch),
+                storage,
+                definition,
+                events,
+                Box::new(move |job| done(job.map(Import))),
+            ),
             Err(e) => done(Err(e)),
         }),
     );
-    // Within `import`, so the web's split puts it in the API's module.
-    fn start(
-        storage: Arc<dyn Storage>,
-        definition: RegionDefinition,
-        events: RegionEvents,
-        done: StorageDone<Import>,
-    ) {
-        let listed = storage.clone();
-        listed.list(
-            "regions",
-            Box::new(move |names| {
-                let id = match names {
-                    Ok(names) => next_id(&names),
-                    Err(e) => return done(Err(e)),
-                };
-                let job = Arc::new(Job {
-                    id,
-                    fetch: Arc::new(NoFetch),
-                    storage,
-                    definition,
-                    events,
-                    state: Mutex::new(State::default()),
-                    abort: Abort::new(),
-                });
-                let manifest = job.manifest(false);
-                let storage = job.storage.clone();
-                storage.write(
-                    &format!("{}/manifest.json", region_dir(id)),
-                    manifest.into_bytes(),
-                    false,
-                    Box::new(move |written| done(written.map(|()| Import(job)))),
-                );
-            }),
-        );
-    }
 }
 
 /// The id after the greatest of the regions `names`.
@@ -554,6 +490,45 @@ struct Job {
 }
 
 impl Job {
+    /// Starts a new region of `definition` in `storage`, its manifest
+    /// written first, so that one interrupted is listed (and can be
+    /// deleted).
+    fn begin(
+        fetch: Arc<dyn Fetch>,
+        storage: Arc<dyn Storage>,
+        definition: RegionDefinition,
+        events: RegionEvents,
+        done: StorageDone<Arc<Self>>,
+    ) {
+        let listed = storage.clone();
+        listed.list(
+            "regions",
+            Box::new(move |names| {
+                let id = match names {
+                    Ok(names) => next_id(&names),
+                    Err(e) => return done(Err(e)),
+                };
+                let job = Arc::new(Job {
+                    id,
+                    fetch,
+                    storage,
+                    definition,
+                    events,
+                    state: Mutex::new(State::default()),
+                    abort: Abort::new(),
+                });
+                let manifest = job.manifest(false);
+                let storage = job.storage.clone();
+                storage.write(
+                    &format!("{}/manifest.json", region_dir(id)),
+                    manifest.into_bytes(),
+                    false,
+                    Box::new(move |written| done(written.map(|()| job))),
+                );
+            }),
+        );
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().expect("region download poisoned")
     }

@@ -21,7 +21,7 @@ use orb_host::jobs::Executor;
 use orb_host::{Abort, Fetch, FetchError, FontFiles, Lifetime, ResourceKind};
 
 use crate::glyphs::{GlyphRaster, LocalGlyphs, RasterDone, ResourceError};
-use crate::loader::TileLoader;
+use crate::loader::{Loads, TileLoader};
 use crate::modules::{Load, Modules};
 use crate::style::ImageKind;
 use crate::tile::Select;
@@ -639,138 +639,141 @@ impl JobHost {
             self.load_data(worker, url, request, done);
             return;
         }
-        let (executor, loader) = (Arc::clone(&self.executor), Arc::clone(&self.loader));
-        let key = request.load_key();
+        let executor = Arc::clone(&self.executor);
+        let resource = worker.resource_kind(&request);
         if let Some(kind) = worker.image_kind(request.source) {
             let (source, tile, warp) = (request.source, request.tile, request.warp);
-            let resource = worker.resource_kind(&request);
-            let fetch: Start = Box::new(move |turn| {
-                let Some(turn) = turn else {
-                    fetched();
-                    return done(Ok(Loaded::Cancelled));
-                };
-                let (abort, rank) = (turn.abort().clone(), turn.rank());
-                loader.load(
-                    resource,
-                    request.location.clone(),
-                    request.tile,
-                    request.encoding,
-                    false,
-                    &abort,
-                    Box::new(move |bytes| {
-                        drop(turn);
-                        fetched();
-                        match bytes {
-                            // Given up while it was fetched: not decoded.
-                            Ok(_) if !glyphs.wants.wanted(&request) => done(Ok(Loaded::Cancelled)),
-                            // An archive's left-out tile draws nothing.
-                            Ok((fetched, _)) if fetched.bytes.is_empty() => {
-                                done(Ok(Loaded::Tile(TileBuild::default())))
-                            }
-                            // Its mesh on the surface's plane is the costly
-                            // part of drawing it there: the grid is made here.
-                            Ok((fetched, _)) if warp => executor.spawn_ranked(
-                                rank,
-                                Box::new(move || {
-                                    let warp_grid = worker.warp_grid(source, tile).map(Arc::new);
-                                    done(Ok(Loaded::Image {
-                                        bytes: fetched.bytes,
-                                        kind,
-                                        warp_grid,
-                                    }))
-                                }),
-                            ),
-                            Ok((fetched, _)) => done(Ok(Loaded::Image {
+            // An image's reload has no relayout to replace it in place.
+            let then = move |bytes: Loads, request: TileRequest, rank, done: LoadedDone| {
+                match bytes {
+                    // Given up while it was fetched: not decoded.
+                    Ok(_) if !glyphs.wants.wanted(&request) => done(Ok(Loaded::Cancelled)),
+                    // An archive's left-out tile draws nothing.
+                    Ok((fetched, _)) if fetched.bytes.is_empty() => {
+                        done(Ok(Loaded::Tile(TileBuild::default())))
+                    }
+                    // Its mesh on the surface's plane is the costly part of
+                    // drawing it there: the grid is made here.
+                    Ok((fetched, _)) if warp => executor.spawn_ranked(
+                        rank,
+                        Box::new(move || {
+                            let warp_grid = worker.warp_grid(source, tile).map(Arc::new);
+                            done(Ok(Loaded::Image {
                                 bytes: fetched.bytes,
                                 kind,
-                                warp_grid: None,
-                            })),
-                            Err(e) => done(missing(e)),
-                        }
-                    }),
-                );
-            });
-            return self.turns.wait(rank, key, fetch);
+                                warp_grid,
+                            }))
+                        }),
+                    ),
+                    Ok((fetched, _)) => done(Ok(Loaded::Image {
+                        bytes: fetched.bytes,
+                        kind,
+                        warp_grid: None,
+                    })),
+                    Err(e) => done(missing(e)),
+                }
+            };
+            return self.fetch_in_turn(resource, request, false, fetched, done, then);
         }
         let newest = Arc::clone(&self.newest);
-        let resource = worker.resource_kind(&request);
+        let stale = request.takes_stale;
+        let then = move |bytes: Loads, request: TileRequest, rank, done: LoadedDone| {
+            executor.spawn_ranked(
+                rank,
+                Box::new(move || match bytes {
+                    Err(FetchError::Aborted) => done(Ok(Loaded::Cancelled)),
+                    _ if newest.load(Ordering::Relaxed) > request.style => {
+                        done(Err(format!("style {} was replaced", request.style)))
+                    }
+                    // A sparse tileset has no tile there: an ancestor
+                    // stands in.
+                    Ok((fetched, _))
+                        if fetched.bytes.is_empty() && worker.sparse(request.source) =>
+                    {
+                        done(Ok(Loaded::Missing))
+                    }
+                    Ok((fetched, encoding)) => {
+                        let fresh_until = match fetched.lifetime {
+                            Lifetime::Fresh { until } => {
+                                Some(until.max(request.asked_at + MIN_LIFETIME))
+                            }
+                            Lifetime::Expired { at } => Some(at),
+                            Lifetime::Unknown | Lifetime::Stale => None,
+                        };
+                        let stale = fetched.lifetime == Lifetime::Stale;
+                        let request = TileRequest {
+                            encoding,
+                            fresh_until,
+                            ..request
+                        };
+                        // A reload no server answered, a cached copy
+                        // standing in, leaves the tile as drawn too.
+                        if request.job == TileJob::Revalidate
+                            && (stale || worker.renew(&request, &fetched.bytes))
+                        {
+                            let build = TileBuild {
+                                fresh_until,
+                                renewed: true,
+                                stale,
+                                ..TileBuild::default()
+                            };
+                            return done(Ok(Loaded::Tile(build)));
+                        }
+                        glyphs.complete(worker, Arc::new(fetched.bytes), request, done)
+                    }
+                    // Offline or the server failing, a frame kept of the
+                    // tile stands in, expired as it is, as the native
+                    // cache's stale copy does: drawn, it loads again.
+                    Err(e) if e.transient() && request.job != TileJob::Revalidate => {
+                        let kept = TileRequest {
+                            asked_at: 0,
+                            ..request
+                        };
+                        match worker.has_data(&kept) {
+                            true => glyphs.complete(worker, Arc::default(), kept, done),
+                            false => done(missing(e)),
+                        }
+                    }
+                    Err(e) => done(missing(e)),
+                }),
+            );
+        };
+        self.fetch_in_turn(resource, request, stale, fetched, done, then);
+    }
+
+    /// Fetches `request`'s data tile, a stale cached copy too where
+    /// `stale` says, in its turn; `then` takes the answer, with the
+    /// request, its rank and `done`. Without a turn it's
+    /// [`Loaded::Cancelled`]; `fetched` hears when the fetch ends.
+    fn fetch_in_turn(
+        &self,
+        resource: ResourceKind,
+        request: TileRequest,
+        stale: bool,
+        fetched: Fetched,
+        done: LoadedDone,
+        then: impl FnOnce(Loads, TileRequest, u64, LoadedDone) + Send + 'static,
+    ) {
+        let loader = Arc::clone(&self.loader);
+        let (rank, key) = (request.rank, request.load_key());
         let fetch: Start = Box::new(move |turn| {
             let Some(turn) = turn else {
                 fetched();
                 return done(Ok(Loaded::Cancelled));
             };
-            let data_tile = request.data_tile();
             let (abort, rank) = (turn.abort().clone(), turn.rank());
+            let (location, tile) = (request.location.clone(), request.data_tile());
             loader.load(
                 resource,
-                request.location.clone(),
-                data_tile,
+                location,
+                tile,
                 request.encoding,
-                request.takes_stale,
+                stale,
                 &abort,
                 Box::new(move |bytes| {
                     drop(turn);
                     fetched();
-                    executor.spawn_ranked(
-                        rank,
-                        Box::new(move || match bytes {
-                            Err(FetchError::Aborted) => done(Ok(Loaded::Cancelled)),
-                            _ if newest.load(Ordering::Relaxed) > request.style => {
-                                done(Err(format!("style {} was replaced", request.style)))
-                            }
-                            // A sparse tileset has no tile there: an
-                            // ancestor stands in.
-                            Ok((fetched, _))
-                                if fetched.bytes.is_empty() && worker.sparse(request.source) =>
-                            {
-                                done(Ok(Loaded::Missing))
-                            }
-                            Ok((fetched, encoding)) => {
-                                let fresh_until = match fetched.lifetime {
-                                    Lifetime::Fresh { until } => {
-                                        Some(until.max(request.asked_at + MIN_LIFETIME))
-                                    }
-                                    Lifetime::Expired { at } => Some(at),
-                                    Lifetime::Unknown | Lifetime::Stale => None,
-                                };
-                                let stale = fetched.lifetime == Lifetime::Stale;
-                                let request = TileRequest {
-                                    encoding,
-                                    fresh_until,
-                                    ..request
-                                };
-                                // A reload no server answered, a cached copy
-                                // standing in, leaves the tile as drawn too.
-                                if request.job == TileJob::Revalidate
-                                    && (stale || worker.renew(&request, &fetched.bytes))
-                                {
-                                    let build = TileBuild {
-                                        fresh_until,
-                                        renewed: true,
-                                        stale,
-                                        ..TileBuild::default()
-                                    };
-                                    return done(Ok(Loaded::Tile(build)));
-                                }
-                                glyphs.complete(worker, Arc::new(fetched.bytes), request, done)
-                            }
-                            // Offline or the server failing, a frame kept of
-                            // the tile stands in, expired as it is, as the
-                            // native cache's stale copy does: drawn, it loads
-                            // again.
-                            Err(e) if e.transient() && request.job != TileJob::Revalidate => {
-                                let kept = TileRequest {
-                                    asked_at: 0,
-                                    ..request
-                                };
-                                match worker.has_data(&kept) {
-                                    true => glyphs.complete(worker, Arc::default(), kept, done),
-                                    false => done(missing(e)),
-                                }
-                            }
-                            Err(e) => done(missing(e)),
-                        }),
-                    );
+                    then(bytes, request, rank, done);
                 }),
             );
         });

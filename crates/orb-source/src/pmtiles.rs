@@ -496,11 +496,11 @@ impl Reader {
     }
 
     /// What the header says of the archive's tiles, once read.
-    pub fn tilejson(&self) -> Step<TileJson> {
-        match &self.header {
+    pub fn tilejson(&self) -> Result<Step<TileJson>, String> {
+        Ok(match &self.header {
             Some(header) => Step::Done(header.tilejson()),
             None => Step::Read(self.first),
-        }
+        })
     }
 
     /// Where `tile` is, or the read that finds out; `None` when the archive

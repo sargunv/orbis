@@ -575,33 +575,18 @@ pub(crate) fn upload(
     Ok(resident)
 }
 
-/// Evicts the least recently used cached tile the view doesn't use, of
-/// source `first` before others'.
-pub(crate) fn evict_unused(sources: &mut [SourceSlot], first: usize) -> Option<ResidentTile> {
-    let others = (0..sources.len()).filter(|&s| s != first);
-    std::iter::once(first)
-        .chain(others)
-        .find_map(|s| match &mut sources[s].state {
-            SourceState::Ready { pyramid, .. } => pyramid.evict_lru(),
-            _ => None,
-        })
-}
-
-/// Evicts a tile that only stands in for a tile of a cover ([`TilePyramid::
-/// evict_stand_in`]), `first`'s first and the ancestors of its `tile`
-/// before others, to make room for `tile`.
-pub(crate) fn evict_stand_in(
+/// A tile `evict` takes of a source's pyramid, source `first`'s first
+/// (`evict` hears whether it's that one's), then the others'.
+pub(crate) fn evict_first(
     sources: &mut [SourceSlot],
     first: usize,
-    tile: TileIndex,
+    evict: impl Fn(&mut TilePyramid<ResidentTile>, bool) -> Option<ResidentTile>,
 ) -> Option<ResidentTile> {
     let others = (0..sources.len()).filter(|&s| s != first);
     std::iter::once(first)
         .chain(others)
         .find_map(|s| match &mut sources[s].state {
-            SourceState::Ready { pyramid, .. } => {
-                pyramid.evict_stand_in((s == first).then_some(tile))
-            }
+            SourceState::Ready { pyramid, .. } => evict(pyramid, s == first),
             _ => None,
         })
 }

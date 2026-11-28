@@ -19,8 +19,8 @@ pub use orb_source::endpoint::TileLocation;
 
 /// A tile's bytes, with their lifetime where they have one (a tile in an
 /// archive has none), and their encoding.
-pub(crate) type LoadDone =
-    Box<dyn FnOnce(Result<(Fetched, Encoding), FetchError>) + Send + 'static>;
+pub(crate) type Loads = Result<(Fetched, Encoding), FetchError>;
+pub(crate) type LoadDone = Box<dyn FnOnce(Loads) + Send + 'static>;
 /// A shared fetch's answer, for each load that waits on it.
 type Shared = Result<Arc<Fetched>, FetchError>;
 type Waiter = Box<dyn FnOnce(Shared) + Send>;

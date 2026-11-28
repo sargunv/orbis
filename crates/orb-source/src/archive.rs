@@ -92,6 +92,17 @@ pub enum Body {
 /// A tile's bytes, decompressed, and its encoding (`None`: an image).
 pub type TileBytes = (Vec<u8>, Option<Encoding>);
 
+/// `$body` of the reader `$reader` is, whichever it is.
+macro_rules! each {
+    ($self:ident, $reader:ident => $body:expr) => {
+        match $self {
+            Self::Pmtiles($reader) => $body,
+            #[cfg(feature = "mbtiles")]
+            Self::Mbtiles($reader) => $body,
+        }
+    };
+}
+
 /// One archive's reader: what it has read of the archive so far.
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant, reason = "one per archive, kept")]
@@ -118,49 +129,29 @@ impl Reader {
     /// Keeps the bytes a [`Step::Read`] of `range` asked for: the first
     /// read may be shorter, ending where the archive does.
     pub fn insert(&mut self, range: Range, bytes: &[u8]) -> Result<(), String> {
-        match self {
-            Self::Pmtiles(r) => r.insert(range, bytes),
-            #[cfg(feature = "mbtiles")]
-            Self::Mbtiles(r) => r.insert(range, bytes),
-        }
+        each!(self, r => r.insert(range, bytes))
     }
 
     /// Whether the read of `range` a step asked for is still wanted: false
     /// once bytes inserted hold it.
     pub fn wants(&self, range: Range) -> bool {
-        match self {
-            Self::Pmtiles(r) => r.wants(range),
-            #[cfg(feature = "mbtiles")]
-            Self::Mbtiles(r) => r.wants(range),
-        }
+        each!(self, r => r.wants(range))
     }
 
     /// The read of `range` failed as one past an archive's end does: true
     /// when that was the first read, which steps from now on ask shorter.
     pub fn read_failed(&mut self, range: Range) -> bool {
-        match self {
-            Self::Pmtiles(r) => r.read_failed(range),
-            #[cfg(feature = "mbtiles")]
-            Self::Mbtiles(r) => r.read_failed(range),
-        }
+        each!(self, r => r.read_failed(range))
     }
 
     /// What the archive says of its tiles.
     pub fn tilejson(&mut self) -> Result<Step<TileJson>, String> {
-        match self {
-            Self::Pmtiles(r) => Ok(r.tilejson()),
-            #[cfg(feature = "mbtiles")]
-            Self::Mbtiles(r) => r.tilejson(),
-        }
+        each!(self, r => r.tilejson())
     }
 
     /// Tile `tile`, or `None` when the archive leaves it out.
     pub fn tile(&mut self, tile: TileIndex) -> Result<Step<Option<Tile>>, String> {
-        match self {
-            Self::Pmtiles(r) => r.tile(tile),
-            #[cfg(feature = "mbtiles")]
-            Self::Mbtiles(r) => r.tile(tile),
-        }
+        each!(self, r => r.tile(tile))
     }
 
     /// Answers `step` from `file`, an archive in memory, and tile bodies
