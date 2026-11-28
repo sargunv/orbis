@@ -224,9 +224,9 @@ mod tests {
                 ..FitOptions::default()
             };
             let target = camera
-                .for_bounds(bounds, &options, &Surface::from(&projection), VIEWPORT)
+                .for_bounds(bounds, &options, &Surface::plane(projection), VIEWPORT)
                 .unwrap();
-            let view = on_screen(&camera, &target, &Surface::from(&projection));
+            let view = on_screen(&camera, &target, &Surface::plane(projection));
             let points: Vec<_> = bounds
                 .corners()
                 .iter()
@@ -257,7 +257,7 @@ mod tests {
         let camera = CameraState::new(Geodetic::new(0.0, 0.0), 2.0, &mercator());
         assert!(
             camera
-                .for_bounds(bounds, &cramped, &Surface::from(&projection), VIEWPORT)
+                .for_bounds(bounds, &cramped, &Surface::plane(projection), VIEWPORT)
                 .is_none()
         );
     }

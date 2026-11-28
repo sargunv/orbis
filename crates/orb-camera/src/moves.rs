@@ -670,17 +670,17 @@ mod tests {
         camera.pitch = 40.0;
         camera.bearing = 30.0;
         let at = DVec2::new(100.0, 450.0);
-        let before = View::new(&camera, VIEWPORT, &Surface::from(&p))
+        let before = View::new(&camera, VIEWPORT, &Surface::plane(p))
             .unproject(at)
             .unwrap();
-        camera.zoom_around(&Surface::from(&p), VIEWPORT, at, 13.5);
-        let after = View::new(&camera, VIEWPORT, &Surface::from(&p))
+        camera.zoom_around(&Surface::plane(p), VIEWPORT, at, 13.5);
+        let after = View::new(&camera, VIEWPORT, &Surface::plane(p))
             .unproject(at)
             .unwrap();
         assert!((camera.zoom(&mercator()) - 13.5).abs() < 1e-9);
         assert!(before.distance(after) < 1e-6, "{before} {after}");
-        camera.rotate_around(&Surface::from(&p), VIEWPORT, at, 75.0);
-        let rotated = View::new(&camera, VIEWPORT, &Surface::from(&p))
+        camera.rotate_around(&Surface::plane(p), VIEWPORT, at, 75.0);
+        let rotated = View::new(&camera, VIEWPORT, &Surface::plane(p))
             .unproject(at)
             .unwrap();
         assert!(before.distance(rotated) < 1e-6);
@@ -694,11 +694,11 @@ mod tests {
         camera.pitch = 50.0;
         let from = DVec2::new(400.0, 400.0);
         let to = DVec2::new(470.0, 350.0);
-        let ground = View::new(&camera, VIEWPORT, &Surface::from(&p))
+        let ground = View::new(&camera, VIEWPORT, &Surface::plane(p))
             .unproject(from)
             .unwrap();
-        camera.pan(&Surface::from(&p), VIEWPORT, from, to);
-        let now = View::new(&camera, VIEWPORT, &Surface::from(&p))
+        camera.pan(&Surface::plane(p), VIEWPORT, from, to);
+        let now = View::new(&camera, VIEWPORT, &Surface::plane(p))
             .project(ground)
             .unwrap();
         assert!(now.distance(to) < 1e-6, "{now}");
@@ -724,8 +724,8 @@ mod tests {
         // Far outside and too far out: zooms in until the box fills the
         // viewport, and moves inside.
         let mut camera = CameraState::new(Geodetic::new(0.0, 0.0), 3.0, &mercator());
-        camera.constrain(&constraints, &Surface::from(&p), VIEWPORT);
-        let view = View::new(&camera, VIEWPORT, &Surface::from(&p));
+        camera.constrain(&constraints, &Surface::plane(p), VIEWPORT);
+        let view = View::new(&camera, VIEWPORT, &Surface::plane(p));
         let rect = bounds.world(&p);
         for corner in [DVec2::ZERO, DVec2::new(VIEWPORT.width, VIEWPORT.height)] {
             let world = view.unproject(corner).unwrap();
@@ -735,8 +735,8 @@ mod tests {
         // Turned, every corner of the viewport stays inside too.
         let mut turned = CameraState::new(Geodetic::new(139.02, 35.02), 9.5, &mercator());
         turned.bearing = 35.0;
-        turned.constrain(&constraints, &Surface::from(&p), VIEWPORT);
-        let view = View::new(&turned, VIEWPORT, &Surface::from(&p));
+        turned.constrain(&constraints, &Surface::plane(p), VIEWPORT);
+        let view = View::new(&turned, VIEWPORT, &Surface::plane(p));
         for (x, y) in [
             (0.0, 0.0),
             (VIEWPORT.width, 0.0),
@@ -756,12 +756,12 @@ mod tests {
         // A view inside is left alone.
         let mut inside = CameraState::new(Geodetic::new(139.5, 35.5), 12.0, &mercator());
         let before = inside;
-        inside.constrain(&constraints, &Surface::from(&p), VIEWPORT);
+        inside.constrain(&constraints, &Surface::plane(p), VIEWPORT);
         assert_eq!(inside, before);
         // Zoom and pitch ranges.
         let mut steep = CameraState::new(Geodetic::new(139.5, 35.5), 30.0, &mercator());
         steep.pitch = 89.0;
-        steep.constrain(&Constraints::default(), &Surface::from(&p), VIEWPORT);
+        steep.constrain(&Constraints::default(), &Surface::plane(p), VIEWPORT);
         assert!((steep.zoom(&mercator()) - 22.0).abs() < 1e-9);
         assert_eq!(steep.pitch, 60.0);
     }
@@ -780,29 +780,29 @@ mod tests {
             camera.pitch = 35.0;
             camera.bearing = -20.0;
             let (from, to) = (DVec2::new(300.0, 420.0), DVec2::new(520.0, 260.0));
-            let ground = View::new(&camera, VIEWPORT, &Surface::from(&p))
+            let ground = View::new(&camera, VIEWPORT, &Surface::plane(p))
                 .unproject(from)
                 .unwrap();
-            camera.pan(&Surface::from(&p), VIEWPORT, from, to);
-            let now = View::new(&camera, VIEWPORT, &Surface::from(&p))
+            camera.pan(&Surface::plane(p), VIEWPORT, from, to);
+            let now = View::new(&camera, VIEWPORT, &Surface::plane(p))
                 .project(ground)
                 .unwrap();
             assert!(now.distance(to) < 1e-6, "{id}: pan {now}");
             let at = DVec2::new(150.0, 500.0);
-            let before = View::new(&camera, VIEWPORT, &Surface::from(&p))
+            let before = View::new(&camera, VIEWPORT, &Surface::plane(p))
                 .unproject(at)
                 .unwrap();
-            camera.zoom_around(&Surface::from(&p), VIEWPORT, at, 9.0);
-            camera.rotate_around(&Surface::from(&p), VIEWPORT, at, 60.0);
-            let after = View::new(&camera, VIEWPORT, &Surface::from(&p))
+            camera.zoom_around(&Surface::plane(p), VIEWPORT, at, 9.0);
+            camera.rotate_around(&Surface::plane(p), VIEWPORT, at, 60.0);
+            let after = View::new(&camera, VIEWPORT, &Surface::plane(p))
                 .unproject(at)
                 .unwrap();
             assert!(before.distance(after) < 1e-6, "{id}: {before} {after}");
             // The world's edge holds on both axes: a plane that doesn't wrap
             // keeps the viewport inside its extent.
             let mut far = CameraState::new(target, 1.0, &p);
-            far.constrain(&Constraints::WORLD, &Surface::from(&p), VIEWPORT);
-            let view = View::new(&far, VIEWPORT, &Surface::from(&p));
+            far.constrain(&Constraints::WORLD, &Surface::plane(p), VIEWPORT);
+            let view = View::new(&far, VIEWPORT, &Surface::plane(p));
             let world = p.world_bounds();
             for corner in [DVec2::ZERO, DVec2::new(VIEWPORT.width, VIEWPORT.height)] {
                 let w = view.unproject(corner).unwrap();
@@ -837,7 +837,7 @@ mod tests {
             .for_bounds(
                 cap,
                 &crate::FitOptions::default(),
-                &Surface::from(&p),
+                &Surface::plane(p),
                 VIEWPORT,
             )
             .unwrap();
@@ -1120,7 +1120,7 @@ mod tests {
             let lat = -89.0 + 178.0 * f64::from(i) / 4000.0;
             let mut camera = CameraState::new(Geodetic::new(10.0, lat), 0.0, &p);
             camera.set_zoom(&p, -1e-3 * f64::from(i % 5));
-            camera.constrain(&least, &Surface::from(&p), small);
+            camera.constrain(&least, &Surface::plane(p), small);
             let zoom = camera.zoom(&p);
             assert!(zoom.abs() < 1e-9, "{lat}: {zoom}");
             if zoom < 0.0 {

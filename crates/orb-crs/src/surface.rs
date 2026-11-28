@@ -58,18 +58,6 @@ impl Surface {
     }
 }
 
-impl From<Projection> for Surface {
-    fn from(projection: Projection) -> Self {
-        Self::plane(projection)
-    }
-}
-
-impl From<&Projection> for Surface {
-    fn from(projection: &Projection) -> Self {
-        Self::plane(*projection)
-    }
-}
-
 /// What a view draws on at low zoom before it hands over to the plane
 /// between two zooms (adaptive projections): a sphere the
 /// plane's tiles wrap around ([`sphere`](crate::sphere)), or another plane

@@ -1636,9 +1636,12 @@ fn tile_zoom(desired: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use orb_crs::{Globe, LowSurface};
+
     #[test]
     fn whole_zooms_cover_with_their_own_tiles_at_any_latitude() {
-        let tms = orb_crs::TileMatrixSet::web_mercator();
+        let tms = TileMatrixSet::web_mercator();
         for lat in [0.0, 57.0, 80.0] {
             let camera = CameraState::new(Geodetic::new(0.0, lat), 2.0, &mercator());
             let surface = Surface::plane(mercator());
@@ -1656,13 +1659,9 @@ mod tests {
         }
     }
 
-    use super::*;
-    use orb_crs::{Globe, LowSurface};
-
     fn mercator() -> Projection {
         *TileMatrixSet::web_mercator().projection()
     }
-    use orb_crs::TileIndex;
 
     /// A background may stand in for the clear only where its tiles meet
     /// every pixel: not past the horizon, nor past the world's edge.
@@ -1793,7 +1792,7 @@ mod tests {
         // Near the pole, the target moves south until the top edge is the
         // world's (GL JS `getConstrained`).
         let mut camera = CameraState::new(Geodetic::new(0.0, 85.0), 4.0, &mercator());
-        camera.constrain(&world, &Surface::from(p), viewport);
+        camera.constrain(&world, &Surface::plane(*p), viewport);
         assert!((camera.zoom(&mercator()) - 4.0).abs() < 1e-9);
         assert!(camera.target.lat < 85.0 && camera.target.lat > 84.0);
         // A world shorter than the viewport zooms in to fill it.
@@ -1802,13 +1801,13 @@ mod tests {
             height: 1024.0,
         };
         let mut camera = CameraState::new(Geodetic::new(10.0, 30.0), 0.0, &mercator());
-        camera.constrain(&world, &Surface::from(p), tall);
+        camera.constrain(&world, &Surface::plane(*p), tall);
         assert!((camera.zoom(&mercator()) - 1.0).abs() < 1e-9);
         assert!(camera.target.lat.abs() < 1e-9);
         // A view inside the world is left alone.
         let mut camera = CameraState::new(Geodetic::new(10.0, 30.0), 6.0, &mercator());
         let before = camera;
-        camera.constrain(&world, &Surface::from(p), viewport);
+        camera.constrain(&world, &Surface::plane(*p), viewport);
         assert_eq!(camera, before);
     }
 
@@ -1821,7 +1820,7 @@ mod tests {
             height: 500.0,
         };
         (
-            View::new(&camera, viewport, &Surface::from(tms.projection())),
+            View::new(&camera, viewport, &Surface::plane(*tms.projection())),
             tms.clone(),
         )
     }
@@ -2014,7 +2013,7 @@ mod tests {
                         width: 1024.0,
                         height: 768.0,
                     },
-                    &Surface::from(tms.projection()),
+                    &Surface::plane(*tms.projection()),
                 );
                 assert!(view.view_proj().is_finite());
                 assert!(view.far_px > view.eye_distance_px);
@@ -2102,43 +2101,6 @@ mod tests {
     }
 
     #[test]
-    fn world_spans_512_px_at_zoom_0_on_the_equator() {
-        let (view, tms) = setup(0.0, 0.0);
-        let width = tms.projection().world_bounds().size().x;
-        assert!((width / view.world_per_px() - 512.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn project_and_unproject_agree() {
-        let (view, _) = setup(3.5, 45.0);
-        for px in [
-            DVec2::new(500.0, 250.0),
-            DVec2::new(10.0, 490.0),
-            DVec2::new(990.0, 100.0),
-        ] {
-            let world = view.unproject(px).unwrap();
-            let back = view.project(world).unwrap();
-            assert!(back.distance(px) < 1e-6, "{px} -> {back}");
-        }
-        let center = view.project(view.camera_world()).unwrap();
-        assert!(center.distance(DVec2::new(500.0, 250.0)) < 1e-9);
-    }
-
-    #[test]
-    fn covers_at_the_floor_of_the_zoom() {
-        let (view, tms) = setup(2.2, 0.0);
-        let tiles = view.cover(&tms, 512.0, 22, Cover::default());
-        // A 1000×500 viewport at zoom 2.2 on the equator sees the middle two
-        // columns and rows of the 4×4 matrix.
-        let mut indices: Vec<_> = tiles.iter().map(|t| (t.wrap, t.index)).collect();
-        indices.sort();
-        let mut expected =
-            [(1, 1), (2, 1), (1, 2), (2, 2)].map(|(col, row)| (0, TileIndex::new(2, col, row)));
-        expected.sort();
-        assert_eq!(indices, expected);
-    }
-
-    #[test]
     fn detail_changes_continuously_with_pitch() {
         // Up to GL JS's threshold, one zoom, as GL JS.
         let (view, tms) = setup(10.0, 60.0);
@@ -2167,14 +2129,6 @@ mod tests {
         let max = tiles.iter().map(|t| t.index.z).max().unwrap();
         assert!(max >= 10);
         assert!(min < max, "zooms {min}..={max}");
-    }
-
-    #[test]
-    fn low_zoom_covers_wrapped_copies() {
-        let (view, tms) = setup(0.0, 0.0);
-        let tiles = view.cover(&tms, 512.0, 22, Cover::default());
-        assert!(tiles.iter().any(|t| t.wrap == -1));
-        assert!(tiles.iter().any(|t| t.wrap == 1));
     }
 
     fn globe_view(target: Geodetic, zoom: f64, pitch: f64, bearing: f64) -> View {

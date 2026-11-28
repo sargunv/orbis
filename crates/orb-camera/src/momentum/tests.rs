@@ -8,7 +8,7 @@ fn camera(target: CameraTarget) -> Camera {
     let projection = *TileMatrixSet::web_mercator().projection();
     let mut camera = Camera::new(
         CameraState::new(Geodetic::new(20.0, 10.0), 8.0, &projection),
-        projection.into(),
+        Surface::plane(projection),
         Viewport {
             width: 1000.0,
             height: 1000.0,

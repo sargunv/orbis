@@ -1208,7 +1208,7 @@ mod tests {
         let projection = *TileMatrixSet::web_mercator().projection();
         Camera::new(
             CameraState::new(Geodetic::new(139.7, 35.68), 10.0, &mercator()),
-            Surface::from(projection),
+            Surface::plane(projection),
             Viewport {
                 width: 800.0,
                 height: 600.0,
@@ -1335,7 +1335,7 @@ mod tests {
             width: 800.0,
             height: 1440.0,
         };
-        let mut camera = Camera::new(asked, Surface::from(mercator()), viewport);
+        let mut camera = Camera::new(asked, Surface::plane(mercator()), viewport);
         camera.set_viewport(viewport);
         assert!(camera.state().target.lat.abs() < 1e-6);
         assert!(camera.state().zoom(&mercator()) > 1.4);
@@ -1347,7 +1347,7 @@ mod tests {
         let moved = *camera.state();
         camera.set_surface(globe);
         assert_eq!(*camera.state(), moved);
-        camera.set_surface(Surface::from(mercator()));
+        camera.set_surface(Surface::plane(mercator()));
         assert!(camera.state().target.lat.abs() < 1e-6);
         // A jump asks as a new camera does (a z0 URL hash on the Globe).
         camera.jump_to(&CameraTarget {
@@ -1369,7 +1369,7 @@ mod tests {
             width: 800.0,
             height: 1440.0,
         };
-        let camera = Camera::new(asked, Surface::from(mercator()), viewport);
+        let camera = Camera::new(asked, Surface::plane(mercator()), viewport);
         let globe = Surface::globe(mercator(), orb_crs::Globe::V8);
         (camera, globe)
     }
@@ -2063,7 +2063,7 @@ mod tests {
             height: 768.0,
         };
         let start = CameraState::new(Geodetic::new(-45.0, 72.0), 2.0, &projection);
-        let mut camera = Camera::new(start, Surface::from(projection), viewport);
+        let mut camera = Camera::new(start, Surface::plane(projection), viewport);
         camera.set_constraints(Constraints {
             min_zoom: 1.9,
             ..Constraints::default()

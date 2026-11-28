@@ -35,7 +35,7 @@ fn covers_match_pinned_gl_js() {
                 width: n("width"),
                 height: n("height"),
             },
-            &Surface::from(tms.projection()),
+            &Surface::plane(*tms.projection()),
         );
         let mut actual: Vec<_> = view
             .cover(

@@ -306,7 +306,7 @@ mod tests {
         };
         assert!(camera.settle_on(&ridge, &projection));
         assert_eq!(camera.elevation, 1000.0);
-        let view = View::new(&camera, viewport, &Surface::from(&projection));
+        let view = View::new(&camera, viewport, &Surface::plane(projection));
         let center = DVec2::new(400.0, 300.0);
         let (world, elevation) = view.unproject_terrain(center, &ridge).unwrap();
         assert!(world.distance(view.camera_world()) < 0.01, "{world}");
@@ -319,7 +319,7 @@ mod tests {
         assert!(back.distance(px) < 0.01, "{back}");
         // Sky has no ground.
         camera.pitch = 85.0;
-        let view = View::new(&camera, viewport, &Surface::from(&projection));
+        let view = View::new(&camera, viewport, &Surface::plane(projection));
         assert!(
             view.unproject_terrain(DVec2::new(400.0, 0.0), &ridge)
                 .is_none()
@@ -334,11 +334,11 @@ mod tests {
         };
         camera.elevation = 200.0;
         let eye = |c: &CameraState| {
-            let view = View::new(c, viewport, &Surface::from(&projection));
+            let view = View::new(c, viewport, &Surface::plane(projection));
             view.camera_world().extend(0.0) + view.eye()
         };
         let before = eye(&camera);
-        assert!(camera.recenter_on(&ridge, &Surface::from(&projection), viewport));
+        assert!(camera.recenter_on(&ridge, &Surface::plane(projection), viewport));
         assert!((camera.elevation - 1000.0).abs() < 1.0);
         assert!(before.distance(eye(&camera)) < 1e-3 * before.length().max(1.0));
         assert!(camera.zoom(&projection) > 13.0, "the target came closer");
@@ -357,8 +357,8 @@ mod tests {
         camera.set_zoom(&projection, 20.0);
         camera.pitch = 80.0;
         camera.elevation = 0.0;
-        assert!(camera.keep_above(&ridge, &Surface::from(&projection), viewport));
-        let view = View::new(&camera, viewport, &Surface::from(&projection));
+        assert!(camera.keep_above(&ridge, &Surface::plane(projection), viewport));
+        let view = View::new(&camera, viewport, &Surface::plane(projection));
         let eye_m = view.eye().z / view.height_scale();
         assert!(eye_m >= 1000.0 + CLEARANCE.0 - 1e-6);
     }
@@ -425,7 +425,7 @@ mod tests {
             let view = View::new(
                 store.state(),
                 self.viewport,
-                &Surface::from(&self.projection),
+                &Surface::plane(self.projection),
             );
             let clearance = view.clearance(&Peak).unwrap().0;
             assert!(
@@ -454,7 +454,7 @@ mod tests {
         );
         state.pitch = 75.0;
         state.bearing = 90.0;
-        let mut store = Camera::new(state, Surface::from(projection), viewport);
+        let mut store = Camera::new(state, Surface::plane(projection), viewport);
         store.set_terrain(Some(Arc::new(Peak)));
         let mut watch = Watch {
             projection,
@@ -525,7 +525,7 @@ mod tests {
         );
         state.pitch = 60.0;
         state.bearing = 90.0;
-        let mut store = Camera::new(state, Surface::from(projection), viewport);
+        let mut store = Camera::new(state, Surface::plane(projection), viewport);
         store.set_terrain(Some(Arc::new(Peak)));
         let mut pointer = DVec2::new(380.0, 60.0);
         let grabbed = store.unproject(pointer).unwrap();
@@ -586,7 +586,7 @@ mod tests {
     #[test]
     fn dem_landing_mid_flight_bends_the_path() {
         let (projection, viewport, state) = setup();
-        let mut store = Camera::new(state, Surface::from(projection), viewport);
+        let mut store = Camera::new(state, Surface::plane(projection), viewport);
         let destination = Geodetic::new(0.05, 0.0);
         store.fly_to(
             &CameraTarget {
@@ -627,7 +627,7 @@ mod tests {
     #[test]
     fn a_jump_keeps_its_elevation_until_the_dem_lands() {
         let (projection, viewport, state) = setup();
-        let mut store = Camera::new(state, Surface::from(projection), viewport);
+        let mut store = Camera::new(state, Surface::plane(projection), viewport);
         store.set_terrain(Some(Arc::new(Ridge { loaded_until: 1.0 })));
         assert_eq!(store.state().elevation, 1000.0);
         // East of the loaded data the target keeps 1000 m (GL JS #8549).
@@ -649,7 +649,7 @@ mod tests {
     #[test]
     fn an_unclamped_target_keeps_the_elevation_it_is_given() {
         let (projection, viewport, state) = setup();
-        let mut store = Camera::new(state, Surface::from(projection), viewport);
+        let mut store = Camera::new(state, Surface::plane(projection), viewport);
         store.set_terrain(Some(Arc::new(Ridge {
             loaded_until: f64::INFINITY,
         })));

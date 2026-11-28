@@ -10,7 +10,7 @@ fn camera() -> Camera {
     let projection = *TileMatrixSet::web_mercator().projection();
     Camera::new(
         CameraState::new(Geodetic::new(139.7, 35.68), 12.0, &projection),
-        projection.into(),
+        orb_crs::Surface::plane(projection),
         Viewport {
             width: 800.0,
             height: 600.0,

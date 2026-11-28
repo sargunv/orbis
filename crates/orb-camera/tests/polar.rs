@@ -20,7 +20,7 @@ fn check(tms: &TileMatrixSet, target: Geodetic) {
                 let mut camera = CameraState::new(target, zoom, projection);
                 camera.bearing = bearing;
                 camera.pitch = pitch;
-                let view = View::new(&camera, viewport, &Surface::from(projection));
+                let view = View::new(&camera, viewport, &Surface::plane(*projection));
                 let cover = view.cover(tms, 512.0, 16, Cover::default());
                 assert!(!cover.is_empty());
                 let case = format!("{} {target:?} z{zoom} b{bearing} p{pitch}", tms.id());
