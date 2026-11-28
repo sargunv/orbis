@@ -193,8 +193,10 @@ impl Shader {
     }
 }
 
-/// The scene tables' layouts, reflected from `types.wgsl`: each struct's
-/// words and each member's first word.
+/// What the shaders declare, reflected: the scene tables' layouts (each
+/// struct's words and each member's first word) and every scalar
+/// constant.
+#[allow(clippy::approx_constant, reason = "the shaders' own values of π")]
 pub mod layout {
     include!(concat!(env!("OUT_DIR"), "/layout.rs"));
 }

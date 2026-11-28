@@ -566,7 +566,7 @@ const WARP_PATCH_WORDS: usize = 18;
 /// Words per biquadratic patch on a globe: nine nodes' positions in space.
 const GLOBE_PATCH_WORDS: usize = 27;
 /// Words of a warp's window, before its patches.
-const WARP_WINDOW_WORDS: usize = 4;
+const WARP_WINDOW_WORDS: usize = layout::WARP_WINDOW_WORDS as usize;
 
 /// A warp as the scene takes it (`project.wgsl`): its patches per side
 /// (x then y) packed, and its words: `window` (the rectangle of the tile
@@ -585,12 +585,11 @@ const CHUNK_WORDS: usize = layout::chunk::WORDS;
 const CANDIDATE_WORDS: usize = layout::candidate::WORDS;
 const VISIBLE_WORDS: usize = layout::visible::WORDS;
 const NODE_CULL_WORDS: usize = layout::node_cull::WORDS;
-/// Candidate rows of an indexed node one cull workgroup decides
-/// (`cull.wgsl`'s `WORKGROUP`).
-const CULL_BATCH: u32 = 256;
+/// Candidate rows of an indexed node one cull workgroup decides.
+const CULL_BATCH: u32 = layout::WORKGROUP;
 /// Words per node of `SceneBuffers::args`: a draw's indirect arguments
 /// and the cull's counters.
-pub const ARGS_WORDS: usize = 8;
+pub const ARGS_WORDS: usize = layout::ARGS_WORDS as usize;
 /// The bytes of compacted slots a frame's layout moves tidying what changes
 /// in place left out of order, past the first node it tidies: a copy on
 /// the GPU (twice, through the scratch buffer), bounded like the frame's
@@ -885,9 +884,7 @@ pub struct TileId(u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MeshId(u32);
 
-/// Metres per unit of a placement's packed terrain range (`types.wgsl`'s
-/// `TERRAIN_RANGE_UNIT`).
-const TERRAIN_RANGE_UNIT: f32 = 4.0;
+use layout::TERRAIN_RANGE_UNIT;
 
 /// A terrain range as two i16s of [`TERRAIN_RANGE_UNIT`], rounded
 /// outward so it still covers the range.
@@ -1013,7 +1010,7 @@ const CHUNK_PROPS_WORD: u64 = layout::chunk::PROP_BASE as u64;
 const CHUNK_ROW_WORDS_WORD: u64 = layout::chunk::ROW_WORDS as u64;
 
 /// No feature-state remap: every feature has the default state.
-pub(crate) const NO_STATE: u32 = u32::MAX;
+pub(crate) use layout::NO_STATE;
 
 /// A cull row: a render node's, or its second stream's, in one block, with
 /// the block's meshes it draws.
@@ -1102,7 +1099,7 @@ enum Stream {
     /// that neighbour isn't placed alone, and in a placement that isn't
     /// alone over its square ([`Route`]), its own.
     Cut(u32),
-    /// A split node's chunks in the placements [`NodeCull::untested`]
+    /// A split node's chunks in the placements its [`Split::Untested`]
     /// names, with the row of the rest.
     Untested(u32),
     /// Row `n`'s chunks in the placements its untested row leaves.
@@ -1112,7 +1109,7 @@ enum Stream {
 /// Which of a split node's placements draw untested, from its own row
 /// ([`Stream::Untested`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Untested {
+pub(crate) enum Untested {
     /// Those that draw their whole square, within their bound: fills'
     /// meshes end at the square (orb-layout clips polygons to it), and so
     /// do image tiles', and no other placement draws there. A warped
@@ -1172,10 +1169,14 @@ impl Route {
         ..Self::ALL
     };
 
-    fn new(stream: Stream, untested: Option<Untested>, row: &TileRow) -> Self {
+    fn new(stream: Stream, split: Option<Split>, row: &TileRow) -> Self {
+        let untested = match split {
+            Some(Split::Untested(untested)) => untested.holds(row),
+            _ => false,
+        };
         let split = |stream| Self {
             stream,
-            alone: untested.is_some_and(|u| u.holds(row)),
+            alone: untested,
             ..Self::ALL
         };
         match stream {
@@ -1222,7 +1223,7 @@ impl Route {
 
 /// How the cull pass treats a render node's chunks.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NodeCull {
+pub(crate) struct NodeCull {
     /// Extra margin around chunk bounds, in pixels.
     pub margin_px: f32,
     /// Maximum nonnegative elevation in metres (base and roof).
@@ -1240,24 +1241,65 @@ pub struct NodeCull {
     /// circles): on a globe each draws as a grid of cells that follows the
     /// sphere (`types.wgsl`'s `SURFACE`).
     pub surface: bool,
-    /// Its meshes draw past their placements' clip rectangles: a whole
-    /// extrusion draws entire from the placement owning it
-    /// (`extrusion.wgsl`), so the cull keeps chunks by their own bounds.
-    pub unclipped: bool,
-    /// For a node that draws in two rows by its placements' clips
-    /// ([`Stream::Untested`]), which of them its own row holds: the rest
-    /// its second row holds. Whether it has one stays with the node; which
-    /// placements it holds follows the paint.
-    pub untested: Option<Untested>,
+    /// How it draws in a second row, if it does. Whether it does stays
+    /// with the node; which placements a split's own row holds follows
+    /// the paint.
+    pub split: Option<Split>,
     /// Whose meshes its candidates are.
     pub meshes: NodeMeshes,
+}
+
+/// Where a scene's words lie: a block's vertex and index pools, the
+/// property rows every block shares, and chunk rows in a block's index
+/// pool past its meshes' indices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pool {
+    Vertices,
+    Indices,
+    Props,
+    ChunkRows,
+}
+
+impl Pool {
+    /// The pools a mesh's words take, in its builds' order.
+    pub(crate) const WORDS: [Self; 3] = [Self::Vertices, Self::Indices, Self::Props];
+}
+
+/// How a render node draws in two rows ([`Scene::second_row`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Split {
+    /// An extrusion's: its meshes draw past their placements' clip
+    /// rectangles, a whole extrusion entire from the placement owning it
+    /// (`extrusion.wgsl`), so the cull keeps chunks by their own bounds;
+    /// its second row draws what they draw cut.
+    Cut,
+    /// By its placements' clips ([`Stream::Untested`]): which of them its
+    /// own row holds, untested, the rest its second row holds.
+    Untested(Untested),
+}
+
+/// A render node's second row and what it draws ([`Scene::second_row`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Second {
+    /// An extrusion's cut stream.
+    Cut(u32),
+    /// A split node's tested placements.
+    Tested(u32),
+}
+
+impl Second {
+    pub(crate) fn row(self) -> u32 {
+        match self {
+            Self::Cut(row) | Self::Tested(row) => row,
+        }
+    }
 }
 
 /// Whose meshes a render node's candidates are: a symbol layer's icon node
 /// takes its text node's (the next) after its own, so that one draw draws
 /// both in one order, by sort key, a key's icons then its text.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum NodeMeshes {
+pub(crate) enum NodeMeshes {
     /// Its own.
     #[default]
     Own,
@@ -1270,7 +1312,7 @@ pub enum NodeMeshes {
 /// How a render node draws its visible chunks, which the cull pass
 /// prepares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NodeDraw {
+pub(crate) enum NodeDraw {
     /// Image meshes, by vertex pulling: one instance of 768 vertices per
     /// visible chunk, from the node's visible list. Their fragments clip in
     /// the image's own tile units (a warped tile's mesh is in other units),
@@ -1305,7 +1347,11 @@ impl NodeCull {
             }
             | if self.visible { 0 } else { HIDDEN }
             | if self.surface { SURFACE } else { 0 }
-            | if self.unclipped { UNCLIPPED } else { 0 }
+            | if self.split == Some(Split::Cut) {
+                UNCLIPPED
+            } else {
+                0
+            }
             | if self.labels { SYMBOLS } else { 0 }
     }
 }
@@ -1313,29 +1359,25 @@ impl NodeCull {
 impl NodeDraw {
     fn word(self) -> u32 {
         match self {
-            Self::Images => 0,
-            Self::Points => 1,
-            Self::Indexed => 2,
+            Self::Images => layout::DRAW_IMAGES,
+            Self::Points => layout::DRAW_POINTS,
+            Self::Indexed => layout::DRAW_INDEXED,
         }
     }
 }
 
-/// The cull's flag on a node's draw word: its candidates are drape
-/// placements (`cull.wgsl`'s `DRAPED`).
-pub(crate) const DRAPED: u32 = 1 << 8;
-/// The cull's flag on a node's draw word: the node draws nothing
-/// (`cull.wgsl`'s `HIDDEN`).
-pub(crate) const HIDDEN: u32 = 1 << 9;
-/// The cull's flag on a node's draw word: its point quads lie on the
-/// surface (`cull.wgsl`'s `SURFACE`).
-pub(crate) const SURFACE: u32 = 1 << 10;
-/// The cull's flag on a node's draw word: its meshes draw past the clip
-/// rectangles (`cull.wgsl`'s `UNCLIPPED`).
-pub(crate) const UNCLIPPED: u32 = 1 << 11;
-/// The cull's flag on a node's draw word: it draws symbols, whose chunk
-/// rows say in which world copies placement shows them (`cull.wgsl`'s
-/// `SYMBOLS`).
-pub(crate) const SYMBOLS: u32 = 1 << 12;
+// The shaders' chunk sizes are the layout's: the most indices a chunk
+// has, which bounds the cull's copy loop, and the instances a point chunk
+// reserves; and the node rows' words, which a block's rows are found past.
+const _: () = assert!(
+    layout::CHUNK_INDICES == orb_layout::CHUNK_INDICES
+        && layout::CHUNK_POINTS == orb_layout::MAX_CHUNK_INSTANCES
+        && layout::CHUNK_QUADS == orb_layout::MAX_CHUNK_INSTANCES
+        && layout::NODE_CULL_WORDS as usize == NODE_CULL_WORDS
+);
+
+/// The cull's flags on a node's draw word (`types.wgsl`'s).
+pub(crate) use layout::{DRAPED, HIDDEN, SURFACE, SYMBOLS, UNCLIPPED};
 
 #[derive(Debug)]
 pub(crate) struct Scene {
@@ -1838,21 +1880,22 @@ impl Scene {
     }
 
     /// The row of render node `node`'s second stream in a block, if it
-    /// draws one: an extrusion node's cut stream ([`NodeCull::unclipped`]),
-    /// or a split node's tested placements ([`NodeCull::untested`]). Drawn
-    /// as a node of its own, its candidates are what the node's placements
-    /// draw cut, or tested ([`Stream`]). Block `b`'s is
-    /// [`row`](Self::row)`(second, b)`.
-    pub(crate) fn second_row(&self, node: u32) -> Option<u32> {
+    /// draws one ([`NodeCull::split`]): an extrusion node's cut stream, or
+    /// a split node's tested placements. Drawn as a node of its own, its
+    /// candidates are what the node's placements draw cut, or tested
+    /// ([`Stream`]). Block `b`'s is [`row`](Self::row)`(second, b)`.
+    pub(crate) fn second_row(&self, node: u32) -> Option<Second> {
         match self.nodes.get(node as usize)?.stream {
-            Stream::Whole(second) | Stream::Untested(second) => Some(second),
+            Stream::Whole(second) => Some(Second::Cut(second)),
+            Stream::Untested(second) => Some(Second::Tested(second)),
             Stream::All | Stream::Cut(_) | Stream::Tested(_) => None,
         }
     }
 
-    /// Whether a node of `cull` draws in a second row.
-    fn splits(cull: &NodeCull) -> bool {
-        cull.unclipped || cull.untested.is_some()
+    /// How a node of `cull` draws in a second row, its untested
+    /// placements aside.
+    fn splits(cull: &NodeCull) -> Option<bool> {
+        cull.split.map(|split| split == Split::Cut)
     }
 
     /// The cull's rows for `nodes`, render nodes in order: each node's,
@@ -1862,11 +1905,11 @@ impl Scene {
         let mut seconds = Vec::new();
         let mut rows: Vec<NodeEntry> = (nodes.iter().enumerate())
             .map(|(n, &c)| {
-                if !Self::splits(&c) {
+                let Some(cut) = Self::splits(&c) else {
                     return NodeEntry::new(c, Stream::All);
-                }
+                };
                 let second = (nodes.len() + seconds.len()) as u32;
-                let (first, rest) = match c.unclipped {
+                let (first, rest) = match cut {
                     true => (Stream::Whole(second), Stream::Cut(n as u32)),
                     false => (Stream::Untested(second), Stream::Tested(n as u32)),
                 };
@@ -1978,7 +2021,7 @@ impl Scene {
                     NodeMeshes::WithNext { next: true, .. }
                 )
         });
-        let second = self.second_row(node).map(|c| c as usize);
+        let second = self.second_row(node).map(|s| s.row() as usize);
         for row in [Some(n), second, before].into_iter().flatten() {
             if let Some(dirty) = self.dirty.get_mut(row) {
                 *dirty = true;
@@ -2128,9 +2171,7 @@ impl Scene {
     pub(crate) fn set_nodes(&mut self, nodes: &[NodeCull]) {
         let render = &self.nodes[..self.render_nodes()];
         let same_rows = nodes.len() == render.len()
-            && (nodes.iter().zip(render)).all(|(c, n)| {
-                (c.unclipped, Self::splits(c)) == (n.cull.unclipped, Self::splits(&n.cull))
-            });
+            && (nodes.iter().zip(render)).all(|(c, n)| Self::splits(c) == Self::splits(&n.cull));
         if !same_rows {
             assert!(
                 self.nodes.iter().all(|n| n.meshes.is_empty()),
@@ -2156,11 +2197,11 @@ impl Scene {
     pub(crate) fn set_node(&mut self, node: u32, cull: NodeCull) {
         let was = &self.nodes[node as usize].cull;
         assert_eq!(
-            (was.unclipped, Self::splits(was)),
-            (cull.unclipped, Self::splits(&cull)),
+            Self::splits(was),
+            Self::splits(&cull),
             "a node keeps whether it draws a second stream"
         );
-        let second = self.second_row(node);
+        let second = self.second_row(node).map(Second::row);
         for block in 0..self.block_slots() {
             for row in std::iter::once(node).chain(second) {
                 self.set_row(self.row(row, block) as usize, cull);
@@ -2180,7 +2221,7 @@ impl Scene {
             return;
         }
         // Which placements its rows hold changed: their runs go again.
-        if entry.cull.untested != cull.untested {
+        if entry.cull.split != cull.split {
             self.candidates_dirty = true;
             if let Some(dirty) = self.dirty.get_mut(i) {
                 *dirty = true;
@@ -2245,7 +2286,7 @@ impl Scene {
         let range = self
             .prop_arena
             .alloc(patches.len() as u32)
-            .ok_or(OutOfSpace)?;
+            .map_err(|_| OutOfSpace)?;
         let words: Vec<u32> = patches.iter().map(|v| v.to_bits()).collect();
         self.tables
             .write(gpu, Table::Props, range.start, Words::Core(&words));
@@ -2445,48 +2486,26 @@ impl Scene {
         node: u32,
         mesh: &MeshData<'_>,
     ) -> Result<MeshId, OutOfSpace> {
-        self.insert_mesh_sharing(gpu, tile, node, mesh, [None; 2])
-    }
-
-    /// [`insert_mesh`](Self::insert_mesh) drawing the vertices, the
-    /// indices or both of earlier meshes (`shares`), whose words it
-    /// leaves out of `mesh`: in their block.
-    pub(crate) fn insert_mesh_sharing(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        tile: TileId,
-        node: u32,
-        mesh: &MeshData<'_>,
-        shares: [Option<MeshId>; 2],
-    ) -> Result<MeshId, OutOfSpace> {
-        // A shared range is the earlier mesh's; the others are allocated.
-        let shared = shares.map(|of| of.map(|of| self.mesh_ranges(of)));
-        let block = shared.iter().flatten().map(|&(block, _)| block).next();
         let words = [mesh.vertices, mesh.indices, mesh.props];
-        let lens = [0, 1, 2, 3].map(|p| match p {
-            0 | 1 if shared[p].is_some() => 0,
+        let lens = std::array::from_fn(|p| match p {
             3 => chunk_words(mesh.chunks.len()),
-            _ => words[p].len(),
+            p => words[p].len(),
         });
         let points = self.overlaps(node);
-        let (block, ranges) = self.alloc_words(gpu, lens, block, points)?;
-        for (pool, range) in ranges[..3].iter().enumerate() {
+        let (block, ranges) = self.alloc_words(gpu, lens, points)?;
+        for ((pool, range), words) in Pool::WORDS.into_iter().zip(&ranges).zip(words) {
             if !range.is_empty() {
-                self.write_pool(gpu, block, pool, range.start, words[pool]);
+                self.write_pool(gpu, (block, pool), range.start, words);
             }
         }
-        let ranges_drawn = [0, 1, 2].map(|p| match &shared {
-            [Some((_, of)), _] if p == 0 => of[0].clone(),
-            [_, Some((_, of))] if p == 1 => of[1].clone(),
-            _ => ranges[p].clone(),
-        });
+        let [vertices, indices, props, chunk_rows] = ranges;
         Ok(self.insert_mesh_at(
             gpu,
             tile,
             (node, block),
-            (ranges_drawn, ranges[3].clone()),
+            ([vertices, indices, props], chunk_rows),
             (mesh.chunks, mesh.row_words),
-            shares.map(|s| s.is_some()),
+            [false; 2],
         ))
     }
 
@@ -2499,28 +2518,23 @@ impl Scene {
 
     /// Takes `lens` words of each pool (vertices, indices, property rows)
     /// and of chunk rows, all of them or none: the vertices, indices and
-    /// chunk rows (in the index pool, past the indices) in one block,
-    /// `block` if given, else for what draws from lists (`points`) the
-    /// block for them, grown to hold them, else the first other with room
-    /// for them, else a new one. The property rows grow to hold theirs.
-    /// `Err` only past the device's limits.
+    /// chunk rows (in the index pool, past the indices) in one block: for
+    /// what draws from lists (`points`) the block for them, grown to hold
+    /// them, else the first other with room for them, else a new one. The
+    /// property rows grow to hold theirs. `Err` only past the device's
+    /// limits.
     pub(crate) fn alloc_words(
         &mut self,
         gpu: &mut dyn Gpu,
         lens: [u32; 4],
-        block: Option<u32>,
         points: bool,
     ) -> Result<(u32, [Range<u32>; 4]), OutOfSpace> {
         let props = self.alloc_props(gpu, lens[2])?;
         let need = [lens[0], lens[1] + lens[3]];
         let fits = |b: &Block| b.vertices.fits_all([need[0]]) && b.indices.fits_all([need[1]]);
-        let found = match block {
-            Some(block) => self.blocks[block as usize]
-                .as_ref()
-                .is_some_and(fits)
-                .then_some(block),
-            None if points => self.points_block(gpu, need),
-            None => (self.blocks.iter())
+        let found = match points {
+            true => self.points_block(gpu, need),
+            false => (self.blocks.iter())
                 .position(|b| b.as_ref().is_some_and(|b| !b.points && fits(b)))
                 .map(|b| b as u32)
                 .or_else(|| {
@@ -2529,7 +2543,6 @@ impl Scene {
                 }),
         };
         let Some(block) = found else {
-            // Shared words lie in their block, or nowhere.
             self.prop_arena.free(props);
             return Err(OutOfSpace);
         };
@@ -2806,10 +2819,10 @@ impl Scene {
     /// Takes `words` of the property rows, which grow to hold them.
     fn alloc_props(&mut self, gpu: &mut dyn Gpu, words: u32) -> Result<Range<u32>, OutOfSpace> {
         loop {
-            if let Some(range) = self.prop_arena.alloc(words) {
-                return Ok(range);
-            }
-            let need = self.prop_arena.take_needed();
+            let need = match self.prop_arena.alloc(words) {
+                Ok(range) => return Ok(range),
+                Err(need) => need,
+            };
             let (old, max) = (self.capacity.prop_words, self.capacity.max_prop_words);
             let new = grown(old, u64::from(need), max);
             if new <= old {
@@ -2819,37 +2832,35 @@ impl Scene {
         }
     }
 
-    /// Gives back words of pool `pool` (vertices, indices, property rows,
-    /// or chunk rows, which are index words) that no mesh holds: block
-    /// `block`'s, for all but property rows.
-    pub(crate) fn free_words(&mut self, block: u32, pool: usize, range: Range<u32>) {
-        if pool == 2 {
-            return self.prop_arena.free(range);
-        }
-        let b = self.blocks[block as usize].as_mut().expect("a block");
-        match pool {
-            0 => b.vertices.free(range),
-            _ => b.indices.free(range),
+    /// Gives back words of `pool` that no mesh holds: block `block`'s, for
+    /// all but property rows.
+    pub(crate) fn free_words(&mut self, block: u32, pool: Pool, range: Range<u32>) {
+        let b = self.blocks.get_mut(block as usize).and_then(Option::as_mut);
+        match (pool, b) {
+            (Pool::Props, _) => self.prop_arena.free(range),
+            (Pool::Vertices, Some(b)) => b.vertices.free(range),
+            (Pool::Indices | Pool::ChunkRows, Some(b)) => b.indices.free(range),
+            (_, None) => panic!("a block"),
         }
     }
 
-    /// Queues `words` into pool `pool` (vertices, indices, property rows)
-    /// from word `at`: block `block`'s, for vertices and indices.
+    /// Queues `words` into `pool` from word `at`: block `block`'s, for
+    /// vertices and indices.
     pub(crate) fn write_pool(
         &mut self,
         gpu: &mut dyn Gpu,
-        block: u32,
-        pool: usize,
+        (block, pool): (u32, Pool),
         at: u32,
         words: Words<'_>,
     ) {
         match pool {
-            0 | 1 => {
-                let pool = BlockPool::ALL[pool];
-                self.tables
-                    .write_block(gpu, (block as usize, pool), at, words);
+            Pool::Vertices => {
+                (self.tables).write_block(gpu, (block as usize, BlockPool::Vertices), at, words)
             }
-            _ => self.tables.write(gpu, Table::Props, at, words),
+            Pool::Indices | Pool::ChunkRows => {
+                (self.tables).write_block(gpu, (block as usize, BlockPool::Indices), at, words)
+            }
+            Pool::Props => self.tables.write(gpu, Table::Props, at, words),
         }
     }
 
@@ -2894,11 +2905,11 @@ impl Scene {
         self.add_mesh(entry)
     }
 
-    /// A mesh's block, and its vertex and index ranges there, which a
-    /// mesh sharing them draws.
-    pub(crate) fn mesh_ranges(&self, mesh: MeshId) -> (u32, [Range<u32>; 2]) {
+    /// A mesh's vertex and index ranges in its block, which a mesh
+    /// sharing them draws.
+    pub(crate) fn mesh_ranges(&self, mesh: MeshId) -> [Range<u32>; 2] {
         let entry = self.meshes[mesh.0 as usize].as_ref().expect("live mesh");
-        (entry.block, [entry.vertices.clone(), entry.indices.clone()])
+        [entry.vertices.clone(), entry.indices.clone()]
     }
 
     /// Registers an uploaded mesh with its node and tile.
@@ -3057,9 +3068,13 @@ impl Scene {
         self.nodes[row as usize].meshes.retain(|&m| m != id);
         self.dirty_node(row);
         let block = entry.block;
-        self.free_words(block, 3, entry.chunk_rows);
-        for (pool, range) in [entry.vertices, entry.indices].into_iter().enumerate() {
-            if self.release_shared(pool, block, &range) {
+        self.free_words(block, Pool::ChunkRows, entry.chunk_rows);
+        let pools = [
+            (Pool::Vertices, entry.vertices),
+            (Pool::Indices, entry.indices),
+        ];
+        for (i, (pool, range)) in pools.into_iter().enumerate() {
+            if self.release_shared(i, block, &range) {
                 self.free_words(block, pool, range);
             }
         }
@@ -3528,38 +3543,6 @@ mod tests {
                     assert_eq!(shift, sign * corner / 2, "{local} at {corner}");
                 }
             }
-        }
-    }
-
-    /// The shaders' chunk sizes are the layout's: the most indices a chunk
-    /// has, which bounds the cull's copy loop, and the instances a point
-    /// chunk reserves; and the node rows' words, which a block's rows are
-    /// found past.
-    #[test]
-    fn the_shaders_share_the_chunk_sizes() {
-        use orb_shaders::{CIRCLE_SHADER, CULL_SHADER, SYMBOL_PLACE_SHADERS, SYMBOL_SHADER};
-        let points = orb_layout::MAX_CHUNK_INSTANCES;
-        for (source, name, value) in [
-            (
-                CULL_SHADER.source(),
-                "CHUNK_INDICES",
-                orb_layout::CHUNK_INDICES,
-            ),
-            (CULL_SHADER.source(), "CHUNK_POINTS", points),
-            (CIRCLE_SHADER.source(), "CHUNK_POINTS", points),
-            (SYMBOL_SHADER.source(), "CHUNK_QUADS", points),
-            (SYMBOL_PLACE_SHADERS[0].source(), "CHUNK_QUADS", points),
-            (SYMBOL_SHADER.source(), "PLACED_WIDTH", super::PLACED_WIDTH),
-            (
-                CULL_SHADER.source(),
-                "NODE_CULL_WORDS",
-                super::NODE_CULL_WORDS as u32,
-            ),
-        ] {
-            assert!(
-                source.contains(&format!("const {name}: u32 = {value}u;")),
-                "a shader's {name} isn't {value}"
-            );
         }
     }
 

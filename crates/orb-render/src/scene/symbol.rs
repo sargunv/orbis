@@ -16,7 +16,9 @@ use std::ops::Range;
 use super::Table;
 use orb_hal::Gpu;
 
-use crate::scene::{Chunk, MeshEntry, MeshId, OutOfSpace, Scene, TileId, Words, write_chunk_word};
+use crate::scene::{
+    Chunk, MeshEntry, MeshId, OutOfSpace, Pool, Scene, TileId, Words, write_chunk_word,
+};
 
 /// Words of a symbol mesh's header, ahead of its tables.
 pub const SYMBOL_HEADER_WORDS: usize = 20;
@@ -118,9 +120,9 @@ const SHOWN_WORD: u64 = orb_shaders::layout::chunk::FIRST_VERTEX as u64;
 pub const QUAD_WORDS: u32 = 12;
 pub const PLACED_WORDS: u32 = 11;
 
-/// Texels a row of the symbol placement target (`symbol.wgsl`'s
-/// `PLACED_WIDTH`): within GLSL ES 3.00's smallest texture side.
-pub(crate) const PLACED_WIDTH: u32 = 2048;
+/// Texels a row of the symbol placement target: within GLSL ES 3.00's
+/// smallest texture side.
+pub(crate) use orb_shaders::layout::PLACED_WIDTH;
 
 /// A symbol mesh's placement state: its state words, and in which world
 /// copies its chunks show anything.
@@ -334,7 +336,7 @@ impl Scene {
             .map(|(_, data)| super::chunk_words(data.chunks.len()))
             .collect();
         let lens = [words.iter().sum(), 0, 0, rows.iter().sum()];
-        let (block, [mut all, _, _, mut all_rows]) = self.alloc_words(gpu, lens, None, true)?;
+        let (block, [mut all, _, _, mut all_rows]) = self.alloc_words(gpu, lens, true)?;
         let mut ids = Vec::with_capacity(meshes.len());
         for ((&(node, data), words), rows) in meshes.iter().zip(words).zip(rows) {
             let vertices = all.start..all.start + words;
@@ -351,8 +353,8 @@ impl Scene {
                 Ok(id) => ids.push(id),
                 Err(e) => {
                     // This mesh's words and those of the meshes after it.
-                    self.free_words(block, 0, vertices.start..all.end);
-                    self.free_words(block, 3, rows_from..all_rows.end);
+                    self.free_words(block, Pool::Vertices, vertices.start..all.end);
+                    self.free_words(block, Pool::ChunkRows, rows_from..all_rows.end);
                     for id in ids {
                         self.remove_mesh(id);
                     }
@@ -393,13 +395,18 @@ impl Scene {
         let mut at = SYMBOL_HEADER_WORDS as u32;
         for (i, table) in tables.iter().enumerate() {
             header[i] = at;
-            self.write_pool(gpu, block, 0, vertices.start + at, *table);
+            self.write_pool(gpu, (block, Pool::Vertices), vertices.start + at, *table);
             at += table.len();
         }
         header[symbol_header::STATES] = states.start;
         header[symbol_header::COPIES] = 1;
         header[symbol_header::PARAMS..].copy_from_slice(&data.params);
-        self.write_pool(gpu, block, 0, vertices.start, Words::Core(&header));
+        self.write_pool(
+            gpu,
+            (block, Pool::Vertices),
+            vertices.start,
+            Words::Core(&header),
+        );
         self.tables
             .write(gpu, Table::Props, props.start, data.props);
         let zeros = vec![0; states.len()];
@@ -479,7 +486,7 @@ impl Scene {
         symbol.order = order.to_vec();
         symbol.lay_runs(&entry.chunks);
         let (block, at) = (entry.block, entry.vertices.start + symbol.order_at);
-        self.write_pool(gpu, block, 0, at, Words::Core(order));
+        self.write_pool(gpu, (block, Pool::Vertices), at, Words::Core(order));
         self.write_symbol_masks(gpu, mesh, None);
     }
 
@@ -514,7 +521,12 @@ impl Scene {
             entry.vertices.start + symbol_header::STATES as u32,
         );
         self.prop_arena.free(old);
-        self.write_pool(gpu, block, 0, header, Words::Core(&[states.start, copies]));
+        self.write_pool(
+            gpu,
+            (block, Pool::Vertices),
+            header,
+            Words::Core(&[states.start, copies]),
+        );
         self.write_symbol_masks(gpu, mesh, None);
         Ok(())
     }

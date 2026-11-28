@@ -18,8 +18,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::scene::{
-    MeshData, MeshId, MeshSize, OutOfSpace, Pixels, SymbolMeshData, TileId, TileRow, TileWarp,
-    Words, chunk_words,
+    MeshData, MeshId, MeshSize, OutOfSpace, Pixels, Pool, SymbolMeshData, TileId, TileRow,
+    TileWarp, Words, chunk_words,
 };
 use orb_crs::TileIndex;
 use orb_hal::Gpu;
@@ -605,7 +605,7 @@ impl Renderer {
         // them, whole: its draws overlap other tiles' (`scene::Block`).
         let points = (build.meshes.iter()).any(|m| self.scene.overlaps(m.node));
         let (block, [vertices, indices, props, chunk_rows]) = (self.scene)
-            .alloc_words(gpu, lens, None, points)
+            .alloc_words(gpu, lens, points)
             .map_err(|OutOfSpace| UploadError::NoRoom)?;
         let starts = [vertices.start, indices.start, props.start];
         Ok(Reserved {
@@ -629,7 +629,7 @@ impl Renderer {
         let mut budget = bytes / 4;
         let mut skip = reserved.written / 4;
         let mut written = 0;
-        for (pool, (range, at)) in reserved.pools.iter().enumerate() {
+        for (&pool, (range, at)) in Pool::WORDS.iter().zip(&reserved.pools) {
             let len = u64::from(range.end - range.start);
             if skip >= len {
                 skip -= len;
@@ -641,7 +641,7 @@ impl Renderer {
             }
             let from = range.start + skip as u32;
             let piece = words.slice(from..from + take as u32);
-            (self.scene).write_pool(gpu, reserved.block, pool, at + skip as u32, piece);
+            (self.scene).write_pool(gpu, (reserved.block, pool), at + skip as u32, piece);
             (skip, budget, written) = (0, budget - take, written + take * 4);
         }
         reserved.written += written;
@@ -650,12 +650,11 @@ impl Renderer {
 
     /// Gives back a reserved tile's room.
     pub fn unreserve(&mut self, reserved: Reserved) {
-        for (pool, (range, at)) in reserved.pools.into_iter().enumerate() {
+        for (pool, (range, at)) in Pool::WORDS.into_iter().zip(reserved.pools) {
             self.scene
                 .free_words(reserved.block, pool, at..at + (range.end - range.start));
         }
-        self.scene
-            .free_words(reserved.block, 3, reserved.chunk_rows);
+        (self.scene).free_words(reserved.block, Pool::ChunkRows, reserved.chunk_rows);
     }
 
     /// Makes a reserved tile, its words all written, of its build: its
@@ -684,7 +683,7 @@ impl Renderer {
             start..start + (span.end - span.start)
         };
         // The words between the meshes' (those of meshes left out) go.
-        for pool in 0..3 {
+        for (pool, kind) in Pool::WORDS.into_iter().enumerate() {
             let mut spans: Vec<Range<u32>> = (build.meshes.iter())
                 .map(|m| m.spans[pool].clone())
                 .filter(|s| !s.is_empty())
@@ -696,7 +695,7 @@ impl Renderer {
                 .chain(std::iter::once(reserved.pools[pool].0.end..u32::MAX))
             {
                 if span.start > from {
-                    (self.scene).free_words(block, pool, at(pool, &(from..span.start)));
+                    (self.scene).free_words(block, kind, at(pool, &(from..span.start)));
                 }
                 from = span.end;
             }
@@ -708,7 +707,7 @@ impl Renderer {
             // Meshes a tile shares words between take them from its block.
             let shared = mesh
                 .shares
-                .map(|of| of.map(|of| self.scene.mesh_ranges(ids[of]).1));
+                .map(|of| of.map(|of| self.scene.mesh_ranges(ids[of])));
             let ranges = [0, 1, 2].map(|p| match (&shared, p) {
                 ([Some(of), _], 0) => of[0].clone(),
                 ([_, Some(of)], 1) => of[1].clone(),
@@ -737,12 +736,13 @@ impl Renderer {
             for mesh in &build.meshes[i + 1..] {
                 for (pool, span) in mesh.spans.iter().enumerate() {
                     if !span.is_empty() {
-                        self.scene.free_words(block, pool, at(pool, span));
+                        self.scene
+                            .free_words(block, Pool::WORDS[pool], at(pool, span));
                     }
                 }
             }
             let left = rows..reserved.chunk_rows.end.max(rows);
-            self.scene.free_words(block, 3, left);
+            self.scene.free_words(block, Pool::ChunkRows, left);
             self.release_tile(tile);
             return Err(UploadError::NoRoom);
         }
@@ -781,24 +781,8 @@ impl Renderer {
         data: &MeshData<'_>,
         rows: &MeshRows<'_>,
     ) -> Result<MeshId, OutOfSpace> {
-        self.add_mesh_sharing(gpu, tile, (node, extent), data, rows, [None; 2])
-    }
-
-    /// [`add_mesh`](Self::add_mesh) drawing the vertices, the indices or
-    /// both of meshes of the same tile (`shares`).
-    fn add_mesh_sharing(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        tile: GpuTile,
-        (node, extent): (u32, u32),
-        data: &MeshData<'_>,
-        rows: &MeshRows<'_>,
-        shares: [Option<MeshId>; 2],
-    ) -> Result<MeshId, OutOfSpace> {
         let part = self.part(tile, extent);
-        let id = self
-            .scene
-            .insert_mesh_sharing(gpu, part, node, data, shares)?;
+        let id = self.scene.insert_mesh(gpu, part, node, data)?;
         if let Err(e) = self.attach(gpu, id, rows) {
             self.scene.remove_mesh(id);
             return Err(e);

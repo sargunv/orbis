@@ -86,31 +86,52 @@ pub(crate) fn read_usage(caps: &Caps) -> BufferUsages {
     }
 }
 
-/// The placement dispatch's kind ([`SYMBOL_PLACE_SHADERS`] by `kind / 2`,
-/// with property rows `kind % 2`): point labels' alone, or with line
-/// labels' where any symbol layer places along lines; `None` without
-/// symbol layers. One dispatch places every layer's quads.
-pub(crate) type Placings = Option<usize>;
+/// What a symbol pipeline is specialised for: line labels' placement as
+/// well as point labels', and property rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SymbolKind {
+    pub(crate) along_line: bool,
+    pub(crate) rows: bool,
+}
+
+impl std::ops::BitOr for SymbolKind {
+    type Output = Self;
+
+    /// What places both.
+    fn bitor(self, other: Self) -> Self {
+        Self {
+            along_line: self.along_line || other.along_line,
+            rows: self.rows || other.rows,
+        }
+    }
+}
+
+impl SymbolKind {
+    /// Its place among the four kinds.
+    fn index(self) -> usize {
+        2 * usize::from(self.along_line) + usize::from(self.rows)
+    }
+}
+
+/// The placement dispatch's kind: point labels' alone, or with line
+/// labels' where any symbol layer places along lines, and property rows
+/// where any reads them; `None` without symbol layers. One dispatch
+/// places every layer's quads.
+pub(crate) type Placings = Option<SymbolKind>;
 
 /// How the symbol draws find their quads placed.
 #[derive(Debug)]
 enum Placing {
     /// By a dispatch before them.
     Dispatched(Box<Dispatch>),
-    /// By each corner itself: the draw's pipelines by the layer's kind
-    /// ([`Symbols::make`]), into the map's passes as they are now.
+    /// By each corner itself, with a draw for each kind of layer.
     #[cfg(cpu_driven)]
-    Inline([Variants; 4]),
+    Inline,
 }
 
 /// The placement dispatch, its target and the draws that read it.
 #[derive(Debug)]
 struct Dispatch {
-    /// The draw's pipelines, without and with property rows, into the
-    /// map's passes as they are now (the renderer's [`Cache`] keeps those
-    /// for the others), each made for the first symbol layer that draws
-    /// with it.
-    draws: [Variants; 2],
     /// The dispatch's pipelines, by their [`Placings`] kind; its layout,
     /// and by scene block slot its group with the scene's entries it was
     /// made with.
@@ -141,19 +162,17 @@ pub(crate) struct Symbols {
     /// The draws' groups' layouts: the scene's, the node's and
     /// [`pass_layout`](Self::pass_layout).
     layouts: [BindGroupLayoutId; 3],
-    /// The map's passes.
-    target: Attachments,
 }
 
 impl Symbols {
     /// The symbols of a renderer whose tables are on `backing`, drawing
-    /// glyphs from the chunks of `glyphs` into the map's passes, `target`,
-    /// with the scene's and the node's groups of `(scene, node)`.
+    /// glyphs from the chunks of `glyphs` with the scene's and the node's
+    /// groups of `(scene, node)`.
     pub(crate) fn new(
         gpu: &mut dyn Gpu,
         backing: Backing,
         glyphs: [TextureId; PAGE_CHUNKS],
-        (target, (scene, node)): (Attachments, (BindGroupLayoutId, BindGroupLayoutId)),
+        (scene, node): (BindGroupLayoutId, BindGroupLayoutId),
     ) -> Self {
         use BindGroupLayoutEntry as E;
         let placing = Placing::new(gpu, backing);
@@ -199,7 +218,6 @@ impl Symbols {
             glyphs,
             quad_indices,
             layouts: [scene, node, pass_layout],
-            target,
         }
     }
 
@@ -220,14 +238,14 @@ impl Symbols {
         true
     }
 
-    /// Gives the placement target `rows` rows (the scene's
-    /// `placed_rows`); whether the draws' bindings changed, which the
-    /// bundles record.
     /// The placement target's rows, 0 before it has one.
     pub(crate) fn rows(&self) -> u32 {
         self.placing.dispatch().map_or(0, |dispatch| dispatch.rows)
     }
 
+    /// Gives the placement target `rows` rows (the scene's
+    /// `placed_rows`); whether the draws' bindings changed, which the
+    /// bundles record.
     pub(crate) fn fit(&mut self, gpu: &mut dyn Gpu, rows: u32) -> bool {
         let Some(dispatch) = self.placing.dispatch_mut() else {
             return false;
@@ -280,88 +298,46 @@ impl Symbols {
         }
     }
 
-    /// The draws' pipelines, by the slot [`draw`](Self::draw) gives.
-    fn draws(&self) -> &[Variants] {
-        match &self.placing {
-            Placing::Dispatched(dispatch) => &dispatch.draws,
-            #[cfg(cpu_driven)]
-            Placing::Inline(draws) => draws,
-        }
-    }
-
-    fn draws_mut(&mut self) -> &mut [Variants] {
-        match &mut self.placing {
-            Placing::Dispatched(dispatch) => &mut dispatch.draws,
-            #[cfg(cpu_driven)]
-            Placing::Inline(draws) => draws,
-        }
-    }
-
-    /// The draw of a symbol layer of `kind` (as in [`make`](Self::make))
-    /// into passes of `target`, and its slot among the draws' pipelines:
-    /// one draw for every kind after a dispatch placed them, with property
+    /// The draw of a symbol layer of `kind` into passes of `target`: one
+    /// draw for every kind after a dispatch placed them, with property
     /// rows and without, but one for each where every corner places its
     /// quad itself.
-    fn draw(&self, target: Attachments, kind: usize) -> (Draw<'_>, usize) {
-        let (shader, slot): (&Shader, _) = match &self.placing {
-            Placing::Dispatched(_) => (&SYMBOL_SHADER, kind % 2),
+    fn draw(&self, target: Attachments, kind: SymbolKind) -> Draw<'_> {
+        let shader: &Shader = match &self.placing {
+            Placing::Dispatched(_) => &SYMBOL_SHADER,
             #[cfg(cpu_driven)]
-            Placing::Inline(_) => (&SYMBOL_INLINE_SHADERS[kind / 2], kind),
+            Placing::Inline => &SYMBOL_INLINE_SHADERS[usize::from(kind.along_line)],
         };
         let blend = Some(BlendState::PremultipliedAlpha);
-        let draw = Draw {
-            rows: kind % 2 == 1,
+        Draw {
+            rows: kind.rows,
             ..Draw::new(shader, &self.layouts, target, blend)
-        };
-        (draw, slot)
+        }
     }
 
-    /// Draws into the map's passes as `target` from now on, with or
-    /// without their depth: with the pipelines made for them before, if
-    /// any.
-    pub(crate) fn retarget(&mut self, cache: &Cache, target: Attachments) {
-        self.target = target;
-        // Each slot's own index is a kind that draws with it.
-        let found: Vec<Variants> = (0..self.draws().len())
-            .map(|slot| Variants::find(cache, self.draw(target, slot).0))
-            .collect();
-        self.draws_mut().copy_from_slice(&found);
-    }
-
-    /// Makes the pipelines a symbol layer of `kind` draws with (along
-    /// lines `kind / 2`, with property rows `kind % 2`) into passes of
-    /// `target` where the symbol layers place with `placings`, each
-    /// variant of `variants` asked for. Those into other passes than the
-    /// map's now are made ahead, for [`retarget`](Self::retarget) to find.
+    /// Makes the pipelines a symbol layer of `kind` draws with into passes
+    /// of `target` where the symbol layers place with `placings`, each
+    /// variant of `variants` asked for.
     pub(crate) fn make(
         &mut self,
         (gpu, cache): (&mut dyn Gpu, &mut Cache),
         target: Attachments,
-        (kind, placings): (usize, Placings),
+        (kind, placings): (SymbolKind, Placings),
         variants: [bool; 2],
     ) {
-        let (draw, slot) = self.draw(target, kind);
-        let current = target == self.target;
-        let mut made = match current {
-            true => self.draws()[slot],
-            false => Variants::default(),
-        };
-        made.make((gpu, cache), variants, draw);
-        if current {
-            self.draws_mut()[slot] = made;
-        }
+        cache.make_variants(gpu, variants, self.draw(target, kind));
         match &mut self.placing {
             Placing::Dispatched(dispatch) => {
                 let layouts = [dispatch.layout];
                 if let Some(placing) = placings {
-                    let shader = &SYMBOL_PLACE_SHADERS[placing / 2];
-                    dispatch.pipelines[placing].make_with(variants, |full| {
+                    let shader = &SYMBOL_PLACE_SHADERS[usize::from(placing.along_line)];
+                    dispatch.pipelines[placing.index()].make_with(variants, |full| {
                         let mut constants = Vec::new();
                         if !full && shader.takes(shader.compute, orb_shaders::PLANE) {
                             constants.push((orb_shaders::PLANE, 1.0));
                         }
                         let rows = orb_shaders::FEATURE_ROWS;
-                        if placing % 2 == 0 && shader.takes(shader.compute, rows) {
+                        if !placing.rows && shader.takes(shader.compute, rows) {
                             constants.push((rows, 0.0));
                         }
                         crate::pipeline::compute(gpu, shader, &layouts, &constants)
@@ -369,7 +345,7 @@ impl Symbols {
                 }
             }
             #[cfg(cpu_driven)]
-            Placing::Inline(_) => {}
+            Placing::Inline => {}
         }
     }
 
@@ -379,20 +355,16 @@ impl Symbols {
     pub(crate) fn wanted(
         &self,
         (cache, target): (&Cache, Attachments),
-        (kind, placings): (usize, Placings),
+        (kind, placings): (SymbolKind, Placings),
         full: bool,
     ) -> impl Iterator<Item = PipelineId> {
-        let (draw, slot) = self.draw(target, kind);
-        let draws = match target == self.target {
-            true => self.draws()[slot],
-            false => Variants::find(cache, draw),
-        };
+        let draws = cache.variants(self.draw(target, kind));
         let place = match &self.placing {
             Placing::Dispatched(dispatch) => {
-                placings.and_then(|p| dispatch.pipelines[p].wanted(full).map(Into::into))
+                placings.and_then(|p| dispatch.pipelines[p.index()].wanted(full).map(Into::into))
             }
             #[cfg(cpu_driven)]
-            Placing::Inline(_) => None,
+            Placing::Inline => None,
         };
         [place, draws.wanted(full).map(Into::into)]
             .into_iter()
@@ -410,23 +382,22 @@ impl Symbols {
     pub(crate) fn commands(
         &self,
         gpu: &mut dyn Gpu,
-        (kind, placings, full): (usize, Placings, bool),
+        (cache, target): (&Cache, Attachments),
+        (kind, placings, full): (SymbolKind, Placings, bool),
         (scene, group): (BindGroupId, BindGroupId),
         apart: [bool; 2],
         quads: RenderCommand,
         commands: &mut Vec<RenderCommand>,
         lacks: &mut Lacks,
     ) -> bool {
-        let draw = match &self.placing {
-            Placing::Dispatched(dispatch) => {
-                if dispatch.placements(gpu, placings, full, lacks).is_none() {
-                    return false;
-                }
-                dispatch.draws[kind % 2].drawn(gpu, full, lacks)
-            }
-            #[cfg(cpu_driven)]
-            Placing::Inline(draws) => draws[kind].drawn(gpu, full, lacks),
-        };
+        if let Some(dispatch) = self.placing.dispatch()
+            && dispatch.placements(gpu, placings, full, lacks).is_none()
+        {
+            return false;
+        }
+        let draw = cache
+            .variants(self.draw(target, kind))
+            .drawn(gpu, full, lacks);
         let Some(draw) = draw else {
             return false;
         };
@@ -518,7 +489,7 @@ impl Dispatch {
             return Some(None);
         };
         let mut wants = Lacks::default();
-        let drawn = self.pipelines[placing].drawn(gpu, full, &mut wants);
+        let drawn = self.pipelines[placing.index()].drawn(gpu, full, &mut wants);
         if drawn.is_none() {
             lacks.extend(&wants);
         }
@@ -531,10 +502,9 @@ impl Placing {
         // Only WebGL 2's build (`cpu-driven`) meets a device without compute.
         #[cfg(cpu_driven)]
         if !gpu.caps().compute() {
-            return Self::Inline(Default::default());
+            return Self::Inline;
         }
         Self::Dispatched(Box::new(Dispatch {
-            draws: Default::default(),
             pipelines: Default::default(),
             layout: compute_layout(gpu, backing),
             groups: Vec::new(),
@@ -548,7 +518,7 @@ impl Placing {
         match self {
             Self::Dispatched(dispatch) => Some(dispatch),
             #[cfg(cpu_driven)]
-            Self::Inline(_) => None,
+            Self::Inline => None,
         }
     }
 
@@ -556,7 +526,7 @@ impl Placing {
         match self {
             Self::Dispatched(dispatch) => Some(dispatch),
             #[cfg(cpu_driven)]
-            Self::Inline(_) => None,
+            Self::Inline => None,
         }
     }
 
@@ -658,7 +628,7 @@ impl Release for Symbols {
                 (pipelines, (layout, groups, target)).release(gpu);
             }
             #[cfg(cpu_driven)]
-            Placing::Inline(_) => {}
+            Placing::Inline => {}
         }
         (self.pass_layout, self.pass_buffer).release(gpu);
         (self.passes, self.quad_indices).release(gpu);

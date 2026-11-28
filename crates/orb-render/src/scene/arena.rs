@@ -12,9 +12,6 @@ pub(crate) struct Arena {
     free: BTreeMap<u32, u32>,
     used: u32,
     capacity: u32,
-    /// The words it would have needed for the allocations it refused since
-    /// [`take_needed`](Self::take_needed) last asked.
-    needed: u32,
 }
 
 impl Arena {
@@ -27,7 +24,6 @@ impl Arena {
             free,
             used: 0,
             capacity,
-            needed: 0,
         }
     }
 
@@ -76,22 +72,21 @@ impl Arena {
         self.capacity
     }
 
-    pub(crate) fn alloc(&mut self, len: u32) -> Option<Range<u32>> {
+    /// `len` words, or where it has no room, the capacity that would
+    /// hold them (growth extends the free tail).
+    pub(crate) fn alloc(&mut self, len: u32) -> Result<Range<u32>, u32> {
         if len == 0 {
-            return Some(0..0);
+            return Ok(0..0);
         }
         let Some((&start, &size)) = self.free.iter().find(|(_, size)| **size >= len) else {
-            // Growth extends the free tail.
-            let needed = self.free_from(self.capacity).saturating_add(len);
-            self.needed = self.needed.max(needed);
-            return None;
+            return Err(self.free_from(self.capacity).saturating_add(len));
         };
         self.free.remove(&start);
         if size > len {
             self.free.insert(start + len, size - len);
         }
         self.used += len;
-        Some(start..start + len)
+        Ok(start..start + len)
     }
 
     /// Whether allocations of `lens` would all succeed now, in order: what
@@ -115,14 +110,6 @@ impl Arena {
             return false;
         }
         true
-    }
-
-    /// The size, in words, that would have held each allocation refused
-    /// since the last call when it was refused, or 0. It counts what the
-    /// arena held then, which an upload that failed may have given back
-    /// since: retried, it takes that room again.
-    pub(crate) fn take_needed(&mut self) -> u32 {
-        std::mem::take(&mut self.needed)
     }
 
     pub(crate) fn free(&mut self, range: Range<u32>) {
@@ -228,11 +215,11 @@ mod tests {
         let b = arena.alloc(30).unwrap();
         let c = arena.alloc(30).unwrap();
         assert_eq!((a.clone(), b.clone(), c.clone()), (0..30, 30..60, 60..90));
-        assert!(arena.alloc(20).is_none());
+        assert!(arena.alloc(20).is_err());
         arena.free(a);
         arena.free(c);
         // c merged with the free tail into 60..100.
-        assert_eq!(arena.alloc(41), None);
+        assert_eq!(arena.alloc(41), Err(101));
         arena.free(b);
         // Freed down to nothing above 30: the tail from 30 can go.
         let mut tail = Arena::new(100);
@@ -245,10 +232,10 @@ mod tests {
             (tail.free_from(50), tail.largest_free(), tail.used()),
             (30, 20, 30)
         );
-        assert_eq!(tail.alloc(21), None);
+        assert!(tail.alloc(21).is_err());
         tail.free(low);
         assert_eq!(arena.used(), 0);
-        assert_eq!(arena.alloc(100), Some(0..100));
+        assert_eq!(arena.alloc(100), Ok(0..100));
     }
 
     /// `fits_all` answers as allocating would, over free lists of many
@@ -266,7 +253,7 @@ mod tests {
             let mut arena = Arena::new(256);
             let mut held = Vec::new();
             for _ in 0..next(20) {
-                if let Some(r) = arena.alloc(1 + next(40)) {
+                if let Ok(r) = arena.alloc(1 + next(40)) {
                     held.push(r);
                 }
             }
@@ -275,7 +262,7 @@ mod tests {
             }
             let lens: Vec<u32> = (0..1 + next(6)).map(|_| next(60)).collect();
             let mut copy = arena.clone();
-            let allocates = lens.iter().all(|&len| copy.alloc(len).is_some());
+            let allocates = lens.iter().all(|&len| copy.alloc(len).is_ok());
             assert_eq!(arena.fits_all(lens.iter().copied()), allocates, "{lens:?}");
         }
     }
@@ -312,26 +299,15 @@ mod tests {
         assert_eq!(slots.available(), 2);
     }
 
-    /// A refusal keeps the size that would have held it then, so room
-    /// given back after it doesn't hide what the retry needs.
-    #[test]
-    fn refusals_keep_the_size_they_needed() {
-        let mut arena = Arena::new(100);
-        let held = arena.alloc(60).unwrap();
-        assert_eq!((arena.alloc(50), arena.alloc(70)), (None, None));
-        arena.free(held);
-        assert_eq!((arena.take_needed(), arena.take_needed()), (130, 0));
-    }
-
     #[test]
     fn grows_into_a_block_joined_with_the_free_tail() {
         let mut arena = Arena::new(100);
         let a = arena.alloc(90).unwrap();
-        assert!(arena.alloc(20).is_none());
+        assert!(arena.alloc(20).is_err());
         arena.grow(100, 200);
         assert_eq!(arena.used(), 90);
         assert_eq!(arena.largest_free(), 110);
-        assert_eq!(arena.alloc(20), Some(90..110));
+        assert_eq!(arena.alloc(20), Ok(90..110));
         arena.free(a);
         assert_eq!(arena.used(), 20);
     }

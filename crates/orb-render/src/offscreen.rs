@@ -11,7 +11,7 @@ use orb_hal::*;
 use orb_shaders::{COMPOSITE_OVER_SHADER, COMPOSITE_REPLACE_SHADER, COMPOSITE_STACK_SHADER};
 
 use crate::Blend;
-use crate::pipeline::{Attachments, Cache, Draw, Take};
+use crate::pipeline::{Attachments, Cache, Draw};
 
 /// A colour attachment to draw into and sample.
 #[derive(Debug)]
@@ -89,15 +89,25 @@ impl Target {
 
 /// A node drawn apart from the map: its target and composite once sized,
 /// the opacity the composite applies (a 3D layer's, a heatmap's), and its
-/// recorded draw.
+/// recorded draw with what it was recorded over (`K`).
 #[derive(Debug)]
-pub(crate) struct Apart {
+pub(crate) struct Apart<K = Recorded> {
     pub(crate) offscreen: Option<Offscreen>,
     pub(crate) opacity: f32,
-    pub(crate) bundle: Option<RenderBundleId>,
+    bundle: Option<(RenderBundleId, K)>,
 }
 
-impl Default for Apart {
+/// What a node drawn apart recorded its draw over: the revisions of what
+/// its draws bind and draw, its pipelines, and its pass's depth format
+/// and sample count. Any of them changing records it again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Recorded {
+    pub(crate) draws: [u64; 2],
+    pub(crate) pipelines: [Option<RenderPipelineId>; 2],
+    pub(crate) target: (Option<TextureFormat>, u32),
+}
+
+impl<K> Default for Apart<K> {
     fn default() -> Self {
         Self {
             offscreen: None,
@@ -107,11 +117,28 @@ impl Default for Apart {
     }
 }
 
-impl Apart {
-    /// Drops the recorded draw, so the next frame records it over the
-    /// current bind groups.
-    pub(crate) fn forget_bundle(&mut self, gpu: &mut dyn Gpu) {
-        self.bundle.take().release(gpu);
+impl<K: Copy + PartialEq> Apart<K> {
+    /// Whether its draw is recorded over `over`.
+    pub(crate) fn records(&self, over: K) -> bool {
+        self.bundle.is_some_and(|(_, recorded)| recorded == over)
+    }
+
+    /// Its draw recorded over `over`: as recorded, or by `record` anew.
+    pub(crate) fn bundle(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        over: K,
+        record: impl FnOnce(&mut dyn Gpu) -> RenderBundleId,
+    ) -> RenderBundleId {
+        match self.bundle {
+            Some((bundle, recorded)) if recorded == over => bundle,
+            _ => {
+                self.bundle.take().map(|(bundle, _)| bundle).release(gpu);
+                let bundle = record(gpu);
+                self.bundle = Some((bundle, over));
+                bundle
+            }
+        }
     }
 
     pub(crate) fn set_opacity(&mut self, gpu: &mut dyn Gpu, opacity: f32) {
@@ -212,13 +239,6 @@ pub(crate) struct Composites {
     layout: BindGroupLayoutId,
     /// Stacks' ([`Stack`]).
     stack_layout: BindGroupLayoutId,
-    /// Into the map's passes as they are now (the [`Cache`] keeps those
-    /// for the others), made for the first composite that needs each.
-    over: Option<RenderPipelineId>,
-    replace: Option<RenderPipelineId>,
-    /// Stacks' by size ([`STACK_SIZES`]).
-    stacks: [Option<RenderPipelineId>; 3],
-    target: Attachments,
     linear: SamplerId,
     /// Bound where a composite has no ramp or backdrop.
     blank: TextureId,
@@ -243,7 +263,7 @@ pub(crate) struct Composite {
 }
 
 impl Composites {
-    pub(crate) fn new(gpu: &mut dyn Gpu, target: Attachments) -> Self {
+    pub(crate) fn new(gpu: &mut dyn Gpu) -> Self {
         use BindGroupLayoutEntry as E;
         let fs = ShaderStages::FRAGMENT;
         let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
@@ -280,57 +300,30 @@ impl Composites {
         Self {
             layout,
             stack_layout,
-            over: None,
-            replace: None,
-            stacks: [None; 3],
-            target,
             linear,
             blank,
         }
     }
 
-    /// Composites into `target`'s passes from now on, the map's with or
-    /// without their depth: with the pipelines made for them before, if
-    /// any.
-    pub(crate) fn retarget(&mut self, cache: &Cache, target: Attachments) {
-        self.target = target;
-        let take = &mut Take::Find(cache);
-        self.over = self.composite_pipeline(take, target, false);
-        self.replace = self.composite_pipeline(take, target, true);
-        self.stacks = self.stack_pipelines(take, target);
-    }
-
-    /// The pipeline of composites that write over the map (`replace`) or
-    /// blend over it in passes of `target`, as `take` takes it.
-    fn composite_pipeline(
-        &self,
-        take: &mut Take<'_>,
-        target: Attachments,
-        replace: bool,
-    ) -> Option<RenderPipelineId> {
+    /// The draw of composites that write over the map (`replace`) or
+    /// blend over it in passes of `target`.
+    fn composite_draw(&self, target: Attachments, replace: bool) -> Draw<'_> {
         let (shader, blend) = match replace {
             true => (&COMPOSITE_REPLACE_SHADER, None),
             false => (&COMPOSITE_OVER_SHADER, Some(BlendState::PremultipliedAlpha)),
         };
-        take.pipeline(&Draw::new(shader, &[self.layout], target, blend))
+        Draw::new(shader, std::slice::from_ref(&self.layout), target, blend)
     }
 
-    /// The pipelines of stacks by size in passes of `target`, as `take`
-    /// takes them.
-    fn stack_pipelines(
-        &self,
-        take: &mut Take<'_>,
-        target: Attachments,
-    ) -> [Option<RenderPipelineId>; 3] {
-        let layouts = [self.stack_layout];
+    /// The draws of stacks by size ([`STACK_SIZES`]) in passes of
+    /// `target`.
+    fn stack_draws(&self, target: Attachments) -> [Draw<'_>; 3] {
+        let layouts = std::slice::from_ref(&self.stack_layout);
         let blend = Some(BlendState::PremultipliedAlpha);
-        let draw = Draw::new(&COMPOSITE_STACK_SHADER, &layouts, target, blend);
-        STACK_SIZES.map(|size| {
-            let constants: &[_] = &[(orb_shaders::STACK_LAYERS, size as f64)];
-            take.pipeline(&Draw {
-                constants: [&[], constants],
-                ..draw
-            })
+        let draw = Draw::new(&COMPOSITE_STACK_SHADER, layouts, target, blend);
+        std::array::from_fn(|size| Draw {
+            constants: [&[], &STACK_CONSTANTS[size]],
+            ..draw
         })
     }
 
@@ -341,51 +334,37 @@ impl Composites {
     }
 
     /// Makes the pipeline of composites in `mode` into passes of
-    /// `target`, unless it is made: ahead, for
-    /// [`retarget`](Self::retarget) to find, where the map's aren't so
-    /// now.
+    /// `target`, unless it is made.
     pub(crate) fn make(
-        &mut self,
+        &self,
         (gpu, cache): (&mut dyn Gpu, &mut Cache),
         target: Attachments,
         mode: Mode,
     ) {
-        let replace = mode.replaces();
-        let take = &mut Take::Make(gpu, cache);
-        if target != self.target {
-            self.composite_pipeline(take, target, replace);
-        } else if self.pipeline(mode).is_none() {
-            let made = self.composite_pipeline(take, target, replace);
-            *(if replace {
-                &mut self.replace
-            } else {
-                &mut self.over
-            }) = made;
-        }
+        cache.get_or_make(gpu, &self.composite_draw(target, mode.replaces()));
     }
 
     /// Makes the pipelines of stacks into passes of `target`, unless they
-    /// are made, as [`make`](Self::make) does.
-    pub(crate) fn make_stack(
-        &mut self,
-        (gpu, cache): (&mut dyn Gpu, &mut Cache),
-        target: Attachments,
-    ) {
-        let take = &mut Take::Make(gpu, cache);
-        if target != self.target {
-            self.stack_pipelines(take, target);
-        } else if self.stacks.iter().any(Option::is_none) {
-            self.stacks = self.stack_pipelines(take, target);
+    /// are made.
+    pub(crate) fn make_stack(&self, (gpu, cache): (&mut dyn Gpu, &mut Cache), target: Attachments) {
+        for draw in self.stack_draws(target) {
+            cache.get_or_make(gpu, &draw);
         }
     }
 
-    /// The pipelines of stacks, `None` for one not made.
-    pub(crate) fn stack_needs(&self) -> impl Iterator<Item = Option<PipelineId>> + use<> {
-        self.stacks.map(|p| p.map(Into::into)).into_iter()
+    /// The pipelines of stacks into passes of `target`, `None` for one not
+    /// made.
+    pub(crate) fn stack_needs(
+        &self,
+        cache: &Cache,
+        target: Attachments,
+    ) -> [Option<PipelineId>; 3] {
+        self.stack_draws(target)
+            .map(|draw| cache.get(&draw).map(Into::into))
     }
 
     /// A stack of `layers`, 2 to [`STACK`], bottom first.
-    pub(crate) fn stack(&mut self, gpu: &mut dyn Gpu, layers: &[Layer]) -> Stack {
+    pub(crate) fn stack(&self, gpu: &mut dyn Gpu, layers: &[Layer]) -> Stack {
         assert!(
             (2..=STACK).contains(&layers.len()),
             "a stack of 2 to {STACK}"
@@ -431,17 +410,19 @@ impl Composites {
         }
     }
 
-    /// The pipeline of stacks of `layers`: the smallest that holds them.
-    fn stack_pipeline(&self, layers: usize) -> RenderPipelineId {
-        let size = STACK_SIZES.iter().position(|&s| s >= layers);
-        let pipeline = size.and_then(|s| self.stacks[s]);
-        pipeline.expect("made with the stack")
-    }
-
-    /// A stack's draw, for a bundle.
-    pub(crate) fn stack_commands(&self, stack: &Stack) -> [RenderCommand; 3] {
+    /// A stack's draw into passes of `target`, for a bundle: with the
+    /// pipeline of the smallest size that holds its layers, made with
+    /// the stack.
+    pub(crate) fn stack_commands(
+        &self,
+        (cache, target): (&Cache, Attachments),
+        stack: &Stack,
+    ) -> [RenderCommand; 3] {
+        let size = STACK_SIZES.iter().position(|&s| s >= stack.layers.len());
+        let draw = size.map(|s| self.stack_draws(target)[s]);
+        let pipeline = draw.and_then(|draw| cache.get(&draw));
         [
-            RenderCommand::SetPipeline(self.stack_pipeline(stack.layers.len())),
+            RenderCommand::SetPipeline(pipeline.expect("made with the stack")),
             RenderCommand::SetBindGroup {
                 index: 0,
                 group: stack.group,
@@ -557,39 +538,35 @@ impl Composites {
         }
     }
 
-    /// The pipeline of composites in `mode`, once made.
-    fn pipeline(&self, mode: Mode) -> Option<RenderPipelineId> {
-        match mode.replaces() {
-            true => self.replace,
-            false => self.over,
-        }
+    /// The pipeline of composites in `mode` into passes of `target`, once
+    /// made.
+    pub(crate) fn pipeline(
+        &self,
+        cache: &Cache,
+        target: Attachments,
+        mode: Mode,
+    ) -> Option<RenderPipelineId> {
+        cache.get(&self.composite_draw(target, mode.replaces()))
     }
 
-    /// Whether the pipeline of a composite in `mode` compiled.
-    pub(crate) fn ready(&self, gpu: &mut dyn Gpu, mode: Mode) -> bool {
-        crate::awaits::compiled(gpu, [self.needs(mode)])
-    }
-
-    /// The pipeline of a composite in `mode`, `None` until made.
-    pub(crate) fn needs(&self, mode: Mode) -> Option<PipelineId> {
-        self.pipeline(mode).map(Into::into)
+    /// The pipeline of a composite in `mode` into passes of `target`,
+    /// `None` until made.
+    pub(crate) fn needs(
+        &self,
+        cache: &Cache,
+        target: Attachments,
+        mode: Mode,
+    ) -> Option<PipelineId> {
+        self.pipeline(cache, target, mode).map(Into::into)
     }
 
     /// The pipelines of composites and stacks into passes of `target`,
     /// made through `cache`.
     pub(crate) fn pipelines(&self, cache: &Cache, target: Attachments) -> Vec<PipelineId> {
-        let take = &mut Take::Find(cache);
-        let (over, replace, stacks) = match target == self.target {
-            true => (self.over, self.replace, self.stacks),
-            false => (
-                self.composite_pipeline(take, target, false),
-                self.composite_pipeline(take, target, true),
-                self.stack_pipelines(take, target),
-            ),
-        };
-        [over, replace]
-            .into_iter()
-            .chain(stacks)
+        let composites =
+            [false, true].map(|replace| cache.get(&self.composite_draw(target, replace)));
+        let stacks = self.stack_draws(target).map(|draw| cache.get(&draw));
+        (composites.into_iter().chain(stacks))
             .flatten()
             .map(PipelineId::from)
             .collect()
@@ -601,10 +578,15 @@ impl Composites {
         self.layout
     }
 
-    /// A composite's draw, for a bundle or the pass it opens.
-    pub(crate) fn commands(&self, composite: &Composite) -> [RenderCommand; 3] {
-        let pipeline = self.pipeline(composite.mode);
-        Self::commands_through(composite, pipeline.expect("made with the composite"))
+    /// A composite's draw into passes of `target`, for a bundle or the
+    /// pass it opens, once its pipeline is made.
+    pub(crate) fn commands(
+        &self,
+        (cache, target): (&Cache, Attachments),
+        composite: &Composite,
+    ) -> Option<[RenderCommand; 3]> {
+        let pipeline = self.pipeline(cache, target, composite.mode)?;
+        Some(Self::commands_through(composite, pipeline))
     }
 
     /// A composite's draw through `pipeline`, one of its mode made for
@@ -666,6 +648,17 @@ pub(crate) const STACK: usize = 8;
 /// layers (`composite_stack.wgsl`'s `stack_layers`): a stack draws with the
 /// smallest that holds it, the layers past its own blank.
 const STACK_SIZES: [usize; 3] = [2, 4, STACK];
+
+/// Each of [`STACK_SIZES`] as its pipeline's override constant.
+static STACK_CONSTANTS: [[(&str, f64); 1]; 3] = {
+    let mut constants = [[(orb_shaders::STACK_LAYERS, 0.0)]; 3];
+    let mut i = 0;
+    while i < STACK_SIZES.len() {
+        constants[i][0].1 = STACK_SIZES[i] as f64;
+        i += 1;
+    }
+    constants
+};
 
 /// A stack's uniform: its count, then each layer's scale and tint.
 const STACK_WORDS: usize = 4 + STACK * 8;
@@ -747,9 +740,9 @@ fn write_uniform(
     gpu.write_buffer(uniform, 0, bytemuck::cast_slice(&words));
 }
 
-impl crate::release::Release for Apart {
+impl<K> crate::release::Release for Apart<K> {
     fn release(self, gpu: &mut dyn Gpu) {
-        (self.bundle, self.offscreen).release(gpu);
+        (self.bundle.map(|(bundle, _)| bundle), self.offscreen).release(gpu);
     }
 }
 

@@ -68,17 +68,11 @@ pub struct AtmosphereView {
 #[derive(Debug)]
 pub(crate) struct Atmosphere {
     pub(crate) uniform: BufferId,
-    /// What the map's passes draw into, which `sky` and `scatter` are
-    /// made for.
-    target: Attachments,
     /// The layout and group the sky and the scattering share, made for the
     /// first of them.
     group: Option<(BindGroupLayoutId, BindGroupId)>,
-    /// The sky's pipeline in the map's passes, made for the first sky.
-    sky: Option<RenderPipelineId>,
-    /// The globe's scattering pipeline in them and its sunward table, made
-    /// for the first globe sky.
-    scatter: Option<RenderPipelineId>,
+    /// The globe's scattering's sunward table, made for the first globe
+    /// sky.
     sunward: Option<Sunward>,
     scatter_blend: f32,
     written: Option<(Option<AtmospherePaint>, AtmosphereView)>,
@@ -86,8 +80,8 @@ pub(crate) struct Atmosphere {
 }
 
 impl Atmosphere {
-    /// None yet, into the map's passes as `target`.
-    pub(crate) fn new(gpu: &mut dyn Gpu, target: Attachments) -> Self {
+    /// None yet.
+    pub(crate) fn new(gpu: &mut dyn Gpu) -> Self {
         let uniform = gpu.create_buffer(&BufferDesc {
             label: "atmosphere",
             size: orb_shaders::layout::atmosphere::WORDS as u64 * 4,
@@ -95,10 +89,7 @@ impl Atmosphere {
         });
         Self {
             uniform,
-            target,
             group: None,
-            sky: None,
-            scatter: None,
             sunward: None,
             scatter_blend: 0.0,
             written: None,
@@ -106,30 +97,8 @@ impl Atmosphere {
         }
     }
 
-    /// The pipelines a frame into the map's passes as `target` draws
-    /// with, once made through `cache`.
-    pub(crate) fn pipelines(&self, cache: &Cache, target: Attachments) -> Vec<PipelineId> {
-        let [sky, scatter] = match target == self.target {
-            true => [self.sky, self.scatter],
-            false => self.found(cache, target),
-        };
-        [sky, scatter]
-            .into_iter()
-            .filter(|_| self.enabled)
-            .flatten()
-            .map(PipelineId::from)
-            .collect()
-    }
-
-    /// Draws into the map's passes as `target` from now on: with the
-    /// pipelines made for them before, if any.
-    pub(crate) fn retarget(&mut self, cache: &Cache, target: Attachments) {
-        self.target = target;
-        [self.sky, self.scatter] = self.found(cache, target);
-    }
-
-    /// The sky's and the scattering's pipelines into passes of `target`
-    /// that `cache` made.
+    /// The sky's and the scattering's pipelines into the map's passes as
+    /// `target`, once made.
     fn found(&self, cache: &Cache, target: Attachments) -> [Option<RenderPipelineId>; 2] {
         let Some((layout, _)) = self.group else {
             return [None; 2];
@@ -140,12 +109,21 @@ impl Atmosphere {
         [sky, scatter]
     }
 
-    /// Asks for the sky's pipeline unless it is made, and for the globe's
-    /// scattering where the map's views may be on a low-zoom surface
-    /// (`full_projection`), in the background unless the view is a globe
-    /// (`globe`): the pipeline set's for a style with a sky. Those into
-    /// other passes than the map's now (`target`) are made ahead, for
-    /// [`retarget`](Self::retarget) to find.
+    /// The pipelines a frame into the map's passes as `target` draws
+    /// with, once made.
+    pub(crate) fn pipelines(&self, cache: &Cache, target: Attachments) -> Vec<PipelineId> {
+        (self.found(cache, target).into_iter())
+            .filter(|_| self.enabled)
+            .flatten()
+            .map(PipelineId::from)
+            .collect()
+    }
+
+    /// Asks for the sky's pipeline into the map's passes as `target`
+    /// unless it is made, and for the globe's scattering where the map's
+    /// views may be on a low-zoom surface (`full_projection`), in the
+    /// background unless the view is a globe (`globe`): the pipeline
+    /// set's for a style with a sky.
     pub(crate) fn request(
         &mut self,
         (gpu, cache): (&mut dyn Gpu, &mut Cache),
@@ -157,23 +135,16 @@ impl Atmosphere {
         let (layout, _) = *self
             .group
             .get_or_insert_with(|| sky_group(gpu, frame, uniform));
-        let current = target == self.target;
-        let [mut sky, mut scatter] = match current {
-            true => [self.sky, self.scatter],
-            false => self.found(cache, target),
-        };
-        if sky.is_none() {
-            sky = Some(cache.get_or_make(gpu, &draw(&SKY_SHADER, &[layout], target)));
-        }
-        if scatter.is_none() && (globe || full_projection) {
+        cache.get_or_make(gpu, &draw(&SKY_SHADER, &[layout], target));
+        if globe || full_projection {
             let sunward = self.sunward.get_or_insert_with(|| Sunward::new(gpu));
-            gpu.set_background_compiles(!globe);
             let layouts = [layout, sunward.layout];
-            scatter = Some(cache.get_or_make(gpu, &draw(&SCATTER_SHADER, &layouts, target)));
-            gpu.set_background_compiles(false);
-        }
-        if current {
-            (self.sky, self.scatter) = (sky, scatter);
+            let scatter = draw(&SCATTER_SHADER, &layouts, target);
+            if cache.get(&scatter).is_none() {
+                gpu.set_background_compiles(!globe);
+                cache.get_or_make(gpu, &scatter);
+                gpu.set_background_compiles(false);
+            }
         }
     }
 
@@ -234,9 +205,14 @@ impl Atmosphere {
         self.written = Some((paint, view));
     }
 
-    /// The sky's draw, once its pipeline compiled.
-    pub(crate) fn commands(&self, gpu: &mut dyn Gpu) -> Vec<RenderCommand> {
-        match (self.group, self.sky) {
+    /// The sky's draw into the map's passes as `target`, once its
+    /// pipeline compiled.
+    pub(crate) fn commands(
+        &self,
+        gpu: &mut dyn Gpu,
+        (cache, target): (&Cache, Attachments),
+    ) -> Vec<RenderCommand> {
+        match (self.group, self.found(cache, target)[0]) {
             (Some((_, group)), Some(pipeline))
                 if self.enabled && gpu.pipeline_ready(pipeline.into()) =>
             {
@@ -248,8 +224,12 @@ impl Atmosphere {
 
     /// The globe's scattering over the map, after its layers, once its
     /// pipeline compiled.
-    pub(crate) fn commands_after(&self, gpu: &mut dyn Gpu) -> Vec<RenderCommand> {
-        match (self.group, self.scatter, &self.sunward) {
+    pub(crate) fn commands_after(
+        &self,
+        gpu: &mut dyn Gpu,
+        (cache, target): (&Cache, Attachments),
+    ) -> Vec<RenderCommand> {
+        match (self.group, self.found(cache, target)[1], &self.sunward) {
             (Some((_, group)), Some(pipeline), Some(sunward))
                 if self.enabled
                     && self.scatter_blend > 0.0

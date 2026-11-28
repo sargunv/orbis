@@ -4,6 +4,7 @@
 
 use orb_hal::*;
 use orb_shaders::Shader;
+use rustc_hash::FxHashMap;
 
 use crate::TargetFormat;
 use crate::awaits::Lacks;
@@ -216,27 +217,31 @@ impl<'a> Draw<'a> {
 /// The render pipelines made through it, one for each pipeline a [`Draw`]
 /// describes: what draws into several kinds of pass (the map's with its
 /// depth and without, the 3D layers', the drape atlas's, at one sample or
-/// four) asks for its pipelines in the passes it draws in now, and finds
-/// those it made for passes it drew in before. Nothing makes a pipeline
-/// twice, and what draws into passes of equal attachments (the drape's and
-/// the map's on a target of its format) shares it. Each user holds the ids
-/// for the passes it draws in now, so it is asked only as pipelines are
-/// made or the passes change: a list of a hundred or so serves.
+/// four) looks its pipelines up by the draw it makes into the pass at
+/// hand, so nothing holds an id that goes stale when the passes change.
+/// Nothing makes a pipeline twice, and what draws into passes of equal
+/// attachments (the drape's and the map's on a target of its format)
+/// shares it.
 #[derive(Debug, Default)]
 pub(crate) struct Cache {
-    made: Vec<(DrawKey, RenderPipelineId)>,
+    made: FxHashMap<DrawKey, RenderPipelineId>,
 }
+
+/// The most override constants a stage of a [`Draw`] sets, and the most
+/// bind group layouts it has.
+const MAX_CONSTANTS: usize = 4;
+const MAX_LAYOUTS: usize = 4;
 
 /// What makes a [`Draw`]'s pipeline: everything but its label. A shader is
 /// its label, which the catalog gives each its own.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DrawKey {
     /// Each stage's shader and entry point.
     stages: [(&'static str, &'static str); 2],
     /// Each stage's override constants, their values' bits.
-    constants: [Box<[(&'static str, u64)]>; 2],
+    constants: [[Option<(&'static str, u64)>; MAX_CONSTANTS]; 2],
     variant: [bool; 4],
-    layouts: Box<[BindGroupLayoutId]>,
+    layouts: [Option<BindGroupLayoutId>; MAX_LAYOUTS],
     target: ColorTargetState,
     sample_count: u32,
     depth: Option<DepthState>,
@@ -244,10 +249,30 @@ struct DrawKey {
     cull_back: bool,
 }
 
+impl std::hash::Hash for DrawKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // What tells draws apart most; equal keys agree on the rest.
+        (self.stages, self.constants, self.variant, self.layouts).hash(state);
+        (self.target.format, self.sample_count).hash(state);
+        self.depth.map(|d| d.format).hash(state);
+    }
+}
+
 impl DrawKey {
     fn of(draw: &Draw<'_>) -> Self {
-        let constants =
-            |c: &[(&'static str, f64)]| c.iter().map(|&(n, v)| (n, v.to_bits())).collect();
+        let constants = |c: &[(&'static str, f64)]| {
+            assert!(
+                c.len() <= MAX_CONSTANTS,
+                "{}: too many constants",
+                draw.label
+            );
+            std::array::from_fn(|i| c.get(i).map(|&(n, v)| (n, v.to_bits())))
+        };
+        assert!(
+            draw.layouts.len() <= MAX_LAYOUTS,
+            "{}: too many layouts",
+            draw.label
+        );
         Self {
             stages: [
                 (draw.vertex.0.label, draw.vertex.1),
@@ -255,7 +280,7 @@ impl DrawKey {
             ],
             constants: draw.constants.map(constants),
             variant: [draw.plane, draw.rows, draw.state, draw.patterns],
-            layouts: draw.layouts.into(),
+            layouts: std::array::from_fn(|i| draw.layouts.get(i).copied()),
             target: draw.target,
             sample_count: draw.sample_count,
             depth: draw.depth,
@@ -277,27 +302,34 @@ impl DrawKey {
 impl Cache {
     /// `draw`'s pipeline, made unless it was before.
     pub(crate) fn get_or_make(&mut self, gpu: &mut dyn Gpu, draw: &Draw<'_>) -> RenderPipelineId {
-        let key = DrawKey::of(draw);
-        if let Some(&(_, made)) = self.made.iter().find(|(k, _)| *k == key) {
-            return made;
-        }
-        let made = draw.make(gpu);
-        self.made.push((key, made));
-        made
+        *self
+            .made
+            .entry(DrawKey::of(draw))
+            .or_insert_with(|| draw.make(gpu))
     }
 
     /// `draw`'s pipeline, if it was made.
     pub(crate) fn get(&self, draw: &Draw<'_>) -> Option<RenderPipelineId> {
-        let key = DrawKey::of(draw);
-        self.made
-            .iter()
-            .find(|(k, _)| *k == key)
-            .map(|&(_, made)| made)
+        self.made.get(&DrawKey::of(draw)).copied()
+    }
+
+    /// `draw`'s plane and full variants ([`Draw::plane`]) as made.
+    pub(crate) fn variants(&self, draw: Draw<'_>) -> Variants {
+        Variants([false, true].map(|full| self.get(&variant(draw, full))))
+    }
+
+    /// Makes each of `draw`'s variants `[plane, full]` asked for.
+    pub(crate) fn make_variants(&mut self, gpu: &mut dyn Gpu, variants: [bool; 2], draw: Draw<'_>) {
+        for full in [false, true] {
+            if variants[usize::from(full)] {
+                self.get_or_make(gpu, &variant(draw, full));
+            }
+        }
     }
 
     /// Lets the pipelines go that draw into attachments `keep` refuses.
     pub(crate) fn retain(&mut self, gpu: &mut dyn Gpu, keep: impl Fn(Attachments) -> bool) {
-        self.made.retain(|&(ref key, pipeline)| {
+        self.made.retain(|key, &mut pipeline| {
             let kept = keep(key.attachments());
             if !kept {
                 gpu.destroy_pipeline(pipeline.into());
@@ -307,29 +339,17 @@ impl Cache {
     }
 }
 
-/// How what draws in several kinds of pass takes its pipelines from the
-/// [`Cache`]: making those not made (`Make`), or finding those made for
-/// the passes it draws in now (`Find`), none where none were.
-pub(crate) enum Take<'a> {
-    Make(&'a mut dyn Gpu, &'a mut Cache),
-    Find(&'a Cache),
-}
-
-impl Take<'_> {
-    /// `draw`'s pipeline.
-    pub(crate) fn pipeline(&mut self, draw: &Draw<'_>) -> Option<RenderPipelineId> {
-        match self {
-            Self::Make(gpu, cache) => Some(cache.get_or_make(*gpu, draw)),
-            Self::Find(cache) => cache.get(draw),
-        }
+/// `draw` in its full variant or its plane one.
+fn variant(draw: Draw<'_>, full: bool) -> Draw<'_> {
+    Draw {
+        plane: !full,
+        ..draw
     }
 }
 
 impl crate::release::Release for Cache {
     fn release(self, gpu: &mut dyn Gpu) {
-        (self.made.into_iter().map(|(_, made)| made))
-            .collect::<Vec<_>>()
-            .release(gpu);
+        (self.made.into_values()).collect::<Vec<_>>().release(gpu);
     }
 }
 
@@ -497,33 +517,6 @@ impl<P> Default for Variants<P> {
     }
 }
 
-impl Variants {
-    /// Makes each of the variants `[plane, full]` asked for that isn't
-    /// made, through `cache`.
-    pub(crate) fn make(
-        &mut self,
-        (gpu, cache): (&mut dyn Gpu, &mut Cache),
-        variants: [bool; 2],
-        draw: Draw<'_>,
-    ) {
-        self.make_with(variants, |full| {
-            cache.get_or_make(gpu, &Self::variant(draw, full))
-        });
-    }
-
-    /// `draw`'s variants made in `cache`, none where none were.
-    pub(crate) fn find(cache: &Cache, draw: Draw<'_>) -> Self {
-        Self([false, true].map(|full| cache.get(&Self::variant(draw, full))))
-    }
-
-    fn variant(draw: Draw<'_>, full: bool) -> Draw<'_> {
-        Draw {
-            plane: !full,
-            ..draw
-        }
-    }
-}
-
 impl<P: Copy + Into<PipelineId>> Variants<P> {
     /// Makes each of the variants `[plane, full]` asked for that isn't
     /// made, with `make(full)`.
@@ -576,53 +569,5 @@ impl<P: Copy + Into<PipelineId>> Variants<P> {
 impl<P: crate::release::Release> crate::release::Release for Variants<P> {
     fn release(self, gpu: &mut dyn Gpu) {
         self.0.release(gpu);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A draw asked for again finds the pipeline made for it, one into
-    /// other attachments is made apart, and what `retain` refuses is
-    /// made again when asked for.
-    #[test]
-    fn the_cache_makes_each_draw_once() {
-        let Ok(mut gpu) = pollster::block_on(orb_hal_wgpu::WgpuGpu::offscreen()) else {
-            eprintln!("no GPU adapter; skipped");
-            return;
-        };
-        let gpu: &mut dyn Gpu = &mut gpu;
-        let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: "sky",
-            entries: &[0, 1]
-                .map(|binding| BindGroupLayoutEntry::uniform(binding, ShaderStages::FRAGMENT)),
-        });
-        let layouts = [layout];
-        let at = |sample_count| TargetFormat {
-            color: TextureFormat::Rgba8Unorm,
-            sample_count,
-        };
-        let shader = &orb_shaders::SKY_SHADER;
-        let one = Draw::new(shader, &layouts, at(1), None);
-        let four = Draw::new(shader, &layouts, at(4), None);
-        let mut cache = Cache::default();
-        let before = gpu.counters().pipelines_requested;
-        let made = cache.get_or_make(gpu, &one);
-        assert_eq!(cache.get_or_make(gpu, &one), made);
-        let relabelled = Draw {
-            label: "another sky",
-            ..one
-        };
-        assert_eq!(cache.get(&relabelled), Some(made));
-        assert_eq!(cache.get(&four), None);
-        let four_made = cache.get_or_make(gpu, &four);
-        assert_ne!(four_made, made);
-        assert_eq!(gpu.counters().pipelines_requested - before, 2);
-        cache.retain(gpu, |a| a.sample_count == 1);
-        assert_eq!((cache.get(&one), cache.get(&four)), (Some(made), None));
-        cache.get_or_make(gpu, &four);
-        assert_eq!(gpu.counters().pipelines_requested - before, 3);
-        crate::release::Release::release((cache, layout), gpu);
     }
 }

@@ -88,21 +88,14 @@ const CANDIDATE_WORDS: usize = layout::candidate::WORDS;
 const CHUNK_WORDS: usize = layout::chunk::WORDS;
 const TILE_WORDS: usize = layout::tile::WORDS;
 const NODE_WORDS: usize = layout::node_cull::WORDS;
-/// `types.wgsl`'s draw kinds.
-const DRAW_IMAGES: u32 = 0;
-const DRAW_POINTS: u32 = 1;
-const DRAW_INDEXED: u32 = 2;
 /// What this driver hides with, where the GPU's cull writes
 /// [`HIDDEN_INDEX`]: the primitive restart index, which WebGL 2 skips
 /// without drawing its triangle's vertices (WebGL rejects other element
 /// indices from 2^31, and ANGLE drops a whole draw holding one); where it
 /// isn't a restart (Metal's triangle lists), `pull_indexed` takes it as
 /// hidden too.
-pub(crate) const RESTART_INDEX: u32 = 0xffff_ffff;
-/// `types.wgsl`'s vertices an image chunk draws.
-const CHUNK_VERTICES: u32 = 768;
-/// `types.wgsl`'s metres per unit of a placement's terrain range.
-const TERRAIN_RANGE_UNIT: f32 = 4.0;
+pub(crate) use layout::RESTART_INDEX;
+use layout::{CHUNK_VERTICES, DRAW_IMAGES, DRAW_INDEXED, DRAW_POINTS, TERRAIN_RANGE_UNIT};
 
 #[derive(Debug, Default)]
 pub(crate) struct CpuDriver {

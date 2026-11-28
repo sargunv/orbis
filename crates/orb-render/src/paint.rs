@@ -472,6 +472,17 @@ pub struct PatternPaint {
 }
 
 impl NodePaint {
+    /// A fill's or background's colour, premultiplied by its opacity,
+    /// where it reads no feature's row or state: one colour everywhere.
+    pub(crate) fn solid_color(&self) -> Option<[f32; 4]> {
+        match self {
+            Self::Fill(p) | Self::Background(p) if p.table_mask == 0 && p.state.mask == 0 => {
+                Some(p.color.map(|c| c * p.opacity))
+            }
+            _ => None,
+        }
+    }
+
     /// What an extrusion node's pipelines are specialised for; the
     /// default for another.
     pub(crate) fn extrusion_shape(&self) -> ExtrusionShape {

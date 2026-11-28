@@ -26,7 +26,7 @@ use orb_shaders::{
     RASTER_SHADER,
 };
 
-use crate::pipeline::{Attachments, Cache, Draw, Take};
+use crate::pipeline::{Attachments, Cache, Draw};
 use crate::{Family, OutOfSpace, TargetFormat};
 
 /// Words per image tile property row: texture layer; the latitudes of the
@@ -215,53 +215,12 @@ pub(crate) struct Prepared {
     pub(crate) draws: u32,
 }
 
-/// The raster, hillshade and color-relief pipelines into one kind of
-/// pass, each made for the first node of its family drawing there: by
-/// family, tested and untested
-/// ([`Untested::Square`](crate::Untested::Square)), whose fragments test
-/// no clip, for placements drawing their whole square.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct ImagePipelines {
-    target: Attachments,
-    made: [[Option<RenderPipelineId>; 2]; 3],
-}
-
-fn image_index(family: Family) -> usize {
-    match family {
-        Family::Raster => 0,
-        Family::Hillshade => 1,
-        Family::ColorRelief => 2,
-        _ => unreachable!("not an image family"),
-    }
-}
-
-impl ImagePipelines {
-    /// None yet, into passes of `target`.
-    pub(crate) fn new(target: Attachments) -> Self {
-        Self {
-            target,
-            made: [[None; 2]; 3],
-        }
-    }
-
-    pub(crate) fn get(&self, family: Family) -> Option<RenderPipelineId> {
-        self.made[image_index(family)][0]
-    }
-
-    pub(crate) fn untested(&self, family: Family) -> Option<RenderPipelineId> {
-        self.made[image_index(family)][1]
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct Images {
     draw_layout: BindGroupLayoutId,
     image_layout: BindGroupLayoutId,
     /// Color-relief and hillshade nodes': the image node's and a table.
     table_layout: BindGroupLayoutId,
-    /// Raster, hillshade and color relief into the map's passes as they
-    /// are now (the [`Cache`] keeps those for the others).
-    pipelines: ImagePipelines,
     /// Which placements of its nodes draw untested.
     untesting: crate::Untesting,
     /// Shaded hillshades' slopes into the drape atlas, made for the first.
@@ -286,11 +245,7 @@ pub(crate) struct Images {
 }
 
 impl Images {
-    pub(crate) fn new(
-        gpu: &mut dyn Gpu,
-        target: Attachments,
-        draw_layout: BindGroupLayoutId,
-    ) -> Self {
+    pub(crate) fn new(gpu: &mut dyn Gpu, draw_layout: BindGroupLayoutId) -> Self {
         use BindGroupLayoutEntry as E;
         let fs = ShaderStages::FRAGMENT;
         let mut image_entries = vec![
@@ -346,7 +301,6 @@ impl Images {
             draw_layout,
             image_layout,
             table_layout,
-            pipelines: ImagePipelines::new(target),
             untesting: crate::Untesting::of(gpu.caps()),
             slopes: None,
             tables: None,
@@ -361,99 +315,71 @@ impl Images {
         }
     }
 
-    /// Draws the map's nodes into `target`'s passes from now on, the
-    /// map's with or without their depth: with the pipelines made for
-    /// them before, if any.
-    pub(crate) fn retarget(&mut self, cache: &Cache, target: Attachments) {
-        self.pipelines = self.found(cache, target);
-    }
-
-    /// The pipelines into the map's passes as `target`, made through
-    /// `cache` or not.
-    pub(crate) fn pipelines_into(&self, cache: &Cache, target: Attachments) -> ImagePipelines {
-        match target == self.pipelines.target {
-            true => self.pipelines,
-            false => self.found(cache, target),
-        }
-    }
-
-    /// The pipelines into passes of `target` that `cache` made.
-    fn found(&self, cache: &Cache, target: Attachments) -> ImagePipelines {
-        let mut pipelines = ImagePipelines::new(target);
-        for family in [Family::Raster, Family::Hillshade, Family::ColorRelief] {
-            pipelines.made[image_index(family)] = self.take(&mut Take::Find(cache), target, family);
-        }
-        pipelines
-    }
-
-    /// Makes `family`'s pipeline into the map's passes as `target` if it
-    /// isn't made: ahead, for [`retarget`](Self::retarget) to find, where
-    /// they aren't so now.
+    /// Makes `family`'s pipelines into passes of `target` (the map's or
+    /// the drape atlas's) unless they are made: the tested one first,
+    /// which frames wait for and draw every placement with until the
+    /// untested one compiles.
     pub(crate) fn make(
-        &mut self,
-        gpu: (&mut dyn Gpu, &mut Cache),
-        target: Attachments,
-        family: Family,
-    ) {
-        let current = target == self.pipelines.target;
-        let mut pipelines = match current {
-            true => self.pipelines,
-            false => ImagePipelines::new(target),
-        };
-        self.make_into(gpu, &mut pipelines, family);
-        if current {
-            self.pipelines = pipelines;
-        }
-    }
-
-    /// Makes `family`'s pipeline in `pipelines` (the map's, or the drape
-    /// atlas's) if it isn't made.
-    pub(crate) fn make_into(
         &self,
         (gpu, cache): (&mut dyn Gpu, &mut Cache),
-        pipelines: &mut ImagePipelines,
+        target: Attachments,
         family: Family,
     ) {
-        let untested = self.untesting.of_family(family).is_some();
-        let made = &mut pipelines.made[image_index(family)];
-        if made[0].is_none() || (untested && made[1].is_none()) {
-            *made = self.take(&mut Take::Make(gpu, cache), pipelines.target, family);
+        for untested in [false, true] {
+            if let Some(draw) = self.draw(target, family, untested, &self.layouts(family)) {
+                cache.get_or_make(gpu, &draw);
+            }
         }
     }
 
-    /// `family`'s tested and untested pipelines into `target`, as `take`
-    /// takes them: the untested one only where its nodes have untested
-    /// placements ([`Untesting::of_family`](crate::Untesting::of_family)).
-    fn take(
+    /// `family`'s pipeline into passes of `target`, tested or untested,
+    /// once made.
+    pub(crate) fn pipeline(
         &self,
-        take: &mut Take<'_>,
+        cache: &Cache,
         target: Attachments,
         family: Family,
-    ) -> [Option<RenderPipelineId>; 2] {
-        let (shader, layout, untested) = match family {
-            Family::Raster => (&RASTER_SHADER, self.image_layout, "raster untested"),
-            Family::Hillshade => (&HILLSHADE_SHADER, self.table_layout, "hillshade untested"),
-            _ => (
-                &COLOR_RELIEF_SHADER,
-                self.table_layout,
-                "color relief untested",
-            ),
+        untested: bool,
+    ) -> Option<RenderPipelineId> {
+        let layouts = self.layouts(family);
+        cache.get(&self.draw(target, family, untested, &layouts)?)
+    }
+
+    /// The groups `family`'s pipelines bind: the scene's and the node's.
+    fn layouts(&self, family: Family) -> [BindGroupLayoutId; 2] {
+        let node = match family {
+            Family::Raster => self.image_layout,
+            _ => self.table_layout,
+        };
+        [self.draw_layout, node]
+    }
+
+    /// `family`'s tested or untested draw into passes of `target`: the
+    /// untested one only where its nodes have untested placements
+    /// ([`Untesting::of_family`](crate::Untesting::of_family)).
+    fn draw<'a>(
+        &self,
+        target: Attachments,
+        family: Family,
+        untested: bool,
+        layouts: &'a [BindGroupLayoutId; 2],
+    ) -> Option<Draw<'a>> {
+        let (shader, label) = match family {
+            Family::Raster => (&RASTER_SHADER, "raster untested"),
+            Family::Hillshade => (&HILLSHADE_SHADER, "hillshade untested"),
+            _ => (&COLOR_RELIEF_SHADER, "color relief untested"),
         };
         let blend = Some(BlendState::PremultipliedAlpha);
-        let layouts = [self.draw_layout, layout];
-        let draw = Draw::new(shader, &layouts, target, blend);
-        // The tested pipeline first: frames wait for it, and draw every
-        // placement with it until the untested one compiles.
-        let tested = take.pipeline(&draw);
-        let constants: &[_] = &[(orb_shaders::CLIP_FRAGMENTS, 0.0)];
-        let untested = self.untesting.of_family(family).map(|_| {
-            take.pipeline(&Draw {
-                label: untested,
-                constants: [&[], constants],
-                ..draw
-            })
-        });
-        [tested, untested.flatten()]
+        let draw = Draw::new(shader, layouts, target, blend);
+        if !untested {
+            return Some(draw);
+        }
+        self.untesting.of_family(family)?;
+        Some(Draw {
+            label,
+            constants: [&[], &[(orb_shaders::CLIP_FRAGMENTS, 0.0)]],
+            ..draw
+        })
     }
 
     /// Makes the pipeline shaded hillshades drape their slopes with, if
@@ -545,11 +471,6 @@ impl Images {
                 },
             ],
         })
-    }
-
-    /// The pipelines into the map's passes, made or not.
-    pub(crate) fn pipelines(&self) -> ImagePipelines {
-        self.pipelines
     }
 
     /// Makes the DEM prepare pipelines, unless they are made: the
@@ -704,7 +625,6 @@ impl Images {
         )
     }
 
-    /// The size of a page's tiles.
     /// Bytes one layer of a page takes.
     pub(crate) fn layer_bytes(&self, id: PageId) -> u64 {
         self.page(id).page.layer_bytes()

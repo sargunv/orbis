@@ -4,7 +4,7 @@
 
 use crate::TargetFormat;
 use crate::offscreen::{Apart, Composites, Mode, Offscreen};
-use crate::pipeline::Draw;
+use crate::pipeline::{Attachments, Cache, Draw};
 use orb_hal::*;
 use orb_shaders::HEATMAP_SHADER;
 
@@ -20,8 +20,9 @@ pub(crate) struct NodeHeatmap {
     ramp: TextureId,
     colors: Vec<u32>,
     /// Its density, drawn apart; the composite draws nothing while the
-    /// node is hidden or has nothing to draw.
-    pub(crate) apart: Apart,
+    /// node is hidden or has nothing to draw. Its one pipeline fixed, its
+    /// draw is recorded over the draws' revision alone.
+    pub(crate) apart: Apart<u64>,
 }
 
 /// The density target's format: half floats where they blend, else 8 bits
@@ -56,15 +57,15 @@ impl Heatmaps {
         self.pipeline = Some(draw.make(gpu));
     }
 
-    /// Whether the density pipeline and the composites' compiled.
-    pub(crate) fn ready(&self, gpu: &mut dyn Gpu, composites: &Composites) -> bool {
-        crate::awaits::compiled(gpu, self.needs(composites))
-    }
-
-    /// The pipelines [`ready`](Self::ready) waits for, `None` for one not
+    /// What a heatmap's composite into the map's passes as `target` waits
+    /// for: the density pipeline and the composite's, `None` for one not
     /// made.
-    pub(crate) fn needs(&self, composites: &Composites) -> [Option<PipelineId>; 2] {
-        [self.pipeline.map(Into::into), composites.needs(Mode::Ramp)]
+    pub(crate) fn needs(
+        &self,
+        (composites, cache, target): (&Composites, &Cache, Attachments),
+    ) -> [Option<PipelineId>; 2] {
+        let composite = composites.needs(cache, target, Mode::Ramp);
+        [self.pipeline.map(Into::into), composite]
     }
 
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
@@ -133,17 +134,24 @@ impl Heatmaps {
     }
 
     /// The node's density pass: its draw in each scene block, over the
-    /// block's group (`draws`, asked for only when its bundle records).
+    /// block's group (`draws`, asked for only when its bundle records, at
+    /// the renderer's draws' revision `revision`).
     pub(crate) fn prepare(
         &self,
         gpu: &mut dyn Gpu,
         node: &mut NodeHeatmap,
         group: BindGroupId,
-        draws: impl FnOnce() -> Vec<(BindGroupId, RenderCommand)>,
+        (draws, revision): (impl FnOnce() -> Vec<(BindGroupId, RenderCommand)>, u64),
     ) -> Option<RenderPass> {
         let pipeline = self.pipeline?;
-        let target = &node.apart.offscreen.as_ref()?.target;
-        let bundle = *node.apart.bundle.get_or_insert_with(|| {
+        let target = node
+            .apart
+            .offscreen
+            .as_ref()?
+            .target
+            .attachment(LoadOp::Clear([0.0; 4]));
+        let format = density_format(gpu);
+        let bundle = node.apart.bundle(gpu, revision, |gpu| {
             let mut commands = vec![
                 RenderCommand::SetPipeline(pipeline),
                 RenderCommand::SetBindGroup { index: 1, group },
@@ -160,7 +168,7 @@ impl Heatmaps {
             gpu.create_render_bundle(
                 &RenderBundleDesc {
                     label: "heatmap density",
-                    color_formats: &[density_format(gpu)],
+                    color_formats: &[format],
                     depth_format: None,
                     sample_count: 1,
                 },
@@ -169,7 +177,7 @@ impl Heatmaps {
         });
         Some(RenderPass {
             label: "heatmap density",
-            colors: vec![target.attachment(LoadOp::Clear([0.0; 4]))],
+            colors: vec![target],
             depth: None,
             commands: vec![RenderCommand::ExecuteBundles(vec![bundle])],
         })

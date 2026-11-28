@@ -46,17 +46,12 @@ use crate::driver::SubmitLimits;
 
 use super::{
     CANDIDATE_WORDS, CHUNK_WORDS, CULL_BATCH, HIDDEN, NODE_CULL_WORDS, NodeDraw, NodeEntry,
-    NodeMeshes, PlacementTarget, Route, Scene, Stream, Table, UNKNOWN, Untested, VISIBLE_WORDS,
+    NodeMeshes, PlacementTarget, Route, Scene, Split, Stream, Table, UNKNOWN, VISIBLE_WORDS,
 };
 
-/// A candidate row that holds no candidate: a hole a run left in an
-/// indexed node's rows, which the cull skips (`cull.wgsl`'s `NO_CHUNK`).
-pub(crate) const NO_CHUNK: u32 = u32::MAX;
-
-/// A candidate's `drawn` word once its slot moved with its run: the slot
-/// holds the chunk's indices or hidden ones, as the slot it was copied
-/// from did, and its first word says which (`cull.wgsl`'s `MOVED`).
-pub(crate) const MOVED: u32 = 2;
+/// A candidate row that holds no candidate, which the cull skips, and a
+/// candidate's `drawn` word once its slot moved with its run (`cull.wgsl`).
+pub(crate) use layout::{MOVED, NO_CHUNK};
 
 /// A stretch of an indexed node's draw: compacted words of its row in one
 /// block, drawn with that block bound.
@@ -327,25 +322,11 @@ impl RunPlan<'_> {
 }
 
 /// What of a node decides how its candidates lay out.
-type Shape = (
-    NodeDraw,
-    PlacementTarget,
-    bool,
-    bool,
-    Option<Untested>,
-    NodeMeshes,
-);
+type Shape = (NodeDraw, PlacementTarget, bool, Option<Split>, NodeMeshes);
 
 fn shape(node: &NodeEntry) -> Shape {
     let c = &node.cull;
-    (
-        c.draw,
-        c.target,
-        c.labels,
-        c.unclipped,
-        c.untested,
-        c.meshes,
-    )
+    (c.draw, c.target, c.labels, c.split, c.meshes)
 }
 
 /// An indexed node's index is `(run + 1) << run_shift | vertex`.
@@ -397,7 +378,7 @@ impl Scene {
                 if !node.cull.draws(placement.row.target) {
                     continue;
                 }
-                let route = Route::new(node.stream, node.cull.untested, &placement.row);
+                let route = Route::new(node.stream, node.cull.split, &placement.row);
                 let run = RunPlan {
                     key: (self.mesh_serials[mesh.0 as usize], placement.slot, route),
                     rank: super::place(&self.tiles, entry.tile),
@@ -1563,7 +1544,6 @@ mod tests {
             shape: (
                 NodeDraw::Indexed,
                 PlacementTarget::Map,
-                false,
                 false,
                 None,
                 NodeMeshes::Own,

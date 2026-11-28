@@ -15,10 +15,10 @@ use crate::scene::{ARGS_WORDS, BlockPool, NodeDraw, Scene, SceneBuffers, Table};
 /// Compacted indices are full u32s.
 pub(crate) const INDEX_BITS: u32 = 32;
 
-/// `types.wgsl`'s compacted index that draws nothing, which the cull
-/// writes: zero, so that clearing a range hides it.
+/// The compacted index that draws nothing, which the cull writes: zero,
+/// so that clearing a range hides it.
 #[cfg(cpu_driven)]
-pub(crate) const HIDDEN_INDEX: u32 = 0;
+pub(crate) use orb_shaders::layout::HIDDEN_INDEX;
 
 /// The draw arguments: the cull dispatch writes them, indirect draws read
 /// them, and tests read them back.
