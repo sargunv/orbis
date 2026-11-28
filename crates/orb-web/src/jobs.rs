@@ -246,8 +246,8 @@ impl JobWorker {
                 self.host.set_icons(style, Arc::new(icons));
                 return Ok(None);
             }
-            JobRequest::ArchiveHead { url, head } => {
-                self.host.add_archive_head(&url, &head);
+            JobRequest::ArchiveHead { archive, head } => {
+                self.host.add_archive_head(&archive, &head);
                 return Ok(None);
             }
             JobRequest::Cancel {

@@ -609,10 +609,10 @@ impl JobHost {
         self.glyphs.arrived(worker, (id, url), fetched);
     }
 
-    /// PMTiles archive `url` begins with `head`: loads of its tiles start
-    /// from these bytes.
-    pub fn add_archive_head(&self, url: &str, head: &[u8]) {
-        self.loader.add_head(url, head);
+    /// `archive` begins with `head`: loads of its tiles start from these
+    /// bytes.
+    pub fn add_archive_head(&self, archive: &crate::Archive, head: &[u8]) {
+        self.loader.add_head(archive, head);
     }
 
     /// Loads and lays out a tile; `fetched` hears when its fetch ends.

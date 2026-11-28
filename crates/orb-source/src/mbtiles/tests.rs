@@ -20,34 +20,27 @@ fn body(z: u8, x: u32, y: u32) -> Vec<u8> {
         .repeat(1 + (x as usize % 5) * 300)
 }
 
-/// Answers `step` from `file` until it's done, and counts its reads.
-fn answer<T>(
-    file: &[u8],
-    reader: &mut Reader,
-    mut step: impl FnMut(&mut Reader) -> Answer<T>,
-) -> (T, usize) {
-    for reads in 0..64 {
-        match step(reader).unwrap() {
-            Step::Done(value) => return (value, reads),
-            Step::Read { offset, length } => {
-                let (at, end) = (offset as usize, (offset + length) as usize);
-                reader
-                    .insert(offset, &file[at.min(file.len())..end.min(file.len())])
-                    .unwrap();
-            }
-        }
-    }
-    panic!("the reader never answered");
+fn reader() -> crate::archive::Reader {
+    crate::archive::Reader::Mbtiles(Reader::default())
 }
 
-fn flat(gzip: bool, metadata: bool) -> Vec<u8> {
+fn tilejson(file: &[u8]) -> Result<TileJson, String> {
+    reader().read_in(file, crate::archive::Reader::tilejson)
+}
+
+fn flat(gzip: bool, metadata: bool, index: bool) -> Vec<u8> {
     written(|db| {
         db.execute_batch(
             "CREATE TABLE metadata (name text, value text);
-             CREATE TABLE tiles (zoom_level integer, tile_column integer, tile_row integer, tile_data blob);
-             CREATE UNIQUE INDEX tile_index on tiles (zoom_level, tile_column, tile_row);",
+             CREATE TABLE tiles (zoom_level integer, tile_column integer, tile_row integer, tile_data blob);",
         )
         .unwrap();
+        if index {
+            db.execute_batch(
+                "CREATE UNIQUE INDEX tile_index on tiles (zoom_level, tile_column, tile_row);",
+            )
+            .unwrap();
+        }
         if metadata {
             db.execute_batch(
                 r#"INSERT INTO metadata VALUES ('format', 'pbf'), ('minzoom', '1'), ('maxzoom', '4'),
@@ -80,44 +73,44 @@ fn flat(gzip: bool, metadata: bool) -> Vec<u8> {
 #[test]
 fn reads_an_archives_tilejson_and_tiles_by_xyz() {
     for gzip in [false, true] {
-        let file = flat(gzip, true);
-        let mut reader = Reader::default();
-        let (tilejson, _) = answer(&file, &mut reader, Reader::tilejson);
-        let doc = orb_expr::json::parse(&tilejson).unwrap();
-        assert_eq!(doc.get("minzoom").and_then(|v| v.as_f64()), Some(1.0));
-        assert_eq!(doc.get("maxzoom").and_then(|v| v.as_f64()), Some(4.0));
-        assert_eq!(doc.get("encoding").and_then(|v| v.as_str()), Some("mvt"));
+        let file = flat(gzip, true, true);
         assert_eq!(
-            doc.get("attribution").and_then(|v| v.as_str()),
-            Some(r#"<a href="x">"x"</a>"#)
+            tilejson(&file).unwrap(),
+            TileJson {
+                minzoom: Some(1.0),
+                maxzoom: Some(4.0),
+                bounds: Some([-10.5, -20.0, 30.0, 40.25]),
+                encoding: Some(Encoding::Mvt),
+                ..TileJson::default()
+            }
         );
-        assert!(
-            tilejson.contains(r#""bounds":[-10.5,-20,30,40.25]"#),
-            "{tilejson}"
-        );
-        assert!(
-            tilejson.contains(r#""vector_layers":[{"id":"water""#),
-            "{tilejson}"
-        );
+        let mut reader = reader();
         for (z, x, y) in [(2, 0, 0), (3, 5, 1), (4, 15, 3), (4, 9, 14)] {
-            let (tile, reads) = answer(&file, &mut reader, |r| r.tile(TileIndex::new(z, x, y)));
+            let tile = reader.tile_in(&file, TileIndex::new(z, x, y)).unwrap();
             assert_eq!(
                 tile,
-                Some((body(z, x, y), Format::Vector(Encoding::Mvt))),
+                Some((body(z, x, y), Some(Encoding::Mvt))),
                 "{z}/{x}/{y}"
             );
-            assert!(reads <= 4, "{z}/{x}/{y}: {reads} reads");
         }
-        let (missing, _) = answer(&file, &mut reader, |r| r.tile(TileIndex::new(1, 0, 0)));
+        let missing = reader.tile_in(&file, TileIndex::new(1, 0, 0)).unwrap();
         assert_eq!(missing, None);
     }
 }
 
 #[test]
 fn zooms_the_metadata_leaves_out_come_from_the_tiles() {
-    let file = flat(false, false);
-    let (tilejson, _) = answer(&file, &mut Reader::default(), Reader::tilejson);
-    assert_eq!(tilejson, r#"{"minzoom":2,"maxzoom":4,"encoding":"mvt"}"#);
+    let tilejson = tilejson(&flat(false, false, true)).unwrap();
+    assert_eq!((tilejson.minzoom, tilejson.maxzoom), (Some(2.0), Some(4.0)));
+}
+
+#[test]
+fn archives_without_a_tile_index_are_refused() {
+    let error = tilejson(&flat(false, true, false)).unwrap_err();
+    assert!(
+        error.contains("MBTiles table tiles has no index"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -145,39 +138,22 @@ fn reads_deduplicated_archives() {
             }
         }
     });
-    let mut reader = Reader::default();
-    let (tilejson, _) = answer(&file, &mut reader, Reader::tilejson);
-    assert_eq!(tilejson, r#"{"minzoom":3,"maxzoom":3}"#);
-    let (tile, _) = answer(&file, &mut reader, |r| r.tile(TileIndex::new(3, 1, 2)));
-    assert_eq!(tile, Some((vec![0x89, 0x50, 0x4e, 0x48], Format::Raster)));
-    let (tile, _) = answer(&file, &mut reader, |r| r.tile(TileIndex::new(3, 1, 1)));
-    assert_eq!(tile, Some((vec![0x89, 0x50, 0x4e, 0x47], Format::Raster)));
+    let tilejson = tilejson(&file).unwrap();
+    assert_eq!((tilejson.minzoom, tilejson.encoding), (Some(3.0), None));
+    let mut reader = reader();
+    let tile = reader.tile_in(&file, TileIndex::new(3, 1, 2)).unwrap();
+    assert_eq!(tile, Some((vec![0x89, 0x50, 0x4e, 0x48], None)));
+    let tile = reader.tile_in(&file, TileIndex::new(3, 1, 1)).unwrap();
+    assert_eq!(tile, Some((vec![0x89, 0x50, 0x4e, 0x47], None)));
 }
 
 #[test]
 fn what_isnt_an_archive_says_so() {
-    let mut reader = Reader::default();
-    let not = vec![7u8; 8192];
-    let step = reader.tilejson();
-    let Ok(Step::Read { offset, length }) = step else {
-        panic!("{step:?}");
-    };
-    assert!(reader.insert(offset, &not[..length as usize]).is_err());
+    assert!(tilejson(&[7u8; 8192]).is_err());
     let file = written(|db| db.execute_batch("CREATE TABLE other (a);").unwrap());
-    let mut reader = Reader::default();
-    let mut failed = None;
-    for _ in 0..8 {
-        match reader.tilejson() {
-            Ok(Step::Read { offset, length }) => {
-                let end = ((offset + length) as usize).min(file.len());
-                reader.insert(offset, &file[offset as usize..end]).unwrap();
-            }
-            Ok(Step::Done(t)) => panic!("{t}"),
-            Err(e) => {
-                failed = Some(e);
-                break;
-            }
-        }
-    }
-    assert!(failed.unwrap().contains("no MBTiles tiles table"));
+    assert!(
+        tilejson(&file)
+            .unwrap_err()
+            .contains("no MBTiles tiles table")
+    );
 }

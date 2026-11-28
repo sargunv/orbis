@@ -7,7 +7,7 @@
 //!   resources and the tile archives;
 //! - `resources`: the bodies of everything fetched by URL (or URL and byte
 //!   range) but tiles from `{z}/{x}/{y}` templates: the style, TileJSON,
-//!   glyph ranges, sprites, GeoJSON and image data, and a `pmtiles://`
+//!   glyph ranges, sprites, GeoJSON and image data, and an archive
 //!   source's header, directories and tiles, as the runtime reads them;
 //! - `<n>.pmtiles`: an extract (`orb_source::pmtiles::write_head`) of each
 //!   templated source's tiles, as the server sent them.
@@ -29,10 +29,14 @@ use crate::modules::{Load, Modules};
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_expr::json::{self, Json, JsonValue};
 use orb_host::{
-    Abort, Fetch, FetchDone, FetchError, Fetched, ResourceKind, Storage, StorageDone, TileFormat,
+    Abort, Fetch, FetchDone, FetchError, Fetched, Read, ResourceKind, Storage, StorageDone,
+    TileFormat,
 };
-use orb_source::endpoint::TileEndpoint;
-use orb_source::pmtiles::{self, Contents, Entry, Lookup, Reader};
+use orb_source::archive::{self, Archive};
+use orb_source::endpoint::{TileEndpoint, TileJson, Tiles};
+use orb_source::pmtiles::{self, Contents, Entry};
+
+use crate::loader::{ArchiveReader, ReadDone, Reads};
 use orb_style::{GeoJsonData, Scheme, SourceKind};
 
 /// What a region holds: a style's map of `bounds` (west, south, east,
@@ -116,8 +120,8 @@ fn region_dir(id: u32) -> String {
 
 /// Starts downloading `definition` through `fetch` (the network, or the
 /// HTTP cache) into `storage` as a new region, once `load` has the archive
-/// module, and calls `done` with its id once its id is chosen; `events`
-/// follow.
+/// and SQLite modules (an `mbtiles://` source is read with both), and
+/// calls `done` with its id once its id is chosen; `events` follow.
 pub fn download(
     load: &Load,
     fetch: Arc<dyn Fetch>,
@@ -127,7 +131,7 @@ pub fn download(
     done: StorageDone<Download>,
 ) {
     load(
-        Modules::ARCHIVE,
+        Modules::SQLITE | Modules::ARCHIVE,
         Box::new(move |loaded| match loaded {
             Ok(()) => start(fetch, storage, definition, events, done),
             Err(e) => done(Err(e)),
@@ -332,7 +336,7 @@ impl Import {
                 .iter()
                 .position(|a| a.templates.iter().any(|t| t == template));
             let index = found.unwrap_or_else(|| {
-                state.archives.push(Archive {
+                state.archives.push(Extract {
                     templates: vec![template.to_string()],
                     scheme: Scheme::Xyz,
                     tile_type: tile_type(&bytes),
@@ -470,8 +474,11 @@ enum Task {
         url: String,
         kind: ResourceKind,
     },
-    /// A `pmtiles://` source's tile, read through its directories.
-    ArchiveTile { source: usize, tile: TileIndex },
+    /// What archive source `source`'s archive `archive` (in
+    /// `State::readers`) says of its tiles, then those tiles.
+    ArchiveTiles { source: String, archive: usize },
+    /// A tile of archive `archive`, read through its directories.
+    ArchiveTile { archive: usize, tile: TileIndex },
 }
 
 /// What a resource is for, once it arrives.
@@ -482,8 +489,6 @@ enum Then {
     Style,
     /// TileJSON of a source.
     TileJson(String),
-    /// A `pmtiles://` source's header.
-    Header(String),
 }
 
 impl Then {
@@ -492,7 +497,7 @@ impl Then {
         match self {
             &Then::Keep(kind) => kind,
             Then::Style => ResourceKind::Style,
-            Then::TileJson(_) | Then::Header(_) => ResourceKind::Source,
+            Then::TileJson(_) => ResourceKind::Source,
         }
     }
 }
@@ -516,16 +521,17 @@ struct State {
     resources_len: u64,
     /// Bytes waiting to be appended to `resources`.
     resources_buffer: Vec<u8>,
-    archives: Vec<Archive>,
-    /// `pmtiles://` sources' readers, by archive URL.
-    readers: Vec<(String, Arc<Mutex<Reader>>)>,
+    archives: Vec<Extract>,
+    /// Archive sources' readers.
+    readers: Vec<(Archive, ArchiveReader)>,
     /// Appends to storage in order: one in flight at a time.
     writes: VecDeque<(String, Vec<u8>)>,
     writing: bool,
     bytes: u64,
 }
 
-struct Archive {
+/// A templated source's tiles, for an extract.
+struct Extract {
     templates: Vec<String>,
     scheme: Scheme,
     tile_type: pmtiles::TileType,
@@ -632,63 +638,69 @@ impl Job {
                     Box::new(move |result| job.arrived(task, tries, result)),
                 );
             }
-            Task::ArchiveTile { source, tile } => {
-                let (url, reader) = self.lock().readers[*source].clone();
-                let lookup = reader.lock().expect("reader poisoned").lookup(*tile);
-                match lookup {
-                    Ok(Lookup::Read(range)) => {
-                        let reader = reader.clone();
-                        let key = orb_host::cache::key(&url, Some((range.offset, range.length)));
-                        self.fetch.get_range(
-                            ResourceKind::Source,
-                            &url,
-                            range.offset,
-                            range.length,
-                            &self.abort,
-                            Box::new(move |result| match result {
-                                Ok(Fetched { bytes, .. }) => {
-                                    let inserted = reader
-                                        .lock()
-                                        .expect("reader poisoned")
-                                        .insert(range, &bytes);
-                                    job.keep(key, &bytes);
-                                    match inserted {
-                                        // The same tile again, one level deeper.
-                                        Ok(()) => job.start(task, tries),
-                                        Err(e) => {
-                                            job.arrived(task, RETRIES, Err(FetchError::Range(e)))
-                                        }
-                                    }
-                                }
-                                // An archive shorter than the first read is
-                                // read header first.
-                                Err(e)
-                                    if crate::loader::falls_back(&e)
-                                        && reader
-                                            .lock()
-                                            .expect("reader poisoned")
-                                            .read_failed(range) =>
-                                {
-                                    job.start(task, tries)
-                                }
-                                Err(e) => job.arrived(task, tries, Err(e)),
-                            }),
-                        );
-                    }
-                    Ok(Lookup::Tile { range, .. }) => {
-                        let resource = Task::Resource {
-                            url,
-                            range: Some((range.offset, range.length)),
-                            then: Then::Keep(ResourceKind::Tile(TileFormat::Archive)),
-                        };
-                        // Counted once: as this task.
-                        self.start(resource, tries);
-                    }
-                    Ok(Lookup::Missing) => self.arrived(task, tries, Err(FetchError::NotFound)),
-                    Err(e) => self.arrived(task, RETRIES, Err(FetchError::Range(e))),
-                }
+            Task::ArchiveTiles { source, archive } => {
+                let (source, index) = (source.clone(), *archive);
+                let (archive, reader) = self.lock().readers[index].clone();
+                let reads = self.reads(archive.url());
+                crate::loader::drive(
+                    reader,
+                    archive::Reader::tilejson,
+                    reads,
+                    Box::new(move |result| match result {
+                        Ok(tilejson) => {
+                            job.tiles(&source, Some(&tilejson), Some(index));
+                            job.arrived(task, tries, Ok(Fetched::default()));
+                        }
+                        Err(e) => job.arrived(task, tries, Err(e)),
+                    }),
+                );
+            }
+            &Task::ArchiveTile { archive, tile } => {
+                let (archive, reader) = self.lock().readers[archive].clone();
+                let reads = self.reads(archive.url());
+                let body = Arc::clone(&reads);
+                let done = move |result| job.arrived(task, tries, result);
+                crate::loader::drive(
+                    reader,
+                    move |r| r.tile(tile),
+                    reads,
+                    Box::new(move |found| match found {
+                        // Its body is kept as the archive holds it.
+                        Ok(Some(archive::Tile {
+                            body: archive::Body::At(range, _),
+                            ..
+                        })) => body(
+                            ResourceKind::Tile(TileFormat::Archive),
+                            range,
+                            Box::new(move |read| done(read.map(|_| Fetched::default()))),
+                        ),
+                        // Read with its page, which is kept.
+                        Ok(Some(_)) => done(Ok(Fetched::default())),
+                        // Not in the tileset: nothing to keep.
+                        Ok(None) => done(Err(FetchError::NotFound)),
+                        Err(e) => done(Err(e)),
+                    }),
+                );
             }
         }
+    }
+
+    /// [`Reads`] of `url` through the fetch, each read kept as a resource
+    /// by its URL and range, as the runtime reads it.
+    fn reads(self: &Arc<Self>, url: &str) -> Reads {
+        let (job, key_url) = (Arc::clone(self), url.to_string());
+        let keep = move |range: archive::Range, bytes: &[u8]| {
+            job.keep(
+                orb_host::cache::key(&key_url, Some((range.offset, range.length))),
+                bytes,
+            )
+        };
+        crate::loader::fetch_reads(
+            Arc::clone(&self.fetch),
+            url.to_string(),
+            self.abort.clone(),
+            keep,
+        )
     }
 
     fn arrived(self: &Arc<Self>, task: Task, tries: u8, result: Result<Fetched, FetchError>) {
@@ -696,10 +708,11 @@ impl Job {
             Ok(Fetched { bytes, .. }) => match task {
                 Task::Resource { url, range, then } => {
                     self.keep(orb_host::cache::key(&url, range), &bytes);
-                    self.then(then, &url, &bytes);
+                    self.then(then, &bytes);
                 }
                 Task::Tile { archive, tile, .. } => self.keep_tile(archive, tile, bytes),
-                Task::ArchiveTile { .. } => unreachable!("archive tiles arrive as resources"),
+                // Their reads were kept as they came.
+                Task::ArchiveTiles { .. } | Task::ArchiveTile { .. } => {}
             },
             // Not in the tileset, or no such glyph range: nothing to keep.
             // Aborted, the download is stopping.
@@ -850,7 +863,7 @@ impl Job {
         }
     }
 
-    fn then(self: &Arc<Self>, then: Then, url: &str, bytes: &[u8]) {
+    fn then(self: &Arc<Self>, then: Then, bytes: &[u8]) {
         match then {
             Then::Keep(_) => {}
             Then::Style => match std::str::from_utf8(bytes)
@@ -865,13 +878,10 @@ impl Job {
                 Ok((style, text)) => self.style(style, text),
                 Err(e) => self.fail(format!("style: {e}")),
             },
-            Then::TileJson(source) => {
-                let text = String::from_utf8_lossy(bytes);
-                self.tiles(&source, Some(&text), None);
-            }
-            Then::Header(source) => match orb_source::endpoint::archive_tilejson(bytes) {
-                Ok(tilejson) => self.tiles(&source, Some(&tilejson), Some(url)),
-                Err(e) => self.fail(format!("{url}: {e}")),
+            // A source without tiles (bad TileJSON) leaves them out.
+            Then::TileJson(source) => match TileJson::parse(&String::from_utf8_lossy(bytes)) {
+                Ok(tilejson) => self.tiles(&source, Some(&tilejson), None),
+                Err(_) => self.lock().failed += 1,
             },
         }
     }
@@ -948,20 +958,27 @@ impl Job {
     fn tileset(self: &Arc<Self>, source: &str, tileset: &orb_style::TileSet) {
         match (&tileset.tiles, &tileset.url) {
             (Some(_), _) | (None, None) => self.tiles(source, None, None),
-            (None, Some(url)) => match url.strip_prefix("pmtiles://") {
-                Some(archive) => self.enqueue(Task::Resource {
-                    url: archive.to_string(),
-                    range: Some((0, pmtiles::HEADER_LEN)),
-                    then: Then::Header(source.to_string()),
-                }),
-                None => self.resource(url.clone(), Then::TileJson(source.to_string())),
-            },
+            (None, Some(url)) => {
+                match Archive::of(url).map(|a| archive::Reader::new(&a).map(|r| (a, r))) {
+                    Some(Ok((archive, reader))) => {
+                        let archive = {
+                            let mut state = self.lock();
+                            state.readers.push((archive, Arc::new(Mutex::new(reader))));
+                            state.readers.len() - 1
+                        };
+                        let source = source.to_string();
+                        self.enqueue(Task::ArchiveTiles { source, archive });
+                    }
+                    Some(Err(e)) => self.fail(format!("source {source}: {e}")),
+                    None => self.resource(url.clone(), Then::TileJson(source.to_string())),
+                }
+            }
         }
     }
 
     /// Queues a source's tiles in the region, once its TileJSON (or
     /// archive header) is known.
-    fn tiles(self: &Arc<Self>, source: &str, tilejson: Option<&str>, archive_url: Option<&str>) {
+    fn tiles(self: &Arc<Self>, source: &str, tilejson: Option<&TileJson>, archive: Option<usize>) {
         let Some(style) = self.lock().style.clone() else {
             return;
         };
@@ -981,23 +998,18 @@ impl Job {
                 tiles.len()
             ));
         }
-        if let Some(url) = archive_url {
-            let index = {
-                let mut state = self.lock();
-                state.readers.push((url.to_string(), Arc::default()));
-                state.readers.len() - 1
-            };
+        if let Some(archive) = archive {
             for tile in tiles {
-                self.enqueue(Task::ArchiveTile {
-                    source: index,
-                    tile,
-                });
+                self.enqueue(Task::ArchiveTile { archive, tile });
             }
             return;
         }
+        let Tiles::Templates(templates) = &endpoint.tiles else {
+            return;
+        };
         // Templates with only {z}, {x} and {y} go into an extract; others
         // are kept as resources by URL.
-        let templated = endpoint.templates.iter().all(|t| {
+        let templated = templates.iter().all(|t| {
             let rest = t.replace("{z}", "").replace("{x}", "").replace("{y}", "");
             !rest.contains('{')
         });
@@ -1007,7 +1019,7 @@ impl Job {
         });
         if !templated {
             for tile in tiles {
-                self.resource(endpoint.url(tile), Then::Keep(kind));
+                self.resource(endpoint.url(tile).expect("templated"), Then::Keep(kind));
             }
             return;
         }
@@ -1020,8 +1032,8 @@ impl Job {
         };
         let archive = {
             let mut state = self.lock();
-            state.archives.push(Archive {
-                templates: endpoint.templates.clone(),
+            state.archives.push(Extract {
+                templates: templates.clone(),
                 scheme: endpoint.scheme,
                 tile_type,
                 zooms: [endpoint.minzoom, endpoint.maxzoom],
@@ -1033,7 +1045,7 @@ impl Job {
             state.archives.len() - 1
         };
         for tile in tiles {
-            let url = endpoint.url(tile);
+            let url = endpoint.url(tile).expect("templated");
             self.enqueue(Task::Tile {
                 archive,
                 tile,
@@ -1316,23 +1328,6 @@ impl std::fmt::Debug for RegionFetch {
 /// A fetch waiting for the regions to be read.
 type Pending = (ResourceKind, String, Read, Abort, FetchDone);
 
-/// What a fetch reads of its URL: all of it, a stale cached copy too
-/// where `stale` says ([`Fetch::get_or_stale`]), or a byte range.
-#[derive(Clone, Copy, Debug)]
-enum Read {
-    Whole { stale: bool },
-    Range(u64, u64),
-}
-
-impl Read {
-    fn range(self) -> Option<(u64, u64)> {
-        match self {
-            Self::Whole { .. } => None,
-            Self::Range(offset, length) => Some((offset, length)),
-        }
-    }
-}
-
 enum Served {
     Loading(Vec<Pending>),
     Ready(Arc<Vec<ServedRegion>>),
@@ -1348,7 +1343,7 @@ struct ServedArchive {
     key: String,
     templates: Vec<Vec<Part>>,
     tms: bool,
-    reader: Arc<Mutex<Reader>>,
+    reader: ArchiveReader,
 }
 
 #[derive(Debug, PartialEq)]
@@ -1440,47 +1435,51 @@ impl RegionFetch {
                     Some((at, length)),
                     Box::new(move |stored| match stored {
                         Ok(Some(bytes)) => done(Ok(bytes.into())),
-                        _ => pass(&*inner, kind, &url, read, &abort, done),
+                        _ => inner.read(kind, &url, read, &abort, done),
                     }),
                 );
             }
         }
-        if let Read::Whole { stale } = read {
+        if let Read::Whole { .. } = read {
             for region in regions.iter() {
                 for archive in &region.archives {
                     if let Some(tile) = archive.tile(url) {
-                        let served = Tile {
-                            inner: self.inner.clone(),
-                            storage: self.storage.clone(),
-                            key: archive.key.clone(),
-                            reader: archive.reader.clone(),
-                            url: url.to_string(),
-                            kind,
-                            stale,
-                            abort: abort.clone(),
-                        };
-                        return served.read(tile, 0, done);
+                        let (inner, url, abort) =
+                            (self.inner.clone(), url.to_string(), abort.clone());
+                        let found = Box::new(move |found: Result<Option<_>, _>| match found {
+                            Ok(Some((bytes, _))) => done(Ok(Fetched::from(bytes))),
+                            // Not in the region: the network.
+                            _ => inner.read(kind, &url, read, &abort, done),
+                        });
+                        let reads = storage_reads(Arc::clone(&self.storage), archive.key.clone());
+                        return crate::loader::read_tile(
+                            archive.reader.clone(),
+                            tile,
+                            reads,
+                            found,
+                        );
                     }
                 }
             }
         }
-        pass(&*self.inner, kind, url, read, abort, done);
+        self.inner.read(kind, url, read, abort, done);
     }
 }
 
-fn pass(
-    inner: &dyn Fetch,
-    kind: ResourceKind,
-    url: &str,
-    read: Read,
-    abort: &Abort,
-    done: FetchDone,
-) {
-    match read {
-        Read::Whole { stale: false } => inner.get(kind, url, abort, done),
-        Read::Whole { stale: true } => inner.get_or_stale(kind, url, abort, done),
-        Read::Range(offset, length) => inner.get_range(kind, url, offset, length, abort, done),
-    }
+/// [`Reads`] of `key` in `storage`.
+fn storage_reads(storage: Arc<dyn Storage>, key: String) -> Reads {
+    Arc::new(move |_, range, done: ReadDone| {
+        storage.read(
+            &key,
+            Some((range.offset, range.length)),
+            Box::new(move |read| match read {
+                Ok(Some(bytes)) => done(Ok(&bytes)),
+                Ok(None) => done(Err(FetchError::NotFound)),
+                // As past a short extract's end.
+                Err(e) => done(Err(FetchError::Range(e))),
+            }),
+        )
+    })
 }
 
 impl Fetch for RegionFetch {
@@ -1500,69 +1499,6 @@ impl Fetch for RegionFetch {
         done: FetchDone,
     ) {
         self.serve(kind, url, Read::Range(offset, length), abort, done);
-    }
-}
-
-/// A templated tile read from a region's extract.
-struct Tile {
-    inner: Arc<dyn Fetch>,
-    storage: Arc<dyn Storage>,
-    key: String,
-    reader: Arc<Mutex<Reader>>,
-    url: String,
-    kind: ResourceKind,
-    /// Passed to the network, it may answer stale.
-    stale: bool,
-    abort: Abort,
-}
-
-impl Tile {
-    /// Leaves the tile to the network.
-    fn pass(&self, done: FetchDone) {
-        let read = Read::Whole { stale: self.stale };
-        pass(&*self.inner, self.kind, &self.url, read, &self.abort, done);
-    }
-
-    fn read(self, tile: TileIndex, reads: u8, done: FetchDone) {
-        let lookup = self.reader.lock().expect("reader poisoned").lookup(tile);
-        match lookup {
-            Ok(Lookup::Read(range)) if reads < 6 => {
-                let storage = self.storage.clone();
-                storage.read(
-                    &self.key.clone(),
-                    Some((range.offset, range.length)),
-                    Box::new(move |read| {
-                        let mut reader = self.reader.lock().expect("reader poisoned");
-                        let kept = match read {
-                            Ok(Some(bytes)) => reader.insert(range, &bytes).is_ok(),
-                            _ => false,
-                        };
-                        // An extract shorter than the first read is read
-                        // header first.
-                        let again = kept || reader.read_failed(range);
-                        drop(reader);
-                        if again {
-                            self.read(tile, reads + 1, done);
-                        } else {
-                            self.pass(done);
-                        }
-                    }),
-                );
-            }
-            Ok(Lookup::Tile { range, .. }) => {
-                let storage = self.storage.clone();
-                storage.read(
-                    &self.key.clone(),
-                    Some((range.offset, range.length)),
-                    Box::new(move |read| match read {
-                        Ok(Some(bytes)) => done(Ok(bytes.into())),
-                        _ => self.pass(done),
-                    }),
-                );
-            }
-            // Not in the region: the network.
-            _ => self.pass(done),
-        }
     }
 }
 
@@ -1605,7 +1541,7 @@ fn served_region(id: u32, doc: &Json, extracts: bool) -> ServedRegion {
                 .filter_map(|t| Some(parse_template(t.as_str()?)))
                 .collect(),
             tms: a.get("tms").and_then(Json::as_bool).unwrap_or(false),
-            reader: Arc::default(),
+            reader: Arc::new(Mutex::new(archive::Reader::Pmtiles(Default::default()))),
         })
         .collect();
     ServedRegion {
@@ -1845,7 +1781,7 @@ mod tests {
             key: String::new(),
             templates: vec![parse_template("https://a/{z}/{x}/{y}.pbf?key={k}")],
             tms: true,
-            reader: Arc::default(),
+            reader: Arc::new(Mutex::new(archive::Reader::Pmtiles(Default::default()))),
         };
         assert_eq!(
             archive.tile("https://a/3/2/1.pbf?key={k}"),

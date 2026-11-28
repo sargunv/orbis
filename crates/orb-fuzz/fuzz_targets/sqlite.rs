@@ -6,27 +6,7 @@
 #![forbid(unsafe_code)]
 
 use orb_runtime::orb_sqlite::{Database, Value};
-use orb_source::mbtiles::{Reader, Step};
-
-/// Answers `step` from `data` until it's done or fails.
-fn answer<T>(
-    data: &[u8],
-    reader: &mut Reader,
-    mut step: impl FnMut(&mut Reader) -> Result<Step<T>, String>,
-) {
-    for _ in 0..64 {
-        match step(reader) {
-            Ok(Step::Read { offset, length }) => {
-                let at = (offset as usize).min(data.len());
-                let end = (offset.saturating_add(length) as usize).min(data.len());
-                if reader.insert(offset, &data[at..end]).is_err() {
-                    return;
-                }
-            }
-            _ => return,
-        }
-    }
-}
+use orb_source::archive::Reader;
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     if let Ok(db) = Database::open(data) {
@@ -61,10 +41,9 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             let _ = native.regions();
         }
     }
-    let mut reader = Reader::default();
-    answer(data, &mut reader, Reader::tilejson);
+    let mut reader = Reader::Mbtiles(Default::default());
+    let _ = reader.read_in(data, Reader::tilejson);
     for tile in [(0, 0, 0), (3, 2, 5), (14, 9000, 6000)] {
-        let tile = orb_crs::TileIndex::new(tile.0, tile.1, tile.2);
-        answer(data, &mut reader, |r| r.tile(tile));
+        let _ = reader.tile_in(data, orb_crs::TileIndex::new(tile.0, tile.1, tile.2));
     }
 });

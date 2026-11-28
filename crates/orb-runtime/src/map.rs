@@ -29,7 +29,7 @@ use crate::style::StylePlan;
 use crate::turns::FetchCounts;
 use crate::worker::{Cause, StyleUpdate, TileJob, TileRequest, TileWorker};
 use orb_source::Backoff;
-use orb_source::endpoint::{TileEndpoint, TileLocation};
+use orb_source::endpoint::{TileEndpoint, TileJson};
 
 /// Logical pixel size of vector/background tiles and pattern origins.
 pub(crate) const TILE_PX: f64 = 512.0;
@@ -391,9 +391,9 @@ pub(crate) enum Message {
         generation: u64,
         /// The source's key.
         source: u32,
-        result: Result<String, FetchError>,
-        /// A PMTiles archive's URL and first bytes, for the jobs.
-        head: Option<(String, Vec<u8>)>,
+        result: Result<TileJson, String>,
+        /// An archive's first bytes, for the jobs.
+        head: Option<(crate::Archive, Vec<u8>)>,
     },
     Tile {
         generation: u64,
@@ -1816,6 +1816,41 @@ impl Map {
         self.nodes_stale = true;
     }
 
+    /// Reads what source `key`'s `archive` says of its tiles; its first
+    /// bytes go to the jobs too.
+    fn resolve_archive(&mut self, key: u32, archive: crate::Archive) {
+        let generation = self.generation;
+        let head = Arc::new(Mutex::new(None));
+        let keep = Arc::clone(&head);
+        let reads = crate::loader::fetch_reads(
+            Arc::clone(&self.services.fetch),
+            archive.url().to_string(),
+            self.style_loads.clone(),
+            move |range, bytes| {
+                if range.offset == 0 {
+                    *keep.lock().expect("head poisoned") = Some(bytes.to_vec());
+                }
+            },
+        );
+        let reader = orb_source::archive::Reader::new(&archive);
+        let done = self.reply(move |result: Result<TileJson, FetchError>| {
+            let head = head.lock().expect("head poisoned").take();
+            Message::TileJson {
+                generation,
+                source: key,
+                head: head.filter(|_| result.is_ok()).map(|head| (archive, head)),
+                result: result.map_err(|e| format!("TileJSON: {e}")),
+            }
+        });
+        match reader {
+            Ok(reader) => {
+                let reader = Arc::new(Mutex::new(reader));
+                crate::loader::drive(reader, orb_source::archive::Reader::tilejson, reads, done);
+            }
+            Err(e) => done(Err(FetchError::UnsupportedUrl(e))),
+        }
+    }
+
     /// Starts resolving a source of the plan: its TileJSON or archive
     /// header, or a ready endpoint.
     pub(crate) fn start_source(&mut self, plan: &StylePlan, index: usize) -> SourceState {
@@ -1831,58 +1866,13 @@ impl Map {
             (_, Some(tileset)) => match &tileset.url {
                 Some(url) => {
                     let generation = self.generation;
-                    if let Some(archive) = url.strip_prefix("pmtiles://") {
-                        // Its first bytes, the header and root directory,
-                        // go to the jobs too.
-                        let url = archive.to_string();
-                        let done = self.reply(move |result: Result<orb_host::Fetched, _>| {
-                            let header = orb_source::pmtiles::HEADER_LEN as usize;
-                            let read = result.and_then(|orb_host::Fetched { bytes, .. }| {
-                                orb_source::endpoint::archive_tilejson(
-                                    bytes.get(..header).unwrap_or(&bytes),
-                                )
-                                .map(|tilejson| (tilejson, bytes))
-                                .map_err(FetchError::Range)
-                            });
-                            let (result, head) = match read {
-                                Ok((tilejson, bytes)) => (Ok(tilejson), Some((url, bytes))),
-                                Err(e) => (Err(e), None),
-                            };
-                            Message::TileJson {
-                                generation,
-                                source: key,
-                                result,
-                                head,
-                            }
-                        });
-                        let abort = &self.style_loads;
-                        crate::loader::read_head(&self.services.fetch, archive, abort, done);
-                    } else if let Some(TileLocation::Mbtiles(archive)) =
-                        orb_source::endpoint::archive_url(url)
-                    {
-                        // Its TileJSON is its metadata table's.
-                        let done = self.reply(move |result| Message::TileJson {
-                            generation,
-                            source: key,
-                            result,
-                            head: None,
-                        });
-                        #[cfg(feature = "sqlite")]
-                        crate::loader::drive(
-                            &crate::loader::TileLoader::new(self.services.fetch.clone()),
-                            archive,
-                            Arc::default(),
-                            orb_source::mbtiles::Reader::tilejson,
-                            self.style_loads.clone(),
-                            done,
-                        );
-                        #[cfg(not(feature = "sqlite"))]
-                        done(Err(FetchError::UnsupportedUrl(format!(
-                            "{archive}: mbtiles:// needs Orbis built with its `sqlite` feature"
-                        ))));
+                    if let Some(archive) = crate::Archive::of(url) {
+                        self.resolve_archive(key, archive);
                     } else {
                         let abort = self.style_loads.clone();
                         self.fetch_text(ResourceKind::Source, url, &abort, move |result| {
+                            let result = (result.map_err(|e| format!("TileJSON: {e}")))
+                                .and_then(|text| TileJson::parse(&text));
                             Message::TileJson {
                                 generation,
                                 source: key,

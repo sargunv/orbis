@@ -132,10 +132,10 @@ pub fn every() -> Load {
 /// for MBTiles gzip too, which is in [`Modules::ARCHIVE`] (as the split's
 /// `needs` lists).
 fn archive(url: Option<&str>) -> Modules {
-    match url {
-        Some(url) if url.starts_with("pmtiles://") => Modules::ARCHIVE,
-        Some(url) if url.starts_with("mbtiles://") => Modules::SQLITE | Modules::ARCHIVE,
-        _ => Modules::NONE,
+    match url.and_then(crate::Archive::of) {
+        Some(crate::Archive::Pmtiles(_)) => Modules::ARCHIVE,
+        Some(crate::Archive::Mbtiles(_)) => Modules::SQLITE | Modules::ARCHIVE,
+        None => Modules::NONE,
     }
 }
 

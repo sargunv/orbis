@@ -373,8 +373,10 @@ impl Map {
                 else {
                     return;
                 };
-                if let Some((url, head)) = head {
-                    self.services.jobs.add_archive_head(&url, &Arc::new(head));
+                if let Some((archive, head)) = head {
+                    self.services
+                        .jobs
+                        .add_archive_head(&archive, &Arc::new(head));
                 }
                 let plan = style.worker.plan();
                 let Some(index) = plan.source(source) else {
@@ -386,10 +388,12 @@ impl Map {
                 let def = plan.source_def(index);
                 let tms = self.surface.source_tms(&def.id, false);
                 let endpoint = match (&result, self.surface.plan(&tms, plan.image_kind(index))) {
-                    (Err(e), _) => Err(format!("TileJSON: {e}")),
+                    (Err(e), _) => Err(e.clone()),
                     (Ok(_), Err(e)) => Err(e),
-                    (Ok(text), Ok(warp)) => TileEndpoint::resolve(&def.kind, Some(text), tms)
-                        .map(|endpoint| (endpoint, warp)),
+                    (Ok(tilejson), Ok(warp)) => {
+                        TileEndpoint::resolve(&def.kind, Some(tilejson), tms)
+                            .map(|endpoint| (endpoint, warp))
+                    }
                 };
                 // Tiles in MLT wait for its decoders.
                 let mlt = crate::modules::Modules::MLT;

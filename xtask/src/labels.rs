@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 use orb_crs::TileIndex;
-use orb_source::pmtiles::Reader;
+use orb_source::archive::Reader;
 use orb_text::TextTransform;
 use serde_json::value::RawValue;
 
@@ -221,7 +221,7 @@ fn code_points() -> Result<HashMap<String, BTreeSet<u32>>, String> {
     )
     .map_err(|e| e.to_string())?;
     let archive = std::fs::read(format!("{OUT}/tokyo-mvt.pmtiles")).map_err(|e| e.to_string())?;
-    let mut reader = Reader::default();
+    let mut reader = Reader::Pmtiles(Default::default());
     let mut by_layer: HashMap<String, BTreeSet<u32>> = HashMap::new();
     for coordinate in manifest["tiles"].as_array().ok_or("manifest tiles")? {
         let tile = TileIndex::new(

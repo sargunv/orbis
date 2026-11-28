@@ -164,7 +164,10 @@ fn a_suspect_lost_again_is_quarantined() {
 #[test]
 fn a_replacement_gets_the_style_icons_and_archive_heads_before_the_loads() {
     let (jobs, posted) = jobs(2);
-    jobs.add_archive_head("pmtiles://a", &Arc::new(vec![1, 2, 3]));
+    jobs.add_archive_head(
+        &orb_runtime::Archive::Pmtiles("a".into()),
+        &Arc::new(vec![1, 2, 3]),
+    );
     let _a = load(&jobs, tile(0));
     let [(lost, _, _)] = posted.loads()[..] else {
         panic!("one load")
@@ -176,8 +179,9 @@ fn a_replacement_gets_the_style_icons_and_archive_heads_before_the_loads() {
             let kind = match request {
                 JobRequest::Style { style: 7, .. } => "style",
                 JobRequest::Icons { style: 7, .. } => "icons",
-                JobRequest::ArchiveHead { url, head } => {
-                    assert_eq!((url.as_str(), &head[..]), ("pmtiles://a", &[1, 2, 3][..]));
+                JobRequest::ArchiveHead { archive, head } => {
+                    let a = orb_runtime::Archive::Pmtiles("a".into());
+                    assert_eq!((archive, &head[..]), (a, &[1, 2, 3][..]));
                     "head"
                 }
                 JobRequest::Load { .. } => "load",

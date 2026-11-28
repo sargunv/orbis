@@ -1,4 +1,4 @@
-//! Tiled sources' TileJSON/tile URLs and GeoJSON source-data endpoints.
+//! Where a source's tiles come from, and the facts its TileJSON gives.
 
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_expr::json::{self, Json, JsonValue, Member};
@@ -6,6 +6,8 @@ use orb_style::{
     DemEncoding, Encoding, GeoJsonData, GeoJsonSource, RasterSource, Scheme, SourceKind, TileSet,
     VectorSource,
 };
+
+use crate::archive::Archive;
 
 /// Vector tiles are laid out for this many logical pixels per side, as GL
 /// JS's default `tileSize`.
@@ -17,13 +19,9 @@ pub use orb_style::HOST_TILES;
 #[derive(Clone, Debug, PartialEq, Eq, orb_wire::Wire)]
 pub enum TileLocation {
     Url(String),
-    /// The archive URL without the `pmtiles://` protocol prefix.
-    Pmtiles(String),
-    /// An MBTiles archive's URL ([`archive_url`]).
-    Mbtiles(String),
+    Archive(Archive),
     /// The app's answer for a tile of a source it feeds, or
-    /// [`HostTile::Empty`] for a source with nothing to fetch (an `image`
-    /// without a URL).
+    /// [`HostTile::Empty`] for a source with nothing to fetch.
     Host(HostTile),
 }
 
@@ -44,17 +42,69 @@ pub enum HostTile {
     Empty,
 }
 
-/// Where a source's tile jobs get their data (merged TileJSON for tiled
-/// sources).
+/// What a TileJSON document, or an archive's header or metadata, says of
+/// a tiled source; a source's own keys take precedence.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TileJson {
+    pub tiles: Option<Vec<String>>,
+    pub minzoom: Option<f64>,
+    pub maxzoom: Option<f64>,
+    pub bounds: Option<[f64; 4]>,
+    pub scheme: Option<Scheme>,
+    pub tile_size: Option<f64>,
+    /// A vector source's tile encoding.
+    pub encoding: Option<Encoding>,
+    /// A `raster-dem` source's encoding.
+    pub dem_encoding: Option<DemEncoding>,
+}
+
+impl TileJson {
+    /// Reads a TileJSON document.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let doc = json::parse(text).map_err(|e| format!("bad TileJSON: {e}"))?;
+        let number = |key: &str| doc.get(key).and_then(Json::as_f64);
+        let text = |key: &str| doc.get(key).and_then(Json::as_str);
+        let encoding = text("encoding");
+        Ok(Self {
+            tiles: doc.get("tiles").and_then(Json::as_array).map(|tiles| {
+                (tiles.iter())
+                    .filter_map(|u| u.as_str().map(str::to_string))
+                    .collect()
+            }),
+            minzoom: number("minzoom"),
+            maxzoom: number("maxzoom"),
+            bounds: doc.get("bounds").and_then(Json::as_array).and_then(|b| {
+                let b: Option<Vec<f64>> = b.iter().take(4).map(Json::as_f64).collect();
+                b?.try_into().ok()
+            }),
+            scheme: text("scheme").and_then(<Scheme as orb_style::Enum>::from_name),
+            tile_size: number("tileSize"),
+            encoding: encoding.and_then(<Encoding as orb_style::Enum>::from_name),
+            dem_encoding: encoding.and_then(<DemEncoding as orb_style::Enum>::from_name),
+        })
+    }
+}
+
+/// Where a source's tiles come from.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Tiles {
+    /// URL templates, spread over its tiles.
+    Templates(Vec<String>),
+    Archive(Archive),
+    /// The app ([`HOST_TILES`]).
+    Host,
+    /// A whole GeoJSON document at a URL, or inline (`None`).
+    Document(Option<String>),
+    /// An `image` source's image, or nothing to fetch: no URL, or a
+    /// video's or a canvas's frames, which come from its host.
+    Image(Option<String>),
+}
+
+/// Where a source's tile jobs get their data, and what its tiles are.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TileEndpoint {
-    /// Where every tile is, when one place holds them all: an archive, or
-    /// nothing, for an `image` source without a URL.
-    whole: Option<TileLocation>,
+    pub tiles: Tiles,
     pub bounds: Option<[f64; 4]>,
-    pub templates: Vec<String>,
-    /// A whole GeoJSON document; an empty URL denotes inline source data.
-    data_url: Option<String>,
     pub scheme: Scheme,
     pub minzoom: u8,
     pub maxzoom: u8,
@@ -75,107 +125,57 @@ impl TileEndpoint {
     /// precedence over its TileJSON's, as in GL JS.
     pub fn resolve(
         source: &SourceKind,
-        tilejson: Option<&str>,
+        tilejson: Option<&TileJson>,
         tms: TileMatrixSet,
     ) -> Result<Self, String> {
-        let doc = tilejson
-            .map(|text| json::parse(text).map_err(|e| format!("bad TileJSON: {e}")))
-            .transpose()?;
-        let number = |key: &str| {
-            doc.as_ref()
-                .and_then(|d| d.get(key))
-                .and_then(|v| v.as_f64())
-        };
-        let text = |key: &str| {
-            doc.as_ref()
-                .and_then(|d| d.get(key))
-                .and_then(|v| v.as_str())
-        };
+        let doc = tilejson.cloned().unwrap_or_default();
         let (tileset, raster) = match source {
             SourceKind::Vector(v) => (&v.tileset, None),
             SourceKind::Raster(r) => (&r.tileset, Some(r)),
             SourceKind::RasterDem(d) => (&d.raster.tileset, Some(&d.raster)),
             _ => unreachable!("tiled sources only"),
         };
-        let templates = match &tileset.tiles {
-            Some(tiles) => tiles.clone(),
-            None => doc
-                .as_ref()
-                .and_then(|d| d.get("tiles"))
-                .and_then(|t| t.as_array())
-                .map(|t| {
-                    t.iter()
-                        .filter_map(|u| u.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default(),
-        };
-        let archive = tileset
-            .url
-            .as_deref()
+        let archive = (tileset.url.as_deref())
             .filter(|_| tileset.tiles.is_none())
-            .and_then(archive_url);
-        if templates.is_empty() && archive.is_none() {
-            return Err("source has no tile URLs".to_string());
-        }
-        let scheme = tileset.scheme.unwrap_or(match text("scheme") {
-            Some("tms") => Scheme::Tms,
-            _ => TileSet::DEFAULT_SCHEME,
-        });
-        let zoom = |style: Option<f64>, key: &str, default: f64| {
-            style
-                .or_else(|| number(key))
-                .unwrap_or(default)
+            .and_then(Archive::of);
+        let tiles = match (archive, tileset.tiles.clone().or(doc.tiles)) {
+            (Some(archive), _) => Tiles::Archive(archive),
+            (None, Some(t)) if t.iter().any(|t| t.starts_with(HOST_TILES)) => Tiles::Host,
+            (None, Some(t)) if !t.is_empty() => Tiles::Templates(t),
+            (None, _) => return Err("source has no tile URLs".to_string()),
+        };
+        let zoom = |style: Option<f64>, tilejson: Option<f64>, default: f64| {
+            (style.or(tilejson).unwrap_or(default))
                 .clamp(f64::from(tms.min_zoom()), f64::from(tms.max_zoom())) as u8
         };
-        let bounds = tileset.bounds.or_else(|| {
-            let values = doc.as_ref()?.get("bounds")?.as_array()?;
-            Some([
-                values.first()?.as_f64()?,
-                values.get(1)?.as_f64()?,
-                values.get(2)?.as_f64()?,
-                values.get(3)?.as_f64()?,
-            ])
-        });
         // Raster sources round the covering zoom, as GL JS's `roundZoom`
         // does: a tile is refined once it would span √2 times its size.
         let cover_px = match raster {
             None => VECTOR_TILE_PX,
             Some(r) => {
-                r.tile_size
-                    .or_else(|| number("tileSize"))
-                    .unwrap_or(RasterSource::DEFAULT_TILE_SIZE)
+                (r.tile_size.or(doc.tile_size)).unwrap_or(RasterSource::DEFAULT_TILE_SIZE)
                     / std::f64::consts::SQRT_2
             }
         };
         let dem_unpack = match source {
-            SourceKind::RasterDem(dem) => {
-                let encoding = dem.encoding.unwrap_or(
-                    match text("encoding").and_then(<DemEncoding as orb_style::Enum>::from_name) {
-                        Some(encoding) => encoding,
-                        None => orb_style::RasterDemSource::DEFAULT_ENCODING,
-                    },
-                );
-                Some(encoding.unpack(dem.factors))
-            }
+            SourceKind::RasterDem(dem) => Some(
+                (dem.encoding.or(doc.dem_encoding))
+                    .unwrap_or(orb_style::RasterDemSource::DEFAULT_ENCODING)
+                    .unpack(dem.factors),
+            ),
             _ => None,
         };
         let encoding = match source {
-            SourceKind::Vector(v) => v.encoding.unwrap_or(match text("encoding") {
-                Some("mlt") => Encoding::Mlt,
-                _ => VectorSource::DEFAULT_ENCODING,
-            }),
-            _ => VectorSource::DEFAULT_ENCODING,
+            SourceKind::Vector(v) => v.encoding.or(doc.encoding),
+            _ => None,
         };
         Ok(Self {
-            whole: archive,
-            bounds,
-            templates,
-            data_url: None,
-            scheme,
-            minzoom: zoom(tileset.minzoom, "minzoom", TileSet::DEFAULT_MINZOOM),
-            maxzoom: zoom(tileset.maxzoom, "maxzoom", TileSet::DEFAULT_MAXZOOM),
-            encoding,
+            tiles,
+            bounds: tileset.bounds.or(doc.bounds),
+            scheme: (tileset.scheme.or(doc.scheme)).unwrap_or(TileSet::DEFAULT_SCHEME),
+            minzoom: zoom(tileset.minzoom, doc.minzoom, TileSet::DEFAULT_MINZOOM),
+            maxzoom: zoom(tileset.maxzoom, doc.maxzoom, TileSet::DEFAULT_MAXZOOM),
+            encoding: encoding.unwrap_or(VectorSource::DEFAULT_ENCODING),
             cover_px,
             dem_unpack,
             tms,
@@ -183,17 +183,15 @@ impl TileEndpoint {
         })
     }
 
-    /// GeoJSON uses one source URL (or no URL for inline data); the tile
-    /// worker supplies geometry rather than decoding a vector tile response.
+    /// A GeoJSON source's: the worker tiles its one document.
     pub fn geojson(source: &GeoJsonSource, tms: TileMatrixSet) -> Self {
+        let url = match &source.data {
+            GeoJsonData::Url(url) => Some(url.clone()),
+            GeoJsonData::Inline(_) => None,
+        };
         Self {
-            whole: None,
+            tiles: Tiles::Document(url),
             bounds: None,
-            templates: Vec::new(),
-            data_url: Some(match &source.data {
-                GeoJsonData::Url(url) => url.clone(),
-                GeoJsonData::Inline(_) => String::new(),
-            }),
             scheme: Scheme::Xyz,
             minzoom: 0,
             maxzoom: source.options.max_zoom,
@@ -205,8 +203,8 @@ impl TileEndpoint {
         }
     }
 
-    /// An `image` source on `projection`'s plane: one tile, the image at
-    /// its URL (empty without one), in a one-tile set around its quad.
+    /// An `image` source on `projection`'s plane: one tile, its image, in a
+    /// one-tile set around its quad.
     pub fn image(source: &orb_style::ImageSource, projection: &orb_crs::Projection) -> Self {
         let corners = source
             .coordinates
@@ -218,22 +216,13 @@ impl TileEndpoint {
             min: bounds.center() - half,
             max: bounds.center() + half,
         };
-        let (whole, templates) = match &source.content {
-            orb_style::ImageContent::Image(Some(url)) => (None, vec![url.clone()]),
-            orb_style::ImageContent::Image(None) => {
-                (Some(TileLocation::Host(HostTile::Empty)), Vec::new())
-            }
-            // A video's or a canvas's frames come from its host, not a
-            // fetch.
-            orb_style::ImageContent::Video(_) | orb_style::ImageContent::Canvas(_) => {
-                (None, Vec::new())
-            }
+        let url = match &source.content {
+            orb_style::ImageContent::Image(url) => url.clone(),
+            orb_style::ImageContent::Video(_) | orb_style::ImageContent::Canvas(_) => None,
         };
         Self {
-            whole,
+            tiles: Tiles::Image(url),
             bounds: None,
-            templates,
-            data_url: None,
             scheme: Scheme::Xyz,
             minzoom: 0,
             maxzoom: 0,
@@ -254,13 +243,19 @@ impl TileEndpoint {
 
     /// Whether the app feeds the source's tiles ([`HOST_TILES`]).
     pub fn host(&self) -> bool {
-        self.whole.is_none() && self.templates.iter().any(|t| t.starts_with(HOST_TILES))
+        matches!(self.tiles, Tiles::Host)
     }
 
+    /// Where `tile`'s bytes are: for the app's tiles, the answer it has
+    /// yet to give, nothing.
     pub fn location(&self, tile: TileIndex) -> TileLocation {
-        match &self.whole {
-            Some(whole) => whole.clone(),
-            None => TileLocation::Url(self.url(tile)),
+        match &self.tiles {
+            Tiles::Templates(_) => TileLocation::Url(self.url(tile).expect("templated")),
+            Tiles::Archive(archive) => TileLocation::Archive(archive.clone()),
+            Tiles::Document(Some(url)) | Tiles::Image(Some(url)) => TileLocation::Url(url.clone()),
+            Tiles::Host | Tiles::Document(None) | Tiles::Image(None) => {
+                TileLocation::Host(HostTile::Empty)
+            }
         }
     }
 
@@ -304,34 +299,62 @@ impl TileEndpoint {
             .collect()
     }
 
-    /// The URL of a tile, spreading tiles over the templates.
-    pub fn url(&self, tile: TileIndex) -> String {
-        if let Some(url) = &self.data_url {
-            return url.clone();
-        }
-        let (col, native) = (self.tms.native_col(tile), self.tms.native_row(tile));
-        let row = match self.scheme {
-            Scheme::Xyz => native,
-            Scheme::Tms => self.tms.matrix_size(tile.z).1 - 1 - native,
+    /// The URL of a templated source's tile, spreading tiles over its
+    /// templates, at a pixel ratio of 1: the map never asks for `@2x`.
+    pub fn url(&self, tile: TileIndex) -> Option<String> {
+        let Tiles::Templates(templates) = &self.tiles else {
+            return None;
         };
-        let template =
-            &self.templates[(tile.col as usize + tile.row as usize) % self.templates.len()];
-        let mut url = template
-            .replace("{z}", &tile.z.to_string())
-            .replace("{x}", &col.to_string())
-            .replace("{y}", &row.to_string())
-            .replace("{tileMatrix}", &tile.z.to_string())
-            .replace("{tileCol}", &col.to_string())
-            .replace("{tileRow}", &native.to_string());
-        if url.contains("{bbox}") {
-            let b = self.tms.tile_bounds(tile);
-            url = url.replace(
-                "{bbox}",
-                &format!("{},{},{},{}", b.min.x, b.min.y, b.max.x, b.max.y),
-            );
-        }
-        url
+        let template = &templates[(tile.col as usize + tile.row as usize) % templates.len()];
+        Some(expand(template, &self.tms, self.scheme, tile, 1.0))
     }
+}
+
+/// `template` filled in for `tile` of `tms` in `scheme`, as GL JS and
+/// MapLibre Native fill tile URLs: `{z}`, `{x}`, `{y}`, OGC's
+/// `{tileMatrix}`, `{tileCol}` and `{tileRow}`, `{bbox}` in the set's
+/// units (and `{bbox-epsg-3857}` on Web Mercator), `{quadkey}`,
+/// `{prefix}`, and `{ratio}`, `@2x` above a pixel ratio of 1.
+pub fn expand(
+    template: &str,
+    tms: &TileMatrixSet,
+    scheme: Scheme,
+    tile: TileIndex,
+    ratio: f32,
+) -> String {
+    let (col, native) = (tms.native_col(tile), tms.native_row(tile));
+    let row = match scheme {
+        Scheme::Xyz => native,
+        Scheme::Tms => tms.matrix_size(tile.z).1 - 1 - native,
+    };
+    let mut url = template
+        .replace("{z}", &tile.z.to_string())
+        .replace("{x}", &col.to_string())
+        .replace("{y}", &row.to_string())
+        .replace("{tileMatrix}", &tile.z.to_string())
+        .replace("{tileCol}", &col.to_string())
+        .replace("{tileRow}", &native.to_string())
+        .replace("{ratio}", if ratio > 1.0 { "@2x" } else { "" })
+        .replace("{prefix}", &format!("{:x}{:x}", col % 16, native % 16));
+    if url.contains("{quadkey}") {
+        let quadkey: String = (1..=tile.z)
+            .rev()
+            .map(|i| {
+                let mask = 1 << (i - 1);
+                char::from(b'0' + u8::from(col & mask != 0) + 2 * u8::from(native & mask != 0))
+            })
+            .collect();
+        url = url.replace("{quadkey}", &quadkey);
+    }
+    if url.contains("{bbox") {
+        let b = tms.tile_bounds(tile);
+        let bbox = format!("{},{},{},{}", b.min.x, b.min.y, b.max.x, b.max.y);
+        if tms.projection().is_web_mercator() {
+            url = url.replace("{bbox-epsg-3857}", &bbox);
+        }
+        url = url.replace("{bbox}", &bbox);
+    }
+    url
 }
 
 /// `relative` resolved against `base`, as a browser resolves a link:
@@ -388,16 +411,13 @@ pub fn resolve_style_urls(doc: &mut Json, base: &str) {
         let JsonValue::String(url) = value else {
             return;
         };
-        let (prefix, rest) = match ARCHIVES
-            .iter()
-            .find_map(|p| Some((*p, url.strip_prefix(p)?)))
-        {
+        *url = match Archive::of(url) {
+            Some(Archive::Pmtiles(rest)) => format!("pmtiles://{}", join_url(base, &rest)),
             // A path names a file, as MapLibre Native reads `mbtiles:///`.
-            Some(("mbtiles://", rest)) if rest.starts_with('/') => return,
-            Some(found) => found,
-            None => ("", url.as_str()),
+            Some(Archive::Mbtiles(rest)) if rest.starts_with("file://") => return,
+            Some(Archive::Mbtiles(rest)) => format!("mbtiles://{}", join_url(base, &rest)),
+            None => join_url(base, url),
         };
-        *url = format!("{prefix}{}", join_url(base, rest));
     }
     fn members(value: Option<&mut Json>) -> &mut [Member] {
         match value.map(|v| &mut v.value) {
@@ -434,39 +454,6 @@ pub fn resolve_style_urls(doc: &mut Json, base: &str) {
             _ => face(&mut faces.value, base),
         }
     }
-}
-
-/// The protocols of archives a source's `url` names.
-const ARCHIVES: [&str; 2] = ["pmtiles://", "mbtiles://"];
-
-/// Where the archive a source's `url` names is, if it names one: a
-/// `pmtiles://` URL's archive, or an `mbtiles://` URL's, a path (as
-/// `mbtiles:///data/a.mbtiles`) as a `file://` URL.
-pub fn archive_url(url: &str) -> Option<TileLocation> {
-    if let Some(rest) = url.strip_prefix("pmtiles://") {
-        return Some(TileLocation::Pmtiles(rest.to_string()));
-    }
-    let rest = url.strip_prefix("mbtiles://")?;
-    Some(TileLocation::Mbtiles(match rest.starts_with('/') {
-        true => format!("file://{rest}"),
-        false => rest.to_string(),
-    }))
-}
-
-/// A PMTiles archive's header as TileJSON: its zooms, bounds and tile
-/// encoding, which the source's own keys take precedence over.
-pub fn archive_tilejson(bytes: &[u8]) -> Result<String, String> {
-    let header = crate::pmtiles::Header::parse(bytes)?;
-    let [west, south, east, north] = header.bounds;
-    let encoding = match header.tile_type {
-        crate::pmtiles::TileType::Mvt => r#","encoding":"mvt""#,
-        crate::pmtiles::TileType::Mlt => r#","encoding":"mlt""#,
-        _ => "",
-    };
-    Ok(format!(
-        r#"{{"minzoom":{},"maxzoom":{},"bounds":[{west},{south},{east},{north}]{encoding}}}"#,
-        header.minzoom, header.maxzoom
-    ))
 }
 
 #[cfg(test)]
@@ -583,7 +570,7 @@ mod tests {
         let tile = TileIndex::new(1, 1, 0);
         let b = nztm.tile_bounds(tile);
         assert_eq!(
-            endpoint.url(tile),
+            endpoint.url(tile).unwrap(),
             format!("t/1/1/0?b={},{},{},{}", b.min.x, b.min.y, b.max.x, b.max.y)
         );
         // New Zealand is at the grid's centre: the middle four tiles at
@@ -613,7 +600,8 @@ mod tests {
         let source = vector(r#"{"type": "raster-dem", "url": "https://x/dem.json"}"#);
         let tilejson =
             r#"{"tiles": ["t/{z}/{x}/{y}.png"], "tileSize": 256, "encoding": "terrarium"}"#;
-        let endpoint = TileEndpoint::resolve(&source, Some(tilejson), mercator()).unwrap();
+        let tilejson = TileJson::parse(tilejson).unwrap();
+        let endpoint = TileEndpoint::resolve(&source, Some(&tilejson), mercator()).unwrap();
         assert_eq!(endpoint.cover_px, 256.0 / std::f64::consts::SQRT_2);
         assert_eq!(
             endpoint.dem_unpack,
@@ -622,16 +610,28 @@ mod tests {
     }
 
     #[test]
+    fn tilejson_bounds_are_their_first_four_numbers() {
+        let bounds = |b: &str| {
+            TileJson::parse(&format!(r#"{{"bounds": {b}}}"#))
+                .unwrap()
+                .bounds
+        };
+        assert_eq!(bounds("[1, 2, 3, 4, 5]"), Some([1.0, 2.0, 3.0, 4.0]));
+        assert_eq!(bounds(r#"[1, "a", 2, 3, 4]"#), None);
+        assert_eq!(bounds("[1, 2, 3]"), None);
+    }
+
+    #[test]
     fn mbtiles_urls_name_files_or_urls() {
         assert_eq!(
-            archive_url("mbtiles:///data/a.mbtiles"),
-            Some(TileLocation::Mbtiles("file:///data/a.mbtiles".into()))
+            Archive::of("mbtiles:///data/a.mbtiles"),
+            Some(Archive::Mbtiles("file:///data/a.mbtiles".into()))
         );
         assert_eq!(
-            archive_url("mbtiles://https://x/a.mbtiles"),
-            Some(TileLocation::Mbtiles("https://x/a.mbtiles".into()))
+            Archive::of("mbtiles://https://x/a.mbtiles"),
+            Some(Archive::Mbtiles("https://x/a.mbtiles".into()))
         );
-        assert_eq!(archive_url("https://x/a.json"), None);
+        assert_eq!(Archive::of("https://x/a.json"), None);
         let mut doc = json::parse(
             r#"{"sources": {"a": {"url": "mbtiles://./a.mbtiles"}, "b": {"url": "mbtiles:///b.mbtiles"}}}"#,
         )
@@ -644,11 +644,10 @@ mod tests {
         assert_eq!(url("a"), "mbtiles://https://x/styles/a.mbtiles");
         assert_eq!(url("b"), "mbtiles:///b.mbtiles");
         let source = vector(r#"{"type":"vector","url":"mbtiles:///b.mbtiles"}"#);
-        let endpoint =
-            TileEndpoint::resolve(&source, Some(r#"{"maxzoom":3}"#), mercator()).unwrap();
+        let endpoint = TileEndpoint::resolve(&source, None, mercator()).unwrap();
         assert_eq!(
             endpoint.location(TileIndex::new(2, 1, 1)),
-            TileLocation::Mbtiles("file:///b.mbtiles".into())
+            TileLocation::Archive(Archive::Mbtiles("file:///b.mbtiles".into()))
         );
     }
 
@@ -666,7 +665,7 @@ mod tests {
         {
             header[102 + i * 4..106 + i * 4].copy_from_slice(&value.to_le_bytes());
         }
-        let metadata = archive_tilejson(&header).unwrap();
+        let metadata = crate::pmtiles::Header::parse(&header).unwrap().tilejson();
         let source =
             vector(r#"{"type":"vector","url":"pmtiles://https://x/tokyo.pmtiles","maxzoom":12}"#);
         let endpoint = TileEndpoint::resolve(&source, Some(&metadata), mercator()).unwrap();
@@ -677,7 +676,7 @@ mod tests {
         assert_eq!(endpoint.bounds, Some([139.725, 35.677, 139.755, 35.697]));
         assert_eq!(
             endpoint.location(TileIndex::new(10, 909, 403)),
-            TileLocation::Pmtiles("https://x/tokyo.pmtiles".into())
+            TileLocation::Archive(Archive::Pmtiles("https://x/tokyo.pmtiles".into()))
         );
         assert!(endpoint.contains(TileIndex::new(10, 909, 403)));
         assert!(!endpoint.contains(TileIndex::new(10, 0, 0)));
@@ -687,10 +686,7 @@ mod tests {
         let endpoint = TileEndpoint::resolve(&source, Some(&metadata), mercator()).unwrap();
         assert_eq!(endpoint.encoding, Encoding::Mvt);
         assert!(endpoint.contains(TileIndex::new(10, 0, 1)));
-        assert!(matches!(
-            endpoint.location(TileIndex::new(10, 909, 403)),
-            TileLocation::Url(_)
-        ));
+        assert!(matches!(endpoint.tiles, Tiles::Templates(_)));
     }
 
     #[test]
@@ -715,21 +711,44 @@ mod tests {
     fn style_keys_override_tilejson() {
         let source = vector(r#"{"type": "vector", "url": "https://x/tiles.json", "maxzoom": 12}"#);
         let tilejson = r#"{"tiles": ["https://x/{z}/{x}/{y}.pbf"], "minzoom": 2, "maxzoom": 14}"#;
-        let endpoint = TileEndpoint::resolve(&source, Some(tilejson), mercator()).unwrap();
+        let tilejson = TileJson::parse(tilejson).unwrap();
+        let endpoint = TileEndpoint::resolve(&source, Some(&tilejson), mercator()).unwrap();
         assert_eq!((endpoint.minzoom, endpoint.maxzoom), (2, 12));
-        assert_eq!(endpoint.url(TileIndex::new(3, 1, 2)), "https://x/3/1/2.pbf");
+        assert_eq!(
+            endpoint.url(TileIndex::new(3, 1, 2)).unwrap(),
+            "https://x/3/1/2.pbf"
+        );
     }
 
     #[test]
     fn tms_rows_count_from_the_bottom() {
         let source = vector(r#"{"type": "vector", "tiles": ["t/{z}/{x}/{y}"], "scheme": "tms"}"#);
         let endpoint = TileEndpoint::resolve(&source, None, mercator()).unwrap();
-        assert_eq!(endpoint.url(TileIndex::new(2, 1, 0)), "t/2/1/3");
+        assert_eq!(endpoint.url(TileIndex::new(2, 1, 0)).unwrap(), "t/2/1/3");
+    }
+
+    /// Bing's `{quadkey}` and `{prefix}`, `{ratio}` and WMS's
+    /// `{bbox-epsg-3857}`, as GL JS and Native fill them.
+    #[test]
+    fn templates_fill_every_token() {
+        let tile = TileIndex::new(3, 5, 2);
+        let url = |template, ratio| expand(template, &mercator(), Scheme::Xyz, tile, ratio);
+        assert_eq!(
+            url("https://{prefix}.x/{z}/{x}/{y}{ratio}.png?q={quadkey}", 2.0),
+            "https://52.x/3/5/2@2x.png?q=121"
+        );
+        assert_eq!(url("{x}{ratio}", 1.0), "5");
+        let b = mercator().tile_bounds(tile);
+        assert_eq!(
+            url("?bbox={bbox-epsg-3857}", 1.0),
+            format!("?bbox={},{},{},{}", b.min.x, b.min.y, b.max.x, b.max.y)
+        );
     }
 
     #[test]
     fn needs_tile_urls() {
         let source = vector(r#"{"type": "vector", "url": "https://x/tiles.json"}"#);
-        assert!(TileEndpoint::resolve(&source, Some("{}"), mercator()).is_err());
+        let tilejson = TileJson::parse("{}").unwrap();
+        assert!(TileEndpoint::resolve(&source, Some(&tilejson), mercator()).is_err());
     }
 }

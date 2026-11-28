@@ -184,7 +184,11 @@ pub(crate) const MODULES: &[Module] = &[
     // A `pmtiles://` source.
     Module {
         name: "archive",
-        paths: &["orb_source::pmtiles::", "orb_source::gzip::"],
+        paths: &[
+            "orb_source::pmtiles::",
+            "orb_source::gzip::",
+            "orb_source::archive::Reader>::",
+        ],
         except: &[],
         needs: &[],
     },
@@ -1107,7 +1111,7 @@ mod tests {
         assert_eq!(at("<mlt_core[0a1b]::decoder::Parser>::parse"), Some("mlt"));
         assert_eq!(at("<orb_tile::mlt::Layer as Drop>::drop"), Some("mlt"));
         assert_eq!(at("core::ptr::drop_in_place::<orb_tile::mlt::Layer>"), None);
-        assert_eq!(at("<orb_source::pmtiles::Reader>::lookup"), Some("archive"));
+        assert_eq!(at("<orb_source::pmtiles::Reader>::tile"), Some("archive"));
         assert_eq!(at("orb_tile::mvt::decode"), None);
         // A path ends where a name does.
         assert_eq!(at("<orb_render::Renderer>::pad_dems"), Some("dem"));

@@ -29,6 +29,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use orb_crs::TileIndex;
 use orb_host::Fetch;
+use orb_runtime::Archive;
 use orb_runtime::{
     FeaturesDone, FetchCounts, GlyphRaster, JobReply, JobRequest, Jobs, QueryDone, RasterDone,
     SpriteIcons, StyleUpdate, TileDone, TileOutcome, TileRequest, TileResult, TileWorker, Turn,
@@ -73,8 +74,8 @@ struct State {
     lost_loads: HashMap<LoadKey, u8>,
     /// The loads of suspects waiting for the one in flight.
     suspects: VecDeque<(TileRequest, TileDone)>,
-    /// The PMTiles archive heads the map read, for a replacement worker.
-    heads: Vec<(String, Arc<Vec<u8>>)>,
+    /// The archive heads the map read, for a replacement worker.
+    heads: Vec<(Archive, Arc<Vec<u8>>)>,
     /// Workers lost.
     lost: Vec<bool>,
     /// The worker each tile (by source; an overzoomed tile by the ancestor
@@ -203,9 +204,9 @@ impl WorkerJobs {
                 self.post(worker, &JobRequest::Style { style, update });
                 self.post(worker, &JobRequest::Icons { style, icons });
             }
-            for (url, head) in heads {
+            for (archive, head) in heads {
                 let head = (*head).clone();
-                self.post(worker, &JobRequest::ArchiveHead { url, head });
+                self.post(worker, &JobRequest::ArchiveHead { archive, head });
             }
         }
         // Their turns pass on once a replacement has the style.
@@ -530,18 +531,18 @@ impl Jobs for WorkerJobs {
         });
     }
 
-    fn add_archive_head(&self, url: &str, head: &Arc<Vec<u8>>) {
+    fn add_archive_head(&self, archive: &Archive, head: &Arc<Vec<u8>>) {
         {
             let mut state = self.state.lock().expect("jobs poisoned");
-            state.heads.retain(|(u, _)| u != url);
-            state.heads.push((url.to_string(), Arc::clone(head)));
+            state.heads.retain(|(a, _)| a != archive);
+            state.heads.push((archive.clone(), Arc::clone(head)));
             // As many as a job host keeps.
             if state.heads.len() > 8 {
                 state.heads.remove(0);
             }
         }
         self.broadcast(&JobRequest::ArchiveHead {
-            url: url.to_string(),
+            archive: archive.clone(),
             head: (**head).clone(),
         });
     }

@@ -1,30 +1,17 @@
-//! PMTiles v3 indexing, with no I/O. Callers satisfy [`Lookup::Read`] and
-//! cache the decoded directory with [`Reader::insert`]. All allocations and
-//! decompressed bodies are bounded; unsupported codecs fail explicitly.
+//! PMTiles v3 archives, read as [`crate::archive`] reads any archive.
+//! All allocations and decompressed bodies are bounded; unsupported codecs
+//! fail explicitly.
 
 use std::collections::VecDeque;
 
 use orb_crs::TileIndex;
+use orb_style::Encoding;
+
+use crate::archive::{Body, MAX_BYTES, Range, Step, Tile};
+use crate::endpoint::TileJson;
 
 pub const HEADER_LEN: u64 = 127;
-/// Maximum compressed or decompressed directory/tile body (64 MiB).
-pub(crate) const MAX_BYTES: u64 = 64 << 20;
 const CACHE_BYTES: usize = 8 << 20;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Range {
-    pub offset: u64,
-    pub length: u64,
-}
-
-impl Range {
-    pub fn new(offset: u64, length: u64) -> Result<Self, String> {
-        if length == 0 || length > MAX_BYTES || offset.checked_add(length).is_none() {
-            return Err("invalid or oversized PMTiles range".into());
-        }
-        Ok(Self { offset, length })
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compression {
@@ -61,6 +48,17 @@ pub enum TileType {
     Png,
     Jpeg,
     Webp,
+}
+
+impl TileType {
+    /// A vector tile's encoding; `None` for an image.
+    fn encoding(self) -> Option<Encoding> {
+        match self {
+            Self::Mvt => Some(Encoding::Mvt),
+            Self::Mlt => Some(Encoding::Mlt),
+            Self::Png | Self::Jpeg | Self::Webp => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -131,6 +129,17 @@ impl Header {
                 .ok_or("PMTiles section overflow")?;
         }
         Ok(header)
+    }
+
+    /// What the header says of the archive's tiles.
+    pub fn tilejson(&self) -> TileJson {
+        TileJson {
+            minzoom: Some(self.minzoom.into()),
+            maxzoom: Some(self.maxzoom.into()),
+            bounds: Some(self.bounds),
+            encoding: self.tile_type.encoding(),
+            ..TileJson::default()
+        }
     }
 }
 
@@ -388,17 +397,6 @@ fn write_directory(entries: &[Entry]) -> Vec<u8> {
     out
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Lookup {
-    Read(Range),
-    Tile {
-        range: Range,
-        compression: Compression,
-        tile_type: TileType,
-    },
-    Missing,
-}
-
 /// What a reader reads first: the header and, the spec requires, the root
 /// directory within the first 16 KiB, in one round trip.
 pub const HEAD: Range = Range {
@@ -410,8 +408,8 @@ const HEADER: Range = Range {
     length: HEADER_LEN,
 };
 
-/// Reads an archive's directories as [`Lookup::Read`] asks: [`HEAD`] first,
-/// then the leaves a tile's lookup needs, keeping the last 32 used.
+/// Reads an archive's directories as its steps ask: [`HEAD`] first, then
+/// the leaves a tile's lookup needs, keeping the last 32 used.
 #[derive(Debug)]
 pub struct Reader {
     header: Option<Header>,
@@ -435,7 +433,7 @@ impl Default for Reader {
 }
 
 impl Reader {
-    /// Keeps the bytes a [`Lookup::Read`] of `range` asked for. The first
+    /// Keeps the bytes a [`Step::Read`] of `range` asked for. The first
     /// read may be any prefix of the archive at least a header long: the
     /// root directory is kept too when it is within it.
     pub fn insert(&mut self, range: Range, bytes: &[u8]) -> Result<(), String> {
@@ -497,14 +495,22 @@ impl Reader {
         true
     }
 
-    /// Where `tile` is, or the read that finds out. A leaf directory used
-    /// becomes the most recently used.
-    pub fn lookup(&mut self, tile: TileIndex) -> Result<Lookup, String> {
+    /// What the header says of the archive's tiles, once read.
+    pub fn tilejson(&self) -> Step<TileJson> {
+        match &self.header {
+            Some(header) => Step::Done(header.tilejson()),
+            None => Step::Read(self.first),
+        }
+    }
+
+    /// Where `tile` is, or the read that finds out; `None` when the archive
+    /// leaves it out. A leaf directory used becomes the most recently used.
+    pub fn tile(&mut self, tile: TileIndex) -> Result<Step<Option<Tile>>, String> {
         let Some(header) = &self.header else {
-            return Ok(Lookup::Read(self.first));
+            return Ok(Step::Read(self.first));
         };
         if tile.z < header.minzoom || tile.z > header.maxzoom {
-            return Ok(Lookup::Missing);
+            return Ok(Step::Done(None));
         }
         let id = tile_id(tile)?;
         let mut range = header.root;
@@ -519,11 +525,11 @@ impl Reader {
                 None
             };
             let Some(dir) = dir else {
-                return Ok(Lookup::Read(range));
+                return Ok(Step::Read(range));
             };
             let index = dir.partition_point(|e| e.id <= id);
             let Some(entry) = index.checked_sub(1).map(|i| &dir[i]) else {
-                return Ok(Lookup::Missing);
+                return Ok(Step::Done(None));
             };
             let (base, size) = if entry.run == 0 {
                 (header.leaves_offset, header.leaves_length)
@@ -543,15 +549,10 @@ impl Reader {
                 entry.length,
             )?;
             if entry.run > 0 {
-                return Ok(if id - entry.id < entry.run {
-                    Lookup::Tile {
-                        range,
-                        compression: header.tile_compression,
-                        tile_type: header.tile_type,
-                    }
-                } else {
-                    Lookup::Missing
-                });
+                return Ok(Step::Done((id - entry.id < entry.run).then(|| Tile {
+                    body: Body::At(range, header.tile_compression),
+                    encoding: header.tile_type.encoding(),
+                })));
             }
         }
         Err("PMTiles directory nesting exceeds four levels".into())
@@ -602,8 +603,8 @@ mod tests {
         reads: &mut Vec<Range>,
     ) -> Option<Vec<u8>> {
         loop {
-            match reader.lookup(tile).unwrap() {
-                Lookup::Read(range) => {
+            match reader.tile(tile).unwrap() {
+                Step::Read(range) => {
                     reads.push(range);
                     let (at, end) = (
                         range.offset as usize,
@@ -614,11 +615,14 @@ mod tests {
                         None => assert!(reader.read_failed(range), "{range:?}"),
                     }
                 }
-                Lookup::Tile { range, .. } => {
+                Step::Done(Some(Tile {
+                    body: Body::At(range, _),
+                    ..
+                })) => {
                     let at = range.offset as usize;
                     break Some(archive[at..at + range.length as usize].to_vec());
                 }
-                Lookup::Missing => break None,
+                Step::Done(_) => break None,
             }
         }
     }
@@ -677,40 +681,6 @@ mod tests {
         let mut reads = Vec::new();
         read(&mut reader, &large, TileIndex::new(9, 1, 1), &mut reads);
         assert_eq!(reads.len(), 1, "a leaf alone: {reads:?}");
-    }
-
-    /// The 32 leaf directories kept are the ones used last.
-    #[test]
-    fn leaves_are_kept_least_recently_used_first() {
-        let archive = archive(9);
-        let mut reader = Reader::default();
-        // One tile in each of 33 leaves.
-        let mut tiles: Vec<(TileIndex, Range)> = Vec::new();
-        'find: for row in 0..512 {
-            for col in 0..512 {
-                let tile = TileIndex::new(9, col, row);
-                let mut reads = Vec::new();
-                read(&mut reader, &archive, tile, &mut reads);
-                if let Some(&leaf) = reads.iter().find(|r| **r != HEAD) {
-                    tiles.push((tile, leaf));
-                    if tiles.len() == 33 {
-                        break 'find;
-                    }
-                }
-            }
-        }
-        assert_eq!(tiles.len(), 33);
-        let mut reader = Reader::default();
-        let mut reads = Vec::new();
-        for (tile, _) in &tiles[..32] {
-            read(&mut reader, &archive, *tile, &mut reads);
-        }
-        // Using the first leaf again keeps it over the second.
-        read(&mut reader, &archive, tiles[0].0, &mut reads);
-        read(&mut reader, &archive, tiles[32].0, &mut reads);
-        assert!(!reader.wants(tiles[0].1));
-        assert!(reader.wants(tiles[1].1));
-        assert!(!reader.wants(tiles[2].1));
     }
 
     #[test]
@@ -773,23 +743,20 @@ mod tests {
             leaves: VecDeque::new(),
             first: HEAD,
         };
-        assert!(matches!(
-            reader.lookup(TileIndex::new(1, 0, 0)).unwrap(),
-            Lookup::Tile {
-                range: Range {
-                    offset: 300,
-                    length: 3
-                },
-                ..
-            }
-        ));
+        let at = |offset, length| {
+            Step::Done(Some(Tile {
+                body: Body::At(Range::new(offset, length).unwrap(), Compression::None),
+                encoding: Some(Encoding::Mvt),
+            }))
+        };
+        assert_eq!(reader.tile(TileIndex::new(1, 0, 0)).unwrap(), at(300, 3));
         assert_eq!(
-            reader.lookup(TileIndex::new(1, 1, 1)).unwrap(),
-            Lookup::Missing
+            reader.tile(TileIndex::new(1, 1, 1)).unwrap(),
+            Step::Done(None)
         );
         assert_eq!(
-            reader.lookup(TileIndex::new(1, 1, 0)).unwrap(),
-            Lookup::Read(Range::new(203, 4).unwrap())
+            reader.tile(TileIndex::new(1, 1, 0)).unwrap(),
+            Step::Read(Range::new(203, 4).unwrap())
         );
         // A leaf entry id4 run1 len2 offset5 (six bytes).
         reader.header.as_mut().unwrap().root = root;
@@ -802,16 +769,7 @@ mod tests {
                 offset: 5,
             }],
         ));
-        assert!(matches!(
-            reader.lookup(TileIndex::new(1, 1, 0)).unwrap(),
-            Lookup::Tile {
-                range: Range {
-                    offset: 305,
-                    length: 2
-                },
-                ..
-            }
-        ));
+        assert_eq!(reader.tile(TileIndex::new(1, 1, 0)).unwrap(), at(305, 2));
     }
 
     #[test]

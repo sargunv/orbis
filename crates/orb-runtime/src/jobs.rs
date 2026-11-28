@@ -95,7 +95,7 @@ pub enum JobRequest {
     },
     /// [`Jobs::add_archive_head`].
     ArchiveHead {
-        url: String,
+        archive: crate::Archive,
         head: Vec<u8>,
     },
     /// [`Jobs::cancel`].
@@ -219,10 +219,10 @@ pub trait Jobs: Send + Sync {
     /// Lets the glyph ranges that failed be fetched again by the tiles
     /// that need them, in every job host.
     fn retry_glyphs(&self) {}
-    /// PMTiles archive `url` begins with `head`, which the map read for its
-    /// header: loads of its tiles start from these bytes rather than read
-    /// them again.
-    fn add_archive_head(&self, url: &str, head: &Arc<Vec<u8>>);
+    /// `archive` begins with `head`, which the map read for its header:
+    /// loads of its tiles start from these bytes rather than read them
+    /// again.
+    fn add_archive_head(&self, archive: &crate::Archive, head: &Arc<Vec<u8>>);
     /// Rasterizes glyphs for the atlas: one deduplicated job per unit, run
     /// by the unit's owner worker.
     fn raster(&self, request: GlyphRaster, done: RasterDone);
@@ -294,8 +294,8 @@ impl Jobs for PoolJobs {
         self.host.retry_glyphs();
     }
 
-    fn add_archive_head(&self, url: &str, head: &Arc<Vec<u8>>) {
-        self.host.add_archive_head(url, head);
+    fn add_archive_head(&self, archive: &crate::Archive, head: &Arc<Vec<u8>>) {
+        self.host.add_archive_head(archive, head);
     }
 
     fn features(&self, request: crate::FeatureRequest, done: crate::FeaturesDone) {

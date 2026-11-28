@@ -196,31 +196,24 @@ impl<'p, P: Pages + ?Sized> NativeDatabase<'p, P> {
                 .replace("{x}", "")
                 .replace("{y}", "");
             if rest.contains('{') {
-                import.resource(&tile_url(&template, ratio, z, x, y), &body);
+                let (tms, tile) = (
+                    orb_crs::TileMatrixSet::web_mercator(),
+                    TileIndex::new(z, x, y),
+                );
+                let url = orb_source::endpoint::expand(
+                    &template,
+                    tms,
+                    orb_style::Scheme::Xyz,
+                    tile,
+                    ratio as f32,
+                );
+                import.resource(&url, &body);
             } else {
                 import.tile(&template, TileIndex::new(z, x, y), body);
             }
         }
         Ok((bytes, count))
     }
-}
-
-/// A tile's URL from its template, as MapLibre Native makes it.
-fn tile_url(template: &str, ratio: i64, z: u8, x: u32, y: u32) -> String {
-    let quadkey: String = (1..=z)
-        .rev()
-        .map(|i| {
-            let mask = 1 << (i - 1);
-            char::from(b'0' + u8::from(x & mask != 0) + 2 * u8::from(y & mask != 0))
-        })
-        .collect();
-    template
-        .replace("{z}", &z.to_string())
-        .replace("{x}", &x.to_string())
-        .replace("{y}", &y.to_string())
-        .replace("{ratio}", if ratio > 1 { "@2x" } else { "" })
-        .replace("{prefix}", &format!("{:x}{:x}", x % 16, y % 16))
-        .replace("{quadkey}", &quadkey)
 }
 
 /// A region definition as MapLibre Native encodes it: a tile pyramid's
@@ -323,19 +316,5 @@ mod tests {
         assert_eq!(g.zooms, [5.0, 25.0]);
         assert!(g.geometry.unwrap().contains("LineString"));
         assert!(parse_definition(r#"{"bounds":[1,2,3,4]}"#).is_none());
-    }
-
-    #[test]
-    fn tile_urls_fill_natives_tokens() {
-        assert_eq!(
-            tile_url(
-                "https://{prefix}.x/{z}/{x}/{y}{ratio}.png?q={quadkey}",
-                2,
-                3,
-                5,
-                2
-            ),
-            "https://52.x/3/5/2@2x.png?q=121"
-        );
     }
 }

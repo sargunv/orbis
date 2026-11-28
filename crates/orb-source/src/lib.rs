@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod archive;
 mod backoff;
 pub mod endpoint;
 mod gzip;

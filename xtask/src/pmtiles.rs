@@ -3,7 +3,8 @@
 use std::io::Write;
 
 use orb_crs::TileIndex;
-use orb_source::pmtiles::{Compression, Contents, Entry, Lookup, Range, Reader, TileType, tile_id};
+use orb_source::archive::{Body, Range, Reader, Step, Tile};
+use orb_source::pmtiles::{Compression, Contents, Entry, TileType, tile_id};
 
 const SOURCE: &str = "https://btrfs.openfreemap.com/areas/planet/20261101_080013_pt/tiles.pmtiles";
 const OUT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../web/demo/data");
@@ -15,7 +16,7 @@ const MAX_ZOOM: u8 = 14;
 pub(crate) fn extract() -> Result<(), String> {
     std::fs::create_dir_all(OUT).map_err(|e| e.to_string())?;
     let agent = ureq::Agent::new_with_defaults();
-    let mut reader = Reader::default();
+    let mut reader = Reader::Pmtiles(Default::default());
     let mut tiles = Vec::new();
     let mut requests = 0;
     let mut downloaded = 0;
@@ -36,17 +37,18 @@ pub(crate) fn extract() -> Result<(), String> {
     coordinates.sort_by_key(|t| tile_id(*t).unwrap());
     for tile in &coordinates {
         loop {
-            match reader.lookup(*tile)? {
-                Lookup::Missing => break,
-                Lookup::Read(range) => {
+            match reader.tile(*tile)? {
+                Step::Done(None) => break,
+                Step::Read(range) => {
                     let bytes = remote(&agent, range)?;
                     requests += 1;
                     downloaded += bytes.len();
                     reader.insert(range, &bytes)?;
                 }
-                Lookup::Tile {
-                    range, compression, ..
-                } => {
+                Step::Done(Some(Tile {
+                    body: Body::At(range, compression),
+                    ..
+                })) => {
                     let bytes = remote(&agent, range)?;
                     requests += 1;
                     downloaded += bytes.len();
@@ -58,6 +60,7 @@ pub(crate) fn extract() -> Result<(), String> {
                     );
                     break;
                 }
+                Step::Done(Some(_)) => unreachable!("PMTiles bodies are ranges"),
             }
         }
     }
@@ -244,22 +247,10 @@ pub(crate) fn local_tile(
     archive: &[u8],
     tile: TileIndex,
 ) -> Result<Vec<u8>, String> {
-    loop {
-        match reader.lookup(tile)? {
-            Lookup::Read(range) => reader.insert(
-                range,
-                &archive[range.offset as usize..(range.offset + range.length) as usize],
-            )?,
-            Lookup::Tile {
-                range, compression, ..
-            } => {
-                return compression.decode(
-                    &archive[range.offset as usize..(range.offset + range.length) as usize],
-                );
-            }
-            Lookup::Missing => return Err(format!("missing extract tile {tile:?}")),
-        }
-    }
+    let found = reader.tile_in(archive, tile)?;
+    found
+        .map(|(bytes, _)| bytes)
+        .ok_or_else(|| format!("missing extract tile {tile:?}"))
 }
 
 #[cfg(test)]
@@ -272,7 +263,10 @@ mod tests {
         let read = |name: &str| std::fs::read(format!("{OUT}/{name}")).unwrap();
         let manifest: serde_json::Value = serde_json::from_slice(&read("manifest.json")).unwrap();
         let (mvt, mlt) = (read("tokyo-mvt.pmtiles"), read("tokyo-mlt.pmtiles"));
-        let (mut a, mut b) = (Reader::default(), Reader::default());
+        let (mut a, mut b) = (
+            Reader::Pmtiles(Default::default()),
+            Reader::Pmtiles(Default::default()),
+        );
         for c in manifest["tiles"].as_array().unwrap() {
             let at = |i: usize| c[i].as_u64().unwrap() as u32;
             let tile = TileIndex::new(at(0) as u8, at(1), at(2));

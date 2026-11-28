@@ -1,18 +1,18 @@
-//! Host-driven tile loading. The PMTiles reader stays pure in orb-source;
-//! this adapter satisfies its range reads and owns per-job-executor caches.
-//! Loads that need the same bytes at once share one fetch: the first view
-//! of an archive reads its head and each leaf directory once, and
-//! overzoomed tiles of one data tile fetch it once. A load aborted leaves
-//! the fetch it shares, which is aborted once no load waits on it.
+//! Host-driven tile loading: tiles by URL, from the app, or read out of an
+//! archive by the reader `orb-source` keeps pure, its range reads
+//! satisfied here. Loads that need the same bytes at once share one fetch:
+//! the first view of an archive reads its head and each directory once,
+//! and overzoomed tiles of one data tile fetch it once. A load aborted
+//! leaves the fetch it shares, which is aborted once no load waits on it.
 
 use rustc_hash::FxHashMap as HashMap;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use orb_crs::TileIndex;
-use orb_host::{Abort, Fetch, FetchDone, FetchError, Fetched, ResourceKind, TileFormat};
+use orb_host::{Abort, Fetch, FetchDone, FetchError, Fetched, Read, ResourceKind, TileFormat};
+use orb_source::archive::{self, Archive, Body, Range, Step, TileBytes};
 use orb_source::endpoint::HostTile;
-use orb_source::pmtiles::{self, Lookup, Range, Reader, TileType};
 use orb_style::Encoding;
 
 pub use orb_source::endpoint::TileLocation;
@@ -21,26 +21,19 @@ pub use orb_source::endpoint::TileLocation;
 /// archive has none), and their encoding.
 pub(crate) type LoadDone =
     Box<dyn FnOnce(Result<(Fetched, Encoding), FetchError>) + Send + 'static>;
-type Archives = VecDeque<(String, Arc<Mutex<Reader>>)>;
 /// A shared fetch's answer, for each load that waits on it.
 type Shared = Result<Arc<Fetched>, FetchError>;
 type Waiter = Box<dyn FnOnce(Shared) + Send>;
 /// A fetch's URL and what it reads of it.
 type FetchKey = (String, Read);
-/// Fetches in flight, by URL and what they read.
-type InFlight = HashMap<FetchKey, Sharing>;
+/// An archive's reader, shared by the loads that read it.
+pub(crate) type ArchiveReader = Arc<Mutex<archive::Reader>>;
 
-/// What a fetch reads of its URL.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Read {
-    /// All of it, a stale cached copy too where `stale` says
-    /// ([`Fetch::get_or_stale`]): a fetch that revalidates never shares
-    /// one that may answer stale.
-    Whole {
-        stale: bool,
-    },
-    Range(Range),
-}
+/// Called once with the bytes of a range read of an archive.
+pub(crate) type ReadDone = Box<dyn FnOnce(Result<&[u8], FetchError>) + Send>;
+/// Reads a range of an archive: its directories and pages as
+/// [`ResourceKind::Source`], a tile's body as an archive tile.
+pub(crate) type Reads = Arc<dyn Fn(ResourceKind, Range, ReadDone) + Send + Sync>;
 
 /// A fetch in flight: the loads waiting on it, by number, and its abort.
 struct Sharing {
@@ -52,11 +45,9 @@ struct Sharing {
 
 pub(crate) struct TileLoader {
     fetch: Arc<dyn Fetch>,
-    archives: Mutex<Archives>,
-    /// MBTiles archives' readers, as [`Self::archives`].
-    #[cfg(feature = "sqlite")]
-    mbtiles: Mutex<VecDeque<(String, Arc<Mutex<orb_source::mbtiles::Reader>>)>>,
-    in_flight: Mutex<InFlight>,
+    /// The readers of the last eight archives read, most recent last.
+    archives: Mutex<VecDeque<(Archive, ArchiveReader)>>,
+    in_flight: Mutex<HashMap<FetchKey, Sharing>>,
     /// Numbers shared fetches and their waiters.
     next: std::sync::atomic::AtomicU64,
 }
@@ -75,75 +66,157 @@ pub(crate) fn tile_format(encoding: Encoding) -> TileFormat {
     }
 }
 
-/// Reads an archive's first bytes, [`pmtiles::HEAD`], or its header alone
-/// when it is too short for that: `done` gets a prefix of the archive.
-pub(crate) fn read_head(fetch: &Arc<dyn Fetch>, url: &str, abort: &Abort, done: FetchDone) {
-    let (head, header) = (pmtiles::HEAD, pmtiles::HEADER_LEN);
-    let (again, url_again, abort_again) = (Arc::clone(fetch), url.to_string(), abort.clone());
-    fetch.get_range(
-        ResourceKind::Source,
-        url,
-        head.offset,
-        head.length,
-        abort,
-        Box::new(move |result| match result {
-            Err(e) if falls_back(&e) => again.get_range(
-                ResourceKind::Source,
-                &url_again,
-                0,
-                header,
-                &abort_again,
-                done,
-            ),
-            result => done(result),
-        }),
-    );
-}
-
-/// Whether a failed first read may succeed as the header alone: anything
+/// Whether a failed first read of an archive may succeed shorter: anything
 /// but an archive that isn't there, or a read given up.
-pub(crate) fn falls_back(error: &FetchError) -> bool {
+fn falls_back(error: &FetchError) -> bool {
     !matches!(
         error,
         FetchError::NotFound | FetchError::UnsupportedUrl(_) | FetchError::Aborted
     )
 }
 
+/// Reads into `reader` the ranges `step` asks for, through `read`, until
+/// it answers; a first read past a short archive's end is asked again
+/// shorter, and a read another load's bytes already answered is kept once.
+pub(crate) fn drive<T: 'static>(
+    reader: ArchiveReader,
+    step: impl Fn(&mut archive::Reader) -> Result<Step<T>, String> + Send + 'static,
+    read: Reads,
+    done: Box<dyn FnOnce(Result<T, FetchError>) + Send>,
+) {
+    fn go<T: 'static>(
+        reader: ArchiveReader,
+        step: impl Fn(&mut archive::Reader) -> Result<Step<T>, String> + Send + 'static,
+        read: Reads,
+        done: Box<dyn FnOnce(Result<T, FetchError>) + Send>,
+        reads: u32,
+    ) {
+        if reads > archive::MAX_READS {
+            return done(Err(FetchError::Range("too many archive reads".into())));
+        }
+        let range = match step(&mut reader.lock().expect("reader poisoned")) {
+            Ok(Step::Done(value)) => return done(Ok(value)),
+            Ok(Step::Read(range)) => range,
+            Err(e) => return done(Err(FetchError::Range(e))),
+        };
+        let again = Arc::clone(&read);
+        read(
+            ResourceKind::Source,
+            range,
+            Box::new(move |result| {
+                let kept = {
+                    let mut reader = reader.lock().expect("reader poisoned");
+                    match result {
+                        Ok(bytes) if reader.wants(range) => {
+                            reader.insert(range, bytes).map_err(FetchError::Range)
+                        }
+                        Ok(_) => Ok(()),
+                        Err(e) if falls_back(&e) && reader.read_failed(range) => Ok(()),
+                        Err(e) => Err(e),
+                    }
+                };
+                match kept {
+                    Ok(()) => go(reader, step, again, done, reads + 1),
+                    Err(e) => done(Err(e)),
+                }
+            }),
+        );
+    }
+    go(reader, step, read, done, 0);
+}
+
+/// Reads `tile` out of an archive with `reader`, its body too, through
+/// `read`: `None` when the archive leaves it out.
+pub(crate) fn read_tile(
+    reader: ArchiveReader,
+    tile: TileIndex,
+    read: Reads,
+    done: Box<dyn FnOnce(Result<Option<TileBytes>, FetchError>) + Send>,
+) {
+    let body = Arc::clone(&read);
+    let found: Box<dyn FnOnce(_) + Send> = Box::new(move |found| match found {
+        Ok(Some(archive::Tile {
+            body: Body::At(range, compression),
+            encoding,
+        })) => body(
+            ResourceKind::Tile(TileFormat::Archive),
+            range,
+            Box::new(move |read| {
+                let bytes = read.and_then(|b| compression.decode(b).map_err(FetchError::Range));
+                done(bytes.map(|bytes| Some((bytes, encoding))))
+            }),
+        ),
+        Ok(Some(archive::Tile {
+            body: Body::Bytes(bytes),
+            encoding,
+        })) => done(Ok(Some((bytes, encoding)))),
+        Ok(None) => done(Ok(None)),
+        Err(e) => done(Err(e)),
+    });
+    drive(reader, move |r| r.tile(tile), read, found);
+}
+
+/// [`Reads`] of `url` through `fetch`, `then` seeing each read's bytes.
+pub(crate) fn fetch_reads(
+    fetch: Arc<dyn Fetch>,
+    url: String,
+    abort: Abort,
+    then: impl Fn(Range, &[u8]) + Send + Sync + 'static,
+) -> Reads {
+    let then = Arc::new(then);
+    Arc::new(move |kind, range, done: ReadDone| {
+        let then = Arc::clone(&then);
+        let (offset, length) = (range.offset, range.length);
+        fetch.get_range(
+            kind,
+            &url,
+            offset,
+            length,
+            &abort,
+            Box::new(move |result| match result {
+                Ok(fetched) => {
+                    then(range, &fetched.bytes);
+                    done(Ok(&fetched.bytes))
+                }
+                Err(e) => done(Err(e)),
+            }),
+        );
+    })
+}
+
 impl TileLoader {
     pub(crate) fn new(fetch: Arc<dyn Fetch>) -> Arc<Self> {
         Arc::new(Self {
             fetch,
-            archives: Mutex::new(VecDeque::new()),
-            #[cfg(feature = "sqlite")]
-            mbtiles: Mutex::default(),
-            in_flight: Mutex::new(HashMap::default()),
+            archives: Mutex::default(),
+            in_flight: Mutex::default(),
             next: Default::default(),
         })
     }
 
-    /// The reader of archive `url`, the most recently used of the eight
-    /// kept.
-    fn reader(&self, url: &str) -> Arc<Mutex<Reader>> {
-        let mut archives = self.archives.lock().expect("archives poisoned");
-        if let Some(index) = archives.iter().position(|(u, _)| u == url) {
-            let entry = archives.remove(index).expect("found");
-            let reader = entry.1.clone();
-            archives.push_back(entry);
-            return reader;
+    /// The reader of `archive`, made if need be: the most recently used of
+    /// the eight kept.
+    fn reader(&self, archive: &Archive) -> Result<ArchiveReader, FetchError> {
+        let mut readers = self.archives.lock().expect("archives poisoned");
+        if let Some(index) = readers.iter().position(|(a, _)| a == archive) {
+            let entry = readers.remove(index).expect("found");
+            let reader = Arc::clone(&entry.1);
+            readers.push_back(entry);
+            return Ok(reader);
         }
-        let reader = Arc::new(Mutex::new(Reader::default()));
-        if archives.len() == 8 {
-            archives.pop_front();
+        let reader = archive::Reader::new(archive).map_err(FetchError::UnsupportedUrl)?;
+        let reader = Arc::new(Mutex::new(reader));
+        if readers.len() == 8 {
+            readers.pop_front();
         }
-        archives.push_back((url.to_string(), reader.clone()));
-        reader
+        readers.push_back((archive.clone(), Arc::clone(&reader)));
+        Ok(reader)
     }
 
-    /// Archive `url` begins with `head`, which the map read for its
-    /// header: its loads start from these bytes rather than read them.
-    pub(crate) fn add_head(&self, url: &str, head: &[u8]) {
-        if let Ok(range) = Range::new(0, head.len() as u64) {
-            let reader = self.reader(url);
+    /// `archive` begins with `head`, which the map read for its header:
+    /// its loads start from these bytes rather than read them.
+    pub(crate) fn add_head(&self, archive: &Archive, head: &[u8]) {
+        if let (Ok(range), Ok(reader)) = (Range::new(0, head.len() as u64), self.reader(archive)) {
             let mut reader = reader.lock().expect("reader poisoned");
             if reader.wants(range) {
                 let _ = reader.insert(range, head);
@@ -205,10 +278,9 @@ impl TileLoader {
                 }
             };
             let waiting = waiting.map(|s| s.waiters).unwrap_or_default();
-            let waiting = waiting.into_iter().map(|(_, waiter)| waiter);
             let result = result.map(Arc::new);
             // The last waiter takes the answer: one load alone copies none.
-            let mut waiting = waiting.into_iter();
+            let mut waiting = waiting.into_iter().map(|(_, waiter)| waiter);
             let last = waiting.next_back();
             for waiter in waiting {
                 waiter(result.clone());
@@ -217,15 +289,7 @@ impl TileLoader {
                 waiter(result);
             }
         });
-        match read {
-            Read::Whole { stale: false } => self.fetch.get(kind, url, &shared, done),
-            Read::Whole { stale: true } => self.fetch.get_or_stale(kind, url, &shared, done),
-            Read::Range(range) => {
-                let (offset, length) = (range.offset, range.length);
-                self.fetch
-                    .get_range(kind, url, offset, length, &shared, done)
-            }
-        }
+        self.fetch.read(kind, url, read, &shared, done);
     }
 
     /// Takes waiter `number` off shared fetch `id` of `key`, answering it
@@ -250,6 +314,19 @@ impl TileLoader {
         }
     }
 
+    /// [`Reads`] of `url` through the shared fetches.
+    fn reads(self: &Arc<Self>, url: String, abort: Abort) -> Reads {
+        let loader = Arc::clone(self);
+        Arc::new(move |kind, range, done: ReadDone| {
+            let read = Read::Range(range.offset, range.length);
+            let shared: Waiter = Box::new(move |result| match result {
+                Ok(fetched) => done(Ok(&fetched.bytes)),
+                Err(e) => done(Err(e)),
+            });
+            loader.share(kind, &url, read, &abort, shared);
+        })
+    }
+
     /// Loads a tile, unless `abort` fires first; from a URL, taking a
     /// stale cached copy where `stale` says ([`Fetch::get_or_stale`]).
     #[allow(clippy::too_many_arguments)]
@@ -272,10 +349,6 @@ impl TileLoader {
             TileLocation::Host(HostTile::GeoJson(_) | HostTile::Empty) => {
                 done(Ok((Fetched::default(), encoding)))
             }
-            // A query's refetch of an app's tile the map no longer holds.
-            TileLocation::Url(url) if url.starts_with(orb_source::endpoint::HOST_TILES) => {
-                done(Err(FetchError::NotFound))
-            }
             TileLocation::Url(url) => self.share(
                 kind,
                 &url,
@@ -283,219 +356,25 @@ impl TileLoader {
                 abort,
                 Box::new(move |r| done(r.map(|fetched| (owned(fetched), encoding)))),
             ),
-            TileLocation::Pmtiles(url) => {
-                let reader = self.reader(&url);
-                self.archive(url, reader, tile, encoding, 0, abort.clone(), done);
-            }
-            #[cfg(feature = "sqlite")]
-            TileLocation::Mbtiles(url) => {
-                let reader = {
-                    let mut readers = self.mbtiles.lock().expect("archives poisoned");
-                    most_recent(&mut readers, &url)
+            TileLocation::Archive(archive) => {
+                let reader = match self.reader(&archive) {
+                    Ok(reader) => reader,
+                    Err(e) => return done(Err(e)),
                 };
-                let step = move |r: &mut orb_source::mbtiles::Reader| r.tile(tile);
-                drive(
-                    self,
-                    url,
-                    reader,
-                    step,
-                    abort.clone(),
-                    Box::new(move |result| {
-                        use orb_source::mbtiles::Format;
-                        done(result.map(|found| match found {
-                            // Left out of the archive: empty, as PMTiles.
-                            None => (Fetched::default(), encoding),
-                            Some((bytes, Format::Vector(own))) => (bytes.into(), own),
-                            Some((bytes, Format::Raster)) => (bytes.into(), encoding),
-                        }))
-                    }),
-                );
-            }
-            #[cfg(not(feature = "sqlite"))]
-            TileLocation::Mbtiles(_) => done(Err(FetchError::UnsupportedUrl(
-                "mbtiles:// needs Orbis built with its `sqlite` feature".into(),
-            ))),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn archive(
-        self: &Arc<Self>,
-        url: String,
-        reader: Arc<Mutex<Reader>>,
-        tile: TileIndex,
-        encoding: Encoding,
-        reads: u8,
-        abort: Abort,
-        done: LoadDone,
-    ) {
-        if reads > 8 {
-            done(Err(FetchError::Range(
-                "too many PMTiles directory reads".into(),
-            )));
-            return;
-        }
-        let lookup = reader.lock().expect("reader poisoned").lookup(tile);
-        match lookup {
-            Err(error) => done(Err(FetchError::Range(error))),
-            // Archives leave out empty tiles: draw nothing, as the
-            // PMTiles protocol for GL JS answers empty data.
-            Ok(Lookup::Missing) => done(Ok((Fetched::default(), encoding))),
-            Ok(Lookup::Tile {
-                range,
-                compression,
-                tile_type,
-            }) => {
-                let encoding = match tile_type {
-                    TileType::Mvt => Encoding::Mvt,
-                    TileType::Mlt => Encoding::Mlt,
-                    // Images decode by content.
-                    TileType::Png | TileType::Jpeg | TileType::Webp => encoding,
-                };
-                // An archive holds tiles alone: an image source is one image.
-                self.share(
-                    ResourceKind::Tile(TileFormat::Archive),
-                    &url,
-                    Read::Range(range),
-                    &abort,
-                    Box::new(move |r| {
-                        done(
-                            r.and_then(|read| {
-                                compression.decode(&read.bytes).map_err(FetchError::Range)
-                            })
-                            .map(|bytes| (bytes.into(), encoding)),
-                        );
-                    }),
-                );
-            }
-            Ok(Lookup::Read(range)) => {
-                let loader = Arc::clone(self);
-                let shared = abort.clone();
-                self.share(
-                    ResourceKind::Source,
-                    &url.clone(),
-                    Read::Range(range),
-                    &shared,
-                    Box::new(move |r| {
-                        let result = {
-                            let mut reader = reader.lock().expect("reader poisoned");
-                            match r {
-                                // The first waiter keeps the bytes for all.
-                                Ok(read) if reader.wants(range) => {
-                                    reader.insert(range, &read.bytes).map_err(FetchError::Range)
-                                }
-                                Ok(_) => Ok(()),
-                                Err(e) if falls_back(&e) && reader.read_failed(range) => Ok(()),
-                                Err(e) => Err(e),
-                            }
-                        };
-                        match result {
-                            Ok(()) => {
-                                loader.archive(url, reader, tile, encoding, reads + 1, abort, done)
-                            }
-                            Err(error) => done(Err(error)),
-                        }
-                    }),
-                );
+                let reads = self.reads(archive.url().to_string(), abort.clone());
+                let found = Box::new(move |found: Result<Option<TileBytes>, _>| {
+                    done(found.map(|found| match found {
+                        // Archives leave out empty tiles: draw nothing,
+                        // as the PMTiles protocol for GL JS answers.
+                        None => (Fetched::default(), encoding),
+                        // Images decode by content.
+                        Some((bytes, own)) => (bytes.into(), own.unwrap_or(encoding)),
+                    }))
+                });
+                read_tile(reader, tile, reads, found);
             }
         }
     }
-}
-
-/// The reader of archive `url` in `readers`, made if need be: the most
-/// recently used of the eight kept.
-#[cfg(feature = "sqlite")]
-fn most_recent<R: Default>(
-    readers: &mut VecDeque<(String, Arc<Mutex<R>>)>,
-    url: &str,
-) -> Arc<Mutex<R>> {
-    if let Some(index) = readers.iter().position(|(u, _)| u == url) {
-        let entry = readers.remove(index).expect("found");
-        let reader = entry.1.clone();
-        readers.push_back(entry);
-        return reader;
-    }
-    let reader = Arc::<Mutex<R>>::default();
-    if readers.len() == 8 {
-        readers.pop_front();
-    }
-    readers.push_back((url.to_string(), reader.clone()));
-    reader
-}
-
-/// What an MBTiles read gives, or why it failed.
-#[cfg(feature = "sqlite")]
-pub(crate) type MbtilesDone<T> = Box<dyn FnOnce(Result<T, FetchError>) + Send>;
-
-/// Runs `step` on the MBTiles archive `url`'s `reader` until it answers,
-/// reading the pages it asks for through `loader`'s shared fetches.
-#[cfg(feature = "sqlite")]
-pub(crate) fn drive<T: 'static>(
-    loader: &Arc<TileLoader>,
-    url: String,
-    reader: Arc<Mutex<orb_source::mbtiles::Reader>>,
-    step: impl Fn(&mut orb_source::mbtiles::Reader) -> Result<orb_source::mbtiles::Step<T>, String>
-    + Send
-    + 'static,
-    abort: Abort,
-    done: MbtilesDone<T>,
-) {
-    read_until(loader, url, reader, step, abort, done, 0);
-}
-
-#[cfg(feature = "sqlite")]
-fn read_until<T: 'static>(
-    loader: &Arc<TileLoader>,
-    url: String,
-    reader: Arc<Mutex<orb_source::mbtiles::Reader>>,
-    step: impl Fn(&mut orb_source::mbtiles::Reader) -> Result<orb_source::mbtiles::Step<T>, String>
-    + Send
-    + 'static,
-    abort: Abort,
-    done: MbtilesDone<T>,
-    reads: u32,
-) {
-    use orb_source::mbtiles::Step;
-    // A lookup reads a page per level of two trees and an overflow run.
-    if reads > 64 {
-        return done(Err(FetchError::Range(format!(
-            "{url}: too many MBTiles reads"
-        ))));
-    }
-    let answer = step(&mut reader.lock().expect("reader poisoned"));
-    let (offset, length) = match answer {
-        Ok(Step::Done(value)) => return done(Ok(value)),
-        Err(e) => return done(Err(FetchError::Range(format!("{url}: {e}")))),
-        Ok(Step::Read { offset, length }) => (offset, length),
-    };
-    let range = match Range::new(offset, length) {
-        Ok(range) => range,
-        Err(e) => return done(Err(FetchError::Range(e))),
-    };
-    let next = Arc::clone(loader);
-    loader.share(
-        ResourceKind::Tile(TileFormat::Archive),
-        &url.clone(),
-        Read::Range(range),
-        &abort.clone(),
-        Box::new(move |result| {
-            let inserted = {
-                let mut reader = reader.lock().expect("reader poisoned");
-                match result {
-                    Ok(read) => reader
-                        .insert(offset, &read.bytes)
-                        .map_err(|e| FetchError::Range(format!("{url}: {e}"))),
-                    // A file shorter than the first read is read again.
-                    Err(e) if falls_back(&e) && reader.read_failed(offset) => Ok(()),
-                    Err(e) => Err(e),
-                }
-            };
-            match inserted {
-                Ok(()) => read_until(&next, url, reader, step, abort, done, reads + 1),
-                Err(e) => done(Err(e)),
-            }
-        }),
-    );
 }
 
 /// A shared fetch's answer, copied unless this was the last load waiting.
@@ -506,7 +385,7 @@ fn owned(fetched: Arc<Fetched>) -> Fetched {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orb_source::pmtiles::{Compression, Contents, Entry, write_head};
+    use orb_source::pmtiles::{self, Compression, Contents, Entry, TileType, write_head};
 
     /// Answers reads from `archive` once released, counting them; reads
     /// past its end fail as a server's 416 would.
@@ -595,7 +474,7 @@ mod tests {
             let got = Arc::clone(&got);
             loader.load(
                 ResourceKind::Tile(TileFormat::Mvt),
-                TileLocation::Pmtiles("a".into()),
+                TileLocation::Archive(Archive::Pmtiles("a".into())),
                 tile,
                 Encoding::Mvt,
                 false,
@@ -660,7 +539,7 @@ mod tests {
             ..Held::default()
         });
         let loader = TileLoader::new(fetch.clone());
-        loader.add_head("a", &archive[..16384]);
+        loader.add_head(&Archive::Pmtiles("a".into()), &archive[..16384]);
         let (rounds, _) = load_all(&fetch, &loader, &[TileIndex::new(9, 0, 0)]);
         assert_eq!(rounds, [1, 1], "a leaf, then the tile");
     }
@@ -680,7 +559,7 @@ mod tests {
             let got = Arc::clone(&got);
             loader.load(
                 ResourceKind::Tile(TileFormat::Mvt),
-                TileLocation::Pmtiles("a".into()),
+                TileLocation::Archive(Archive::Pmtiles("a".into())),
                 TileIndex::new(9, 0, 0),
                 Encoding::Mvt,
                 false,
@@ -728,24 +607,23 @@ mod tests {
             }
         }
         let fetch: Arc<dyn Fetch> = orb_host_native::NativeFetch::new();
-        let loader = TileLoader::new(fetch);
+        let loader = TileLoader::new(Arc::clone(&fetch));
         let url = format!("file://{}", path.display());
+        let archive = Archive::Mbtiles(url.clone());
         let (tx, rx) = std::sync::mpsc::channel();
         drive(
-            &loader,
-            url.clone(),
-            Arc::default(),
-            orb_source::mbtiles::Reader::tilejson,
-            Abort::new(),
+            Arc::new(Mutex::new(archive::Reader::new(&archive).unwrap())),
+            archive::Reader::tilejson,
+            fetch_reads(fetch, url.clone(), Abort::new(), |_, _| {}),
             Box::new(move |r| tx.send(r).unwrap()),
         );
         let tilejson = rx.recv().unwrap().unwrap();
-        assert!(tilejson.contains(r#""maxzoom":2"#), "{tilejson}");
+        assert_eq!(tilejson.maxzoom, Some(2.0));
         for (z, x, y, found) in [(2, 1, 2, true), (2, 3, 0, true), (2, 0, 0, false)] {
             let (tx, rx) = std::sync::mpsc::channel();
             loader.load(
                 ResourceKind::Tile(TileFormat::Mvt),
-                TileLocation::Mbtiles(url.clone()),
+                TileLocation::Archive(archive.clone()),
                 TileIndex::new(z, x, y),
                 Encoding::Mvt,
                 false,

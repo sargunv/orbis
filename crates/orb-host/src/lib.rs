@@ -94,8 +94,8 @@ pub enum ResourceKind {
     Unknown,
     /// A style document.
     Style,
-    /// A source's TileJSON or GeoJSON data, or a tile archive's header and
-    /// directories.
+    /// A source's TileJSON or GeoJSON data, or what of a tile archive
+    /// finds its tiles: its header, directories and pages.
     Source,
     /// A tile, in the format given.
     Tile(TileFormat),
@@ -174,6 +174,36 @@ pub trait Fetch: Send + Sync {
         abort: &Abort,
         done: FetchDone,
     );
+    /// Reads `read` of `url`, as [`get`](Self::get),
+    /// [`get_or_stale`](Self::get_or_stale) or
+    /// [`get_range`](Self::get_range) would.
+    fn read(&self, kind: ResourceKind, url: &str, read: Read, abort: &Abort, done: FetchDone) {
+        match read {
+            Read::Whole { stale: false } => self.get(kind, url, abort, done),
+            Read::Whole { stale: true } => self.get_or_stale(kind, url, abort, done),
+            Read::Range(offset, length) => self.get_range(kind, url, offset, length, abort, done),
+        }
+    }
+}
+
+/// What a fetch reads of its URL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Read {
+    /// All of it, a stale cached copy too where `stale` says
+    /// ([`Fetch::get_or_stale`]).
+    Whole { stale: bool },
+    /// `length` bytes at `offset` ([`Fetch::get_range`]).
+    Range(u64, u64),
+}
+
+impl Read {
+    /// The bytes read, `(offset, length)`, of a range.
+    pub fn range(self) -> Option<(u64, u64)> {
+        match self {
+            Self::Whole { .. } => None,
+            Self::Range(offset, length) => Some((offset, length)),
+        }
+    }
 }
 
 /// Tile fetches a map keeps in flight at once, by default: they take

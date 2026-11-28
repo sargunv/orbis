@@ -1,54 +1,38 @@
-//! MBTiles archives: a SQLite file of tiles, read by byte ranges with no
-//! I/O, as the PMTiles reader is. A [`Reader`] answers what it can from
-//! the pages read so far and [`Step::Read`] for the next pages it needs;
-//! the caller reads them, [`Reader::insert`]s them and asks again.
+//! MBTiles archives: a SQLite file of tiles, read as [`crate::archive`]
+//! reads any archive, a step at a time for the pages it needs.
 //!
 //! It reads both layouts writers use: a `tiles` table, and mbutil's and
 //! OpenMapTiles' deduplicated `map` and `images` tables behind a `tiles`
 //! view. Rows count from the south (TMS), as the spec has them.
 
 use orb_crs::TileIndex;
-use orb_sqlite::{Cache, Database, Error, Index, Table, Value};
+use orb_sqlite::{Cache, Database, Error, Index, Pages, Table, Value};
 use orb_style::Encoding;
+
+use crate::archive::{Body, Range, Step, Tile};
+use crate::endpoint::TileJson;
 
 /// The most a tile decompresses to.
 const MAX_TILE: usize = 64 << 20;
-
-/// What a read of the archive needs or gives.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Step<T> {
-    /// Read `length` bytes at `offset`, insert them, and ask again.
-    Read {
-        offset: u64,
-        length: u64,
-    },
-    Done(T),
-}
-
-/// What the tiles are.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Format {
-    Vector(Encoding),
-    /// Images, decoded by content.
-    Raster,
-}
 
 /// An archive's tiles and how to find one.
 #[derive(Debug)]
 struct Archive {
     db: Database,
     tiles: Tiles,
-    format: Format,
+    /// A vector tile's encoding; `None` for images, decoded by content.
+    encoding: Option<Encoding>,
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant, reason = "one per archive")]
 enum Tiles {
-    /// `tiles (zoom_level, tile_column, tile_row, tile_data)`, by an index
-    /// on the first three if it has one.
+    /// `tiles (zoom_level, tile_column, tile_row, tile_data)`, by its index
+    /// on the first three.
     Table {
         table: Table,
-        index: Option<Index>,
-        columns: [usize; 4],
+        index: Index,
+        tile_data: usize,
     },
     /// `map (zoom_level, tile_column, tile_row, tile_id)` and
     /// `images (tile_data, tile_id)`.
@@ -60,6 +44,16 @@ enum Tiles {
         images_index: Index,
         tile_data: usize,
     },
+}
+
+impl Tiles {
+    /// The index by tile.
+    fn index(&self) -> &Index {
+        match self {
+            Self::Table { index, .. } => index,
+            Self::Deduplicated { map_index, .. } => map_index,
+        }
+    }
 }
 
 /// One archive's pages read so far, and its schema once read.
@@ -78,15 +72,27 @@ const MIN_FILE: u64 = 512;
 type Answer<T> = Result<Step<T>, String>;
 
 impl Reader {
-    /// Takes bytes read at `offset` for a [`Step::Read`].
-    pub fn insert(&mut self, offset: u64, bytes: &[u8]) -> Result<(), String> {
-        self.cache.insert(offset, bytes).map_err(|e| e.to_string())
+    /// Takes bytes read for a [`Step::Read`] of `range`.
+    pub fn insert(&mut self, range: Range, bytes: &[u8]) -> Result<(), String> {
+        (self.cache.insert(range.offset, bytes)).map_err(|e| e.to_string())
     }
 
-    /// A read at `offset` failed as one past the file's end does: whether
+    /// Whether the read of `range` is still wanted: its first page isn't
+    /// in yet.
+    pub fn wants(&self, range: Range) -> bool {
+        match self.cache.header() {
+            None => range.offset == 0,
+            Some(header) => {
+                let page = range.offset / u64::from(header.page_size) + 1;
+                u32::try_from(page).is_ok_and(|page| self.cache.page(page, 1).is_err())
+            }
+        }
+    }
+
+    /// A read of `range` failed as one past the file's end does: whether
     /// to read again, shorter.
-    pub fn read_failed(&mut self, offset: u64) -> bool {
-        let again = offset == 0 && self.cache.header().is_none() && !self.short_head;
+    pub fn read_failed(&mut self, range: Range) -> bool {
+        let again = range.offset == 0 && self.cache.header().is_none() && !self.short_head;
         self.short_head |= again;
         again
     }
@@ -99,58 +105,55 @@ impl Reader {
                 if self.short_head && self.cache.header().is_none() {
                     length = MIN_FILE;
                 }
-                Ok(Step::Read { offset, length })
+                Ok(Step::Read(Range::new(offset, length)?))
             }
             Err(e) => Err(e.to_string()),
         }
     }
 
-    fn archive(&mut self) -> Answer<()> {
-        if self.archive.is_some() {
-            return Ok(Step::Done(()));
-        }
-        let opened = Database::open(&self.cache).and_then(|db| open(&self.cache, db));
-        match self.answer(opened)? {
-            Step::Done(archive) => {
-                self.archive = Some(archive);
-                Ok(Step::Done(()))
+    /// Reads the archive's schema, then answers `then` of it.
+    fn with<T>(
+        &mut self,
+        then: impl FnOnce(&Cache, &Archive) -> orb_sqlite::Result<T>,
+    ) -> Answer<T> {
+        if self.archive.is_none() {
+            let opened = Database::open(&self.cache).and_then(|db| open(&self.cache, db));
+            match self.answer(opened)? {
+                Step::Done(archive) => self.archive = Some(archive),
+                Step::Read(range) => return Ok(Step::Read(range)),
             }
-            Step::Read { offset, length } => Ok(Step::Read { offset, length }),
-        }
-    }
-
-    /// The archive's TileJSON, from its `metadata` table and, for zooms
-    /// it doesn't name, its tiles.
-    pub fn tilejson(&mut self) -> Answer<String> {
-        if let Step::Read { offset, length } = self.archive()? {
-            return Ok(Step::Read { offset, length });
         }
         let archive = self.archive.as_ref().expect("opened");
-        let result = tilejson(&self.cache, archive);
-        self.answer(result)
+        self.answer(then(&self.cache, archive))
     }
 
-    /// Tile `tile`'s bytes, decompressed if gzipped, and what they are;
-    /// `None` for a tile the archive leaves out.
-    pub fn tile(&mut self, tile: TileIndex) -> Answer<Option<(Vec<u8>, Format)>> {
-        if let Step::Read { offset, length } = self.archive()? {
-            return Ok(Step::Read { offset, length });
-        }
-        let archive = self.archive.as_ref().expect("opened");
-        let found = find(&self.cache, archive, tile);
-        match self.answer(found)? {
-            Step::Done(Some(bytes)) => {
-                let bytes = if bytes.starts_with(&[0x1f, 0x8b]) {
-                    crate::gzip::decode(&bytes, MAX_TILE)
-                        .map_err(|e| format!("MBTiles gzip: {e}"))?
-                } else {
-                    bytes
-                };
-                Ok(Step::Done(Some((bytes, archive.format))))
+    /// What the archive's `metadata` table and, for zooms it doesn't
+    /// name, its tiles say of them.
+    pub fn tilejson(&mut self) -> Answer<TileJson> {
+        self.with(tilejson)
+    }
+
+    /// Tile `tile`, decompressed if gzipped; `None` for a tile the archive
+    /// leaves out.
+    pub fn tile(&mut self, tile: TileIndex) -> Answer<Option<Tile>> {
+        let found = match self.with(|pages, archive| find(pages, archive, tile))? {
+            Step::Done(found) => found,
+            Step::Read(range) => return Ok(Step::Read(range)),
+        };
+        let Some(bytes) = found else {
+            return Ok(Step::Done(None));
+        };
+        let bytes = match bytes.starts_with(&[0x1f, 0x8b]) {
+            true => {
+                crate::gzip::decode(&bytes, MAX_TILE).map_err(|e| format!("MBTiles gzip: {e}"))?
             }
-            Step::Done(None) => Ok(Step::Done(None)),
-            Step::Read { offset, length } => Ok(Step::Read { offset, length }),
-        }
+            false => bytes,
+        };
+        let encoding = self.archive.as_ref().expect("opened").encoding;
+        Ok(Step::Done(Some(Tile {
+            body: Body::Bytes(bytes),
+            encoding,
+        })))
     }
 }
 
@@ -167,26 +170,29 @@ fn columns<const N: usize>(table: &Table, names: [&str; N]) -> orb_sqlite::Resul
 const KEY: [&str; 3] = ["zoom_level", "tile_column", "tile_row"];
 
 fn open(pages: &Cache, db: Database) -> orb_sqlite::Result<Archive> {
+    let indexed = |table, columns: &[&str]| {
+        db.index(table, columns).cloned().ok_or_else(|| {
+            Error::Unsupported(format!("MBTiles table {table} has no index on {columns:?}"))
+        })
+    };
     let tiles = match db.table("tiles") {
-        Some(table) => Tiles::Table {
-            columns: columns(
+        Some(table) => {
+            let [_, _, _, tile_data] = columns(
                 table,
                 ["zoom_level", "tile_column", "tile_row", "tile_data"],
-            )?,
-            index: db.index("tiles", &KEY).cloned(),
-            table: table.clone(),
-        },
+            )?;
+            Tiles::Table {
+                index: indexed("tiles", &KEY)?,
+                table: table.clone(),
+                tile_data,
+            }
+        }
         None => {
             let (Some(map), Some(images)) = (db.table("map"), db.table("images")) else {
                 return Err(Error::Unsupported("no MBTiles tiles table".into()));
             };
             let [tile_id] = columns(map, ["tile_id"])?;
             let [tile_data] = columns(images, ["tile_data"])?;
-            let indexed = |table, columns: &[&str]| {
-                db.index(table, columns).cloned().ok_or_else(|| {
-                    Error::Unsupported(format!("MBTiles table {table} has no index on {columns:?}"))
-                })
-            };
             Tiles::Deduplicated {
                 map_index: indexed("map", &KEY)?,
                 images_index: indexed("images", &["tile_id"])?,
@@ -197,12 +203,16 @@ fn open(pages: &Cache, db: Database) -> orb_sqlite::Result<Archive> {
             }
         }
     };
-    let format = match metadata(pages, &db, "format")?.as_deref() {
-        Some("png" | "jpg" | "jpeg" | "webp") => Format::Raster,
-        Some("mlt") => Format::Vector(Encoding::Mlt),
-        _ => Format::Vector(Encoding::Mvt),
+    let encoding = match metadata(pages, &db, "format")?.as_deref() {
+        Some("png" | "jpg" | "jpeg" | "webp") => None,
+        Some("mlt") => Some(Encoding::Mlt),
+        _ => Some(Encoding::Mvt),
     };
-    Ok(Archive { db, tiles, format })
+    Ok(Archive {
+        db,
+        tiles,
+        encoding,
+    })
 }
 
 /// The `metadata` table's value for `name`.
@@ -233,27 +243,9 @@ fn find(pages: &Cache, archive: &Archive, tile: TileIndex) -> orb_sqlite::Result
     let found = match &archive.tiles {
         Tiles::Table {
             table,
-            index: Some(index),
-            columns,
-        } => db
-            .find_row(pages, table, index, &key)?
-            .map(|r| (r, columns[3])),
-        Tiles::Table {
-            table,
-            index: None,
-            columns,
-        } => {
-            let mut found = None;
-            db.rows(pages, table, |r| {
-                let at = |i: usize| r.values[columns[i]].as_integer();
-                if (0..3).all(|i| at(i) == key[i].as_integer()) {
-                    found = Some(r);
-                    return Ok(false);
-                }
-                Ok(true)
-            })?;
-            found.map(|r| (r, columns[3]))
-        }
+            index,
+            tile_data,
+        } => (db.find_row(pages, table, index, &key)?).map(|r| (r, *tile_data)),
         Tiles::Deduplicated {
             map,
             map_index,
@@ -273,79 +265,37 @@ fn find(pages: &Cache, archive: &Archive, tile: TileIndex) -> orb_sqlite::Result
     Ok(found.and_then(|(mut row, data)| row.values[data].take_bytes()))
 }
 
-fn quote(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('"');
-    for c in text.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-fn tilejson(pages: &Cache, archive: &Archive) -> orb_sqlite::Result<String> {
+fn tilejson(pages: &Cache, archive: &Archive) -> orb_sqlite::Result<TileJson> {
     let db = &archive.db;
-    let mut members = Vec::new();
     let number = |text: Option<String>| text.and_then(|t| orb_expr::decimal::parse(t.trim()));
-    let zoom_of =
-        |entry: Option<Vec<Value>>| entry.and_then(|e| e.first().and_then(Value::as_integer));
-    let index = match &archive.tiles {
-        Tiles::Table { index, .. } => index.as_ref(),
-        Tiles::Deduplicated { map_index, .. } => Some(map_index),
+    let zoom_of = |entry: Option<Vec<Value>>| {
+        entry
+            .and_then(|e| e.first().and_then(Value::as_integer))
+            .map(|z| z as f64)
     };
     // Zooms the metadata leaves out are its tiles' first and last.
+    let index = archive.tiles.index();
     let minzoom = match number(metadata(pages, db, "minzoom")?) {
         Some(z) => Some(z),
-        None => match index {
-            Some(index) => zoom_of(db.find(pages, index, &[])?).map(|z| z as f64),
-            None => None,
-        },
+        None => zoom_of(db.find(pages, index, &[])?),
     };
     let maxzoom = match number(metadata(pages, db, "maxzoom")?) {
         Some(z) => Some(z),
-        None => match index {
-            Some(index) => zoom_of(db.last(pages, index)?).map(|z| z as f64),
-            None => None,
-        },
+        None => zoom_of(db.last(pages, index)?),
     };
-    if let Some(z) = minzoom {
-        members.push(format!("\"minzoom\":{z}"));
-    }
-    if let Some(z) = maxzoom {
-        members.push(format!("\"maxzoom\":{z}"));
-    }
-    if let Some(bounds) = metadata(pages, db, "bounds")? {
-        let values: Vec<f64> = bounds
-            .split(',')
+    let bounds = metadata(pages, db, "bounds")?.and_then(|bounds| {
+        let values: Vec<f64> = (bounds.split(','))
             .filter_map(|v| orb_expr::decimal::parse(v.trim()))
             .collect();
-        if let [w, s, e, n] = values[..] {
-            members.push(format!("\"bounds\":[{w},{s},{e},{n}]"));
-        }
-    }
-    if let Format::Vector(encoding) = archive.format {
-        let name = match encoding {
-            Encoding::Mvt => "mvt",
-            Encoding::Mlt => "mlt",
-        };
-        members.push(format!("\"encoding\":\"{name}\""));
-    }
-    if let Some(attribution) = metadata(pages, db, "attribution")? {
-        members.push(format!("\"attribution\":{}", quote(&attribution)));
-    }
-    // Vector layers, from the JSON the spec keeps in `json`.
-    if let Some(json) = metadata(pages, db, "json")?
-        && let Ok(doc) = orb_expr::json::parse(&json)
-        && let Some(layers) = doc.get("vector_layers")
-    {
-        members.push(format!("\"vector_layers\":{layers}"));
-    }
-    Ok(format!("{{{}}}", members.join(",")))
+        values.try_into().ok()
+    });
+    Ok(TileJson {
+        minzoom,
+        maxzoom,
+        bounds,
+        encoding: archive.encoding,
+        ..TileJson::default()
+    })
 }
 
 #[cfg(test)]
