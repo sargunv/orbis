@@ -250,7 +250,7 @@ impl Camera {
 fn local(path: &str) -> String {
     let path = std::path::Path::new(DEMO_DATA).join(path);
     let path = path.canonicalize().unwrap_or(path);
-    format!("file://{}", path.display())
+    orb_host::file_url(&path)
 }
 
 /// A loop of camera flights: legs of `flyTo` options (center, zoom,

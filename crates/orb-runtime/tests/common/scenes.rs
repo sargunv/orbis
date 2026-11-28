@@ -36,7 +36,7 @@ pub(crate) fn style(dir: &std::path::Path, name: &str, edit: impl FnOnce(&mut Va
     edit(&mut style);
     let path = dir.join(format!("{name}.json"));
     std::fs::write(&path, style.to_string()).unwrap();
-    format!("file://{}", path.display())
+    orb_host::file_url(&path)
 }
 
 /// A 256 px PNG of `texel(x, y)`, written to `dir`: its path.
@@ -153,7 +153,7 @@ pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
         );
         let path = dir.join("terrain-buildings.json");
         std::fs::write(&path, s.to_string()).unwrap();
-        format!("file://{}", path.display())
+        orb_host::file_url(&path)
     };
     add("terrain-buildings", &buildings, (16.0, -20.0, 60.0), None);
     // Those multisampled: the map's passes then take four samples, kept

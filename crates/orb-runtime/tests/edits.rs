@@ -779,7 +779,7 @@ fn tokyo_json() -> String {
         .canonicalize()
         .unwrap();
     let mut doc = orb_style::v8::read(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    orb_source::endpoint::resolve_style_urls(&mut doc, &format!("file://{}", path.display()));
+    orb_source::endpoint::resolve_style_urls(&mut doc, &orb_host::file_url(&path));
     doc.to_string()
 }
 
@@ -833,8 +833,7 @@ fn a_style_url_over_a_style_diffs() {
     std::fs::write(&path, next).unwrap();
     let mut map = tokyo();
     let before = map.map.job_counts();
-    map.map
-        .load_style_url(&format!("file://{}", path.display()));
+    map.map.load_style_url(&orb_host::file_url(&path));
     let started = Instant::now();
     let mut loaded = false;
     let mut eased = false;
@@ -919,7 +918,7 @@ fn image_tiles_regrid_for_a_globe_after_leaving_a_plane() {
     std::fs::write(&flat, style("")).unwrap();
     let mut map = Offscreen::new(
         &Options {
-            style: Some(format!("file://{}", plane.display())),
+            style: Some(orb_host::file_url(&plane)),
             encoding: "mvt".into(),
             at: Some((orb_crs::Geodetic::new(0.0, 20.0), 1.5, 0.0, 0.0)),
         },
@@ -929,8 +928,7 @@ fn image_tiles_regrid_for_a_globe_after_leaving_a_plane() {
     map.map.set_previews(orb_style::Previews::ALL);
     settle(&mut map);
     assert!(map.map.surface().globe.is_some_and(|g| !g.is_sphere()));
-    map.map
-        .load_style_url(&format!("file://{}", flat.display()));
+    map.map.load_style_url(&orb_host::file_url(&flat));
     let started = Instant::now();
     loop {
         map.frame();
@@ -1009,7 +1007,7 @@ fn layers_added_to_a_loaded_pitched_view_get_scene_room() {
         ..orb_runtime::SceneCapacity::growable()
     };
     let options = Options {
-        style: Some(format!("file://{}", path.display())),
+        style: Some(orb_host::file_url(&path)),
         encoding: "mvt".into(),
         at: Some((orb_crs::Geodetic::new(139.765, 35.68), 15.5, -20.0, 60.0)),
     };
@@ -1101,7 +1099,7 @@ fn patterns_draw_the_same_wherever_the_atlas_packs_them() {
         let path = scratch.join(format!("{sprite}-style.json"));
         std::fs::write(&path, style.to_string()).unwrap();
         let (mut map, _, _) = Offscreen::load(&Options {
-            style: Some(format!("file://{}", path.display())),
+            style: Some(orb_host::file_url(&path)),
             encoding: "mvt".into(),
             at: Some((orb_crs::Geodetic::new(139.74, 35.685), 16.85, 20.0, 55.0)),
         })

@@ -608,7 +608,7 @@ mod tests {
         }
         let fetch: Arc<dyn Fetch> = orb_host_native::NativeFetch::new();
         let loader = TileLoader::new(Arc::clone(&fetch));
-        let url = format!("file://{}", path.display());
+        let url = orb_host::file_url(&path);
         let archive = Archive::Mbtiles(url.clone());
         let (tx, rx) = std::sync::mpsc::channel();
         drive(

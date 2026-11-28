@@ -412,7 +412,7 @@ mod tests {
         let path = dir.join("style.json");
         std::fs::write(&path, style).unwrap();
         let options = |lon: f64, zoom: f64| crate::common::Options {
-            style: Some(format!("file://{}", path.display())),
+            style: Some(orb_host::file_url(&path)),
             at: Some((orb_crs::Geodetic::new(lon, 0.0), zoom, 0.0, 0.0)),
             ..tokyo(zoom)
         };
@@ -490,7 +490,7 @@ mod tests {
         std::fs::write(&path, style).unwrap();
         // At zoom 2 a texel is a pixel; these longitudes are between them.
         let options = |lon: f64| crate::common::Options {
-            style: Some(format!("file://{}", path.display())),
+            style: Some(orb_host::file_url(&path)),
             at: Some((orb_crs::Geodetic::new(lon, 0.0), 2.0, 0.0, 0.0)),
             ..tokyo(2.0)
         };
@@ -583,7 +583,7 @@ mod tests {
         .unwrap();
         let drawn = |zoom: f64| {
             let options = crate::common::Options {
-                style: Some(format!("file://{}", path.display())),
+                style: Some(orb_host::file_url(&path)),
                 at: Some((orb_crs::Geodetic::new(0.0, 0.0), zoom, 0.0, 0.0)),
                 ..tokyo(zoom)
             };
@@ -617,7 +617,7 @@ mod tests {
         )
         .unwrap();
         let options = |zoom: f64, pitch: f64| crate::common::Options {
-            style: Some(format!("file://{}", path.display())),
+            style: Some(orb_host::file_url(&path)),
             at: Some((orb_crs::Geodetic::new(0.0, 0.0), zoom, 0.0, pitch)),
             ..tokyo(zoom)
         };
@@ -679,7 +679,7 @@ mod tests {
             camera
         };
         let options = crate::common::Options {
-            style: Some(format!("file://{}", path.display())),
+            style: Some(orb_host::file_url(&path)),
             at: Some((orb_crs::Geodetic::new(0.0, 0.0), 1.0, 0.0, 0.0)),
             ..tokyo(1.0)
         };
@@ -1410,7 +1410,7 @@ mod tests {
             let path = dir.join(format!("{blend}.json"));
             std::fs::write(&path, style).unwrap();
             let options = crate::common::Options {
-                style: Some(format!("file://{}", path.display())),
+                style: Some(orb_host::file_url(&path)),
                 at: Some((orb_crs::Geodetic::new(0.0, 0.0), 3.0, 0.0, 0.0)),
                 ..tokyo(3.0)
             };

@@ -309,7 +309,7 @@ fn a_style_that_fails_to_load_fails_a_snapshot_at_once() {
     )
     .unwrap();
     let mut map = Map::new(&runtime, MapOptions::default());
-    map.load_style_url(&format!("file://{}", path.display()));
+    map.load_style_url(&orb_host::file_url(&path));
     // Waiting out the snapshot's stall would fail it with "the map
     // stalled" instead of the style's error.
     let error = map.snapshot(64, 64, 1.0).unwrap_err();

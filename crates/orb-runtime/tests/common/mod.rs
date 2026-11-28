@@ -189,7 +189,7 @@ pub(crate) fn load_style(map: &mut Map, options: &Options) -> Result<(), String>
         .join(format!("tokyo-{}.json", options.encoding))
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    map.load_style_url(&format!("file://{}", path.display()));
+    map.load_style_url(&orb_host::file_url(&path));
     Ok(())
 }
 

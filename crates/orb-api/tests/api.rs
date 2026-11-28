@@ -998,7 +998,7 @@ fn feature_state_follows_the_styles_sources() {
     let path = dir.join("style.json");
     let style = map.style().expect("style").to_json();
     std::fs::write(&path, style).unwrap();
-    map.load_style_url(&format!("file://{}", path.display()));
+    map.load_style_url(&orb_host::file_url(&path));
     let events = settle(&mut map, &mut target);
     assert!(
         (events.iter()).any(|e| matches!(e, Event::Map(MapEvent::StyleLoad))),

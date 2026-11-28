@@ -27,7 +27,7 @@ pub(crate) fn data() -> PathBuf {
 /// The demo's Tokyo extract with Liberty's style, as a URL its relative
 /// URLs resolve against.
 pub(crate) fn tokyo_url() -> String {
-    format!("file://{}", data().join("tokyo-mvt.json").display())
+    orb_host::file_url(&data().join("tokyo-mvt.json"))
 }
 
 /// The Tokyo extract's style as text, its relative URLs made absolute: for

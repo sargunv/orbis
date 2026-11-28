@@ -385,6 +385,51 @@ pub fn redacted_url(url: &str) -> String {
     }
 }
 
+/// The `file://` URL of the file at absolute `path`, which
+/// `orb-host-native` reads back: `/`-separated, a Windows drive as
+/// `file:///C:/…` (a verbatim `\\?\` path, as `canonicalize` gives, as the
+/// plain one), and what a URL can't hold percent-encoded.
+pub fn file_url(path: &std::path::Path) -> String {
+    file_url_of(&path.to_string_lossy(), cfg!(windows))
+}
+
+fn file_url_of(path: &str, windows: bool) -> String {
+    use std::fmt::Write;
+    let path = match windows {
+        true => match path.strip_prefix(r"\\?\UNC\") {
+            Some(share) => format!("//{}", share.replace('\\', "/")),
+            None => path
+                .strip_prefix(r"\\?\")
+                .unwrap_or(path)
+                .replace('\\', "/"),
+        },
+        false => path.to_string(),
+    };
+    let mut url = String::from(if path.starts_with('/') {
+        "file://"
+    } else {
+        "file:///"
+    });
+    for byte in path.bytes() {
+        match byte {
+            b'%' | b' ' | b'"' | b'#' | b'?' | ..=0x1f | 0x7f.. => {
+                let _ = write!(url, "%{byte:02X}");
+            }
+            _ => url.push(char::from(byte)),
+        }
+    }
+    url
+}
+
+/// The path a `file://` URL's path (what follows `file://`) names, still
+/// percent-encoded: on Windows, a drive's `/C:/…` is `C:/…`.
+pub fn file_url_path(url_path: &str, windows: bool) -> &str {
+    match url_path.as_bytes() {
+        [b'/', drive, b':', ..] if windows && drive.is_ascii_alphabetic() => &url_path[1..],
+        _ => url_path,
+    }
+}
+
 /// Validates a finite byte range before starting I/O.
 pub fn range_end(offset: u64, length: u64) -> Result<u64, FetchError> {
     if length == 0 || length > 64 << 20 {
@@ -583,6 +628,26 @@ mod tests {
             assert!(accept.len() <= 128, "{accept}");
             assert!(!accept.bytes().any(unsafe_byte), "{accept}");
         }
+    }
+
+    #[test]
+    fn file_urls_hold_unix_and_windows_paths() {
+        assert_eq!(
+            file_url_of("/d/a b#1.json", false),
+            "file:///d/a%20b%231.json"
+        );
+        assert_eq!(file_url_of("/d/a\\b", false), "file:///d/a\\b");
+        let windows = file_url_of("C:\\Users\\x\\é.json", true);
+        assert_eq!(windows, "file:///C:/Users/x/%C3%A9.json");
+        let path = windows.strip_prefix("file://").unwrap();
+        assert_eq!(file_url_path(path, true), "C:/Users/x/%C3%A9.json");
+        assert_eq!(file_url_of(r"\\?\C:\x", true), "file:///C:/x");
+        assert_eq!(
+            file_url_of(r"\\?\UNC\host\share\x", true),
+            file_url_of(r"\\host\share\x", true)
+        );
+        assert_eq!(file_url_path("/home/x", true), "/home/x");
+        assert_eq!(file_url_path("/C:/x", false), "/C:/x");
     }
 
     #[test]

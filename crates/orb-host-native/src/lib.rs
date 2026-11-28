@@ -291,7 +291,7 @@ impl NativeFetch {
 
 /// The file a `file://` URL's path names, its `%XX` escapes decoded.
 fn file_path(url_path: &str) -> std::path::PathBuf {
-    let bytes = percent_decode(url_path);
+    let bytes = percent_decode(orb_host::file_url_path(url_path, cfg!(windows)));
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
@@ -1036,7 +1036,7 @@ mod tests {
         std::fs::write(&path, b"hello").unwrap();
         let (tx, rx) = channel();
         for url in [
-            format!("file://{}", path.display()),
+            orb_host::file_url(&path),
             "file:///nonexistent/orbis".into(),
             "ftp://x".into(),
         ] {
@@ -1124,7 +1124,7 @@ mod tests {
         let dir = Scratch::new("range");
         let path = dir.join("abcdef");
         std::fs::write(&path, b"abcdef").unwrap();
-        let url = format!("file://{}", path.display());
+        let url = orb_host::file_url(&path);
         let fetch = NativeFetch::new();
         assert_eq!(get_range(&fetch, &url, (2, 3)).unwrap().bytes, b"cde");
         for range in [(4, 3), (0, 0), (0, MAX_BODY + 1), (u64::MAX, 2)] {
