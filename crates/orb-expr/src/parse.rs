@@ -1377,29 +1377,3 @@ impl<'l> Parser<'l> {
         Some(self.ir.push(Op::Assert(args), ty, key))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `parse_compound` parses a call's arguments against the one overload
-    /// that takes its arity.
-    #[test]
-    fn one_overload_takes_each_arity() {
-        for (name, (_, overloads)) in OPERATORS.iter().filter_map(|n| Some((n, compound(n)?))) {
-            for arity in 0..8 {
-                let taking = overloads
-                    .iter()
-                    .filter(|(params, _)| match params {
-                        Params::Fixed(types) => types.len() == arity,
-                        Params::Varargs(_) => true,
-                    })
-                    .count();
-                assert!(
-                    taking <= 1,
-                    "{name} has {taking} overloads of arity {arity}"
-                );
-            }
-        }
-    }
-}

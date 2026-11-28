@@ -156,13 +156,7 @@ impl Expression {
     /// `None`), fitting the result to it as GL JS does: value-typed results
     /// are asserted, strings coerced to colours.
     pub fn parse(json: &Json, expected: Option<&Type>) -> Result<Self, Vec<Diagnostic>> {
-        let mut parser = Parser::default();
-        match parser.parse(json, "", expected, None) {
-            Some(root) => Ok(Self {
-                ir: parser.ir.compact(root),
-            }),
-            None => Err(parser.errors),
-        }
+        Self::parse_as(json, expected, None)
     }
 
     /// Parses an expression as a property value of type `expected`, as GL
@@ -170,6 +164,14 @@ impl Expression {
     /// asserted, and a string literal of a colour type parsed.
     pub fn parse_value(json: &Json, expected: Option<&Type>) -> Result<Self, Vec<Diagnostic>> {
         let annotation = (expected == Some(&Type::String)).then_some(parse::Annotation::Coerce);
+        Self::parse_as(json, expected, annotation)
+    }
+
+    fn parse_as(
+        json: &Json,
+        expected: Option<&Type>,
+        annotation: Option<parse::Annotation>,
+    ) -> Result<Self, Vec<Diagnostic>> {
         let mut parser = Parser::default();
         match parser.parse(json, "", expected, annotation) {
             Some(root) => Ok(Self {

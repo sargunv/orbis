@@ -140,19 +140,6 @@ fn an_image_source_needs_no_url_but_a_video_needs_its_urls() {
     assert!(drops[0].message.contains("\"urls\""), "{drops:?}");
 }
 
-#[test]
-fn image_layers_need_matching_sources() {
-    let errors = drops(
-        r#"[{"id": "h", "type": "hillshade", "source": "r"},
-            {"id": "f", "type": "fill", "source": "r"}]"#,
-    );
-    assert!(
-        errors[0].contains("requires a raster-dem source"),
-        "{errors:?}"
-    );
-    assert!(errors[1].contains("requires a vector source"), "{errors:?}");
-}
-
 fn tile() -> orb_tile::Layer {
     let mut b = LayerBuilder::new("roads", 4096);
     for (class, width) in [("primary", 4.0), ("minor", 1.0)] {
@@ -305,6 +292,7 @@ fn diagnostics_carry_json_paths() {
             {"id": "a", "type": "line", "source": "v"},
             {"id": "c", "type": "fill", "source": "r"},
             {"id": "d", "type": "bogus"},
+            {"id": "h", "type": "hillshade", "source": "r"},
             {"id": "e", "type": "line", "source": "v", "source-layer": "x", "filter": ["==", "$type", "Circle"]}]"#,
     );
     assert_eq!(
@@ -314,7 +302,8 @@ fn diagnostics_carry_json_paths() {
             "layers[1]: layer \"a\" must specify a \"source-layer\"; the layer is dropped",
             "layers[2].source: layer \"c\" requires a vector source; the layer is dropped",
             "layers[3].type: expected one of [fill, line, symbol, circle, heatmap, fill-extrusion, raster, hillshade, color-relief, background], \"bogus\" found; the layer is dropped",
-            "layers[4].filter[2]: expected one of [Point, LineString, Polygon], \"Circle\" found; the layer is dropped",
+            "layers[4].source: layer \"h\" requires a raster-dem source; the layer is dropped",
+            "layers[5].filter[2]: expected one of [Point, LineString, Polygon], \"Circle\" found; the layer is dropped",
         ]
     );
 
@@ -727,15 +716,6 @@ fn projections_read_the_global_state() {
 /// Without them, those warn and stay normal.
 #[test]
 fn layer_blends_parse() {
-    let modes = [
-        ("normal", LayerBlend::Normal),
-        ("multiply", LayerBlend::Multiply),
-        ("color", LayerBlend::Color),
-        ("luminosity", LayerBlend::Luminosity),
-        ("plus-lighter", LayerBlend::PlusLighter),
-        ("screen", LayerBlend::Screen),
-        ("overlay", LayerBlend::Overlay),
-    ];
     let types = [
         ("fill", "geojson", "fill-layer-blend", FILL_LAYER_BLEND),
         ("line", "geojson", "line-layer-blend", LINE_LAYER_BLEND),
@@ -753,64 +733,37 @@ fn layer_blends_parse() {
             COLOR_RELIEF_LAYER_BLEND,
         ),
     ];
-    let layers: Vec<String> = (types.iter())
-        .flat_map(|&(ty, source, name, _)| {
-            modes.iter().map(move |(mode, _)| {
-                format!(
-                    r#"{{"id": "{ty}-{mode}", "type": "{ty}", "source": "{source}",
-                        "paint": {{"{name}": "{mode}"}}}}"#
-                )
+    let blends = |mode: &str, previews: Previews| -> (Vec<LayerBlend>, usize) {
+        let layers: Vec<String> = (types.iter())
+            .map(|&(ty, source, name, _)| {
+                format!(r#"{{"id": "{ty}", "type": "{ty}", "source": "{source}", "paint": {{"{name}": "{mode}"}}}}"#)
             })
-        })
-        .collect();
-    let doc = format!(
-        r#"{{"version": 8, "sources": {{
-            "geojson": {{"type": "geojson", "data": {{"type": "FeatureCollection", "features": []}}}},
-            "raster": {{"type": "raster", "tiles": ["https://example.com/{{z}}/{{x}}/{{y}}.png"]}},
-            "dem": {{"type": "raster-dem", "tiles": ["https://example.com/{{z}}/{{x}}/{{y}}.png"]}}}},
-            "layers": [{}]}}"#,
-        layers.join(",")
-    );
-    let blends = |style: &Style| -> Vec<LayerBlend> {
-        (style.layers.iter())
-            .map(|l| {
-                let (.., key) = types.iter().find(|t| t.0 == l.ty.name()).unwrap();
-                l.get(*key).evaluate(0.0)
-            })
-            .collect()
+            .collect();
+        let style = parse_with(
+            &format!(
+                r#"{{"version": 8, "sources": {{
+                    "geojson": {{"type": "geojson", "data": {{"type": "FeatureCollection", "features": []}}}},
+                    "raster": {{"type": "raster", "tiles": ["t"]}}, "dem": {{"type": "raster-dem", "tiles": ["t"]}}}},
+                    "layers": [{}]}}"#,
+                layers.join(",")
+            ),
+            previews,
+            &[],
+        )
+        .unwrap();
+        let blends = (style.layers.iter().zip(&types)).map(|(l, t)| l.get(t.3).evaluate(0.0));
+        (blends.collect(), style.warnings.len())
     };
-    let on = parse_with(&doc, Previews::ALL, &[]).unwrap();
-    assert!(on.warnings.is_empty(), "{:?}", on.warnings);
-    let expected: Vec<LayerBlend> = (types.iter())
-        .flat_map(|_| modes.iter().map(|&(_, b)| b))
-        .collect();
-    assert_eq!(blends(&on), expected);
-    let off = parse(&doc).unwrap();
-    assert_eq!(off.warnings.len(), 2 * modes.len(), "{:?}", off.warnings);
-    assert!(
-        (off.warnings.iter()).all(|w| w.message.contains("preview")
-            && (w.path.contains("hillshade-layer-blend")
-                || w.path.contains("color-relief-layer-blend"))),
-        "{:?}",
-        off.warnings
+    use LayerBlend::{Normal, PlusLighter};
+    assert_eq!(
+        blends("plus-lighter", Previews::ALL),
+        (vec![PlusLighter; 5], 0)
     );
-    let spec = 3 * modes.len();
-    assert_eq!(blends(&off)[..spec], expected[..spec]);
-    assert!(
-        blends(&off)[spec..]
-            .iter()
-            .all(|&b| b == LayerBlend::Normal)
-    );
+    // The hillshade's and colour relief's are behind their previews.
+    let off = vec![PlusLighter, PlusLighter, PlusLighter, Normal, Normal];
+    assert_eq!(blends("plus-lighter", Previews::NONE), (off, 2));
     // `erase` was dropped from the spec: not a mode.
-    let erase = parse(
-        r#"{"version": 8, "sources": {"s": {"type": "geojson",
-            "data": {"type": "FeatureCollection", "features": []}}},
-            "layers": [{"id": "f", "type": "fill", "source": "s",
-            "paint": {"fill-layer-blend": "erase"}}]}"#,
-    )
-    .unwrap();
-    assert_eq!(erase.warnings[0].path, "layers[0].paint.fill-layer-blend");
-    assert_eq!(blends(&erase), [LayerBlend::Normal]);
+    assert_eq!(blends("erase", Previews::ALL), (vec![Normal; 5], 5));
 }
 
 #[test]

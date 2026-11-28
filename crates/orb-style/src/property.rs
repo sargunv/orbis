@@ -56,29 +56,16 @@ impl PropertyValue for String {
     }
 }
 
-impl<const N: usize> PropertyValue for [f32; N] {
-    fn from_value(value: &Value<'_>) -> Option<Self> {
-        let values = value.as_array()?;
-        if values.len() != N {
-            return None;
-        }
-        let mut out = [0.0; N];
-        for (slot, value) in out.iter_mut().zip(values) {
-            *slot = value.as_f64()? as f32;
-        }
-        Some(out)
-    }
-}
-
-impl<const N: usize> PropertyValue for [f64; N] {
+/// A fixed-length array: `[x, y]` pairs, padding's four sides.
+impl<T: PropertyValue + Copy + Default, const N: usize> PropertyValue for [T; N] {
     fn from_value(value: &Value<'_>) -> Option<Self> {
         let values = items(value)?;
         if values.len() != N {
             return None;
         }
-        let mut out = [0.0; N];
+        let mut out = [T::default(); N];
         for (slot, value) in out.iter_mut().zip(values) {
-            *slot = value.as_f64()?;
+            *slot = T::from_value(value)?;
         }
         Some(out)
     }
@@ -92,12 +79,10 @@ fn items<'v>(value: &'v Value<'_>) -> Option<&'v [Value<'static>]> {
     }
 }
 
-impl PropertyValue for Vec<String> {
+/// An array of any item type: strings, numbers, colours, enums.
+impl<T: PropertyValue> PropertyValue for Vec<T> {
     fn from_value(value: &Value<'_>) -> Option<Self> {
-        items(value)?
-            .iter()
-            .map(|v| v.as_str().map(str::to_string))
-            .collect()
+        items(value)?.iter().map(T::from_value).collect()
     }
 }
 
@@ -152,35 +137,6 @@ impl PropertyValue for AnchorOffsets {
                 ))
             })
             .collect()
-    }
-}
-
-impl<E: Enum> PropertyValue for Vec<E> {
-    fn from_value(value: &Value<'_>) -> Option<Self> {
-        items(value)?
-            .iter()
-            .map(|v| E::from_name(v.as_str()?))
-            .collect()
-    }
-}
-
-impl PropertyValue for Vec<f32> {
-    fn from_value(value: &Value<'_>) -> Option<Self> {
-        items(value)?
-            .iter()
-            .map(|v| v.as_f64().map(|n| n as f32))
-            .collect()
-    }
-}
-
-/// A `colorArray`, one colour or more.
-impl PropertyValue for Vec<Color> {
-    fn from_value(value: &Value<'_>) -> Option<Self> {
-        let colors: Vec<Color> = items(value)?
-            .iter()
-            .map(Value::as_color)
-            .collect::<Option<_>>()?;
-        (!colors.is_empty()).then_some(colors)
     }
 }
 

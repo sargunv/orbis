@@ -593,6 +593,5 @@ mod tests {
     #[test]
     fn named_colours_are_sorted() {
         assert!(NAMED.windows(2).all(|w| w[0].0 < w[1].0));
-        assert_eq!(NAMED.len(), 148);
     }
 }

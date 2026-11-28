@@ -392,27 +392,9 @@ impl StyleDoc {
     }
 }
 
-/// A value as JSON.
+/// A value of the global state, which came from JSON, as JSON.
 fn value_json(value: &Value<'_>) -> Json {
-    synthetic(match value {
-        Value::Null => JsonValue::Null,
-        Value::Bool(b) => JsonValue::Bool(*b),
-        Value::Number(n) => JsonValue::Number(*n),
-        Value::String(s) => JsonValue::String(s.to_string()),
-        Value::Array(items) => JsonValue::Array(items.iter().map(value_json).collect()),
-        Value::Object(members) => JsonValue::Object(
-            members
-                .iter()
-                .map(|(k, v)| Member {
-                    key: k.clone(),
-                    key_span: Span::default(),
-                    value: value_json(v),
-                })
-                .collect(),
-        ),
-        // Colours and other typed values don't come from JSON state.
-        other => JsonValue::String(other.to_string()),
-    })
+    orb_expr::json::parse(&value.to_json_string()).expect("values write JSON")
 }
 
 impl Draft {

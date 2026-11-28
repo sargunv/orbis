@@ -29,11 +29,7 @@ struct Section<'a> {
 
 impl Section<'_> {
     fn get(&self, name: &str) -> Option<&Json> {
-        self.members
-            .iter()
-            .rev()
-            .find(|m| m.key == name)
-            .map(|m| &m.value)
+        crate::v8::doc::member(self.members, name)
     }
 }
 
@@ -263,36 +259,15 @@ fn selection(
     sources: &[std::sync::Arc<Source>],
 ) -> Option<(String, Option<String>, Option<Filter>)> {
     let errors = cx.diagnostics.errors.len();
-    let source = match json.get("source") {
-        None => {
-            cx.error(path, json.span, "missing required property \"source\"");
-            None
-        }
-        Some(s) => cx.string(s, &format!("{path}.source")),
-    };
+    let source = layer_source(cx, json, path, id, ty, sources);
     let source_layer = optional_string(cx, json, "source-layer", path);
-    if let Some(source) = &source {
-        let span = json.get("source").expect("present").span;
-        match sources.iter().find(|s| s.id == *source).map(|s| &**s) {
-            None => missing_source(cx, path, span, source),
-            Some(Source {
-                kind: SourceKind::Vector(v),
-                ..
-            }) if source_layer.is_none() && !v.tileset.host() => cx.error(
-                path,
-                json.span,
-                format!("layer \"{id}\" must specify a \"source-layer\""),
-            ),
-            Some(Source {
-                kind: SourceKind::Raster(_) | SourceKind::RasterDem(_) | SourceKind::Image(_),
-                ..
-            }) => cx.error(
-                format!("{path}.source"),
-                span,
-                format!("layer \"{id}\" requires a vector source"),
-            ),
-            Some(_) => {}
-        }
+    let source_kind = |name: &str| sources.iter().find(|s| s.id == name).map(|s| &s.kind);
+    if let Some(SourceKind::Vector(v)) = source.as_deref().and_then(source_kind)
+        && source_layer.is_none()
+        && !v.tileset.host()
+    {
+        let message = format!("layer \"{id}\" must specify a \"source-layer\"");
+        cx.error(path, json.span, message);
     }
     let filter = match json.get("filter") {
         None => None,
@@ -339,50 +314,48 @@ fn camera_filter(cx: &mut Cx, filter: Filter, path: &str, span: Span) -> Filter 
     filter
 }
 
-/// A layer names a source the style doesn't have (yet): it draws nothing
-/// until one by that name is added, as in MapLibre Native. GL JS refuses
-/// the style.
-fn missing_source(cx: &mut Cx, path: &str, span: Span, source: &str) {
-    cx.warn(
-        format!("{path}.source"),
-        span,
-        format!(
-            "source \"{source}\" not found; the layer draws once it is added, which GL JS refuses"
-        ),
-    );
-}
-
-/// The source of a raster, hillshade or color-relief layer, which must be
-/// a `raster` (`dem: false`) or `raster-dem` source.
-fn image_source(
+/// A layer's source, of a kind its type draws: a vector or GeoJSON source
+/// for a feature layer, a raster or image source for a raster layer, a
+/// raster-dem source for a hillshade or colour relief. One the style
+/// doesn't have (yet) draws nothing until it is added, as in MapLibre
+/// Native, with a warning; GL JS refuses the style.
+fn layer_source(
     cx: &mut Cx,
     json: &Json,
     path: &str,
     id: &str,
+    ty: LayerType,
     sources: &[std::sync::Arc<Source>],
-    dem: bool,
 ) -> Option<String> {
     let Some(value) = json.get("source") else {
         cx.error(path, json.span, "missing required property \"source\"");
         return None;
     };
-    let source = cx.string(value, &format!("{path}.source"))?;
+    let source_path = format!("{path}.source");
+    let source = cx.string(value, &source_path)?;
     let fits = match sources.iter().find(|s| s.id == source).map(|s| &s.kind) {
         None => {
-            missing_source(cx, path, value.span, &source);
+            let message = format!(
+                "source \"{source}\" not found; the layer draws once it is added, which GL JS refuses"
+            );
+            cx.warn(source_path, value.span, message);
             return Some(source);
         }
-        Some(SourceKind::Raster(_) | SourceKind::Image(_)) => !dem,
-        Some(SourceKind::RasterDem(_)) => dem,
-        Some(_) => false,
+        Some(kind) => match (ty, kind) {
+            (LayerType::Raster, SourceKind::Raster(_) | SourceKind::Image(_)) => true,
+            (LayerType::Hillshade | LayerType::ColorRelief, SourceKind::RasterDem(_)) => true,
+            (LayerType::Raster | LayerType::Hillshade | LayerType::ColorRelief, _) => false,
+            (_, kind) => matches!(kind, SourceKind::Vector(_) | SourceKind::GeoJson(_)),
+        },
     };
     if !fits {
-        let want = if dem { "raster-dem" } else { "raster" };
-        cx.error(
-            format!("{path}.source"),
-            value.span,
-            format!("layer \"{id}\" requires a {want} source"),
-        );
+        let want = match ty {
+            LayerType::Raster => "raster",
+            LayerType::Hillshade | LayerType::ColorRelief => "raster-dem",
+            _ => "vector",
+        };
+        let message = format!("layer \"{id}\" requires a {want} source");
+        cx.error(source_path, value.span, message);
         return None;
     }
     Some(source)
@@ -526,8 +499,7 @@ pub(crate) fn parse_layer(
         LayerType::ImageProcess => (None, None, None),
         LayerType::Background => (None, None, None),
         LayerType::Raster | LayerType::Hillshade | LayerType::ColorRelief => {
-            let dem = ty != LayerType::Raster;
-            (image_source(cx, json, &path, &id, sources, dem), None, None)
+            (layer_source(cx, json, &path, &id, ty, sources), None, None)
         }
         _ => match selection(cx, json, &path, (&id, ty), sources) {
             Some((source, layer, filter)) => (Some(source), layer, filter),
