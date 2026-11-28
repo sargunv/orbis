@@ -73,8 +73,3 @@ The generated types above are needed because upstream's transform imports its
 symbol projection helpers; those helpers are never used by the generators.
 Upstream source is BSD-3-Clause. Only the generator and numeric outputs are
 committed here.
-
-`cargo test --release -p orb-camera --test covers globe_cover_cost -- --nocapture`
-prints the globe's cover counts and times beside Web Mercator's for the same
-cameras, and holds the globe to about Mercator's tile count where it fills the
-view.

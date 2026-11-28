@@ -617,12 +617,6 @@ impl View {
         self.globe.as_ref()
     }
 
-    /// The camera's view of the low-zoom plane, when one shows at its zoom:
-    /// what the view's cover, picking and labels see.
-    pub fn low_plane(&self) -> Option<&View> {
-        self.globe.as_ref()?.plane()
-    }
-
     /// The camera's view of the sphere, when the view's low-zoom surface is
     /// one and shows at its zoom.
     pub fn sphere(&self) -> Option<&SphereView> {
@@ -816,7 +810,7 @@ impl View {
     /// On a low-zoom surface, the point under a point in logical pixels on
     /// it, `height` up, or `None` where the view ray misses it.
     pub(crate) fn low_ground(&self, px: DVec2, height: Metres) -> Option<Geodetic> {
-        match self.low_plane() {
+        match self.globe.as_ref()?.plane() {
             Some(low) => Some(low.projection.inverse(low.unproject_at(px, height)?)),
             None => self.globe_ground(px, height).map(sphere::geodetic),
         }
@@ -2223,7 +2217,7 @@ mod tests {
         assert!(view(7.0).globe().is_none());
         for zoom in [2.0, 5.0, 6.5] {
             let view = view(zoom);
-            assert!(view.low_plane().is_some());
+            assert!(view.globe().unwrap().plane().is_some());
             for px in [DVec2::new(512.0, 384.0), DVec2::new(100.0, 600.0)] {
                 let world = view.unproject(px).unwrap();
                 let back = view.project(world).unwrap();
