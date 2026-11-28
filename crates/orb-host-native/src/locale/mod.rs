@@ -632,24 +632,34 @@ mod tests {
     }
 
     /// The platform's library, on platforms with a backend a test binary
-    /// can open: Android's needs an app's JVM.
+    /// can open (Android's needs an app's JVM). Apple and Windows ship it
+    /// with the OS, so it failing to load there fails the test; a Linux
+    /// without ICU skips each test, saying why.
     #[cfg(any(target_vendor = "apple", target_os = "linux", windows))]
     mod system {
         use super::super::*;
 
-        fn system() -> SystemLocale {
-            SystemLocale::new(platform::open().expect("the platform's locale library"))
+        fn system() -> Option<SystemLocale> {
+            let backend = platform::open();
+            if backend.is_none() && cfg!(target_os = "linux") {
+                eprintln!("skipped: ICU didn't load");
+                return None;
+            }
+            Some(SystemLocale::new(
+                backend.expect("the platform's locale library"),
+            ))
         }
 
-        fn collator(locale: &str, case: bool, diacritics: bool) -> Collator {
+        fn collator(s: &SystemLocale, locale: &str, case: bool, diacritics: bool) -> Collator {
             Collator {
                 case_sensitive: case,
                 diacritic_sensitive: diacritics,
-                locale: system().resolved_locale(Some(locale)),
+                locale: s.resolved_locale(Some(locale)),
             }
         }
 
         fn format(
+            s: &SystemLocale,
             number: f64,
             locale: &str,
             f: impl FnOnce(&mut NumberFormat<'_>),
@@ -659,13 +669,14 @@ mod tests {
                 ..NumberFormat::default()
             };
             f(&mut o);
-            system().format_number(number, &o)
+            s.format_number(number, &o)
         }
 
         #[test]
         fn collation_follows_the_locale_and_its_extensions() {
-            let s = system();
+            let Some(s) = system() else { return };
             let order = |a, b, c: &Collator| s.compare(a, b, c);
+            let collator = |locale, case, diacritics| collator(&s, locale, case, diacritics);
             assert_eq!(
                 order("ä", "z", &collator("de-DE", false, false)),
                 Ordering::Less
@@ -706,7 +717,7 @@ mod tests {
 
         #[test]
         fn resolved_locales_keep_the_extensions_they_honor() {
-            let s = system();
+            let Some(s) = system() else { return };
             assert_eq!(s.resolved_locale(Some("sv-SE")), "sv-SE");
             assert_eq!(
                 s.resolved_locale(Some("de-DE-u-kn-co-phonebk")),
@@ -729,21 +740,22 @@ mod tests {
 
         #[test]
         fn numbers_format_with_the_locale_currency_and_unit() {
-            assert_eq!(format(1234.5, "de-DE", |_| {}).unwrap(), "1.234,5");
+            let Some(s) = system() else { return };
+            assert_eq!(format(&s, 1234.5, "de-DE", |_| {}).unwrap(), "1.234,5");
             // Apple's data has the half-width yen sign, as Safari shows;
             // CLDR's has the full-width one.
-            let yen = format(1234.6, "ja-JP", |o| o.currency = Some("JPY")).unwrap();
+            let yen = format(&s, 1234.6, "ja-JP", |o| o.currency = Some("JPY")).unwrap();
             assert!(matches!(yen.as_str(), "¥1,235" | "￥1,235"), "{yen}");
             assert_eq!(
-                format(1234.5, "de-DE", |o| o.currency = Some("eur")).unwrap(),
+                format(&s, 1234.5, "de-DE", |o| o.currency = Some("eur")).unwrap(),
                 "1.234,50\u{a0}€"
             );
             assert_eq!(
-                format(-12.3, "en-US", |o| o.currency = Some("USD")).unwrap(),
+                format(&s, -12.3, "en-US", |o| o.currency = Some("USD")).unwrap(),
                 "-$12.30"
             );
             assert_eq!(
-                format(12.3, "en-US", |o| {
+                format(&s, 12.3, "en-US", |o| {
                     o.currency = Some("USD");
                     o.max_fraction_digits = Some(0.0);
                 })
@@ -751,31 +763,32 @@ mod tests {
                 "$12"
             );
             assert_eq!(
-                format(2.5, "en-US", |o| o.max_fraction_digits = Some(0.0)).unwrap(),
+                format(&s, 2.5, "en-US", |o| o.max_fraction_digits = Some(0.0)).unwrap(),
                 "3"
             );
             assert_eq!(
-                format(21.5, "en-US", |o| o.unit = Some("celsius")).unwrap(),
+                format(&s, 21.5, "en-US", |o| o.unit = Some("celsius")).unwrap(),
                 "21.5°C"
             );
             assert_eq!(
-                format(80.0, "en-US", |o| o.unit = Some("kilometer-per-hour")).unwrap(),
+                format(&s, 80.0, "en-US", |o| o.unit = Some("kilometer-per-hour")).unwrap(),
                 "80 km/h"
             );
             assert_eq!(
-                format(12.0, "en-US", |o| o.unit = Some("percent")).unwrap(),
+                format(&s, 12.0, "en-US", |o| o.unit = Some("percent")).unwrap(),
                 "12%"
             );
         }
 
         #[test]
         fn bad_currencies_and_units_fail() {
+            let Some(s) = system() else { return };
             assert_eq!(
-                format(1.0, "en-US", |o| o.currency = Some("US$")),
+                format(&s, 1.0, "en-US", |o| o.currency = Some("US$")),
                 Err("Invalid currency code : US$".into())
             );
-            assert!(format(1.0, "en-US", |o| o.unit = Some("furlong")).is_err());
-            assert!(format(1.0, "en-US", |o| o.unit = Some("meter-per-furlong")).is_err());
+            assert!(format(&s, 1.0, "en-US", |o| o.unit = Some("furlong")).is_err());
+            assert!(format(&s, 1.0, "en-US", |o| o.unit = Some("meter-per-furlong")).is_err());
         }
     }
 }
