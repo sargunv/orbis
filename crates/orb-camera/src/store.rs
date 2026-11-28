@@ -8,7 +8,6 @@ use glam::DVec2;
 use orb_crs::Projection;
 use orb_crs::{Geodetic, Metres};
 
-use crate::Skew;
 use crate::animate::{Around, CameraTarget, EaseOptions, Easing, FlyOptions, Motion, Path};
 use crate::fit::FitOptions;
 use crate::momentum::{Delta, GestureMomentum, Momentum, MomentumVelocity, Part, Stage};
@@ -275,12 +274,11 @@ impl Camera {
     /// The camera asked for, while nothing moved it since, or else the
     /// camera as it is. The target's height is the state's, which the
     /// terrain or [`set_center_elevation`](Self::set_center_elevation)
-    /// gives it, and so is the projection.
+    /// gives it.
     fn asked_or_state(&self) -> CameraState {
         match self.asked {
             Some(asked) => CameraState {
                 elevation: self.state.elevation,
-                axonometric: self.state.axonometric,
                 ..asked
             },
             None => self.state,
@@ -314,16 +312,6 @@ impl Camera {
 
     pub fn center_clamped_to_ground(&self) -> bool {
         self.clamped
-    }
-
-    /// Draws the map in MapLibre Native's axonometric projection, leaning
-    /// heights by `skew`, or in perspective (`None`). Moves and animations
-    /// keep it.
-    pub fn set_axonometric(&mut self, skew: Option<Skew>) {
-        if self.state.axonometric != skew {
-            self.state.axonometric = skew;
-            self.revision += 1;
-        }
     }
 
     /// Puts the target this many metres above the surface at once (GL JS
@@ -374,14 +362,17 @@ impl Camera {
     }
 
     /// Moves to a new surface (a style loaded, or the map's projection
-    /// changed): the target and ground resolution stay, running
-    /// animations stop, and the camera keeps to the new world.
+    /// changed): the target and ground resolution stay, and the camera
+    /// keeps to the new world. Animations stop on a new plane or globe.
     pub fn set_surface(&mut self, surface: Surface) {
         if surface == self.surface {
             return;
         }
+        let (old, new) = (&self.surface, &surface);
+        if (old.projection, old.globe) != (new.projection, new.globe) {
+            self.stop();
+        }
         self.surface = surface;
-        self.stop();
         self.rewrite();
     }
 
@@ -1046,8 +1037,6 @@ impl Camera {
     /// Writes a constrained state. Moves outside the limits are clamped,
     /// whoever makes them.
     fn write(&mut self, mut next: CameraState) {
-        // Only `set_axonometric` changes the projection.
-        next.axonometric = self.state.axonometric;
         next.bearing = wrap_bearing(next.bearing);
         next.constrain(&self.constraints, &self.surface, self.viewport);
         if let Some(terrain) = self.terrain.as_deref().filter(|_| self.clamped) {
@@ -1096,7 +1085,7 @@ impl Camera {
         if let Some(padding) = target.padding {
             to.padding = padding;
         }
-        let center = to.center(viewport);
+        let center = to.center(viewport, surface);
         // Limits bound the scale at the destination.
         let zoom = target.zoom.map(|z| {
             let mut at = CameraState {
@@ -1350,10 +1339,7 @@ mod tests {
         camera.set_viewport(viewport);
         assert!(camera.state().target.lat.abs() < 1e-6);
         assert!(camera.state().zoom(&mercator()) > 1.4);
-        let globe = Surface {
-            projection: mercator(),
-            globe: Some(orb_crs::Globe::V8),
-        };
+        let globe = Surface::globe(mercator(), orb_crs::Globe::V8);
         camera.set_surface(globe);
         assert!((camera.state().target.lat - 28.0).abs() < 1e-9);
         assert!((camera.state().zoom(&mercator()) - 1.0).abs() < 1e-9);
@@ -1384,25 +1370,8 @@ mod tests {
             height: 1440.0,
         };
         let camera = Camera::new(asked, Surface::from(mercator()), viewport);
-        let globe = Surface {
-            projection: mercator(),
-            globe: Some(orb_crs::Globe::V8),
-        };
+        let globe = Surface::globe(mercator(), orb_crs::Globe::V8);
         (camera, globe)
-    }
-
-    /// Setting the axonometric projection before the style, as hosts that
-    /// take it from their options do, doesn't move the camera, so it keeps
-    /// the camera asked for.
-    #[test]
-    fn the_projection_keeps_the_camera_asked_for() {
-        let (mut camera, globe) = tall_mercator_at_30n();
-        camera.set_constraints(Constraints::default());
-        assert!(camera.state().target.lat.abs() < 1e-6);
-        camera.set_axonometric(Some(Skew::default()));
-        camera.set_surface(globe);
-        assert!((camera.state().target.lat - 30.0).abs() < 1e-9);
-        assert_eq!(camera.state().axonometric, Some(Skew::default()));
     }
 
     /// A jump that sets only some of the camera keeps the rest of the one
@@ -1525,10 +1494,7 @@ mod tests {
     /// zoom, and zooming or easing out there stops at the same size.
     #[test]
     fn globe_zooms_keep_the_least_size() {
-        let surface = Surface {
-            projection: mercator(),
-            globe: Some(orb_crs::Globe::V8),
-        };
+        let surface = Surface::globe(mercator(), orb_crs::Globe::V8);
         let viewport = Viewport {
             width: 800.0,
             height: 600.0,
@@ -1571,10 +1537,7 @@ mod tests {
     /// over the sphere, latitude moving steadily.
     #[test]
     fn globe_eases_keep_its_size() {
-        let surface = Surface {
-            projection: mercator(),
-            globe: Some(orb_crs::Globe::V8),
-        };
+        let surface = Surface::globe(mercator(), orb_crs::Globe::V8);
         let viewport = Viewport {
             width: 800.0,
             height: 800.0,
@@ -1974,8 +1937,8 @@ mod tests {
         };
         for globe in [None, Some(orb_crs::Globe::V8)] {
             let surface = Surface {
-                projection: mercator(),
                 globe,
+                ..Surface::plane(mercator())
             };
             let start = CameraState::new(Geodetic::new(20.0, 10.0), 4.0, &mercator());
             for eased in [false, true] {
@@ -2043,8 +2006,8 @@ mod tests {
         };
         for (globe, zoom) in [(None, 11.0), (Some(orb_crs::Globe::V8), 5.0)] {
             let surface = Surface {
-                projection: mercator(),
                 globe,
+                ..Surface::plane(mercator())
             };
             let mut start = CameraState::new(Geodetic::new(8.0, 46.5), zoom, &mercator());
             start.pitch = 50.0;

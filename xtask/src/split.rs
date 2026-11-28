@@ -257,11 +257,8 @@ pub(crate) const MODULES: &[Module] = &[
             "orb_crs::family::oblique::",
             "orb_crs::family::tm::",
             "orb_runtime::globe::",
-            // Covers of the globe, of a projection's low-zoom plane and of
-            // sources in another CRS, and the globe's labels.
+            // Covers of the globe, and the globe's labels.
             "orb_camera::View>::cover_globe",
-            "orb_camera::View>::cover_warped",
-            "orb_camera::View>::cover_low",
             "orb_camera::GlobeFrustum",
             "orb_symbol::placement::view::TileGlobe",
             "orb_symbol::placement::view::GlobeCamera",

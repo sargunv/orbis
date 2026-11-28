@@ -106,10 +106,7 @@ impl Map {
             .map(|(i, _)| renderer.cull_margin_px(i as u32))
             .fold(0.0f32, f32::max);
         let SourceState::Ready {
-            endpoint,
-            pyramid,
-            warped,
-            ..
+            endpoint, pyramid, ..
         } = &style.sources[index].state
         else {
             return None;
@@ -181,16 +178,14 @@ impl Map {
             }
             _ => (view, f64::from(reach), None),
         };
-        let warps = &self.globe_warps;
-        let volume = |view: &View, height: f32| {
-            view.cover_volume(
-                tms,
-                endpoint.cover_px,
-                pyramid.max_zoom(),
-                f64::from(height) * self.extrusion_scale(),
-                elevation.map(|e| e as &dyn orb_camera::Elevation),
-                margin,
-            )
+        let cover = |view: &View, height: f32| {
+            let with = orb_camera::Cover {
+                height: f64::from(height) * self.extrusion_scale(),
+                terrain: elevation.map(|e| e as &dyn orb_camera::Elevation),
+                margin_px: margin,
+                footprints: Some(&self.globe_warps),
+            };
+            view.cover(tms, endpoint.cover_px, pyramid.max_zoom(), with)
         };
         // Heights no expression bounds: the highest the covered tiles hold,
         // as each laid out, widens the cover. It comes from this cover's own
@@ -204,23 +199,12 @@ impl Map {
                 .map(|tile| unbounded.tallest(tile))
                 .fold(height, f32::max)
         };
-        let cover_of = |view: &View| match (view.low_plane(), *warped) {
-            // On a low-zoom plane every set's tiles land through its warp.
-            (Some(low), _) => {
-                low.cover_warped(tms, endpoint.cover_px, pyramid.max_zoom(), |tile| {
-                    warps.footprint(tms, tile)
-                })
+        let cover_of = |view: &View| {
+            let tiles = cover(view, height);
+            match lifted(&tiles) {
+                lift if lift > height => cover(view, lift),
+                _ => tiles,
             }
-            (None, false) => {
-                let cover = volume(view, height);
-                match lifted(&cover) {
-                    lift if lift > height => volume(view, lift),
-                    _ => cover,
-                }
-            }
-            (None, true) => view.cover_warped(tms, endpoint.cover_px, pyramid.max_zoom(), |tile| {
-                warps.surface_footprint(tms, tile)
-            }),
         };
         let Some(middle) = middle else {
             let mut cover = cover_of(cover_view);
@@ -240,10 +224,7 @@ impl Map {
             });
         };
         let drawn = cover_of(middle);
-        let mut cover = match (cover_view.low_plane(), *warped) {
-            (None, false) => volume(cover_view, lifted(&drawn)),
-            _ => cover_of(cover_view),
-        };
+        let mut cover = cover(cover_view, lifted(&drawn));
         focus_first(&mut cover, tms, focus);
         let neighbours = (cover.iter())
             .map(|t| t.index)
@@ -694,6 +675,8 @@ impl Map {
         // A still map redraws every stale slot in its one frame.
         let texels = (self.mode == RenderMode::Continuous).then_some(self.frame_budget.drape());
         let camera = self.frame_camera();
+        let zoom = drape_zoom(camera.zoom(self.surface.projection()));
+        let sphere = DrapeSphere::of(&self.surface(), camera.target, zoom);
         let style = self.style.as_mut().expect("checked");
         let terrain = style.terrain.get_mut().expect("checked");
         let worker = Arc::clone(&style.worker);
@@ -705,8 +688,6 @@ impl Map {
         // shows doesn't depend on them.
         let layout = renderer.reserve_drape(gpu)?;
         let surface = self.surface.tms().clone();
-        let zoom = drape_zoom(camera.zoom(self.surface.projection()));
-        let sphere = DrapeSphere::of(&self.surface.view_surface(), camera.target, zoom);
         let stacks = layout.stack_count() as usize;
         let bearing = camera.bearing;
         let mut images = self.services.images.0.lock().expect("images poisoned");
@@ -945,19 +926,12 @@ impl Map {
         };
         let zoom = self.frame_zoom();
         let tms = self.surface.tms();
-        let cover = match view.low_plane() {
-            Some(low) => low.cover_warped(tms, TILE_PX, 24, |tile| {
-                self.globe_warps.footprint(tms, tile)
-            }),
-            None => view.cover_volume(
-                tms,
-                TILE_PX,
-                24,
-                0.0,
-                elevation.map(|e| e as &dyn orb_camera::Elevation),
-                0.0,
-            ),
+        let with = orb_camera::Cover {
+            terrain: elevation.map(|e| e as &dyn orb_camera::Elevation),
+            footprints: Some(&self.globe_warps),
+            ..orb_camera::Cover::default()
         };
+        let cover = view.cover(tms, TILE_PX, 24, with);
         let period = self.surface.period();
         let at = Placement {
             extent: 8192,

@@ -1111,10 +1111,7 @@ fn a_drag_toward_a_tilted_horizon_moves_a_bounded_way_and_on_past_it() {
 #[test]
 fn a_drag_off_the_globe_turns_it() {
     let projection = *TileMatrixSet::web_mercator().projection();
-    let surface = orb_crs::Surface {
-        projection,
-        globe: Some(orb_crs::Globe::V8),
-    };
+    let surface = orb_crs::Surface::globe(projection, orb_crs::Globe::V8);
     let viewport = Viewport {
         width: 800.0,
         height: 600.0,

@@ -135,7 +135,7 @@ impl Map {
             self.surface = crate::surface::Surface::of(style.doc.style());
             // The camera stands on it now: a move started after the edit
             // runs on the new surface, rather than stopping at the next frame.
-            self.camera.set_surface(self.surface.view_surface());
+            self.camera.set_surface(self.surface());
         }
         self.version += 1;
         let version = self.version;

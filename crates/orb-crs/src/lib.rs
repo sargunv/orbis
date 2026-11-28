@@ -23,7 +23,7 @@ pub use cover::{CoverDecision, CoveredTile};
 pub use geo::{Geodetic, MERCATOR_MAX_LATITUDE, style_parallel, wgs84};
 pub use projection::{Descriptor, Projection, UnknownProjection};
 pub use quad::ImageQuad;
-pub use surface::{Globe, LowSurface, Surface};
+pub use surface::{Globe, LowSurface, Skew, Surface};
 pub use tms::{
     TileIndex, TileMatrix, TileMatrixSet, TileMatrixSetDefinition, UnknownTileMatrixSet,
 };

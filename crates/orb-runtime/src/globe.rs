@@ -116,14 +116,6 @@ impl GlobeWarps {
         self.onto(tms, false)
     }
 
-    /// Where the tile lands on the low-zoom plane; `None` on the sphere.
-    pub(crate) fn footprint(&self, tms: &TileMatrixSet, tile: TileIndex) -> Option<Footprint> {
-        let warp = self.plane.map(|_| self.onto(tms, true))?;
-        self.tile(tms, tile, |t| {
-            *t.low_footprint.get_or_insert_with(|| warp.footprint(tile))
-        })
-    }
-
     /// The tile's patches on the low-zoom surface, or `None` where its
     /// projection doesn't reach.
     pub(crate) fn series(
@@ -167,18 +159,6 @@ impl GlobeWarps {
         Some((warp, series.anchor))
     }
 
-    /// Where a tile of another plane lands on the surface's.
-    pub(crate) fn surface_footprint(
-        &self,
-        tms: &TileMatrixSet,
-        tile: TileIndex,
-    ) -> Option<Footprint> {
-        let warp = self.onto(tms, false);
-        self.tile(tms, tile, |t| {
-            *t.footprint.get_or_insert_with(|| warp.footprint(tile))
-        })
-    }
-
     /// A vector tile of another plane's patches on the surface's, or
     /// `None` if it can't be drawn through them.
     pub(crate) fn surface_series(
@@ -205,6 +185,23 @@ impl GlobeWarps {
             }
         }
         self.frame += 1;
+    }
+}
+
+impl orb_camera::Footprints for GlobeWarps {
+    fn on_plane(&self, tms: &TileMatrixSet, tile: TileIndex) -> Option<Footprint> {
+        let warp = self.onto(tms, false);
+        self.tile(tms, tile, |t| {
+            *t.footprint.get_or_insert_with(|| warp.footprint(tile))
+        })
+    }
+
+    /// `None` on the sphere.
+    fn on_low_plane(&self, tms: &TileMatrixSet, tile: TileIndex) -> Option<Footprint> {
+        let warp = self.plane.map(|_| self.onto(tms, true))?;
+        self.tile(tms, tile, |t| {
+            *t.low_footprint.get_or_insert_with(|| warp.footprint(tile))
+        })
     }
 }
 

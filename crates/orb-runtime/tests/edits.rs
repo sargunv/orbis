@@ -741,8 +741,11 @@ fn projection_switches_load_nothing() {
         let cover = |map: &Offscreen| {
             let tms = orb_crs::TileMatrixSet::web_mercator();
             let view = map.map.view(map.viewport);
-            let tiles: std::collections::HashSet<_> =
-                view.cover(tms, 512.0, 14).iter().map(|t| t.index).collect();
+            let tiles: std::collections::HashSet<_> = view
+                .cover(tms, 512.0, 14, orb_camera::Cover::default())
+                .iter()
+                .map(|t| t.index)
+                .collect();
             tiles
         };
         let before = cover(&map);

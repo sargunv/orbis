@@ -1,8 +1,4 @@
-use std::ops::RangeInclusive;
-
-use glam::DVec2;
-
-use crate::{TileIndex, TileMatrixSet, WorldRect};
+use crate::{TileIndex, TileMatrixSet};
 
 /// A tile chosen by [`TileMatrixSet::cover`], in one copy of a wrapping world.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -24,49 +20,24 @@ pub enum CoverDecision {
 }
 
 impl TileMatrixSet {
-    /// Covers a view by depth-first traversal from the first matrix of each
-    /// world copy in `wraps`, through the children each matrix holds.
-    /// `decide` sees each tile with its area (inside the set's extent)
-    /// shifted into its world copy. Tiles asked to refine at `max_zoom` are
-    /// accepted.
-    ///
-    /// Projections that don't wrap only have copy 0.
+    /// Covers a view by depth-first traversal from the first matrix,
+    /// through the children each matrix holds: on a drawing plane that
+    /// wraps (`wrap`: copies on either side, and the period between them),
+    /// in each copy `-copies..=copies`, else in its one copy. `decide` sees
+    /// each tile with its copy's x offset. Tiles asked to refine at
+    /// `max_zoom` are accepted.
     pub fn cover(
         &self,
-        wraps: RangeInclusive<i32>,
-        max_zoom: u8,
-        mut decide: impl FnMut(TileIndex, WorldRect) -> CoverDecision,
-    ) -> Vec<CoveredTile> {
-        self.cover_with(
-            wraps,
-            self.projection().wrap_period(),
-            max_zoom,
-            |index, offset| {
-                decide(
-                    index,
-                    self.tile_area(index).translated(DVec2::new(offset, 0.0)),
-                )
-            },
-        )
-    }
-
-    /// [`cover`](Self::cover) for tiles drawn on another plane: `decide`
-    /// sees each tile with the x offset of its copy of the drawing plane,
-    /// whose wrap `period` (if it wraps) sets the copies.
-    pub fn cover_with(
-        &self,
-        wraps: RangeInclusive<i32>,
-        period: Option<f64>,
+        wrap: Option<(i32, f64)>,
         max_zoom: u8,
         mut decide: impl FnMut(TileIndex, f64) -> CoverDecision,
     ) -> Vec<CoveredTile> {
-        let wraps = if period.is_some() { wraps } else { 0..=0 };
         let max_zoom = max_zoom.min(self.max_zoom());
-
         let mut out = Vec::new();
         let mut stack = Vec::new();
-        for wrap in wraps {
-            let offset = f64::from(wrap) * period.unwrap_or(0.0);
+        let (copies, period) = wrap.unwrap_or((0, 0.0));
+        for wrap in -copies..=copies {
+            let offset = f64::from(wrap) * period;
             stack.extend(self.roots());
             while let Some(index) = stack.pop() {
                 match decide(index, offset) {
@@ -89,15 +60,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn covers_a_region_at_uniform_zoom() {
+    fn covers_a_region_at_uniform_zoom_in_its_copy() {
         let tms = TileMatrixSet::web_mercator();
+        let half = tms.tile_span(0) / 2.0;
         // The north-east quadrant of the primary world at zoom 2.
-        let region = WorldRect {
-            min: DVec2::splat(1.0),
-            max: tms.projection().world_bounds().max - 1.0,
-        };
-        let mut tiles = tms.cover(-1..=1, 2, |index, bounds| {
-            let overlaps = bounds.min.cmplt(region.max).all() && bounds.max.cmpgt(region.min).all();
+        let mut tiles = tms.cover(Some((1, 2.0 * half)), 2, |index, offset| {
+            let b = tms
+                .tile_area(index)
+                .translated(glam::DVec2::new(offset, 0.0));
+            let overlaps = b.max.x > 0.0 && b.min.x < half && b.max.y > 0.0;
             match (overlaps, index.z) {
                 (false, _) => CoverDecision::Skip,
                 (true, 2) => CoverDecision::Accept,
@@ -116,7 +87,7 @@ mod tests {
     #[test]
     fn refine_stops_at_max_zoom() {
         let tms = TileMatrixSet::web_mercator();
-        let tiles = tms.cover(0..=0, 1, |_, _| CoverDecision::Refine);
+        let tiles = tms.cover(None, 1, |_, _| CoverDecision::Refine);
         assert_eq!(tiles.len(), 4);
         assert!(tiles.iter().all(|t| t.index.z == 1));
     }

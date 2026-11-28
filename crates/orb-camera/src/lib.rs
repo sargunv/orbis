@@ -33,12 +33,13 @@ pub use moves::{Bounds, Constraints};
 pub use store::{AnimationId, Camera, CameraEvent, Change, Phase};
 pub use terrain::{Elevation, HIGHEST_GROUND};
 
+use std::cell::OnceCell;
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use glam::{DMat3, DMat4, DVec2, DVec3, DVec4};
 use orb_crs::{
     CoverDecision, CoveredTile, Footprint, Metres, Projection, Surface, TileIndex, TileMatrixSet,
-    WorldRect, sphere,
+    Warp, WorldRect, sphere,
 };
 use orb_crs::{Geodetic, wgs84};
 
@@ -66,28 +67,6 @@ pub struct CameraState {
     /// `padding`): the target and the vanishing point sit at the middle
     /// of what is left.
     pub padding: Padding,
-    /// MapLibre Native's axonometric projection, when set: heights stand
-    /// without perspective, leaning by its skew, and padding is ignored.
-    /// The ground projects as it does in perspective.
-    pub axonometric: Option<Skew>,
-}
-
-/// How an axonometric view leans what stands above the ground, as
-/// MapLibre Native's `xSkew` and `ySkew` do (`(0, 1)` by default: heights
-/// rise straight up): a height `h` pixels long at the target's scale moves
-/// the picture by `x × h` and `y × h` in clip units at the eye's distance
-/// in pixels, right and up. At the target's depth that is `x × h × width
-/// ÷ 2d` pixels right, `d` that distance, and likewise up.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Skew {
-    pub x: f64,
-    pub y: f64,
-}
-
-impl Default for Skew {
-    fn default() -> Self {
-        Self { x: 0.0, y: 1.0 }
-    }
 }
 
 /// Size of one tile side at its own zoom in the style zoom convention, in
@@ -126,7 +105,6 @@ impl CameraState {
             fov: Self::DEFAULT_FOV,
             elevation: 0.0,
             padding: Padding::default(),
-            axonometric: None,
         };
         camera.set_zoom(projection, zoom);
         camera
@@ -134,8 +112,8 @@ impl CameraState {
 
     /// Where the target shows in `viewport`: the middle of its padded
     /// area (of the whole viewport, axonometric), in logical pixels.
-    pub fn center(&self, viewport: Viewport) -> DVec2 {
-        let p = match self.axonometric {
+    pub fn center(&self, viewport: Viewport, surface: &Surface) -> DVec2 {
+        let p = match surface.axonometric {
             Some(_) => Padding::default(),
             None => self.padding,
         };
@@ -183,6 +161,48 @@ impl Viewport {
             height: f64::from(height) / pixel_ratio,
         }
     }
+}
+
+/// What a [`View::cover`] keeps besides the bare ground, and where tiles
+/// on other planes land: nothing by default.
+#[derive(Clone, Copy, Default)]
+pub struct Cover<'a> {
+    /// How high content stands on the ground, in world units: as the
+    /// bottom edge nears the horizon the culling volume grows toward it
+    /// (at least 500 style metres), keeping tiles whose roofs can show
+    /// above their ground.
+    pub height: f64,
+    /// The terrain: tiles cull by the elevations under them where known,
+    /// and take GL JS's terrain level of detail at any pitch, coarser far
+    /// off than the map's [`TileLod`], as each terrain tile takes a drape
+    /// slot.
+    pub terrain: Option<&'a dyn Elevation>,
+    /// How far past the viewport's edges tiles count, logical pixels.
+    pub margin_px: f64,
+    /// Where tiles land on planes other than their own, which a view on a
+    /// low-zoom plane, or of a set on another plane, covers through: kept
+    /// by the host, or without them made afresh for this cover.
+    pub footprints: Option<&'a dyn Footprints>,
+}
+
+impl std::fmt::Debug for Cover<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cover")
+            .field("height", &self.height)
+            .field("terrain", &self.terrain)
+            .field("margin_px", &self.margin_px)
+            .field("footprints", &self.footprints.is_some())
+            .finish()
+    }
+}
+
+/// Where tiles land on planes other than their own. Covers visit the same
+/// tiles frame after frame, so hosts keep them.
+pub trait Footprints {
+    /// Where `tile` of `tms`, a set on another plane, lands on the view's.
+    fn on_plane(&self, tms: &TileMatrixSet, tile: TileIndex) -> Option<Footprint>;
+    /// Where `tile` of `tms` lands on the view's low-zoom plane.
+    fn on_low_plane(&self, tms: &TileMatrixSet, tile: TileIndex) -> Option<Footprint>;
 }
 
 /// A view's low-zoom surface ([`orb_crs::Globe`]) and how much of the
@@ -426,7 +446,7 @@ impl View {
         // rolled view's vertical extent spans some of its width (Native's
         // `tanFovAboveCenter`, here exact for any padding and roll).
         let (roll_sin, roll_cos) = camera.roll.to_radians().sin_cos();
-        let center = camera.center(viewport);
+        let center = camera.center(viewport, surface);
         let offset = center - DVec2::new(viewport.width, viewport.height) / 2.0;
         let above_center = viewport.height / 2.0 * roll_cos.abs()
             + offset.y * roll_cos
@@ -503,7 +523,7 @@ impl View {
         // it divides by, and moves the picture by its skew instead, its
         // length in pixels each way (`TransformState::getProjMatrix`).
         // Heights count from the target's.
-        if let Some(skew) = camera.axonometric {
+        if let Some(skew) = surface.axonometric {
             let mut z = view_proj.z_axis;
             let at_target = view_proj.w_axis + z * target_z;
             z.x = skew.x / world_per_px;
@@ -517,7 +537,11 @@ impl View {
         let low_plane = surface.globe.and_then(|g| g.plane());
         let globe = (amount > 0.0).then(|| {
             if let Some(plane) = low_plane {
-                let low = Self::on_ground(camera, viewport, &Surface::plane(plane), lowest);
+                let low = Surface {
+                    axonometric: surface.axonometric,
+                    ..Surface::plane(plane)
+                };
+                let low = Self::on_ground(camera, viewport, &low, lowest);
                 return GlobeView {
                     amount,
                     low: LowView::Plane(Box::new(low)),
@@ -576,17 +600,10 @@ impl View {
     }
 
     /// This view with its covers' tiles coarsening by `lod`
-    /// ([`TileLod::default`] until set), its low-zoom surface's too.
+    /// ([`TileLod::default`] until set).
     #[must_use]
     pub fn with_tile_lod(mut self, lod: TileLod) -> Self {
         self.lod = lod.sanitized();
-        if let Some(GlobeView {
-            low: LowView::Plane(low),
-            ..
-        }) = &mut self.globe
-        {
-            low.lod = self.lod;
-        }
         self
     }
 
@@ -863,138 +880,84 @@ impl View {
 
     /// The tiles of `tms` that cover the view: of the zoom whose tiles span
     /// `tile_px` pixels at the target, coarsening with distance past the
-    /// [`TileLod`]'s pitch threshold.
-    pub fn cover(&self, tms: &TileMatrixSet, tile_px: f64, max_zoom: u8) -> Vec<CoveredTile> {
-        self.cover_volume(tms, tile_px, max_zoom, 0.0, None, 0.0)
-    }
-
-    /// Covers ground and content standing on it up to `height` (world
-    /// units). As the bottom edge approaches the horizon the culling volume
-    /// grows toward that height (at least 500 style metres), retaining
-    /// tiles whose roofs can enter the view above their ground.
-    /// On `terrain`, tiles are culled by the elevations under them where
-    /// known, and take the terrain's level of detail
-    /// ([`cover_terrain`](Self::cover_terrain)): draped content shows no
-    /// more detail than its terrain tile's drape slot holds.
-    pub fn cover_volume(
+    /// [`TileLod`]'s pitch threshold, or on terrain by GL JS's terrain
+    /// level of detail at any pitch. A view on a low-zoom plane, or a set
+    /// on another plane than the view's, covers from where each tile lands
+    /// ([`Cover::footprints`]); the sphere takes any set's tiles directly.
+    pub fn cover(
         &self,
         tms: &TileMatrixSet,
         tile_px: f64,
         max_zoom: u8,
-        height: f64,
-        terrain: Option<&dyn Elevation>,
-        margin_px: f64,
+        with: Cover<'_>,
     ) -> Vec<CoveredTile> {
-        let detail = match terrain {
+        let detail = match with.terrain {
             Some(_) => Detail::Terrain,
             None => Detail::Lod(self.lod),
         };
-        self.cover_detailed(tms, (tile_px, max_zoom), height, terrain, margin_px, detail)
-    }
-
-    /// The terrain's own cover: its tiles of `tms`, culled by the
-    /// elevations under them where known, coarsening with distance at any
-    /// pitch by GL JS's terrain level of detail. Each terrain tile takes a
-    /// drape slot per stack, so the terrain keeps GL JS's fewer, coarser
-    /// far tiles rather than the map's [`TileLod`]. Native draws no
-    /// terrain; its default detail wants 43 to 63 terrain tiles at pitches
-    /// 53 to 85 over the Alps and Japan where GL JS's wants 26 to 31, past
-    /// the 32 the drape atlas holds with a viewport-lit hillshade. And
-    /// where the ground falls away from the target, as straight down onto a
-    /// crest, one zoom across the view (Native's below its pitch
-    /// threshold) covers far more ground than the view shows.
-    pub fn cover_terrain(
-        &self,
-        tms: &TileMatrixSet,
-        tile_px: f64,
-        max_zoom: u8,
-        terrain: &dyn Elevation,
-    ) -> Vec<CoveredTile> {
-        let detail = Detail::Terrain;
-        self.cover_detailed(tms, (tile_px, max_zoom), 0.0, Some(terrain), 0.0, detail)
-    }
-
-    fn cover_detailed(
-        &self,
-        tms: &TileMatrixSet,
-        (tile_px, max_zoom): (f64, u8),
-        height: f64,
-        terrain: Option<&dyn Elevation>,
-        margin_px: f64,
-        detail: Detail,
-    ) -> Vec<CoveredTile> {
-        match self.globe.as_ref().map(|g| &g.low) {
-            Some(LowView::Plane(low)) => return low.cover_low(tms, tile_px, max_zoom),
-            Some(LowView::Sphere(globe)) => {
-                let metres = height * globe.metres_per_px / self.world_per_px;
-                let at = (tile_px, max_zoom);
-                return self.cover_globe(globe, tms, at, (metres, terrain), detail);
-            }
-            None => {}
-        }
-        let center_zoom = (tms.tile_span(0) / (self.world_per_px * tile_px)).log2();
-        self.cover_tiles(
-            tms,
-            max_zoom,
-            (height, terrain),
-            margin_px,
-            detail,
-            |index, offset| {
-                let bounds = tms.tile_area(index).translated(DVec2::new(offset, 0.0));
-                Some((bounds, center_zoom))
+        let at = (tile_px, max_zoom);
+        // Warps onto the view's plane and its low plane, where the host
+        // keeps no footprints.
+        let warps = (OnceCell::new(), OnceCell::new());
+        let warp = |cell: &OnceCell<Warp>, to: Projection, index: TileIndex| {
+            cell.get_or_init(|| Warp::new(tms.clone(), to))
+                .footprint(index)
+        };
+        // The tile on the view's plane, where the terrain's ranges are read.
+        let on_plane = |index: TileIndex| match tms.projection().same_plane(&self.projection) {
+            true => Some(Footprint {
+                bounds: tms.tile_area(index),
+                span: tms.tile_span(index.z),
+            }),
+            false => match with.footprints {
+                Some(footprints) => footprints.on_plane(tms, index),
+                None => warp(&warps.0, self.projection, index),
             },
-        )
-    }
-
-    /// Covers the view with tiles of a set on another plane, from where
-    /// each tile lands on this one.
-    pub fn cover_warped(
-        &self,
-        tms: &TileMatrixSet,
-        tile_px: f64,
-        max_zoom: u8,
-        mut footprint: impl FnMut(TileIndex) -> Option<Footprint>,
-    ) -> Vec<CoveredTile> {
+        };
         match self.globe.as_ref().map(|g| &g.low) {
-            Some(LowView::Plane(low)) => return low.cover_low(tms, tile_px, max_zoom),
-            // Any set's tiles wrap the globe directly.
             Some(LowView::Sphere(globe)) => {
-                let detail = Detail::Lod(self.lod);
-                return self.cover_globe(globe, tms, (tile_px, max_zoom), (0.0, None), detail);
+                let metres = with.height * globe.metres_per_px / self.world_per_px;
+                self.cover_globe(globe, tms, at, (metres, with.terrain), detail)
             }
-            None => {}
+            Some(LowView::Plane(low)) => {
+                let with = Cover {
+                    height: with.height * low.world_per_px / self.world_per_px,
+                    ..with
+                };
+                low.cover_tiles(tms, at, with, detail, |index| {
+                    let footprint = match with.footprints {
+                        Some(footprints) => footprints.on_low_plane(tms, index),
+                        None => warp(&warps.1, low.projection, index),
+                    }?;
+                    let ground = match with.terrain {
+                        Some(_) => on_plane(index)?.bounds,
+                        None => footprint.bounds,
+                    };
+                    Some((footprint, ground))
+                })
+            }
+            None => self.cover_tiles(tms, at, with, detail, |index| {
+                on_plane(index).map(|f| (f, f.bounds))
+            }),
         }
-        let scale = self.world_per_px * tile_px;
-        let detail = Detail::Lod(self.lod);
-        self.cover_tiles(tms, max_zoom, (0.0, None), 0.0, detail, |index, offset| {
-            let f = footprint(index)?;
-            // The zoom at which this tile, at its own scale, would span
-            // `tile_px` pixels at the camera.
-            let center = f64::from(index.z) + (f.span / scale).log2();
-            Some((f.bounds.translated(DVec2::new(offset, 0.0)), center))
-        })
     }
 
-    /// Covers this view of a low-zoom plane with tiles of a set on another,
-    /// from where each lands on it. Hosts that cover often keep the
-    /// footprints and call [`cover_warped`](Self::cover_warped) on
-    /// [`low_plane`](Self::low_plane) instead.
-    fn cover_low(&self, tms: &TileMatrixSet, tile_px: f64, max_zoom: u8) -> Vec<CoveredTile> {
-        let warp = orb_crs::Warp::new(tms.clone(), self.projection);
-        self.cover_warped(tms, tile_px, max_zoom, |tile| warp.footprint(tile))
-    }
-
-    /// The cover's traversal: `place` gives each tile's bounds in its copy
-    /// of the world (by x offset) and the zoom whose tiles would span the
-    /// source's tile size at the target's scale, or `None` to skip it.
+    /// The cover's traversal on a plane: `place` gives where each tile
+    /// lands on the view's plane, in its primary copy, and the rectangle
+    /// on the map's plane the terrain's ranges for it are read over, or
+    /// `None` to skip it.
     fn cover_tiles(
         &self,
         tms: &TileMatrixSet,
-        max_zoom: u8,
-        (height, terrain): (f64, Option<&dyn Elevation>),
-        margin_px: f64,
+        (tile_px, max_zoom): (f64, u8),
+        Cover {
+            height,
+            terrain,
+            margin_px,
+            ..
+        }: Cover<'_>,
         detail: Detail,
-        mut place: impl FnMut(TileIndex, f64) -> Option<(WorldRect, f64)>,
+        mut place: impl FnMut(TileIndex) -> Option<(Footprint, WorldRect)>,
     ) -> Vec<CoveredTile> {
         let frustum = Frustum::new(
             self.view_proj,
@@ -1013,8 +976,8 @@ impl View {
         let reach = (self.far_px * self.world_per_px).max(self.viewport.width * self.world_per_px);
         // Match the reference's bounded repeated-world policy: at most
         // three copies on either side, with the same generic DFS in each.
-        let wrap_period = self.projection.wrap_period();
-        let copies = wrap_period.map_or(0, |period| ((reach / period).ceil() as i32).min(3));
+        let wrap = (self.projection.wrap_period())
+            .map(|period| (((reach / period).ceil() as i32).min(3), period));
         let lod = match detail {
             Detail::Lod(lod) => lod,
             Detail::Terrain => TileLod::default(),
@@ -1025,12 +988,17 @@ impl View {
         // the covering zoom.
         let center_distance = self.eye_distance_px * self.world_per_px;
         let terrain_lod = matches!(detail, Detail::Terrain).then(|| self.terrain_lod());
-        tms.cover_with(-copies..=copies, wrap_period, max_zoom, |index, offset| {
-            let Some((bounds, center_zoom)) = place(index, offset) else {
+        let scale = self.world_per_px * tile_px;
+        tms.cover(wrap, max_zoom, |index, offset| {
+            let Some((footprint, ground)) = place(index) else {
                 return CoverDecision::Skip;
             };
+            let bounds = footprint.bounds.translated(DVec2::new(offset, 0.0));
+            // The zoom at which this tile, at its own scale, would span
+            // `tile_px` pixels at the target.
+            let center_zoom = f64::from(index.z) + (footprint.span / scale).log2();
             let ground = terrain
-                .and_then(|t| t.range(bounds, index.z))
+                .and_then(|t| t.range(ground, index.z))
                 .map(|(lo, hi)| (self.world_z(lo), self.world_z(hi)));
             // Elevated content stands on the ground under the tile, which
             // where unknown on terrain may stand as high as any.
@@ -1343,7 +1311,7 @@ impl View {
             (!faces && !sides).then_some((all, n, count))
         };
         let deepest = max_zoom.min(tms.max_zoom());
-        tms.cover_with(0..=0, None, max_zoom, |index, _| {
+        tms.cover(None, max_zoom, |index, _| {
             let Some((points, n, count)) = seen(index) else {
                 return CoverDecision::Skip;
             };
@@ -1639,7 +1607,7 @@ fn corners_in_frustum(view_proj: &DMat4, corners: &[DVec3; 8], margin: DVec2) ->
 enum Detail {
     /// The map's tile level of detail.
     Lod(TileLod),
-    /// GL JS's terrain level of detail ([`View::cover_terrain`]).
+    /// GL JS's terrain level of detail ([`Cover::terrain`]).
     Terrain,
 }
 
@@ -1679,17 +1647,14 @@ mod tests {
         let tms = orb_crs::TileMatrixSet::web_mercator();
         for lat in [0.0, 57.0, 80.0] {
             let camera = CameraState::new(Geodetic::new(0.0, lat), 2.0, &mercator());
-            let surface = Surface {
-                projection: mercator(),
-                globe: None,
-            };
+            let surface = Surface::plane(mercator());
             let viewport = Viewport {
                 width: 900.0,
                 height: 512.0,
             };
             let view = View::new(&camera, viewport, &surface);
             let zooms: Vec<u8> = view
-                .cover(tms, 512.0, 18)
+                .cover(tms, 512.0, 18, Cover::default())
                 .iter()
                 .map(|c| c.index.z)
                 .collect();
@@ -1782,17 +1747,20 @@ mod tests {
             pitch: 40.0,
             ..CameraState::new(Geodetic::new(139.7, 35.7), 15.0, &mercator())
         };
-        let axonometric = CameraState {
+        let padded = CameraState {
             padding: Padding {
                 top: 80.0,
                 ..Padding::default()
             },
-            axonometric: Some(Skew { x: 0.5, y: -1.0 }),
             ..perspective
+        };
+        let axonometric = Surface {
+            axonometric: Some(orb_crs::Skew { x: 0.5, y: -1.0 }),
+            ..surface
         };
         let (a, b) = (
             View::new(&perspective, viewport, &surface),
-            View::new(&axonometric, viewport, &surface),
+            View::new(&padded, viewport, &axonometric),
         );
         let target = mercator().forward(perspective.target);
         for ahead in [0.0, 300.0] {
@@ -1869,8 +1837,16 @@ mod tests {
     #[test]
     fn cover_margins_reach_past_the_edge() {
         let (view, tms) = setup(3.0, 0.0);
-        let plain = view.cover_volume(&tms, 512.0, 14, 0.0, None, 0.0);
-        let padded = view.cover_volume(&tms, 512.0, 14, 0.0, None, 300.0);
+        let plain = view.cover(&tms, 512.0, 14, Cover::default());
+        let padded = view.cover(
+            &tms,
+            512.0,
+            14,
+            Cover {
+                margin_px: 300.0,
+                ..Cover::default()
+            },
+        );
         assert!(padded.len() > plain.len());
         assert!(plain.iter().all(|t| padded.contains(t)));
     }
@@ -1878,7 +1854,7 @@ mod tests {
     #[test]
     fn elevated_cover_keeps_roofs_whose_ground_is_below_the_view() {
         let (view, tms) = setup(14.0, 80.0);
-        let ground = view.cover(&tms, 512.0, 14);
+        let ground = view.cover(&tms, 512.0, 14, Cover::default());
         let frustum = Frustum::new(view.view_proj(), DVec2::ZERO);
         assert!(
             ground.iter().any(|tile| {
@@ -1919,10 +1895,7 @@ mod tests {
             width: 1200.0,
             height: 700.0,
         };
-        let globe = Surface {
-            projection: mercator(),
-            globe: Some(Globe::V8),
-        };
+        let globe = Surface::globe(mercator(), Globe::V8);
         for zoom in [12.0, 14.0] {
             let mut camera = CameraState::new(Geodetic::new(-74.0, 40.7), zoom, &mercator());
             camera.pitch = 80.0;
@@ -1955,10 +1928,7 @@ mod tests {
             width: 1200.0,
             height: 700.0,
         };
-        let globe = Surface {
-            projection: mercator(),
-            globe: Some(Globe::V8),
-        };
+        let globe = Surface::globe(mercator(), Globe::V8);
         for zoom in [8.0, 11.0, 11.5, 12.0, 12.62, 15.0] {
             let mut last = f64::INFINITY;
             for pitch in [0.0, 0.1, 0.5, 1.0, 5.0, 20.0] {
@@ -2056,7 +2026,7 @@ mod tests {
                 assert!(view.far_px > view.eye_distance_px);
                 assert!(view.ground_horizon().is_finite());
                 assert!(view.sky_horizon().is_finite());
-                let cover = view.cover(tms, 512.0, 24);
+                let cover = view.cover(tms, 512.0, 24, Cover::default());
                 assert!(!cover.is_empty());
                 assert!(
                     cover.len() < 512,
@@ -2163,7 +2133,7 @@ mod tests {
     #[test]
     fn covers_at_the_floor_of_the_zoom() {
         let (view, tms) = setup(2.2, 0.0);
-        let tiles = view.cover(&tms, 512.0, 22);
+        let tiles = view.cover(&tms, 512.0, 22, Cover::default());
         // A 1000×500 viewport at zoom 2.2 on the equator sees the middle two
         // columns and rows of the 4×4 matrix.
         let mut indices: Vec<_> = tiles.iter().map(|t| (t.wrap, t.index)).collect();
@@ -2178,12 +2148,16 @@ mod tests {
     fn detail_changes_continuously_with_pitch() {
         // Up to GL JS's threshold, one zoom, as GL JS.
         let (view, tms) = setup(10.0, 60.0);
-        assert!(view.cover(&tms, 512.0, 22).iter().all(|t| t.index.z == 10));
+        assert!(
+            view.cover(&tms, 512.0, 22, Cover::default())
+                .iter()
+                .all(|t| t.index.z == 10)
+        );
         // Across its switch at 60°, a tenth of a degree changes little (at
         // a zoom between whole ones, which any change tips).
         let zooms = |pitch| {
             let (view, tms) = setup(10.3, pitch);
-            let tiles = view.cover(&tms, 512.0, 22);
+            let tiles = view.cover(&tms, 512.0, 22, Cover::default());
             tiles.iter().map(|t| f64::from(t.index.z)).sum::<f64>() / tiles.len() as f64
         };
         assert!((zooms(59.9) - zooms(60.1)).abs() < 0.05);
@@ -2194,7 +2168,7 @@ mod tests {
     #[test]
     fn pitched_cover_coarsens_with_distance() {
         let (view, tms) = setup(10.0, 70.0);
-        let tiles = view.cover(&tms, 512.0, 22);
+        let tiles = view.cover(&tms, 512.0, 22, Cover::default());
         let min = tiles.iter().map(|t| t.index.z).min().unwrap();
         let max = tiles.iter().map(|t| t.index.z).max().unwrap();
         assert!(max >= 10);
@@ -2204,7 +2178,7 @@ mod tests {
     #[test]
     fn low_zoom_covers_wrapped_copies() {
         let (view, tms) = setup(0.0, 0.0);
-        let tiles = view.cover(&tms, 512.0, 22);
+        let tiles = view.cover(&tms, 512.0, 22, Cover::default());
         assert!(tiles.iter().any(|t| t.wrap == -1));
         assert!(tiles.iter().any(|t| t.wrap == 1));
     }
@@ -2213,10 +2187,7 @@ mod tests {
         let mut camera = CameraState::new(target, zoom, &mercator());
         camera.pitch = pitch;
         camera.bearing = bearing;
-        let surface = Surface {
-            projection: mercator(),
-            globe: Some(Globe::V8),
-        };
+        let surface = Surface::globe(mercator(), Globe::V8);
         View::new(
             &camera,
             Viewport {
@@ -2232,13 +2203,11 @@ mod tests {
     #[test]
     fn low_planes_hand_over_to_mercator() {
         let equal_earth = Projection::from_descriptor("equal-earth").unwrap();
-        let surface = Surface {
-            projection: mercator(),
-            globe: Some(Globe {
-                handover: Some([6.0, 7.0]),
-                low: LowSurface::Plane(equal_earth),
-            }),
+        let globe = Globe {
+            handover: Some([6.0, 7.0]),
+            low: LowSurface::Plane(equal_earth),
         };
+        let surface = Surface::globe(mercator(), globe);
         let chicago = Geodetic::new(-87.6357, 41.88155);
         let view = |zoom: f64| {
             let mut camera = CameraState::new(chicago, zoom, &mercator());
@@ -2263,11 +2232,8 @@ mod tests {
             // The target sits in the middle, on the low plane.
             let middle = view.project(mercator().forward(chicago)).unwrap();
             assert!(middle.distance(DVec2::new(512.0, 384.0)) < 1e-6);
-            assert!(
-                !view
-                    .cover(TileMatrixSet::web_mercator(), 512.0, 14)
-                    .is_empty()
-            );
+            let tms = TileMatrixSet::web_mercator();
+            assert!(!view.cover(tms, 512.0, 14, Cover::default()).is_empty());
         }
     }
 
@@ -2349,8 +2315,16 @@ mod tests {
         let view = globe_view(Geodetic::new(0.0, 0.0), 4.5, 80.0, 0.0);
         let globe = view.sphere().unwrap();
         let lift = 500e3 * view.world_per_px() / globe.metres_per_px;
-        let plain = view.cover_volume(tms, 512.0, 22, 0.0, None, 0.0);
-        let lifted = view.cover_volume(tms, 512.0, 22, lift, None, 0.0);
+        let plain = view.cover(tms, 512.0, 22, Cover::default());
+        let lifted = view.cover(
+            tms,
+            512.0,
+            22,
+            Cover {
+                height: lift,
+                ..Cover::default()
+            },
+        );
         assert!(plain.iter().all(|t| lifted.contains(t)));
         let eye = globe.eye_ecef().normalize();
         let past: Vec<_> = (lifted.iter())
@@ -2393,13 +2367,18 @@ mod tests {
                 width: 1000.0,
                 height: 700.0,
             };
-            let surface = Surface {
-                projection: mercator(),
-                globe: Some(Globe::SPHERE),
-            };
+            let surface = Surface::globe(mercator(), Globe::SPHERE);
             let view = View::new(&camera, viewport, &surface);
             let globe = view.sphere().unwrap();
-            let cover = view.cover_terrain(tms, 512.0, 22, &Plateau);
+            let cover = view.cover(
+                tms,
+                512.0,
+                22,
+                Cover {
+                    terrain: Some(&Plateau),
+                    ..Cover::default()
+                },
+            );
             let inverse = globe.view_proj.inverse();
             let shell = sphere::RADIUS + 4000.0;
             let mut seen = 0;
@@ -2444,7 +2423,7 @@ mod tests {
             (Geodetic::new(5.0, 5.0), 11.5, 60.0),
         ] {
             let view = globe_view(target, zoom, pitch, 25.0);
-            let cover = view.cover(tms, 512.0, 22);
+            let cover = view.cover(tms, 512.0, 22, Cover::default());
             assert!(
                 !cover.is_empty() && cover.len() < 400,
                 "{} tiles",
@@ -2492,7 +2471,11 @@ mod tests {
             (0.0, 3.5, 0.0, false),
         ] {
             let view = globe_view(Geodetic::new(10.0, lat), zoom, pitch, 0.0);
-            let cover: Vec<_> = view.cover(tms, 512.0, 22).iter().map(|t| t.index).collect();
+            let cover: Vec<_> = view
+                .cover(tms, 512.0, 22, Cover::default())
+                .iter()
+                .map(|t| t.index)
+                .collect();
             let holding = |px: DVec2| {
                 let world = view.unproject(px)?;
                 cover
@@ -2517,7 +2500,7 @@ mod tests {
         // Looking down on the middle latitudes, the polar row comes a zoom
         // coarser.
         let view = globe_view(Geodetic::new(10.0, 45.0), 3.0, 0.0, 0.0);
-        let polar: Vec<_> = (view.cover(tms, 512.0, 22).into_iter())
+        let polar: Vec<_> = (view.cover(tms, 512.0, 22, Cover::default()).into_iter())
             .map(|t| t.index)
             .filter(|t| t.row == 0)
             .collect();
@@ -2538,7 +2521,11 @@ mod tests {
             for (zoom, covering) in [(11.99, 11), (12.0, 12)] {
                 let view = globe_view(target, zoom, pitch, 20.0);
                 assert_eq!(view.globe().is_some(), zoom < 12.0);
-                let cover: Vec<_> = view.cover(tms, 512.0, 22).iter().map(|t| t.index).collect();
+                let cover: Vec<_> = view
+                    .cover(tms, 512.0, 22, Cover::default())
+                    .iter()
+                    .map(|t| t.index)
+                    .collect();
                 for i in 0..=10 {
                     for j in 0..=10 {
                         let px = DVec2::new(100.0 * f64::from(i), 70.0 * f64::from(j));

@@ -2,13 +2,35 @@
 
 use crate::Projection;
 
-/// What a view draws on: its projection's plane or, at low
-/// zoom, a globe the plane's tiles wrap around. Style zoom is always the
-/// plane's (on Web Mercator, GL JS's convention on its globe too).
+/// What a view draws on and how: its projection's plane or, at low
+/// zoom, a globe the plane's tiles wrap around, in perspective or
+/// axonometric. Style zoom is always the plane's (on Web Mercator, GL JS's
+/// convention on its globe too).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Surface {
     pub projection: Projection,
     pub globe: Option<Globe>,
+    /// MapLibre Native's axonometric projection, when set: heights stand
+    /// without perspective, leaning by its skew, and padding is ignored.
+    /// The ground projects as it does in perspective.
+    pub axonometric: Option<Skew>,
+}
+
+/// How an axonometric view leans what stands above the ground, as
+/// MapLibre Native's `xSkew` and `ySkew` do (`(0, 1)` by default: heights
+/// rise straight up): a height `h` pixels long at the target's scale moves
+/// the picture by `x × h` and `y × h` in clip units at the eye's distance
+/// in pixels, right and up.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Skew {
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Default for Skew {
+    fn default() -> Self {
+        Self { x: 0.0, y: 1.0 }
+    }
 }
 
 impl Surface {
@@ -16,6 +38,15 @@ impl Surface {
         Self {
             projection,
             globe: None,
+            axonometric: None,
+        }
+    }
+
+    /// `projection`'s plane wrapped around `globe` at low zoom.
+    pub fn globe(projection: Projection, globe: Globe) -> Self {
+        Self {
+            globe: Some(globe),
+            ..Self::plane(projection)
         }
     }
 

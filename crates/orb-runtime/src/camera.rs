@@ -7,9 +7,9 @@ use glam::DVec2;
 use orb_camera::input::{GestureOptions, Input, InteractEvent, Move};
 use orb_camera::{
     AnimationId, Bounds, CameraState, CameraTarget, Constraints, EaseOptions, FitOptions,
-    FlyOptions, FreeCamera, GestureMomentum, Skew, Viewport,
+    FlyOptions, FreeCamera, GestureMomentum, Viewport,
 };
-use orb_crs::Geodetic;
+use orb_crs::{Geodetic, Skew};
 
 use crate::{Map, MapEvent, RenderMode};
 
@@ -131,7 +131,13 @@ impl Map {
     /// Draws the map in MapLibre Native's axonometric projection, heights
     /// leaning by `skew` and padding ignored, or in perspective (`None`).
     pub fn set_axonometric(&mut self, skew: Option<Skew>) {
-        self.camera.set_axonometric(skew);
+        if self.axonometric == skew {
+            return;
+        }
+        self.axonometric = skew;
+        self.camera.set_surface(self.surface());
+        // The camera's state stays, so the next rest is a new idle here.
+        self.events.wake();
         (self.services.wake)();
     }
 
@@ -310,7 +316,7 @@ impl Map {
         let Some(terrain) = self.elevation() else {
             return false;
         };
-        let surface = self.surface.view_surface();
+        let surface = self.surface();
         let RenderMode::Tile { camera, .. } = &mut self.mode else {
             unreachable!("checked above");
         };
@@ -324,7 +330,7 @@ impl Map {
     /// terrain that have arrived and the frame's viewport, then gestures
     /// and animations advance to `time`. Returns whether it moves on.
     pub(crate) fn advance_camera(&mut self, viewport: Viewport, time: f64) -> bool {
-        self.camera.set_surface(self.surface.view_surface());
+        self.camera.set_surface(self.surface());
         self.stand_on_terrain();
         if self.camera.viewport() != viewport {
             self.camera.set_viewport(viewport);

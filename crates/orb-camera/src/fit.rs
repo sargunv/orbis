@@ -166,7 +166,7 @@ fn fit_pitched(
             return;
         }
         camera.pan(surface, viewport, middle, goal);
-        let center = camera.center(viewport);
+        let center = camera.center(viewport, surface);
         camera.zoom_around(
             surface,
             viewport,

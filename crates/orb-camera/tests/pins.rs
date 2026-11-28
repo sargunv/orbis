@@ -4,7 +4,7 @@
 //! threshold covers the same tiles.
 
 use glam::DVec2;
-use orb_camera::{CameraState, View, Viewport};
+use orb_camera::{CameraState, Cover, View, Viewport};
 use orb_crs::Geodetic;
 use orb_crs::Surface;
 use orb_crs::TileMatrixSet;
@@ -73,7 +73,7 @@ fn cameras_match_pinned_gl_js() {
         if let Some(tiles) = case.get("tiles").filter(|_| camera.pitch <= threshold) {
             covers += 1;
             let mut actual: Vec<[i64; 4]> = view
-                .cover(tms, 512.0, 22)
+                .cover(tms, 512.0, 22, Cover::default())
                 .iter()
                 .map(|t| {
                     [

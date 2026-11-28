@@ -1,7 +1,7 @@
 use std::f64::consts::SQRT_2;
 
 use glam::DVec2;
-use orb_camera::{CameraState, View, Viewport};
+use orb_camera::{CameraState, Cover, View, Viewport};
 use orb_crs::Geodetic;
 use orb_crs::Surface;
 use orb_crs::TileIndex;
@@ -38,13 +38,15 @@ fn covers_match_pinned_gl_js() {
             &Surface::from(tms.projection()),
         );
         let mut actual: Vec<_> = view
-            .cover_volume(
+            .cover(
                 tms,
                 n("tileSize"),
                 n("maxzoom") as u8,
-                n("maxContentElevation") * tms.projection().style_height_scale(camera.target),
-                None,
-                0.0,
+                Cover {
+                    height: n("maxContentElevation")
+                        * tms.projection().style_height_scale(camera.target),
+                    ..Cover::default()
+                },
             )
             .iter()
             .filter(|t| t.index.z >= n("minzoom") as u8)
@@ -135,10 +137,7 @@ fn covers_match_pinned_gl_js() {
 fn globe_covers_match_pinned_gl_js() {
     let golden: serde_json::Value = serde_json::from_str(include_str!("data/covers.json")).unwrap();
     let tms = TileMatrixSet::web_mercator();
-    let surface = Surface {
-        projection: *tms.projection(),
-        globe: Some(orb_crs::Globe::V8),
-    };
+    let surface = Surface::globe(*tms.projection(), orb_crs::Globe::V8);
     let edge = tms.projection().world_bounds().max.y;
     let period = tms.tile_span(0);
     let cases = golden["globe"].as_array().unwrap();
@@ -163,7 +162,7 @@ fn globe_covers_match_pinned_gl_js() {
         // The globe has one world: GL JS's wraps only name the copy
         // nearest its centre.
         let mut actual: Vec<TileIndex> = view
-            .cover(tms, tile_px, n("maxzoom") as u8)
+            .cover(tms, tile_px, n("maxzoom") as u8, Cover::default())
             .iter()
             .map(|t| t.index)
             .filter(|t| t.z >= n("minzoom") as u8)
@@ -274,15 +273,12 @@ fn globe_cover_cost() {
                 let start = std::time::Instant::now();
                 let mut tiles = 0;
                 for _ in 0..50 {
-                    tiles = view.cover(tms, 512.0, 22).len();
+                    tiles = view.cover(tms, 512.0, 22, Cover::default()).len();
                 }
                 (tiles, start.elapsed().as_secs_f64() * 1e3 / 50.0)
             };
             let (plane_tiles, plane_ms) = time(Surface::plane(projection));
-            let (globe_tiles, globe_ms) = time(Surface {
-                projection,
-                globe: Some(orb_crs::Globe::V8),
-            });
+            let (globe_tiles, globe_ms) = time(Surface::globe(projection, orb_crs::Globe::V8));
             plane_total += plane_ms;
             globe_total += globe_ms;
             println!(

@@ -204,7 +204,8 @@ impl Camera {
             Step::Pan { from, to } => self.pan(from, to),
             Step::ZoomBy { around, levels } => self.zoom_by(around, levels),
             Step::RotateBy { around, degrees } => {
-                let around = around.unwrap_or_else(|| self.state().center(self.viewport()));
+                let around =
+                    around.unwrap_or_else(|| self.state().center(self.viewport(), self.surface()));
                 self.rotate_by(around, degrees);
             }
             Step::PitchBy(degrees) => self.pitch_by(degrees),

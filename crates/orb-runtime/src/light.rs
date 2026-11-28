@@ -149,10 +149,7 @@ mod tests {
         let light = LightValues::of(&orb_style::v8::default_light(), 0.0);
         let tms = orb_crs::TileMatrixSet::web_mercator();
         let mercator = *tms.projection();
-        let surface = orb_crs::Surface {
-            projection: mercator,
-            globe: Some(orb_crs::Globe::V8),
-        };
+        let surface = orb_crs::Surface::globe(mercator, orb_crs::Globe::V8);
         let viewport = orb_camera::Viewport {
             width: 800.0,
             height: 600.0,
@@ -176,10 +173,7 @@ mod tests {
     fn the_haze_takes_gl_js_sun() {
         let tms = orb_crs::TileMatrixSet::web_mercator();
         let mercator = *tms.projection();
-        let surface = orb_crs::Surface {
-            projection: mercator,
-            globe: Some(orb_crs::Globe::V8),
-        };
+        let surface = orb_crs::Surface::globe(mercator, orb_crs::Globe::V8);
         let viewport = orb_camera::Viewport {
             width: 800.0,
             height: 600.0,

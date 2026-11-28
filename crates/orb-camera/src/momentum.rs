@@ -502,7 +502,7 @@ impl Stage<'_> {
         }
         let steps = (distance / PAN_STEP).ceil().min(MAX_PAN_STEPS);
         let step = offset / steps;
-        let center = camera.center(self.viewport);
+        let center = camera.center(self.viewport, self.surface);
         let plane = camera.grip(self.surface, self.viewport, center, self.terrain);
         for _ in 0..steps as usize {
             let free = self.free_bearing.then_some(self.constraints);
@@ -531,7 +531,7 @@ impl Stage<'_> {
         anchor: Option<DVec2>,
     ) {
         let (surface, viewport) = (self.surface, self.viewport);
-        let at = anchor.unwrap_or_else(|| camera.center(viewport));
+        let at = anchor.unwrap_or_else(|| camera.center(viewport, surface));
         let plane = camera.grip(surface, viewport, at, self.terrain);
         match part {
             Part::Zoom => {

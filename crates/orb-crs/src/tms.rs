@@ -1057,7 +1057,7 @@ mod tests {
         );
         // Covers visit only the tiles the matrices hold, children of the
         // edge's tiles too.
-        let cover = tms.cover(0..=0, 2, |_, _| crate::CoverDecision::Refine);
+        let cover = tms.cover(None, 2, |_, _| crate::CoverDecision::Refine);
         assert_eq!(cover.len(), 15);
         assert!(cover.iter().all(|t| tms.contains(t.index)));
         // Its definition reads back as the same set.

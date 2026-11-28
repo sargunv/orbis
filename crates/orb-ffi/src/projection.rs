@@ -242,18 +242,18 @@ fn resolve(v: &mln_map_view) -> Resolved {
     camera.elevation = c.center_altitude;
     camera.padding = screen.insets(padding);
     // An axonometric view centres the target in the whole extent.
-    camera.axonometric = mode.axonometric.then_some(orb_api::Skew {
-        x: mode.x_skew,
-        y: mode.y_skew,
-    });
-    let view = View::new(
-        &camera,
-        Viewport {
-            width: f64::from(v.extent.width),
-            height,
-        },
-        &Surface::plane(*mercator()),
-    );
+    let surface = Surface {
+        axonometric: mode.axonometric.then_some(orb_api::Skew {
+            x: mode.x_skew,
+            y: mode.y_skew,
+        }),
+        ..Surface::plane(*mercator())
+    };
+    let viewport = Viewport {
+        width: f64::from(v.extent.width),
+        height,
+    };
+    let view = View::new(&camera, viewport, &surface);
     Resolved { view, screen }
 }
 

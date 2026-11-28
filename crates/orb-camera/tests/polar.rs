@@ -3,7 +3,7 @@
 //! cover leaves no visible point without a tile.
 
 use glam::DVec2;
-use orb_camera::{CameraState, View, Viewport};
+use orb_camera::{CameraState, Cover, View, Viewport};
 use orb_crs::Geodetic;
 use orb_crs::Surface;
 use orb_crs::{Projection, TileMatrixSet};
@@ -21,7 +21,7 @@ fn check(tms: &TileMatrixSet, target: Geodetic) {
                 camera.bearing = bearing;
                 camera.pitch = pitch;
                 let view = View::new(&camera, viewport, &Surface::from(projection));
-                let cover = view.cover(tms, 512.0, 16);
+                let cover = view.cover(tms, 512.0, 16, Cover::default());
                 assert!(!cover.is_empty());
                 let case = format!("{} {target:?} z{zoom} b{bearing} p{pitch}", tms.id());
                 let top = view.ground_horizon() + 1.0;

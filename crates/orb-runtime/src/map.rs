@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
-use orb_camera::{CameraState, View, Viewport};
+use orb_camera::{CameraState, Footprints, View, Viewport};
 use orb_crs::{Metres, TileIndex, TileMatrixSet};
 
 use crate::surface::Surface;
@@ -840,6 +840,9 @@ pub struct Map {
     /// The plane the map draws on and its sources' tile matrix sets: the
     /// style's, planned for its tiles.
     pub(crate) surface: Surface,
+    /// MapLibre Native's axonometric projection, which views draw in when
+    /// set ([`orb_crs::Surface::axonometric`]).
+    pub(crate) axonometric: Option<orb_crs::Skew>,
     /// The first frame's time: frames' time counts from it (fades,
     /// transitions and the shaders' time run on frame time).
     pub(crate) born: Option<f64>,
@@ -1050,7 +1053,11 @@ impl Map {
             width: 512.0,
             height: 512.0,
         };
-        let mut store = orb_camera::Camera::new(start, surface.view_surface(), viewport);
+        let mut store = orb_camera::Camera::new(
+            start,
+            orb_crs::Surface::plane(*surface.projection()),
+            viewport,
+        );
         // A camera given is the app's: the style's doesn't replace it.
         if let Some(camera) = camera {
             store.jump_to_state(camera);
@@ -1109,6 +1116,7 @@ impl Map {
             options: crate::MapOptions::default(),
             keep_all_cull: false,
             flip_y: false,
+            axonometric: None,
             nodes_stale: false,
             capacity: None,
             frame_budget: crate::Budget::DESKTOP,
@@ -1378,10 +1386,15 @@ impl Map {
     }
 
     /// What views draw on: the plane, or the globe the style's `projection`
-    /// wraps it around. Camera stores follow it on
-    /// [`MapEvent::StyleData`].
+    /// wraps it around, in perspective or the axonometric projection
+    /// [`set_axonometric`](Self::set_axonometric) sets. Camera stores
+    /// follow it on [`MapEvent::StyleData`].
     pub fn surface(&self) -> orb_crs::Surface {
-        self.surface.view_surface()
+        orb_crs::Surface {
+            projection: *self.surface.projection(),
+            globe: self.surface.globe(),
+            axonometric: self.axonometric,
+        }
     }
 
     /// The view frames draw for a viewport, from the frame camera (the
@@ -1390,8 +1403,8 @@ impl Map {
     pub fn view(&self, viewport: Viewport) -> View {
         let camera = self.frame_camera();
         let view = match self.elevation() {
-            Some(terrain) => View::over(&camera, viewport, &self.surface.view_surface(), &*terrain),
-            None => View::new(&camera, viewport, &self.surface.view_surface()),
+            Some(terrain) => View::over(&camera, viewport, &self.surface(), &*terrain),
+            None => View::new(&camera, viewport, &self.surface()),
         };
         view.with_tile_lod(self.options.tile_lod)
     }
@@ -1722,7 +1735,7 @@ impl Map {
             .extend(plan.style.warnings.iter().map(ToString::to_string));
         self.warnings.extend(plan.warnings.iter().cloned());
         // Until the app or the user moves the camera, it takes the style's.
-        self.camera.set_surface(self.surface.view_surface());
+        self.camera.set_surface(self.surface());
         if previous.is_none() && !self.camera.modified() {
             let style = &plan.style;
             self.camera.jump_to(&orb_camera::CameraTarget {
@@ -2814,7 +2827,7 @@ impl Map {
                 poles: [false; 2],
             });
         let footprint = warped
-            .then(|| self.globe_warps.surface_footprint(tms, tile))
+            .then(|| self.globe_warps.on_plane(tms, tile))
             .flatten();
         let zoom = self.surface.tile_zoom(&endpoint.tms, tile, footprint);
         // On a low-zoom surface, geometry bends with it, and on the sphere
@@ -3205,7 +3218,7 @@ impl Map {
             RenderMode::Tile { grid, .. } => orb_symbol::Scope::Tiles(
                 grid.iter()
                     .map(|t| {
-                        let view = View::new(&t.camera, t.viewport, &self.surface.view_surface());
+                        let view = View::new(&t.camera, t.viewport, &self.surface());
                         let f = frame_at(&view, t.center, &t.camera);
                         orb_symbol::ScopeTile {
                             col: t.col,
@@ -3339,7 +3352,12 @@ impl Map {
                 SourceState::Ready { endpoint, .. } if endpoint.tms == *self.surface.tms());
             renderer.set_shaded_on_terrain(gpu, index as u32, viewport && on_surface);
         }
-        let at = (view, self.surface.tms(), camera.target);
+        let at = (
+            view,
+            self.surface.tms(),
+            camera.target,
+            &self.globe_warps as _,
+        );
         let ground = (view.world_z(skirt), cover_room);
         let (frame, requests) = terrain.upkeep(gpu, renderer, at, unpack, ground);
         let order = fetch_order(&endpoint.tms, camera.target);

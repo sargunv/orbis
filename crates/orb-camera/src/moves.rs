@@ -210,7 +210,7 @@ impl CameraState {
     ) {
         let projection = &surface.projection;
         let view = View::new(self, viewport, surface);
-        let center = self.center(viewport);
+        let center = self.center(viewport, surface);
         if view.globe().is_some() {
             // A drag that starts off the planet turns it as one from its
             // middle would, as GL JS's and MapLibre Native's do.
@@ -320,7 +320,7 @@ impl CameraState {
         change: impl FnOnce(&mut Self),
     ) {
         let projection = &surface.projection;
-        let center = self.center(viewport);
+        let center = self.center(viewport, surface);
         if at.distance_squared(center) < 1e-4 {
             // The centre is the target already. A projection round trip
             // could move it by an ULP and change the ideal cover at a zoom
@@ -854,16 +854,13 @@ mod tests {
     }
 
     fn globe_surface() -> Surface {
-        Surface {
-            projection: mercator(),
-            globe: Some(orb_crs::Globe::V8),
-        }
+        Surface::globe(mercator(), orb_crs::Globe::V8)
     }
 
     /// The sphere's radius on screen, along the viewport's middle row.
     fn limb(camera: &CameraState, viewport: Viewport) -> f64 {
         let view = View::new(camera, viewport, &globe_surface());
-        let center = camera.center(viewport);
+        let center = view.center();
         let (mut on, mut off) = (0.0, viewport.width);
         while off - on > 1.0 / 64.0 {
             let x = (on + off) / 2.0;
@@ -1014,7 +1011,11 @@ mod tests {
         let camera = CameraState::new(Geodetic::new(0.0, -90.0), 1.0, &mercator());
         let view = View::new(&camera, VIEWPORT, &surface);
         let tms = orb_crs::TileMatrixSet::web_mercator();
-        assert!(!view.cover(tms, 512.0, 22).is_empty());
+        assert!(
+            !view
+                .cover(tms, 512.0, 22, crate::Cover::default())
+                .is_empty()
+        );
         assert!(view.unproject(DVec2::new(400.0, 300.0)).is_some());
     }
 
@@ -1066,10 +1067,7 @@ mod tests {
                 ][..],
             ),
         ] {
-            let surface = Surface {
-                projection: mercator(),
-                globe: Some(globe),
-            };
+            let surface = Surface::globe(mercator(), globe);
             for &(lon, lat, zoom, bearing, pitch) in cameras {
                 let mut camera = CameraState::new(Geodetic::new(lon, lat), zoom, &mercator());
                 camera.bearing = bearing;

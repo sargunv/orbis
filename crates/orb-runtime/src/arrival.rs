@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use orb_camera::Footprints;
 use orb_crs::TileIndex;
 use orb_hal::Gpu;
 use orb_render::{ImageUpload, OutOfSpace, Renderer, TileKey};
@@ -883,7 +884,7 @@ impl Map {
             }
         }
         let footprint = warped
-            .then(|| self.globe_warps.surface_footprint(&endpoint.tms, tile))
+            .then(|| self.globe_warps.on_plane(&endpoint.tms, tile))
             .flatten();
         let tile_zoom = self.surface.tile_zoom(&endpoint.tms, tile, footprint);
         let globe = self.surface.globe().is_some();

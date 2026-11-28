@@ -1210,7 +1210,6 @@ impl Map {
                     fov: CameraState::DEFAULT_FOV,
                     elevation: 0.0,
                     padding: Padding::default(),
-                    axonometric: None,
                 },
                 viewport,
                 center,
@@ -1224,13 +1223,11 @@ impl Map {
         // The middle tile as the middle of a view of the whole grid sees
         // it: from three times as far, so that what stands up (extrusions)
         // leans at the tile's edges as it does at its neighbours'.
-        // In the map's projection: axonometric, it draws tiles so too.
         let camera = CameraState {
             fov: 2.0
                 * ((CameraState::DEFAULT_FOV / 2.0).to_radians().tan() / 3.0)
                     .atan()
                     .to_degrees(),
-            axonometric: self.map.camera().axonometric,
             ..grid(col, row).expect("checked above").camera
         };
         Ok(RenderMode::Tile {

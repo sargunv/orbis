@@ -374,14 +374,24 @@ impl Terrain {
     /// covers forever.
     fn update(
         &mut self,
-        (view, tms, focus): (&View, &TileMatrixSet, orb_crs::Geodetic),
+        (view, tms, focus, footprints): (
+            &View,
+            &TileMatrixSet,
+            orb_crs::Geodetic,
+            &dyn orb_camera::Footprints,
+        ),
         room: usize,
     ) -> Vec<TileIndex> {
         let consulted = Consulted {
             elevation: &self.elevation,
             ranges: Mutex::new(Vec::new()),
         };
-        let mut tiles = view.cover_terrain(tms, TERRAIN_TILE_PX, TERRAIN_MAX_ZOOM, &consulted);
+        let with = orb_camera::Cover {
+            terrain: Some(&consulted),
+            footprints: Some(footprints),
+            ..orb_camera::Cover::default()
+        };
+        let mut tiles = view.cover(tms, TERRAIN_TILE_PX, TERRAIN_MAX_ZOOM, with);
         let ranges = consulted.ranges.into_inner().expect("ranges poisoned");
         // The tiles the cover drew or refined: any other tile it read a
         // range for, that range culled.
@@ -496,7 +506,12 @@ impl Terrain {
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
-        at: (&View, &TileMatrixSet, orb_crs::Geodetic),
+        at: (
+            &View,
+            &TileMatrixSet,
+            orb_crs::Geodetic,
+            &dyn orb_camera::Footprints,
+        ),
         unpack: [f32; 4],
         (skirt, cover_room): (f64, u32),
     ) -> (orb_render::FrameTerrain, Vec<TileIndex>) {
@@ -2110,9 +2125,11 @@ mod tests {
             let mut camera = orb_camera::CameraState::new(target, zoom, &mercator);
             camera.pitch = pitch;
             let view = View::new(&camera, viewport, &orb_crs::Surface::plane(mercator));
-            (view.cover(&tms, TERRAIN_TILE_PX, 22).into_iter())
-                .map(|t| (t, slot_shrink((&view, ratio), &tms, (t, Metres(0.0)))))
-                .collect::<Vec<_>>()
+            (view
+                .cover(&tms, TERRAIN_TILE_PX, 22, orb_camera::Cover::default())
+                .into_iter())
+            .map(|t| (t, slot_shrink((&view, ratio), &tms, (t, Metres(0.0)))))
+            .collect::<Vec<_>>()
         };
         let shrinks = |zoom, pitch| shrinks_at(zoom, pitch, 1.0);
         // Straight down, every tile shows at 512 pixels or more.
@@ -2353,13 +2370,14 @@ mod tests {
             height: 768.0,
         };
         let view = View::new(&camera, viewport, &orb_crs::Surface::plane(mercator));
+        let warps = crate::globe::GlobeWarps::new(mercator);
         let grid = |metres: f32| Arc::new(DemGrid::from_elevations(16, vec![metres; 256]).unwrap());
         let (low, high) = (grid(50.0), grid(5200.0));
         // Covers, and loads what each cover asks for, until it asks no more.
         let converge = |terrain: &mut Terrain, heights: &Arc<DemGrid>| {
             for _ in 0..32 {
                 terrain.elevation(&tms);
-                let asked = terrain.update((&view, &tms, camera.target), 1024);
+                let asked = terrain.update((&view, &tms, camera.target, &warps), 1024);
                 if asked.is_empty() {
                     break;
                 }
@@ -2371,7 +2389,7 @@ mod tests {
                 }
             }
             terrain.elevation(&tms);
-            terrain.update((&view, &tms, camera.target), 1024);
+            terrain.update((&view, &tms, camera.target, &warps), 1024);
             terrain.tiles.clone()
         };
         let mut fresh = terrain_with(&[]);

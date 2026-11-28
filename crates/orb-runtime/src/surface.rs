@@ -164,14 +164,6 @@ impl Surface {
         &self.projection
     }
 
-    /// What camera views draw on: the plane, or the globe around it.
-    pub(crate) fn view_surface(&self) -> orb_crs::Surface {
-        orb_crs::Surface {
-            projection: self.projection,
-            globe: self.globe,
-        }
-    }
-
     pub(crate) fn globe(&self) -> Option<orb_crs::Globe> {
         self.globe
     }
