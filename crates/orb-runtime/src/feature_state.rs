@@ -15,12 +15,14 @@
 //! as MapLibre Native does, whose state a feature never carries draws
 //! nothing.
 
+use std::sync::LazyLock;
+
 use rustc_hash::FxHashMap as HashMap;
 
 use orb_style::v8::{FeatureTarget, StyleDoc};
 use orb_style::{FeatureStateOp, Patch, SourceKey, Value};
 
-use crate::map::Map;
+use crate::map::{Map, WaitingStyle};
 
 /// A feature's state: its keys in the order first set, never empty.
 type State = Vec<(String, Value<'static>)>;
@@ -41,6 +43,17 @@ struct SourceStates {
 }
 
 impl FeatureStateStore {
+    /// What the drawn style reads: no state while a new style waits for
+    /// its modules, the store's source keys being that style's, which
+    /// number their sources afresh.
+    pub(crate) fn drawn<'a>(&'a self, waiting: &Option<WaitingStyle>) -> &'a Self {
+        static NONE: LazyLock<FeatureStateStore> = LazyLock::new(FeatureStateStore::default);
+        match waiting {
+            Some(WaitingStyle { fresh: true, .. }) => &NONE,
+            _ => self,
+        }
+    }
+
     /// The state of a feature of the style's source `key`.
     pub(crate) fn state(
         &self,
@@ -329,10 +342,13 @@ impl Map {
     }
 
     /// Tells the installed style's state table of `ops`, changes to the
-    /// state of sources of [`style_doc`](Self::style_doc).
+    /// state of sources of [`style_doc`](Self::style_doc): none while
+    /// that is a new style waiting for its modules, whose keys aren't the
+    /// drawn style's.
     fn mirror_states(&mut self, ops: &[FeatureStateOp]) {
         if let Some(style) = &mut self.style
             && !ops.is_empty()
+            && !matches!(self.waiting_style, Some(WaitingStyle { fresh: true, .. }))
         {
             for op in ops {
                 style.states.changed(op);

@@ -2378,7 +2378,7 @@ impl crate::Map {
             generation: picking.generation,
             elevation: elevation.as_deref(),
             states: self.style.as_ref().map(|s| crate::state::States {
-                store: &self.feature_state,
+                store: self.feature_state.drawn(&self.waiting_style),
                 table: &s.states,
             }),
         };

@@ -1061,7 +1061,6 @@ impl Labels {
                 mesh,
                 hits: rows_mesh.map(|m| m.hits.clone()).unwrap_or_default(),
                 layout_rev: result.revision,
-                rows_rev: result.revision,
                 ramps: Vec::new(),
                 states: indices,
                 maxima: Vec::new(),

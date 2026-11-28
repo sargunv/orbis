@@ -490,6 +490,24 @@ fn source_data_is_a_new_revision_of_the_same_source() {
 }
 
 #[test]
+fn merged_patches_keep_diffs_only_of_sources_not_given_whole_data() {
+    let mut doc = doc();
+    let key = doc.source_keys().nth(1).unwrap();
+    let data = r#"{"type":"FeatureCollection","features":[]}"#;
+    let set = commands(&mut doc, &format!(r#"[["setSourceData", "g", {data}]]"#));
+    let update = r#"[["updateSourceData", "g", {"remove": [1]}]]"#;
+    let (first, second) = (commands(&mut doc, update), commands(&mut doc, update));
+    // The whole data holds the diffs after it already.
+    let merged = Patch::merge([set, first.clone()]);
+    assert_eq!(merged.changes, [Change::SourceData(key)]);
+    assert!(merged.source_diffs.is_empty());
+    // Diffs alone go as one list, in order.
+    let merged = Patch::merge([first, second]);
+    assert_eq!(merged.source_diffs.len(), 1);
+    assert_eq!(merged.source_diffs[0].1.len(), 2);
+}
+
+#[test]
 fn source_diffs_change_the_record_and_the_features_alike() {
     let mut doc = doc();
     let point = |id: &str, x: f64, name: &str| {

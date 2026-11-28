@@ -109,7 +109,7 @@ impl crate::Map {
             // The state its paint is evaluated with; the answer's `state`
             // member is read apart, with every queried feature's.
             let states = crate::state::States {
-                store: &self.feature_state,
+                store: self.feature_state.drawn(&self.waiting_style),
                 table: &style.states,
             };
             let state = (hit.id.as_deref())
@@ -289,7 +289,10 @@ impl crate::Map {
         let style = self.style.as_ref().expect("queries need a style");
         let plan = style.worker.plan();
         let sources: Vec<u32> = requests.iter().map(|(_, r)| r.tile.source).collect();
-        let states = self.feature_state.snapshot(&sources);
+        let states = self
+            .feature_state
+            .drawn(&self.waiting_style)
+            .snapshot(&sources);
         // Source features: their source's members, by plan index.
         let source_members: HashMap<usize, (String, u32, bool)> = requests
             .iter()

@@ -27,7 +27,7 @@ use orb_style::v8::{StyleDoc, Transaction};
 use orb_style::{Binding, Change, Class, LayerKey, Patch, PropertyId};
 
 use crate::jobs::TileOutcome;
-use crate::map::{LoadedStyle, Map, NodeState, revise};
+use crate::map::{Judged, LoadedStyle, Map, NodeState, WaitingStyle, revise};
 use crate::resident::{
     SourceSlot, SourceState, record_maxima, remove_resident, resolve_rows, upload_mesh,
 };
@@ -72,39 +72,61 @@ impl Map {
     /// paint and feature-state edits show on the next frame.
     pub fn edit(&mut self, tx: &Transaction) -> Result<u64, String> {
         // A style waiting for its modules is the one asked for last: the
-        // edit goes to it, and shows once it's installed.
-        if let Some(waiting) = &mut self.waiting_style {
-            let patch = waiting.doc.apply(tx).map_err(|d| d.to_string())?;
+        // edit goes to it, and shows once they're in.
+        if let Some(WaitingStyle { doc, edits, fresh }) = &mut self.waiting_style {
+            let patch = doc.apply(tx).map_err(|d| d.to_string())?;
             self.warnings
                 .extend(patch.warnings.iter().map(ToString::to_string));
-            let needed = crate::modules::of_style(waiting.doc.style());
-            self.modules_wanted |= needed.without(self.modules);
+            *fresh |= patch.changes.contains(&Change::Restyle);
+            if !patch.changes.is_empty() {
+                edits.push(patch.clone());
+            }
             self.take_state_edits(&patch);
             self.events.wake();
-            return Ok(self.version + 1);
+            // It may no longer need what it waited for: then it shows at
+            // the version it installed at.
+            let installed = self.install_waiting();
+            return Ok(self.version + u64::from(!installed));
         }
         let style = self.style.as_mut().ok_or("no style is loaded")?;
-        let patch = style.doc.apply(tx).map_err(|d| d.to_string())?;
+        let mut doc = style.doc.clone();
+        let patch = doc.apply(tx).map_err(|d| d.to_string())?;
         self.warnings
             .extend(patch.warnings.iter().map(ToString::to_string));
-        self.take_state_edits(&patch);
-        let style = self.style.as_mut().expect("checked above");
         self.events.wake();
+        // An edit that adds a feature whose module the host hasn't loaded
+        // waits for it, the style drawn as it was: no job runs its code
+        // before then ([`crate::modules`]).
+        let ready = self.modules.contains(crate::modules::of_style(doc.style()));
+        if patch.changes.contains(&Change::Restyle) {
+            self.install(doc);
+            self.take_state_edits(&patch);
+            // The version it's installed at, now or once the modules are in.
+            return Ok(self.version + u64::from(!ready));
+        }
+        if !ready {
+            self.waiting_style = Some(WaitingStyle {
+                doc,
+                edits: vec![patch.clone()],
+                fresh: false,
+            });
+            self.take_state_edits(&patch);
+            return Ok(self.version + 1);
+        }
+        style.doc = doc;
+        self.take_state_edits(&patch);
         if patch.changes.is_empty() {
             let generation = self.generation();
             self.events.push(crate::MapEvent::StyleData { generation });
             return Ok(generation);
         }
-        // An edit that adds a feature whose module the host hasn't loaded
-        // installs the style again once it has: no job runs its code
-        // before then ([`crate::modules`]).
-        let needed = crate::modules::of_style(style.doc.style());
-        if patch.changes.contains(&Change::Restyle) || !self.modules.contains(needed) {
-            let doc = style.doc.clone();
-            self.install(doc);
-            // The version it's installed at, now or once the modules are in.
-            return Ok(self.version + u64::from(self.waiting_style.is_some()));
-        }
+        Ok(self.apply_patch(&patch))
+    }
+
+    /// Applies `patch`, which the drawn style's document has taken, to
+    /// its plan, jobs and tiles: the version it shows at.
+    pub(crate) fn apply_patch(&mut self, patch: &Patch) -> u64 {
+        let style = self.style.as_mut().expect("a patch needs a style");
         // A new projection: the globe changes at once; vector tiles lay
         // out again for its curvature from the jobs' cached data, and the
         // next frame regrids image tiles (nothing loads again).
@@ -137,7 +159,7 @@ impl Map {
             self.options.fonts(),
             self.surface.tiles(),
         ));
-        let update = self.edit_update(&style.doc, &patch, version);
+        let update = self.edit_update(&style.doc, patch, version);
         self.services.jobs.set_style(style.id, &update, &worker);
         self.warnings.extend(
             worker
@@ -150,12 +172,12 @@ impl Map {
         style.worker = Arc::clone(&worker);
         let plan = worker.plan();
 
-        self.start_transitions(&patch, old.plan(), plan);
+        self.start_transitions(patch, old.plan(), plan);
         let added = carry_sources(&mut style, old.plan(), plan);
         let (relayout, columns) = stale_nodes(
             &mut style,
             (old.plan(), plan),
-            &patch,
+            patch,
             (version, reproject, &new_data),
         );
         // Another sprite loads over the old one, next frame.
@@ -172,7 +194,7 @@ impl Map {
         self.events.push(crate::MapEvent::StyleData {
             generation: self.version,
         });
-        Ok(self.version)
+        self.version
     }
 
     /// The jobs' view of an edit's `patch` of `doc`, at `version`: the
@@ -463,8 +485,11 @@ impl Map {
                 let Some(current) = current else {
                     continue;
                 };
-                // A relayout since will bring its own rows.
-                if state.layout_epoch > current.layout_rev || build.revision < state.rows_epoch {
+                // A relayout since will bring its own rows, as will a
+                // later job.
+                if state.layout_epoch > current.layout_rev
+                    || state.judge(build.revision) != Judged::Current
+                {
                     continue;
                 }
                 let props = mesh.props.words(&build.payload);
@@ -497,7 +522,6 @@ impl Map {
                 current.states = rows.states;
                 current.hits = mesh.hits.clone();
                 current.maxima = mesh.maxima.clone();
-                current.rows_rev = build.revision;
                 self.counts.rows_uploaded += 1;
             }
         } else {
@@ -529,12 +553,13 @@ impl Map {
                 // A symbol layer's group comes back whole or not at all:
                 // its layers draw one bucket.
                 let newer = |key: &u32| {
-                    (style.nodes.get(key)).is_some_and(|s| build.revision < s.layout_epoch)
+                    (style.nodes.get(key))
+                        .is_some_and(|s| s.judge(build.revision) == Judged::LayoutStale)
                 };
                 if newer(&key) || plan.with_layout_groups(&[key]).iter().any(newer) {
                     continue;
                 }
-                if build.revision < state.rows_epoch {
+                if state.judge(build.revision) == Judged::RowsStale {
                     stale_rows.push(key);
                 }
                 let (old, kept) = std::mem::take(&mut resident.meshes)
@@ -576,7 +601,7 @@ impl Map {
             build.symbols.retain(|s| {
                 s.layers.iter().all(|&layer| {
                     (style.nodes.get(&crate::style::node_key(layer, 0)))
-                        .is_some_and(|state| build.revision >= state.layout_epoch)
+                        .is_some_and(|state| state.judge(build.revision) != Judged::LayoutStale)
                 })
             });
             no_room = no_room

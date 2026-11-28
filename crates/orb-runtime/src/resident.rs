@@ -127,9 +127,8 @@ pub(crate) struct Resident {
     pub(crate) node: u32,
     pub(crate) mesh: MeshId,
     pub(crate) hits: Arc<crate::query::MeshHits>,
-    /// The style revisions its geometry and its rows were laid out with.
+    /// The style revision its geometry was laid out with.
     pub(crate) layout_rev: u64,
-    pub(crate) rows_rev: u64,
     /// Gradient ramps its rows retain.
     pub(crate) ramps: Vec<u32>,
     /// The feature-state indices its features refer to.
@@ -148,7 +147,6 @@ impl Resident {
             node: mesh.node,
             mesh: id,
             layout_rev: revision,
-            rows_rev: revision,
             ramps: rows.ramps,
             states: rows.states,
             maxima: mesh.maxima.clone(),

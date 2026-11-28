@@ -207,4 +207,34 @@ impl Patch {
     pub fn class(&self) -> Option<Class> {
         self.changes.iter().map(Change::class).max()
     }
+
+    /// The patches of transactions applied in turn, as one: each change
+    /// once, and each source's diffs in order, but none for a source an
+    /// edit gave whole data, whose JSON holds them already. Feature state
+    /// and warnings stay with the edits that made them.
+    pub fn merge(edits: impl IntoIterator<Item = Patch>) -> Patch {
+        let mut merged = Patch::default();
+        let mut whole = Vec::new();
+        for edit in edits {
+            merged.version = edit.version;
+            for change in edit.changes {
+                if let Change::SourceAdded(key) | Change::SourceData(key) = change
+                    && !edit.source_diffs.iter().any(|(k, _)| *k == key)
+                {
+                    whole.push(key);
+                }
+                if !merged.changes.contains(&change) {
+                    merged.changes.push(change);
+                }
+            }
+            for (key, diffs) in edit.source_diffs {
+                match merged.source_diffs.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, held)) => held.extend(diffs),
+                    None => merged.source_diffs.push((key, diffs)),
+                }
+            }
+        }
+        merged.source_diffs.retain(|(key, _)| !whole.contains(key));
+        merged
+    }
 }

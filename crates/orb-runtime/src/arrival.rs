@@ -398,7 +398,6 @@ impl Map {
                     && matches!(def.kind, orb_style::SourceKind::Vector(_))
                     && !self.modules.contains(mlt)
                 {
-                    self.modules_wanted |= mlt;
                     let message = Message::TileJson {
                         generation,
                         source,
@@ -864,12 +863,15 @@ impl Map {
             &mut self.events,
         );
         // Nodes the tile was laid out for before an edit changed them are
-        // laid out again from the job's cached tile.
-        let mut stale = Vec::new();
+        // laid out again from the job's cached tile, or only their rows
+        // evaluated again, their old rows drawn meanwhile.
+        let (mut stale, mut stale_rows) = (Vec::new(), Vec::new());
         for node in plan.nodes.iter().filter(|n| n.source == source) {
             let state = style.nodes.entry(node.key).or_default();
-            if build.image.is_none() && build.revision < state.layout_epoch.max(state.rows_epoch) {
-                stale.push(node.key);
+            match build.image.is_none().then(|| state.judge(build.revision)) {
+                Some(crate::map::Judged::LayoutStale) => stale.push(node.key),
+                Some(crate::map::Judged::RowsStale) => stale_rows.push(node.key),
+                _ => {}
             }
         }
         drop_stale(&mut build, plan, &stale);
@@ -1103,11 +1105,18 @@ impl Map {
                 .ramps
                 .extend(remove_resident(renderer, unwanted, &mut style.states));
         }
+        let cause = crate::worker::Cause::Upkeep;
         if !stale.is_empty() {
-            let cause = crate::worker::Cause::Upkeep;
             let job = crate::TileJob::Relayout {
                 cause,
                 nodes: stale,
+            };
+            self.send_edit_job(source, tile, job);
+        }
+        if !stale_rows.is_empty() {
+            let job = crate::TileJob::Columns {
+                cause,
+                nodes: stale_rows,
             };
             self.send_edit_job(source, tile, job);
         }

@@ -424,7 +424,29 @@ pub(crate) struct NodeState {
     pub(crate) painted: Option<u64>,
 }
 
+/// How a result laid out at some revision stands against its node
+/// ([`NodeState::judge`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Judged {
+    Current,
+    /// Its geometry stands; its property rows need evaluating again.
+    RowsStale,
+    /// It needs laying out again.
+    LayoutStale,
+}
+
 impl NodeState {
+    /// How a result for the node laid out at `revision` stands.
+    pub(crate) fn judge(&self, revision: u64) -> Judged {
+        if revision < self.layout_epoch {
+            Judged::LayoutStale
+        } else if revision < self.rows_epoch {
+            Judged::RowsStale
+        } else {
+            Judged::Current
+        }
+    }
+
     /// A node new at revision `epoch`: tiles laid out before are stale.
     pub(crate) fn new(plan: &StylePlan, node: &crate::style::NodePlan, epoch: u64) -> Self {
         let maxima = vec![0.0; plan.paint_properties(node).len()];
@@ -699,7 +721,7 @@ struct PlanKey {
 type Degraded = (crate::Gap, Vec<String>);
 
 /// Where the latest style request stands.
-enum StyleLoad {
+pub(crate) enum StyleLoad {
     /// No style URL is loading or has failed: the map has no style yet, or
     /// draws the last one set directly or installed from a URL's answer.
     Settled,
@@ -717,19 +739,24 @@ enum StyleLoad {
     },
 }
 
+/// The document asked for last, waiting for feature modules the host
+/// hasn't loaded ([`crate::modules`]), edits going to it: installed afresh
+/// once they're in if `fresh`, else the drawn style's next revision,
+/// taking the `edits` made since as one patch. A style URL's load goes on
+/// beside it.
+pub(crate) struct WaitingStyle {
+    pub(crate) doc: StyleDoc,
+    pub(crate) edits: Vec<orb_style::Patch>,
+    pub(crate) fresh: bool,
+}
+
 impl StyleLoad {
     /// Moves to `next`, giving up a fetch still loading.
-    fn replace(&mut self, next: StyleLoad) {
+    pub(crate) fn replace(&mut self, next: StyleLoad) {
         if let StyleLoad::Fetching { abort, .. } = std::mem::replace(self, next) {
             abort.abort();
         }
     }
-}
-
-/// A style waiting for the feature modules it needs ([`crate::modules`]):
-/// the document asked for last, which edits go to meanwhile.
-pub(crate) struct WaitingStyle {
-    pub(crate) doc: StyleDoc,
 }
 
 /// Work that waits for feature modules, taken again once they're in.
@@ -824,20 +851,19 @@ pub struct Map {
     pub(crate) transitions: crate::transitions::Transitions,
     /// The light, sky and terrain easing in.
     pub(crate) root: crate::root::Root,
-    /// The latest style request.
-    style_load: StyleLoad,
+    /// The latest style URL request.
+    pub(crate) style_load: StyleLoad,
+    /// The document waiting for its modules.
+    pub(crate) waiting_style: Option<WaitingStyle>,
     /// `load_style_url` requests made, which number each one.
     style_requests: u64,
     /// The feature modules the host has loaded ([`crate::modules`]).
     pub(crate) modules: Modules,
-    /// Those the map waits for, which the host is asked for.
-    pub(crate) modules_wanted: Modules,
-    /// A style waiting for its modules, installed once they're in.
-    pub(crate) waiting_style: Option<WaitingStyle>,
     /// The feature state the app set, which the style's state table
     /// mirrors ([`crate::feature_state`]).
     pub(crate) feature_state: crate::feature_state::FeatureStateStore,
-    /// Work waiting for modules, and the modules each waits for.
+    /// Work of this style generation waiting for modules, and the
+    /// modules each waits for.
     pub(crate) for_modules: Vec<(Modules, ModuleWait)>,
     /// Gives up what the style generation fetches (TileJSON, archive
     /// heads, sprites) once the next one starts.
@@ -1067,10 +1093,9 @@ impl Map {
             transitions: Default::default(),
             root: Default::default(),
             style_load: StyleLoad::Settled,
+            waiting_style: None,
             style_requests: 0,
             modules: Modules::ALL,
-            modules_wanted: Modules::NONE,
-            waiting_style: None,
             feature_state: Default::default(),
             for_modules: Vec::new(),
             style_loads: Abort::new(),
@@ -1538,7 +1563,6 @@ impl Map {
     /// installed now, and work waiting for them is taken again.
     pub fn set_modules(&mut self, loaded: Modules) {
         self.modules = loaded;
-        self.modules_wanted = self.modules_wanted.without(loaded);
         self.install_waiting();
         let (ready, waiting) = std::mem::take(&mut self.for_modules)
             .into_iter()
@@ -1561,20 +1585,32 @@ impl Map {
     /// The feature modules the map waits for, which its host should load
     /// and then tell it of ([`Map::set_modules`]).
     pub fn modules_wanted(&self) -> Modules {
-        self.modules_wanted
+        let style = (self.waiting_style.as_ref())
+            .map_or(Modules::NONE, |w| crate::modules::of_style(w.doc.style()));
+        let work = self.for_modules.iter().map(|(needed, _)| *needed);
+        work.fold(style, |all, needed| all | needed)
+            .without(self.modules)
     }
 
-    /// Installs the style waiting for modules, if they're all in.
-    fn install_waiting(&mut self) {
+    /// Takes the document waiting for modules, if they're all in: a new
+    /// style installs, edits of the drawn one apply. Whether it did.
+    pub(crate) fn install_waiting(&mut self) -> bool {
         let ready = (self.waiting_style.as_ref()).is_some_and(|w| {
             self.modules
                 .contains(crate::modules::of_style(w.doc.style()))
         });
         if !ready {
-            return;
+            return false;
         }
-        let WaitingStyle { doc } = self.waiting_style.take().expect("waiting");
-        self.install_revision(doc, None);
+        let WaitingStyle { doc, edits, fresh } = self.waiting_style.take().expect("checked above");
+        match &mut self.style {
+            Some(style) if !fresh => {
+                style.doc = doc;
+                self.apply_patch(&orb_style::Patch::merge(edits));
+            }
+            _ => self.install_revision(doc, None),
+        }
+        true
     }
 
     /// Replaces the style with a v8 document. Its tiles load as frames
@@ -1653,8 +1689,11 @@ impl Map {
     pub(crate) fn install(&mut self, doc: StyleDoc) {
         let needed = crate::modules::of_style(doc.style());
         if !self.modules.contains(needed) {
-            self.modules_wanted |= needed.without(self.modules);
-            self.waiting_style = Some(WaitingStyle { doc });
+            self.waiting_style = Some(WaitingStyle {
+                doc,
+                edits: Vec::new(),
+                fresh: true,
+            });
             self.events.wake();
             return;
         }
@@ -2249,7 +2288,7 @@ impl Map {
         let (fading, missing) = crate::paint::frame(
             gpu,
             renderer,
-            (style, &self.feature_state),
+            (style, self.feature_state.drawn(&self.waiting_style)),
             &mut self.transitions,
             (zoom, camera),
             (now, time),
@@ -2891,7 +2930,6 @@ impl Map {
         // for it ([`crate::modules`]).
         let geojson = Modules::GEOJSON;
         if matches!(answer, crate::HostTile::GeoJson(_)) && !self.modules.contains(geojson) {
-            self.modules_wanted |= geojson;
             let held = ModuleWait::HostTile(id.to_string(), tile, answer);
             self.for_modules.push((geojson, held));
             self.events.wake();
@@ -3529,9 +3567,14 @@ impl Map {
         // A style that loads takes every source's feature state with it,
         // as in Native, even one whose sources the diff kept.
         self.clear_feature_state();
-        // A diff that needed a reload installed the document, which said so.
-        if self.style_id == id {
-            self.events.push(MapEvent::StyleLoad);
+        match &mut self.waiting_style {
+            // One that waits for modules installs, and loads, once
+            // they're in.
+            Some(waiting) => waiting.fresh = true,
+            // A diff that needed a reload installed the document, which
+            // said so.
+            _ if self.style_id == id => self.events.push(MapEvent::StyleLoad),
+            _ => {}
         }
         Ok(())
     }
@@ -3659,6 +3702,7 @@ impl Map {
     /// is given up, since its answers would be dropped.
     fn next_generation(&mut self) {
         self.generation += 1;
+        self.for_modules.clear();
         std::mem::replace(&mut self.style_loads, Abort::new()).abort();
     }
 
@@ -3903,8 +3947,9 @@ mod tests {
         assert_eq!(named(&map), None);
         assert_eq!(map.modules_wanted(), Modules::GEOJSON);
         assert!(!map.style_loaded());
+        // Only what the style asked for last needs is wanted.
         map.set_style_json(terrain).unwrap();
-        assert_eq!(map.modules_wanted(), Modules::GEOJSON | Modules::DEM);
+        assert_eq!(map.modules_wanted(), Modules::DEM);
         map.set_modules(Modules::GEOJSON);
         assert_eq!(named(&map), None, "the terrain still waits");
         map.set_modules(Modules::GEOJSON | Modules::DEM);
@@ -3918,6 +3963,7 @@ mod tests {
             r#"[["addSource", "g", {"type": "geojson", "data": {"type": "FeatureCollection", "features": []}}]]"#,
         )
         .unwrap();
+        map.take_events();
         let generation = map.edit(&add).unwrap();
         assert_eq!(map.modules_wanted(), Modules::GEOJSON);
         let sources = |map: &Map| {
@@ -3928,6 +3974,9 @@ mod tests {
         map.set_modules(Modules::GEOJSON);
         assert_eq!(sources(&map), 1);
         assert_eq!(map.version, generation);
+        // It applied as an edit of the style drawn: no style loaded.
+        let events = map.take_events();
+        assert!(!events.iter().any(|e| matches!(e, MapEvent::StyleLoad)));
         // While a style waits, edits go to it rather than to the style
         // drawn, and the drawn one installed again (a lost device) leaves
         // it waiting.
