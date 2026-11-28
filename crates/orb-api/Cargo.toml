@@ -24,6 +24,7 @@ orb-runtime.workspace = true
 pollster.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 png.workspace = true
 # Writes the MapLibre Native offline database the merge test reads.
 rusqlite.workspace = true

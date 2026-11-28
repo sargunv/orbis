@@ -5,15 +5,6 @@
 mod common;
 
 mod tests {
-    /// Whether frames draw on the GPU frame driver, whose bundles draw
-    /// the counts the cull writes, so that a camera move replays them.
-    /// The CPU driver's (`ORB_DRIVER=cpu`, `cpu-tex`, `webgl2`: WebGL 2's,
-    /// which draws nothing indirectly) hold their draws' counts and record
-    /// again when a move changes what the cull keeps.
-    fn gpu_driven() -> bool {
-        std::env::var("ORB_DRIVER").map_or(true, |driver| driver.is_empty() || driver == "gpu")
-    }
-
     fn tokyo(zoom: f64) -> crate::common::Options {
         crate::common::Options {
             style: None,
@@ -391,8 +382,8 @@ mod tests {
     /// tile-shaped gaps.
     #[test]
     fn raster_tiles_evict_unused_tiles_for_room() {
-        let dir = crate::common::Scratch::new("raster-room");
-        let tile = solid_tile(&dir);
+        let dir = tempfile::tempdir().unwrap();
+        let tile = solid_tile(dir.path());
         // A polygon that only low zooms draw, and imagery.
         let ring: Vec<String> = (0..=360)
             .map(|i| {
@@ -409,7 +400,7 @@ mod tests {
             ring = ring.join(","),
             tile = tile.display(),
         );
-        let path = dir.join("style.json");
+        let path = dir.path().join("style.json");
         std::fs::write(&path, style).unwrap();
         let options = |lon: f64, zoom: f64| crate::common::Options {
             style: Some(orb_host::file_url(&path)),
@@ -459,8 +450,8 @@ mod tests {
     #[test]
     fn image_tiles_snap_to_pixels_only_at_rest() {
         use orb_camera::input::{Button, Input, Modifiers, PointerKind};
-        let dir = crate::common::Scratch::new("raster-align");
-        let tile = dir.join("tile.png");
+        let dir = tempfile::tempdir().unwrap();
+        let tile = dir.path().join("tile.png");
         let mut png = Vec::new();
         {
             let mut encoder = png::Encoder::new(&mut png, 256, 256);
@@ -486,7 +477,7 @@ mod tests {
                 "paint":{{"raster-fade-duration":0}}}}]}}"#,
             tile.display(),
         );
-        let path = dir.join("style.json");
+        let path = dir.path().join("style.json");
         std::fs::write(&path, style).unwrap();
         // At zoom 2 a texel is a pixel; these longitudes are between them.
         let options = |lon: f64| crate::common::Options {
@@ -568,9 +559,9 @@ mod tests {
     /// nothing there, as in GL JS.
     #[test]
     fn sources_load_nothing_where_their_layers_hide() {
-        let dir = crate::common::Scratch::new("hidden");
-        let tile = solid_tile(&dir);
-        let path = dir.join("style.json");
+        let dir = tempfile::tempdir().unwrap();
+        let tile = solid_tile(dir.path());
+        let path = dir.path().join("style.json");
         std::fs::write(
             &path,
             format!(
@@ -603,9 +594,9 @@ mod tests {
     /// may be more than a fresh map would need for them.)
     #[test]
     fn tile_pages_shrink_with_their_tiles() {
-        let dir = crate::common::Scratch::new("pages");
-        let tile = solid_tile(&dir);
-        let path = dir.join("style.json");
+        let dir = tempfile::tempdir().unwrap();
+        let tile = solid_tile(dir.path());
+        let path = dir.path().join("style.json");
         std::fs::write(
             &path,
             format!(
@@ -652,10 +643,10 @@ mod tests {
     /// still shows a source whose tiles can no longer load.
     #[test]
     fn a_growing_page_keeps_other_sources_cached_tiles() {
-        let dir = crate::common::Scratch::new("page-growth");
-        let imagery = solid_tile(&dir);
-        let overlay = solid_png(&dir, "overlay.png", [255, 0, 0, 255]);
-        let path = dir.join("style.json");
+        let dir = tempfile::tempdir().unwrap();
+        let imagery = solid_tile(dir.path());
+        let overlay = solid_png(dir.path(), "overlay.png", [255, 0, 0, 255]);
+        let path = dir.path().join("style.json");
         std::fs::write(
             &path,
             format!(
@@ -861,7 +852,7 @@ mod tests {
         for pitch in [60.0, 80.0, 85.0] {
             crate::common::move_camera(&mut offscreen.map, |c| c.pitch = pitch);
             let report = offscreen.frame();
-            assert!(!gpu_driven() || !report.frame.bundle_recorded);
+            assert!(!report.frame.bundle_recorded);
             assert_eq!(report.frame.paints_written, 0);
             assert!(report.idle());
         }
@@ -884,7 +875,7 @@ mod tests {
                 c.pitch = pitch;
             });
             let report = offscreen.frame();
-            assert!(!gpu_driven() || !report.frame.bundle_recorded);
+            assert!(!report.frame.bundle_recorded);
             assert_eq!(report.frame.paints_written, 0);
             // Only placements: a tile's rows are written again where it
             // or the tiles drawn around it changed (`TileRow::neighbours`).
@@ -1211,9 +1202,9 @@ mod tests {
     /// whose JSON failed never gave them.
     #[test]
     fn a_sprite_whose_image_fails_takes_its_icons_back() {
-        let dir = crate::common::Scratch::new("sprite-image");
+        let dir = tempfile::tempdir().unwrap();
         std::fs::write(
-            dir.join("s.json"),
+            dir.path().join("s.json"),
             r#"{"dot":{"x":0,"y":0,"width":1,"height":1}}"#,
         )
         .unwrap();
@@ -1221,7 +1212,7 @@ mod tests {
             r#"{{"version":8,"sprite":"file://{}/s",
             "sources":{{"s":{{"type":"geojson","data":{{"type":"Point","coordinates":[0,0]}}}}}},
             "layers":[{{"id":"icon","type":"symbol","source":"s","layout":{{"icon-image":"dot"}}}}]}}"#,
-            dir.display()
+            dir.path().display()
         ));
         let started = std::time::Instant::now();
         let mut errors = Vec::new();
@@ -1251,8 +1242,8 @@ mod tests {
     /// fade in. Frames all show one instant, so a fade would never end.
     #[test]
     fn raster_tiles_skip_fades_until_first_idle() {
-        let dir = crate::common::Scratch::new("raster-fade");
-        let tile = solid_tile(&dir);
+        let dir = tempfile::tempdir().unwrap();
+        let tile = solid_tile(dir.path());
         let mut offscreen = null_island(&format!(
             r#"{{"version":8,
             "sources":{{"imagery":{{"type":"raster","tiles":["file://{}"],"tileSize":256}}}},
@@ -1396,8 +1387,8 @@ mod tests {
     /// and none once a zoom past its range or its visibility hides it.
     #[test]
     fn a_hidden_blended_layer_composites_nothing() {
-        let dir = crate::common::Scratch::new("hidden-blend");
-        let tile = solid_tile(&dir);
+        let dir = tempfile::tempdir().unwrap();
+        let tile = solid_tile(dir.path());
         let draws = |blend: &str| {
             let style = format!(
                 r##"{{"version":8,"sources":{{
@@ -1407,7 +1398,7 @@ mod tests {
                       "paint":{{"raster-layer-blend":"{blend}"}}}}]}}"##,
                 tile = tile.display(),
             );
-            let path = dir.join(format!("{blend}.json"));
+            let path = dir.path().join(format!("{blend}.json"));
             std::fs::write(&path, style).unwrap();
             let options = crate::common::Options {
                 style: Some(orb_host::file_url(&path)),

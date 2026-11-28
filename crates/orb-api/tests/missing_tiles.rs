@@ -60,21 +60,21 @@ fn middle(source: &str, layer: &str, missing_tiles: MissingTiles) -> [u8; 4] {
 
 #[test]
 fn a_child_tile_that_404s_draws_its_parent_or_nothing() {
-    let dir = common::Scratch::new("missing-tiles");
-    std::fs::create_dir_all(dir.join("v/0/0")).unwrap();
-    std::fs::create_dir_all(dir.join("r/0/0")).unwrap();
-    std::fs::write(dir.join("v/0/0/0.pbf"), full_tile()).unwrap();
-    blue_png(&dir.join("r/0/0/0.png"));
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("v/0/0")).unwrap();
+    std::fs::create_dir_all(dir.path().join("r/0/0")).unwrap();
+    std::fs::write(dir.path().join("v/0/0/0.pbf"), full_tile()).unwrap();
+    blue_png(&dir.path().join("r/0/0/0.png"));
 
     let vector = format!(
         r#"{{"type": "vector", "maxzoom": 4, "tiles": ["file://{}/v/{{z}}/{{x}}/{{y}}.pbf"]}}"#,
-        dir.display()
+        dir.path().display()
     );
     let fill = r##"{"id": "f", "type": "fill", "source": "s", "source-layer": "l",
         "paint": {"fill-color": "#ff0000"}}"##;
     let raster = format!(
         r#"{{"type": "raster", "maxzoom": 4, "tiles": ["file://{}/r/{{z}}/{{x}}/{{y}}.png"]}}"#,
-        dir.display()
+        dir.path().display()
     );
     let image =
         r#"{"id": "r", "type": "raster", "source": "s", "paint": {"raster-fade-duration": 0}}"#;
@@ -96,15 +96,15 @@ fn a_child_tile_that_404s_draws_its_parent_or_nothing() {
 
 #[test]
 fn an_empty_child_tile_of_a_sparse_source_draws_its_parent() {
-    let dir = common::Scratch::new("sparse-tiles");
-    std::fs::create_dir_all(dir.join("v/0/0")).unwrap();
-    std::fs::write(dir.join("v/0/0/0.pbf"), full_tile()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("v/0/0")).unwrap();
+    std::fs::write(dir.path().join("v/0/0/0.pbf"), full_tile()).unwrap();
     // Every tile past zoom 0 an empty response.
     for z in 1..=2u32 {
         for x in 0..1 << z {
-            std::fs::create_dir_all(dir.join(format!("v/{z}/{x}"))).unwrap();
+            std::fs::create_dir_all(dir.path().join(format!("v/{z}/{x}"))).unwrap();
             for y in 0..1 << z {
-                std::fs::write(dir.join(format!("v/{z}/{x}/{y}.pbf")), b"").unwrap();
+                std::fs::write(dir.path().join(format!("v/{z}/{x}/{y}.pbf")), b"").unwrap();
             }
         }
     }
@@ -112,7 +112,7 @@ fn an_empty_child_tile_of_a_sparse_source_draws_its_parent() {
         format!(
             r#"{{"type": "vector", "maxzoom": 2, "sparse": {sparse},
                 "tiles": ["file://{}/v/{{z}}/{{x}}/{{y}}.pbf"]}}"#,
-            dir.display()
+            dir.path().display()
         )
     };
     let fill = r##"{"id": "f", "type": "fill", "source": "s", "source-layer": "l",

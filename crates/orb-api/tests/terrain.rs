@@ -9,7 +9,7 @@
 mod common;
 
 use common::dem::{alps, alps_dem, dem, hills};
-use common::{At, STATION, camera, culls, extruded, fresh_at, options, tilted, tokyo};
+use common::{At, STATION, camera, extruded, fresh_at, options, tilted, tokyo};
 use orb_api::{Geodetic, Map, Runtime, RuntimeOptions, Target};
 
 const WIDTH: u32 = 512;
@@ -529,7 +529,7 @@ fn an_alpine_view_at_rest_redoes_nothing() {
         assert!(report.idle(), "frame {frame}");
         assert_eq!(report.frame.prepared, 0, "frame {frame}");
         assert_eq!(report.frame.placements_written, 0, "frame {frame}");
-        assert!(report.frame.dispatches <= culls(), "frame {frame}");
+        assert!(report.frame.dispatches <= 1, "frame {frame}");
         let first = *dispatches.get_or_insert(report.frame.dispatches);
         assert_eq!(report.frame.dispatches, first, "frame {frame}");
         assert!(!report.frame.candidates_rebuilt, "frame {frame}");

@@ -119,8 +119,8 @@ mod tests {
 
     #[test]
     fn reads_writes_appends_lists_and_removes() {
-        let root = crate::Scratch::new("storage");
-        let storage = FileStorage::new(&root);
+        let root = tempfile::tempdir().unwrap();
+        let storage = FileStorage::new(root.path());
         storage.write_now("a/b", b"hello", false).unwrap();
         storage.write_now("a/b", b" world", true).unwrap();
         assert_eq!(

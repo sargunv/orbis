@@ -308,10 +308,10 @@ fn assert_stopped(map: &mut Map) {
 
 /// A style of a blue box draped on terrain over one flat terrarium tile,
 /// on a red background, and the directory holding the tile.
-fn flat_terrain(name: &str) -> (common::Scratch, String) {
-    let dir = common::Scratch::new(name);
-    std::fs::create_dir_all(dir.join("0/0")).unwrap();
-    let file = std::fs::File::create(dir.join("0/0/0.png")).unwrap();
+fn flat_terrain() -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("0/0")).unwrap();
+    let file = std::fs::File::create(dir.path().join("0/0/0.png")).unwrap();
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), 256, 256);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
@@ -327,7 +327,7 @@ fn flat_terrain(name: &str) -> (common::Scratch, String) {
             "coordinates":[[[-10,-10],[10,-10],[10,10],[-10,10],[-10,-10]]]}}}}}},
           "layers":[{{"id":"bg","type":"background","paint":{{"background-color":"#ff0000"}}}},
           {{"id":"box","type":"fill","source":"box","paint":{{"fill-color":"#0000ff"}}}}]}}"##,
-        dir.display()
+        dir.path().display()
     );
     (dir, style)
 }
@@ -356,7 +356,7 @@ fn a_failed_terrain_pipeline_draws_flat() {
         assert!(child.status.success(), "{stderr}");
         return;
     }
-    let (_dir, style) = flat_terrain("api-failed-terrain");
+    let (_dir, style) = flat_terrain();
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
@@ -391,7 +391,7 @@ const DRAPE_CHILD: &str = "ORB_TEST_DRAPE_CHILD";
 #[test]
 fn a_drape_pipeline_arriving_last_still_idles() {
     if std::env::var_os(DRAPE_CHILD).is_some() {
-        let (_dir, style) = flat_terrain("api-flat-dem");
+        let (_dir, style) = flat_terrain();
         let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
         let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
         let mut map = Map::new(&runtime, MapOptions::default());

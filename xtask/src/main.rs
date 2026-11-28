@@ -45,7 +45,9 @@ cargo xtask <task>
                Rust names (include_str!, #[path], paths on
                CARGO_MANIFEST_DIR), changed since <rev>'s merge base with
                HEAD (default origin/main), in the working tree or
-               untracked, and every package depending on those
+               untracked, the packages building against those and the
+               ones whose tests do; a change to a package's own tests,
+               benches or examples selects that package alone
   clippy [--fix]  clippy over the workspace, native and wasm32 (WebGL 2 too), denying
                warnings; --fix applies its suggestions
   android [--run [--leakcheck]]  the Android app: orb-android as
@@ -347,51 +349,42 @@ fn checks(selection: &affected::Selection) -> Result<(), String> {
         android::clippy_32bit()?;
     }
     run(&mut test)?;
-    cpu_driver_tests(selection)?;
+    stand_in_tests(selection)?;
     if selection.contains("orb-ffi") {
         mln_ffi::check_declarations()?;
     }
     boundaries::check()
 }
 
-/// Every test in `orb-render`, `orb-runtime` and `orb-api` (whole, drawing or
-/// not, which keeps the filter simple), for the selected packages among them,
-/// run again on the CPU frame driver with its tables in data textures
-/// (`ORB_DRIVER=cpu-tex`), and again on the whole of WebGL 2's stand-in
-/// (`ORB_DRIVER=webgl2`: no compute either, so drawn mip levels, and GL's
-/// texture layers), as WebGL 2 shares every pass with WebGPU (#140, #204).
-/// `validation` runs too, as those drivers call the graphics API otherwise.
-/// Left out are the binaries that pick their driver themselves: `orb-runtime`'s
-/// `drivers`, which makes its own device on the CPU driver and holds it to the
-/// GPU's word for word in every run, and `cull`, which tests the GPU driver's
-/// cull.
-fn cpu_driver_tests(selection: &affected::Selection) -> Result<(), String> {
+/// What the frame drivers can make differ, run again on the CPU frame driver
+/// with its tables in data textures (`ORB_DRIVER=cpu-tex`) and on the whole of
+/// WebGL 2's stand-in (`ORB_DRIVER=webgl2`: no compute either, so drawn mip
+/// levels, and its gaps): `orb-render`'s tests, which drive the renderer
+/// itself, and `orb-runtime`'s `validation`, every offline scene, which between
+/// them draw every pass. Everything else draws through those passes alike on
+/// every driver, and `orb-runtime`'s `drivers` holds the CPU driver's words to
+/// the GPU's.
+fn stand_in_tests(selection: &affected::Selection) -> Result<(), String> {
     let runs = [
         ("orb-render", "package(orb-render)"),
-        (
-            "orb-runtime",
-            "package(orb-runtime) & !(binary(drivers) | binary(cull))",
-        ),
-        ("orb-api", "package(orb-api)"),
+        ("orb-runtime", "package(orb-runtime) & binary(validation)"),
     ];
-    let mut packages = Vec::new();
-    let mut filters = Vec::new();
-    for (package, filter) in runs {
-        if selection.contains(package) {
-            packages.extend(["-p", package]);
-            filters.push(format!("({filter})"));
-        }
-    }
-    if filters.is_empty() {
+    let runs: Vec<_> = (runs.iter())
+        .filter(|(package, _)| selection.contains(package))
+        .collect();
+    if runs.is_empty() {
         return Ok(());
     }
-    let filter = filters.join(" | ");
+    let filter = (runs.iter().map(|(_, filter)| format!("({filter})")))
+        .collect::<Vec<_>>()
+        .join(" | ");
     for driver in ["cpu-tex", "webgl2"] {
-        eprintln!("check: the renderer's tests again on ORB_DRIVER={driver}");
-        run(nextest()
-            .args(&packages)
-            .args(["-E", &filter])
-            .env("ORB_DRIVER", driver))?;
+        eprintln!("check: what the drivers can make differ, on ORB_DRIVER={driver}");
+        let mut command = nextest();
+        for (package, _) in &runs {
+            command.args(["-p", package]);
+        }
+        run(command.args(["-E", &filter]).env("ORB_DRIVER", driver))?;
     }
     Ok(())
 }
@@ -451,6 +444,48 @@ pub(crate) fn root() -> PathBuf {
         .parent()
         .expect("the workspace root")
         .to_path_buf()
+}
+
+/// `cargo metadata` for the workspace.
+pub(crate) fn cargo_metadata() -> Result<serde_json::Value, String> {
+    let output = Command::new(env!("CARGO"))
+        .args(["metadata", "--format-version", "1"])
+        .output()
+        .map_err(|e| format!("failed to run cargo metadata: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    serde_json::from_slice(&output.stdout).map_err(|e| format!("bad cargo metadata: {e}"))
+}
+
+/// What `git args` prints in `dir`, trimmed.
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "`git {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The median of `v`, sorting it; `None` when it's empty.
+pub(crate) fn median(v: &mut [f64]) -> Option<f64> {
+    v.sort_by(f64::total_cmp);
+    match v.len() {
+        0 => None,
+        n if n % 2 == 1 => Some(v[n / 2]),
+        n => Some((v[n / 2 - 1] + v[n / 2]) / 2.0),
+    }
 }
 
 pub(crate) fn cargo(args: &[&str]) -> Result<(), String> {

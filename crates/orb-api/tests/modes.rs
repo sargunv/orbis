@@ -300,8 +300,8 @@ fn labels_across_edges(avoid_edges: bool) -> (usize, Vec<String>) {
 #[test]
 fn a_style_that_fails_to_load_fails_a_snapshot_at_once() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
-    let dir = common::Scratch::new("bad-style");
-    let path = dir.join("style.json");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("style.json");
     // A layer of a type v8 doesn't have fails the style.
     std::fs::write(
         &path,
@@ -330,7 +330,7 @@ fn hillshade_tiles_shade_their_edges_from_their_neighbours() {
     const Z: u8 = 12;
     let (col, row) = (2048u32, 2048u32);
     // Rising 8 m a DEM pixel (some 10 m wide) eastward and 4 m southward.
-    let dir = dem_block("tile-dem", Z, col, row, |east, south| 8 * east + 4 * south);
+    let dir = dem_block(Z, col, row, |east, south| 8 * east + 4 * south);
     let style = format!(
         r#"{{"version":8,
             "sources":{{"dem":{{"type":"raster-dem","encoding":"terrarium","tileSize":{TILE},
@@ -339,7 +339,7 @@ fn hillshade_tiles_shade_their_edges_from_their_neighbours() {
               {{"id":"bg","type":"background","paint":{{"background-color":"white"}}}},
               {{"id":"shade","type":"hillshade","source":"dem"}}
             ]}}"#,
-        dir.display()
+        dir.path().display()
     );
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut map = Map::new(&runtime, MapOptions::default());
@@ -370,14 +370,8 @@ fn hillshade_tiles_shade_their_edges_from_their_neighbours() {
 /// Terrarium tiles of zoom `z`'s 3×3 block around (`col`, `row`) in a new
 /// scratch directory, as `{z}/{x}/{y}.png`: each pixel `metres(east,
 /// south)` high, counting pixels from the block's north-west corner.
-fn dem_block(
-    name: &str,
-    z: u8,
-    col: u32,
-    row: u32,
-    metres: impl Fn(u32, u32) -> u32,
-) -> common::Scratch {
-    let dir = common::Scratch::new(name);
+fn dem_block(z: u8, col: u32, row: u32, metres: impl Fn(u32, u32) -> u32) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
     for x in col - 1..=col + 1 {
         for y in row - 1..=row + 1 {
             let mut pixels = Vec::with_capacity((TILE * TILE * 4) as usize);
@@ -389,7 +383,7 @@ fn dem_block(
                     pixels.extend([(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]);
                 }
             }
-            let path = dir.join(format!("{z}/{x}/{y}.png"));
+            let path = dir.path().join(format!("{z}/{x}/{y}.png"));
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             let file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
             let mut encoder = png::Encoder::new(file, TILE, TILE);
@@ -412,7 +406,7 @@ fn tiles_over_terrain_draw_from_the_ground() {
     const Z: u8 = 12;
     let (col, row) = (2048u32, 2048u32);
     // Terrain meshes this tile from DEM tiles two zooms coarser.
-    let dir = dem_block("tile-plateau", Z - 2, col >> 2, row >> 2, |_, _| 10_000);
+    let dir = dem_block(Z - 2, col >> 2, row >> 2, |_, _| 10_000);
     // The tile's longitude and latitude at a fraction across and down it.
     let n = f64::from(1u32 << Z);
     let lon = |f: f64| (f64::from(col) + f) / n * 360.0 - 180.0;
@@ -436,7 +430,7 @@ fn tiles_over_terrain_draw_from_the_ground() {
               {{"id":"bg","type":"background","paint":{{"background-color":"white"}}}},
               {{"id":"square","type":"fill","source":"square","paint":{{"fill-color":"red"}}}}
             ]}}"#,
-        dir.display(),
+        dir.path().display(),
         dem = Z - 2,
     );
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();

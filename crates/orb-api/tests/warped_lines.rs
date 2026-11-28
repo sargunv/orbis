@@ -67,14 +67,14 @@ fn lines_through_a_stretching_warp_keep_their_width() {
         [[-64, north], [4160, north]],
         [[-64, equator], [4160, equator]],
     ];
-    let dir = common::Scratch::new("warped-lines");
-    std::fs::create_dir_all(dir.join("0/0")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("0/0")).unwrap();
     let parallels: Vec<&[[i64; 2]]> = parallels.iter().map(|line| &line[..]).collect();
-    std::fs::write(dir.join("0/0/0.pbf"), tile(&parallels)).unwrap();
+    std::fs::write(dir.path().join("0/0/0.pbf"), tile(&parallels)).unwrap();
     let meridian = [[x, -64], [x, 4160]];
     let mut east = parallels.clone();
     east.push(&meridian);
-    std::fs::write(dir.join("0/0/1.pbf"), tile(&east)).unwrap();
+    std::fs::write(dir.path().join("0/0/1.pbf"), tile(&east)).unwrap();
 
     let style = format!(
         r##"{{"version": 8, "center": [{}, {}], "zoom": 1,
@@ -86,7 +86,7 @@ fn lines_through_a_stretching_warp_keep_their_width() {
                 "paint": {{"line-color": "#000000", "line-width": 2}}}}]}}"##,
         CENTER[0],
         CENTER[1],
-        dir.display()
+        dir.path().display()
     );
     let pixels = snapshot(&style, SIZE);
     let ink = |x: i64, y: i64| {
@@ -152,11 +152,11 @@ fn joins_through_a_stretching_warp_meet_on_screen() {
             [8 * x, (row * 4096.0).round() as i64]
         })
         .collect();
-    let dir = common::Scratch::new("warped-joins");
-    std::fs::create_dir_all(dir.join("g/0/0")).unwrap();
-    std::fs::write(dir.join("g/0/0/1.pbf"), tile(&[&geographic])).unwrap();
-    std::fs::create_dir_all(dir.join("m/3/4")).unwrap();
-    std::fs::write(dir.join("m/3/4/0.pbf"), tile(&[&mercator])).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("g/0/0")).unwrap();
+    std::fs::write(dir.path().join("g/0/0/1.pbf"), tile(&[&geographic])).unwrap();
+    std::fs::create_dir_all(dir.path().join("m/3/4")).unwrap();
+    std::fs::write(dir.path().join("m/3/4/0.pbf"), tile(&[&mercator])).unwrap();
 
     let draw = |source: &str, line: &str| {
         snapshot(
@@ -173,11 +173,11 @@ fn joins_through_a_stretching_warp_meet_on_screen() {
     let geographic = format!(
         r#"{{"type": "vector", "maxzoom": 0, "dev.sargunv.orbis:tileMatrixSet": "WorldCRS84Quad",
             "tiles": ["file://{}/g/{{tileMatrix}}/{{tileRow}}/{{tileCol}}.pbf"]}}"#,
-        dir.display()
+        dir.path().display()
     );
     let mercator = format!(
         r#"{{"type": "vector", "maxzoom": 3, "tiles": ["file://{}/m/{{z}}/{{x}}/{{y}}.pbf"]}}"#,
-        dir.display()
+        dir.path().display()
     );
     // Through the bisector's frame alone, the joins missed by 5.7%, 3.5%
     // and 18.9% of the line's ink.
@@ -221,11 +221,11 @@ fn joins_through_a_stretching_warp_meet_on_screen() {
 /// which cover it, drew nothing.
 #[test]
 fn whole_world_mercator_tile_draws_on_a_geographic_plane() {
-    let dir = common::Scratch::new("warped-world");
-    std::fs::create_dir_all(dir.join("0/0")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("0/0")).unwrap();
     // The equator and the prime meridian, end to end.
     let cross = tile(&[&[[0, 2048], [4096, 2048]], &[[2048, 0], [2048, 4096]]]);
-    std::fs::write(dir.join("0/0/0.pbf"), cross).unwrap();
+    std::fs::write(dir.path().join("0/0/0.pbf"), cross).unwrap();
     let center = [40.0, 0.0];
     let draw = |zoom: f64| {
         let style = format!(
@@ -239,7 +239,7 @@ fn whole_world_mercator_tile_draws_on_a_geographic_plane() {
                     "paint": {{"line-color": "#000000", "line-width": 2}}}}]}}"##,
             center[0],
             center[1],
-            dir.display()
+            dir.path().display()
         );
         snapshot(&style, SIZE)
     };

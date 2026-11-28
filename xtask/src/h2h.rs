@@ -695,7 +695,7 @@ impl H2h {
                 .filter(|r| r.engine == engine && r.view == view)
                 .filter_map(f)
                 .collect();
-            median(&mut v)
+            crate::median(&mut v)
         };
         let metrics: [Metric; 5] = [
             ("wall ms", &|r| Some(ms(r.t.wall)), 0),
@@ -927,7 +927,7 @@ impl H2h {
                     .flatten())
                 .map(|t| if i == 0 { t.0 } else { t.1 })
                 .collect();
-                median(&mut v)
+                crate::median(&mut v)
             };
             for set in &sets {
                 let count = totals
@@ -951,7 +951,7 @@ impl H2h {
             )
             .expect("a String");
             for name in &names {
-                let r = median(requests.get_mut(*name).map_or(&mut Vec::new(), |v| v));
+                let r = crate::median(requests.get_mut(*name).map_or(&mut Vec::new(), |v| v));
                 write!(out, " {name} {:.0};", r.unwrap_or(0.0)).expect("a String");
             }
             writeln!(out, " times in ms, medians of per-set totals; the `startup` set is the first tile, with the style's load. Timed runs: {}.\n", net.answers()).expect("a String");
@@ -1051,7 +1051,7 @@ impl H2h {
         head.extend(orbis.iter().map(|name| format!("GPU {name}")));
         let mut table = Table::new(head);
         let get = |map: &BTreeMap<(String, String), Vec<f64>>, name: &str, view: &str| {
-            median(
+            crate::median(
                 &mut map
                     .get(&(name.to_string(), view.to_string()))
                     .cloned()
@@ -1480,15 +1480,6 @@ fn perf_counts() -> bool {
 
 fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
-}
-
-fn median(v: &mut [f64]) -> Option<f64> {
-    v.sort_by(f64::total_cmp);
-    match v.len() {
-        0 => None,
-        n if n % 2 == 1 => Some(v[n / 2]),
-        n => Some((v[n / 2 - 1] + v[n / 2]) / 2.0),
-    }
 }
 
 fn output(command: &mut Command) -> Option<String> {

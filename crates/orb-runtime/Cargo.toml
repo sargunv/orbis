@@ -42,6 +42,7 @@ orb-tile.workspace = true
 orb-text = { workspace = true, features = ["sea-dictionaries"] }
 
 [dev-dependencies]
+tempfile.workspace = true
 orb-host-native.workspace = true
 orb-hal-wgpu.workspace = true
 # The graphics API's validation errors, which wgpu-hal logs.

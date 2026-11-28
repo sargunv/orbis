@@ -12,7 +12,7 @@ mod common;
 
 use std::sync::Arc;
 
-use common::scenes::{Scene, scenes};
+use common::scenes::{ALL, Scene, scenes};
 use common::{CameraState, Geodetic, Map, TargetFormat, Viewport, WgpuGpu};
 use orb_hal::{Gpu, TextureId};
 use orb_render::{Compared, Renderer};
@@ -57,6 +57,7 @@ impl Checked {
             at: Some((Geodetic::new(139.74, 35.685), zoom, bearing, pitch)),
         });
         let mut map = Map::new(common::native_services(Arc::new(|| {})), camera);
+        map.set_previews(orb_style::Previews::ALL);
         map.set_stable_labels(false);
         map.set_antialias_3d(scene.antialias);
         map.load_style_url(&scene.url);
@@ -159,20 +160,7 @@ impl Checked {
 /// Every scene, settled, culled and kept whole.
 #[test]
 fn the_cpu_driver_writes_the_gpu_cull_s_words_in_every_scene() {
-    let names = [
-        "liberty-z12",
-        "liberty-z15-pitched",
-        "globe",
-        "terrain",
-        "terrain-drape",
-        "terrain-buildings",
-        "terrain-buildings-antialiased",
-        "heatmap",
-        "raster",
-        "extrusions",
-        "extrusions-lit",
-    ];
-    for scene in scenes(&names) {
+    for scene in scenes(ALL) {
         let mut checked = Checked::new(&scene);
         checked.settle_and_keep_all(scene.name);
         if let Some(edit) = scene.edit {

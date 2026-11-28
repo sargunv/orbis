@@ -21,9 +21,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::dem::{alps, dem, hills};
-use common::{
-    At, STATION, camera, culls, extruded, fresh, fresh_at, options, steep, tilted, tokyo,
-};
+use common::{At, STATION, camera, extruded, fresh, fresh_at, options, steep, tilted, tokyo};
 use glam::DVec2;
 use orb_api::{
     Button, FlyOptions, FrameReport, Geodetic, Input, Map, MapOptions, Modifiers, PointerKind,
@@ -832,8 +830,8 @@ fn a_zoom_blended_feature_width_drapes_at_its_step() {
 #[test]
 fn a_terrain_that_comes_on_late_drapes_what_a_moved_map_does() {
     let (hills, dem) = hills();
-    let tilejson = dem.join("tiles.json");
-    let tiles = format!("file://{}/{{z}}/{{x}}/{{y}}.png", dem.display());
+    let tilejson = dem.path().join("tiles.json");
+    let tiles = format!("file://{}/{{z}}/{{x}}/{{y}}.png", dem.path().display());
     std::fs::write(
         &tilejson,
         format!(r#"{{"tilejson": "3.0.0", "tiles": ["{tiles}"], "maxzoom": 11}}"#),
@@ -905,7 +903,7 @@ fn extrusions_on_terrain_after_a_gesture_draw_what_a_fresh_map_does() {
 /// fill of the background's own colour that covers the ground, so that a
 /// frame shows no tile where it shows the magenta, or nothing ([`bare`]).
 /// Its scratch DEM lives as long as the guard.
-fn terrain_turns() -> (String, String, &'static str, common::Scratch) {
+fn terrain_turns() -> (String, String, &'static str, tempfile::TempDir) {
     let (hills, dem) = hills();
     let ground = r#""ground": {"type": "geojson", "data": {"type": "Polygon",
         "coordinates": [[[139.2, 35.2], [140.3, 35.2], [140.3, 36.2], [139.2, 36.2], [139.2, 35.2]]]}},"#;
@@ -1505,9 +1503,8 @@ fn camera_only_frames_write_no_rows() {
             assert_eq!(report.tiles_loading, 0, "the move loads nothing");
             assert_eq!(report.frame.placements_written, 0, "step {step}");
             assert!(!report.frame.candidates_rebuilt, "step {step}");
-            // The recorded bundles replayed (the CPU driver's record again
-            // when what a node draws changes).
-            assert!(!report.frame.bundle_recorded || culls() == 0, "step {step}");
+            // The recorded bundles replayed.
+            assert!(!report.frame.bundle_recorded, "step {step}");
         }
     }
 }

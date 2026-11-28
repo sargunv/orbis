@@ -30,7 +30,7 @@ impl Build {
     /// there in `profile`.
     pub(crate) fn new(rev: &str, packages: &[&str], profile: &str) -> Result<Self, String> {
         let root = root();
-        let commit = git(
+        let commit = crate::git(
             &root,
             &[
                 "rev-parse",
@@ -52,14 +52,14 @@ impl Build {
         let worktree = compare.join("src");
         eprintln!("compare: {rev} ({commit}) in {}", worktree.display());
         if worktree.join(".git").exists() {
-            git(
+            crate::git(
                 &worktree,
                 &["checkout", "--quiet", "--detach", "--force", &commit],
             )?;
         } else {
             // A worktree whose directory went with target/ is still registered.
-            git(&root, &["worktree", "prune"])?;
-            git(
+            crate::git(&root, &["worktree", "prune"])?;
+            crate::git(
                 &root,
                 &["worktree", "add", "--detach", path(&worktree)?, &commit],
             )?;
@@ -230,7 +230,7 @@ fn medians(cells: &[String]) -> Option<f64> {
         .iter()
         .map(|c| number(c))
         .collect::<Option<Vec<_>>>()?;
-    (!values.is_empty()).then(|| median(&mut values))
+    crate::median(&mut values)
 }
 
 /// The medians of `total (peak)` cells, if every one is one.
@@ -241,7 +241,7 @@ fn with_peaks(cells: &[String]) -> Option<(f64, f64)> {
         totals.push(number(total)?);
         peaks.push(number(peak.strip_suffix(')')?)?);
     }
-    (!totals.is_empty()).then(|| (median(&mut totals), median(&mut peaks)))
+    crate::median(&mut totals).zip(crate::median(&mut peaks))
 }
 
 /// The range over `min–max` cells, if every one is one.
@@ -330,35 +330,9 @@ fn number(cell: &str) -> Option<f64> {
         .filter(|n: &f64| n.is_finite())
 }
 
-fn median(v: &mut [f64]) -> f64 {
-    v.sort_by(f64::total_cmp);
-    let n = v.len();
-    if n % 2 == 1 {
-        v[n / 2]
-    } else {
-        (v[n / 2 - 1] + v[n / 2]) / 2.0
-    }
-}
-
 fn path(p: &Path) -> Result<&str, String> {
     p.to_str()
         .ok_or_else(|| format!("{}: not UTF-8", p.display()))
-}
-
-fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .map_err(|e| format!("git: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "git {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 #[cfg(test)]

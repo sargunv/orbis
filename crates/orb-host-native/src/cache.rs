@@ -486,10 +486,6 @@ mod tests {
         HttpCache::open(Arc::new(crate::FileStorage::new(dir)), max_bytes).unwrap()
     }
 
-    fn dir(name: &str) -> crate::Scratch {
-        crate::Scratch::new(&format!("cache-{name}"))
-    }
-
     /// A lifetime: until when, whether the headers gave it, and whether a
     /// stale copy must revalidate.
     fn lifetime(until: u64, explicit: bool, must_revalidate: bool) -> Freshness {
@@ -502,10 +498,10 @@ mod tests {
 
     #[test]
     fn entries_survive_reopening_and_stale_ones_say_so() {
-        let dir = dir("reopen");
+        let dir = tempfile::tempdir().unwrap();
         let now = now();
         {
-            let cache = open(&dir, 1 << 20);
+            let cache = open(dir.path(), 1 << 20);
             let one = lifetime(now + 60, true, false);
             cache.store("https://a/fresh", b"one", one, Some("\"e1\""), None);
             let modified = Some("Mon, 12 Jan 1970 13:46:40 GMT");
@@ -523,7 +519,7 @@ mod tests {
                 }
             );
         }
-        let cache = open(&dir, 1 << 20);
+        let cache = open(dir.path(), 1 << 20);
         let fresh = cache.lookup("https://a/fresh").unwrap();
         assert_eq!(
             (fresh.bytes.as_slice(), fresh.fresh, fresh.etag.as_deref()),
@@ -553,9 +549,9 @@ mod tests {
 
     #[test]
     fn evicts_least_recently_used_and_sweeps_orphans() {
-        let dir = dir("evict");
+        let dir = tempfile::tempdir().unwrap();
         let now = now();
-        let cache = open(&dir, 400);
+        let cache = open(dir.path(), 400);
         for i in 0..4 {
             cache.store(
                 &format!("https://a/{i}"),
@@ -580,13 +576,13 @@ mod tests {
         assert!(cache.lookup("https://a/0").is_some());
         assert!(cache.lookup("https://a/1").is_none());
         assert!(cache.lookup("https://a/4").is_some());
-        let blobs = std::fs::read_dir(dir.join("blobs")).unwrap().count();
+        let blobs = std::fs::read_dir(dir.path().join("blobs")).unwrap().count();
         assert_eq!(blobs, cache.stats().entries);
         // A blob the index lost in a crash goes on the next open.
         drop(cache);
-        std::fs::write(dir.join("blobs/2"), b"orphan").unwrap();
-        drop(open(&dir, 400));
+        std::fs::write(dir.path().join("blobs/2"), b"orphan").unwrap();
+        drop(open(dir.path(), 400));
         // The sweep runs on the cache thread, before the drop's join.
-        assert!(!dir.join("blobs/2").exists());
+        assert!(!dir.path().join("blobs/2").exists());
     }
 }

@@ -625,10 +625,8 @@ mod tests {
 
     #[test]
     fn identity_uses_only_native_passes_and_reports_missing_and_different_images() {
-        let output = std::env::temp_dir().join(format!("orb-identity-{}", std::process::id()));
-        if output.exists() {
-            std::fs::remove_dir_all(&output).unwrap();
-        }
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path();
         for platform in ["native", "chrome"] {
             std::fs::create_dir_all(output.join(platform)).unwrap();
         }
@@ -647,7 +645,7 @@ mod tests {
         let test = |id: &str, status: &str, allowed: f64| json!({"id":id,"status":status,"image":"a.png", "metadata":{"allowed":allowed,"threshold":0.1285}});
         let native = json!({"tests":[test("exact", "pass", 0.0),test("different", "pass", 0.0),test("allowed", "pass", 1.0),test("missing", "pass", 0.0),test("failed", "fail", 0.0),test("skipped", "skip", 0.0)]});
         let chrome = json!({"tests":[{"id":"exact","image":"../native/a.png"},{"id":"different","image":"b.png"},{"id":"allowed","image":"b.png"},{"id":"missing","status":"skip"}]});
-        let report = identity(&output, &native, &chrome, Suite::Render).unwrap();
+        let report = identity(output, &native, &chrome, Suite::Render).unwrap();
         assert_eq!(report["eligible"], 4);
         assert_eq!(report["match"], 2);
         assert_eq!(report["different"], 1);
@@ -655,6 +653,5 @@ mod tests {
         assert_eq!(report["tests"][1]["different_pixels"], 256);
         assert!(output.join("identity/different/diff.png").exists());
         assert!(!output.join("identity/exact").exists());
-        std::fs::remove_dir_all(output).unwrap();
     }
 }

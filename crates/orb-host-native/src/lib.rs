@@ -908,46 +908,6 @@ impl orb_host::Clock for NativeClock {
     }
 }
 
-/// A directory of a test's own under the system's temporary one, removed
-/// with what it holds when it drops, as a failing test unwinds too.
-#[cfg(test)]
-pub(crate) struct Scratch(std::path::PathBuf);
-
-#[cfg(test)]
-impl Scratch {
-    pub(crate) fn new(name: &str) -> Self {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("orb-{name}-{}-{n}", std::process::id()));
-        // What a killed run with this process id left.
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Self(dir)
-    }
-}
-
-#[cfg(test)]
-impl std::ops::Deref for Scratch {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-#[cfg(test)]
-impl AsRef<std::path::Path> for Scratch {
-    fn as_ref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-#[cfg(test)]
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 // Through ureq, which Android has only in a `standalone` build.
 #[cfg(all(test, ureq_transport))]
 mod tests {
@@ -990,8 +950,8 @@ mod tests {
     }
 
     /// A fetch through a cache of its own in `dir`.
-    fn cached(dir: &Scratch) -> (Arc<NativeFetch>, Arc<HttpCache>) {
-        let cache = HttpCache::open(Arc::new(FileStorage::new(dir)), 1 << 20).unwrap();
+    fn cached(dir: &tempfile::TempDir) -> (Arc<NativeFetch>, Arc<HttpCache>) {
+        let cache = HttpCache::open(Arc::new(FileStorage::new(dir.path())), 1 << 20).unwrap();
         (NativeFetch::with_cache(Some(cache.clone())), cache)
     }
 
@@ -1031,8 +991,8 @@ mod tests {
     #[test]
     fn reads_files_and_reports_missing_ones() {
         let fetch = NativeFetch::new();
-        let dir = Scratch::new("host-native");
-        let path = dir.join("hello");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hello");
         std::fs::write(&path, b"hello").unwrap();
         let (tx, rx) = channel();
         for url in [
@@ -1058,10 +1018,10 @@ mod tests {
     #[test]
     fn file_urls_are_percent_decoded() {
         assert_eq!(&*percent_decode("a%20b%2fc%zz%4"), b"a b/c%zz%4");
-        let dir = Scratch::new("file-url");
-        std::fs::write(dir.join("a b%.json"), b"{}").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a b%.json"), b"{}").unwrap();
         let fetch = NativeFetch::new();
-        let get = |name: &str| get(&fetch, &format!("file://{}/{name}", dir.display()));
+        let get = |name: &str| get(&fetch, &format!("file://{}/{name}", dir.path().display()));
         assert_eq!(get("a%20b%25.json").unwrap().bytes, b"{}");
         assert_eq!(get("a%20b%.json").unwrap().bytes, b"{}");
         assert_eq!(get("a b%.json").unwrap().bytes, b"{}");
@@ -1121,8 +1081,8 @@ mod tests {
 
     #[test]
     fn file_ranges_and_invalid_lengths() {
-        let dir = Scratch::new("range");
-        let path = dir.join("abcdef");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abcdef");
         std::fs::write(&path, b"abcdef").unwrap();
         let url = orb_host::file_url(&path);
         let fetch = NativeFetch::new();
@@ -1134,8 +1094,8 @@ mod tests {
 
     #[test]
     fn concurrent_writers_publish_whole_files() {
-        let dir = Scratch::new("host-write");
-        let path = dir.join("cache");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache");
         let writers: Vec<_> = (0..8u8)
             .map(|i| {
                 let path = path.clone();
@@ -1180,7 +1140,7 @@ mod tests {
 
     #[test]
     fn revalidates_stale_entries_and_answers_offline() {
-        let dir = Scratch::new("fetch-cache");
+        let dir = tempfile::tempdir().unwrap();
         let (fetch, cache) = cached(&dir);
         let close = "Connection: close\r\n";
         let (url, server) = serve(vec![
@@ -1218,7 +1178,7 @@ mod tests {
 
     #[test]
     fn a_stale_entry_answers_at_once_where_asked_unless_it_must_revalidate() {
-        let dir = Scratch::new("fetch-stale");
+        let dir = tempfile::tempdir().unwrap();
         let (fetch, _) = cached(&dir);
         let close = "Connection: close\r\n";
         let get = |url: &str, stale| match stale {
@@ -1265,7 +1225,7 @@ mod tests {
 
     #[test]
     fn rate_limited_requests_answer_with_the_stale_copy() {
-        let dir = Scratch::new("fetch-limited");
+        let dir = tempfile::tempdir().unwrap();
         let (fetch, _) = cached(&dir);
         let close = "Connection: close\r\n";
         let (url, server) = serve(vec![
@@ -1407,7 +1367,7 @@ mod tests {
 
     #[test]
     fn transforms_rewrite_and_sign_requests_and_offline_answers_from_the_cache() {
-        let dir = Scratch::new("fetch-hooks");
+        let dir = tempfile::tempdir().unwrap();
         let (fetch, _) = cached(&dir);
         let (url, server) = serve(vec![
             "HTTP/1.1 200 OK\r\nConnection: close\r\nCache-Control: max-age=0\r\nContent-Length: 4\r\n\r\ntile"
@@ -1461,11 +1421,14 @@ mod tests {
 
     #[test]
     fn a_hook_handing_requests_back_fetches_as_the_network_would() {
-        let files = Scratch::new("fetch-passing-files");
-        std::fs::write(files.join("style.json"), b"{}").unwrap();
-        let dir = Scratch::new("fetch-passing");
+        let files = tempfile::tempdir().unwrap();
+        std::fs::write(files.path().join("style.json"), b"{}").unwrap();
+        let dir = tempfile::tempdir().unwrap();
         let (fetch, _) = cached(&dir);
-        let hook = Arc::new(Passing(Default::default(), files.display().to_string()));
+        let hook = Arc::new(Passing(
+            Default::default(),
+            files.path().display().to_string(),
+        ));
         fetch.set_network_hook(Some(hook.clone()));
         let close = "Connection: close\r\n";
         let (url, server) = serve(vec![

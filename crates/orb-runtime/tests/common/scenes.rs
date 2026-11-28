@@ -1,12 +1,12 @@
 //! Offline scenes of the Tokyo extract that between them draw every
 //! family and pass: Liberty's layers flat and pitched, the globe, terrain
 //! with its drape and a hillshade, buildings on it, a heatmap, raster
-//! imagery, and 3D buildings, single-sampled and multisampled, on the
-//! ground and on terrain.
+//! imagery, 3D buildings, single-sampled and multisampled, on the ground
+//! and on terrain, and render targets with image-process layers.
 
 use serde_json::{Value, json};
 
-use super::{DEMO_DATA, Scratch};
+use super::DEMO_DATA;
 
 /// A scene: its style, camera (zoom, bearing, pitch over Tokyo), an edit
 /// a frame of the settled map makes, and whether its 3D layers
@@ -19,7 +19,7 @@ pub(crate) struct Scene {
     pub edit: Option<&'static str>,
     pub antialias: bool,
     /// Where its files are, while any of the scenes made with it lives.
-    pub dir: std::sync::Arc<Scratch>,
+    pub dir: std::sync::Arc<tempfile::TempDir>,
 }
 
 /// The Tokyo extract's style with its URLs absolute, changed by `edit`,
@@ -86,8 +86,7 @@ fn extrusion(opacity: f64) -> Value {
 
 /// The scenes named `names`, their files in a scratch directory.
 pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
-    let first = names.first().copied().unwrap_or("none");
-    let dir = std::sync::Arc::new(Scratch::new(&format!("scenes-{first}")));
+    let dir = std::sync::Arc::new(tempfile::tempdir().unwrap());
     let all = |name: &str| names.contains(&name);
     let mut out = Vec::new();
     let mut add = |name, url: &dyn Fn() -> String, at, edit| {
@@ -103,12 +102,12 @@ pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
         }
     };
     // Liberty's vector layers and labels, flat and pitched.
-    let liberty = || style(&dir, "liberty", |_| {});
+    let liberty = || style(dir.path(), "liberty", |_| {});
     add("liberty-z12", &liberty, (12.0, 0.0, 0.0), None);
     add("liberty-z15-pitched", &liberty, (15.0, 30.0, 60.0), None);
     // The globe from afar, with its sky.
     let globe = || {
-        style(&dir, "globe", |s| {
+        style(dir.path(), "globe", |s| {
             s["projection"] = json!({"type": "globe"});
         })
     };
@@ -118,12 +117,12 @@ pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
     let terrain = || {
         // Terrarium: elevation = R·256 + G + B/256 − 32768, here hills
         // 200–800 m high.
-        let dem = png(&dir, "dem", |x, y| {
+        let dem = png(dir.path(), "dem", |x, y| {
             let h = 500.0 + 300.0 * (f64::from(x) / 40.0).sin() * (f64::from(y) / 40.0).cos();
             let v = (h + 32768.0).round() as u32;
             [(v >> 8) as u8, v as u8, 0, 255]
         });
-        style(&dir, "terrain", |s| {
+        style(dir.path(), "terrain", |s| {
             s["sources"]["dem"] = json!({"type": "raster-dem", "tiles": [format!("file://{dem}")],
                 "tileSize": 256, "encoding": "terrarium", "maxzoom": 12});
             s["terrain"] = json!({"source": "dem", "exaggeration": 1.5});
@@ -151,7 +150,7 @@ pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
             "paint": {"line-color": "#c06040", "line-width": 4,
                 "line-layer-blend": "multiply"}}),
         );
-        let path = dir.join("terrain-buildings.json");
+        let path = dir.path().join("terrain-buildings.json");
         std::fs::write(&path, s.to_string()).unwrap();
         orb_host::file_url(&path)
     };
@@ -166,7 +165,7 @@ pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
     );
     // A heatmap of the points of interest, and circles.
     let heatmap = || {
-        style(&dir, "heatmap", |s| {
+        style(dir.path(), "heatmap", |s| {
             add_layer(
                 s,
                 json!({"id": "heat", "type": "heatmap", "source": "openmaptiles",
@@ -177,8 +176,8 @@ pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
     add("heatmap", &heatmap, (15.0, 0.0, 0.0), None);
     // Raster imagery under the vector layers.
     let raster = || {
-        let tile = png(&dir, "tile", |x, y| [x as u8, y as u8, 128, 255]);
-        style(&dir, "raster", |s| {
+        let tile = png(dir.path(), "tile", |x, y| [x as u8, y as u8, 128, 255]);
+        style(dir.path(), "raster", |s| {
             s["sources"]["imagery"] =
                 json!({"type": "raster", "tiles": [format!("file://{tile}")], "tileSize": 256});
             let layers = s["layers"].as_array_mut().unwrap();
@@ -192,10 +191,10 @@ pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
     add("raster", &raster, (14.0, 0.0, 0.0), None);
     // Liberty's 3D buildings; then multisampled, under a light of their
     // own.
-    let extrusions = || style(&dir, "extrusions", |s| add_layer(s, extrusion(0.8)));
+    let extrusions = || style(dir.path(), "extrusions", |s| add_layer(s, extrusion(0.8)));
     add("extrusions", &extrusions, (16.0, -20.0, 60.0), None);
     let lit = || {
-        style(&dir, "extrusions-lit", |s| {
+        style(dir.path(), "extrusions-lit", |s| {
             s["light"] = json!({"anchor": "viewport", "position": [1.15, 210, 30],
                 "intensity": 0.5});
             add_layer(
@@ -209,6 +208,31 @@ pub(crate) fn scenes(names: &[&str]) -> Vec<Scene> {
         })
     };
     add("extrusions-lit", &lit, (16.0, -20.0, 60.0), None);
+    // Buildings drawn into a target, blurred into a high-precision one,
+    // drawn through as a fill's shadow and thresholded onto the map.
+    let targets = || {
+        style(dir.path(), "targets", |s| {
+            s["dev.sargunv.orbis:targets"] =
+                json!([{"id": "built"}, {"id": "soft", "precision": "high"}]);
+            for layer in [
+                json!({"id": "built", "type": "fill", "source": "openmaptiles",
+                    "source-layer": "building", "dev.sargunv.orbis:destination-target": "built",
+                    "paint": {"fill-color": "#804020"}}),
+                json!({"id": "soften", "type": "dev.sargunv.orbis.image-process",
+                    "dev.sargunv.orbis:source-target": "built",
+                    "dev.sargunv.orbis:destination-target": "soft",
+                    "dev.sargunv.orbis:operations": [{"type": "blur", "size": 8}]}),
+                json!({"id": "shadow", "type": "fill", "dev.sargunv.orbis:source-target": "soft",
+                    "paint": {"fill-color": "#202020", "fill-opacity": 0.5}}),
+                json!({"id": "outline", "type": "dev.sargunv.orbis.image-process",
+                    "dev.sargunv.orbis:source-target": "soft",
+                    "dev.sargunv.orbis:operations": [{"type": "threshold", "cutoff": 128}]}),
+            ] {
+                add_layer(s, layer);
+            }
+        })
+    };
+    add("targets", &targets, (16.0, 0.0, 0.0), None);
     assert_eq!(out.len(), names.len(), "unknown scenes among {names:?}");
     out
 }
@@ -226,13 +250,15 @@ pub(crate) const ALL: &[&str] = &[
     "raster",
     "extrusions",
     "extrusions-lit",
+    "targets",
 ];
 
 const SIZE: (u32, u32) = (512, 384);
 
 /// `scene`'s map on `gpu`, settled, then one frame more after the scene's
 /// edit if it has one (which a frame of a settled map may not draw
-/// otherwise: the terrain's drape redraws on a paint change).
+/// otherwise: the terrain's drape redraws on a paint change). An error the
+/// map reports fails it.
 pub(crate) fn settle<G: orb_hal::Gpu>(gpu: &mut G, scene: &Scene) {
     use super::{Geodetic, Map, TargetFormat, Viewport};
     let url = &scene.url;
@@ -258,6 +284,7 @@ pub(crate) fn settle<G: orb_hal::Gpu>(gpu: &mut G, scene: &Scene) {
         at: Some((Geodetic::new(139.74, 35.685), zoom, bearing, pitch)),
     });
     let mut map = Map::new(super::native_services(std::sync::Arc::new(|| {})), camera);
+    map.set_previews(orb_style::Previews::ALL);
     map.set_clear_color([1.0; 4]);
     map.set_stable_labels(false);
     map.set_antialias_3d(scene.antialias);
@@ -270,14 +297,19 @@ pub(crate) fn settle<G: orb_hal::Gpu>(gpu: &mut G, scene: &Scene) {
     let mut time = 0.0;
     let mut frame = |map: &mut Map, gpu: &mut G| {
         time += 1000.0 / 60.0;
-        map.render(gpu, &mut renderer, target, viewport, 1.0, time)
+        let report = map.render(gpu, &mut renderer, target, viewport, 1.0, time);
+        for event in map.take_events() {
+            match event {
+                super::MapEvent::Error { message } => panic!("{url}: {message}"),
+                super::MapEvent::Warning { message } => eprintln!("{url}: {message}"),
+                _ => {}
+            }
+        }
+        report
     };
     let started = std::time::Instant::now();
     loop {
         let report = frame(&mut map, gpu);
-        for warning in super::take_warnings(&mut map) {
-            eprintln!("{url}: {warning}");
-        }
         if report.idle() {
             break;
         }

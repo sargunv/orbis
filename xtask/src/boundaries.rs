@@ -6,7 +6,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::process::Command;
 
 use serde_json::Value;
 
@@ -253,7 +252,7 @@ fn gpu_only_uses() -> Result<Vec<String>, String> {
 }
 
 pub(crate) fn check() -> Result<(), String> {
-    let metadata = metadata()?;
+    let metadata = crate::cargo_metadata()?;
     let graph = Graph::new(&metadata)?;
     let mut errors = Vec::new();
 
@@ -312,20 +311,6 @@ pub(crate) fn check() -> Result<(), String> {
     } else {
         Err(format!("boundary violations:\n  {}", errors.join("\n  ")))
     }
-}
-
-fn metadata() -> Result<Value, String> {
-    let output = Command::new(env!("CARGO"))
-        .args(["metadata", "--format-version", "1"])
-        .output()
-        .map_err(|e| format!("failed to run cargo metadata: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "cargo metadata failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    serde_json::from_slice(&output.stdout).map_err(|e| format!("bad cargo metadata: {e}"))
 }
 
 struct Package {

@@ -1,7 +1,8 @@
 //! Terrain for tests to draw on: Terrarium DEM tiles of a function of
 //! longitude and latitude, written to a scratch directory.
 
-use super::{Scratch, write_png};
+use super::write_png;
+use tempfile::TempDir;
 
 /// Terrarium DEM tiles of `metres(lon, lat)` over `(west, south, east,
 /// north)`, zooms 0–`max_zoom`, written to a fresh directory; the source
@@ -11,8 +12,8 @@ pub(crate) fn dem(
     (west, south, east, north): (f64, f64, f64, f64),
     max_zoom: u8,
     metres: impl Fn(f64, f64) -> f64,
-) -> (String, Scratch) {
-    let dir = Scratch::new(&format!("dem-{name}"));
+) -> (String, TempDir) {
+    let dir = tempfile::tempdir().unwrap();
     const SIZE: u32 = 256;
     for z in 0..=max_zoom {
         let n = f64::from(1u32 << z);
@@ -37,7 +38,7 @@ pub(crate) fn dem(
                         pixels.extend([(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]);
                     }
                 }
-                let path = dir.join(format!("{z}/{x}/{y}.png"));
+                let path = dir.path().join(format!("{z}/{x}/{y}.png"));
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
                 write_png(&path, SIZE, SIZE, &pixels);
             }
@@ -47,13 +48,13 @@ pub(crate) fn dem(
         r#""{name}": {{"type": "raster-dem", "encoding": "terrarium", "tileSize": {SIZE},
             "maxzoom": {max_zoom}, "bounds": [{west}, {south}, {east}, {north}],
             "tiles": ["file://{}/{{z}}/{{x}}/{{y}}.png"]}},"#,
-        dir.display()
+        dir.path().display()
     );
     (source, dir)
 }
 
 /// Rolling hills over central Tokyo, zooms 0–11.
-pub(crate) fn hills() -> (String, Scratch) {
+pub(crate) fn hills() -> (String, TempDir) {
     dem("hills", (139.2, 35.2, 140.3, 36.2), 11, |lon, lat| {
         600.0
             + 500.0 * (lon * 40.0).sin() * (lat * 55.0).cos()
@@ -65,7 +66,7 @@ pub(crate) fn hills() -> (String, Scratch) {
 /// hillshaded on the terrain under a sky: ridge silhouettes stand against
 /// it at a high pitch. Crests are rounded: a crease one DEM pixel wide
 /// running across the pixel grid shades as dotted lines.
-pub(crate) fn alps() -> (String, Scratch) {
+pub(crate) fn alps() -> (String, TempDir) {
     let (dem, dir) = alps_dem();
     let dem = dem.trim_end_matches(',');
     let style = format!(
@@ -82,7 +83,7 @@ pub(crate) fn alps() -> (String, Scratch) {
 }
 
 /// The ridges' DEM source `alps`, and its directory.
-pub(crate) fn alps_dem() -> (String, Scratch) {
+pub(crate) fn alps_dem() -> (String, TempDir) {
     dem("alps", (7.4, 45.7, 8.4, 46.3), 11, |lon, lat| {
         let ridge = |v: f64| 1.0 - (v.sin().powi(2) + 0.04).sqrt();
         700.0

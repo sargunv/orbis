@@ -395,9 +395,9 @@ fn wake_callbacks_die_with_their_map() {
 /// Window targets take this path too.
 #[test]
 fn frames_to_idle_save_the_pipeline_cache() {
-    let dir = common::Scratch::new("api-state");
+    let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::new(&RuntimeOptions {
-        state_dir: Some(dir.to_path_buf()),
+        state_dir: Some(dir.path().to_path_buf()),
         ..RuntimeOptions::default()
     })
     .expect("runtime");
@@ -408,7 +408,7 @@ fn frames_to_idle_save_the_pipeline_cache() {
     settle(&mut map, &mut target);
     // Drivers with a pipeline cache (Vulkan) keep it there; Metal caches
     // pipelines itself and keeps none, and the directory may never be made.
-    if let Ok(entries) = std::fs::read_dir(dir.join("pipelines")) {
+    if let Ok(entries) = std::fs::read_dir(dir.path().join("pipelines")) {
         assert!(
             entries.count() > 0,
             "a pipeline cache was started and not written"
@@ -994,8 +994,8 @@ fn feature_state_follows_the_styles_sources() {
     // A style URL's arrival clears it, though the diff keeps the source.
     map.set_feature_state(&seven, &state(r#"{"on": true}"#));
     assert_eq!(centre(&mut map, &mut target), [0, 255, 0, 255]);
-    let dir = common::Scratch::new("api-feature-state");
-    let path = dir.join("style.json");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("style.json");
     let style = map.style().expect("style").to_json();
     std::fs::write(&path, style).unwrap();
     map.load_style_url(&orb_host::file_url(&path));
@@ -1995,9 +1995,9 @@ fn stale_cached_tiles_draw_at_once_while_they_revalidate() {
             let _ = stream.write_all(&body);
         }
     });
-    let dir = common::Scratch::new("api-stale");
+    let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::new(&RuntimeOptions {
-        state_dir: Some(dir.to_path_buf()),
+        state_dir: Some(dir.path().to_path_buf()),
         ..RuntimeOptions::default()
     })
     .expect("runtime");
@@ -2096,9 +2096,9 @@ fn stale_cached_tiles_the_server_confirms_settle() {
             let _ = stream.write_all(&body);
         }
     });
-    let dir = common::Scratch::new("api-stale-confirmed");
+    let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::new(&RuntimeOptions {
-        state_dir: Some(dir.to_path_buf()),
+        state_dir: Some(dir.path().to_path_buf()),
         ..RuntimeOptions::default()
     })
     .expect("runtime");
@@ -2198,10 +2198,10 @@ fn a_map_draws_on_the_thread_that_made_its_runtime() {
 
 #[test]
 fn request_transforms_rewrite_what_the_map_fetches() {
-    let dir = common::Scratch::new("api-requests");
-    std::fs::write(dir.join("style.json"), STYLE).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("style.json"), STYLE).unwrap();
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
-    let base = format!("file://{}/", dir.display());
+    let base = format!("file://{}/", dir.path().display());
     runtime.set_request_transform(Some(std::sync::Arc::new(move |url: &str| {
         let path = url.strip_prefix("app://")?;
         Some(orb_api::Request {
@@ -2318,8 +2318,8 @@ fn fits_before_the_first_frame_use_the_viewport_set() {
 
 /// Terrarium DEM tiles of the whole world, zooms 0 to 2, `metres` high
 /// everywhere, written to a fresh directory.
-fn level_dem(metres: f64) -> common::Scratch {
-    let dir = common::Scratch::new("api-level-dem");
+fn level_dem(metres: f64) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
     const SIZE: u32 = 256;
     let v = ((metres + 32768.0) * 256.0).round() as u32;
     let pixels: Vec<u8> = (0..SIZE * SIZE)
@@ -2335,7 +2335,7 @@ fn level_dem(metres: f64) -> common::Scratch {
     for z in 0..=2u32 {
         for x in 0..1 << z {
             for y in 0..1 << z {
-                let path = dir.join(format!("{z}/{x}/{y}.png"));
+                let path = dir.path().join(format!("{z}/{x}/{y}.png"));
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
                 std::fs::write(path, &png).unwrap();
             }
@@ -2366,7 +2366,7 @@ fn ground_below_sea_level_reaches_the_horizon() {
                 "tileSize": 256, "maxzoom": 2, "tiles": ["file://{}/{{z}}/{{x}}/{{y}}.png"]}}}},
               "layers": [{{"id": "background", "type": "background",
                 "paint": {{"background-color": "#40a040"}}}}]}}"##,
-            dem.display()
+            dem.path().display()
         );
         let mut map = Map::new(&runtime, MapOptions::default());
         map.set_style_json(&style).expect("style");

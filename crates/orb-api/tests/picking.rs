@@ -46,8 +46,8 @@ fn hits_land_where_features_draw_on_the_globe() {
 /// Terrarium DEM tiles of a 3000 m plateau, 16 pixels a side, zooms 0–8,
 /// in a fresh directory; the source's JSON, and the directory to keep
 /// while it's read.
-fn plateau() -> (String, common::Scratch) {
-    let dir = common::Scratch::new("picking-dem");
+fn plateau() -> (String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
     let v = ((3000.0f64 + 32768.0) * 256.0) as u32;
     let texel = [(v >> 16) as u8, (v >> 8) as u8, v as u8, 255];
     let pixels: Vec<u8> = std::iter::repeat_n(texel, 16 * 16).flatten().collect();
@@ -60,7 +60,7 @@ fn plateau() -> (String, common::Scratch) {
         );
         for col in x.saturating_sub(2)..=(x + 2).min((1 << z) - 1) {
             for row in y.saturating_sub(2)..=(y + 2).min((1 << z) - 1) {
-                let path = dir.join(format!("{z}/{col}/{row}.png"));
+                let path = dir.path().join(format!("{z}/{col}/{row}.png"));
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
                 let mut png = Vec::new();
                 let mut encoder = png::Encoder::new(&mut png, 16, 16);
@@ -78,7 +78,7 @@ fn plateau() -> (String, common::Scratch) {
     let source = format!(
         r#"{{"type": "raster-dem", "encoding": "terrarium", "tileSize": 16, "maxzoom": 8,
             "tiles": ["file://{}/{{z}}/{{x}}/{{y}}.png"]}}"#,
-        dir.display()
+        dir.path().display()
     );
     (source, dir)
 }

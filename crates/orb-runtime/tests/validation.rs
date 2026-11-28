@@ -1,13 +1,13 @@
-//! Every offline scene's frames, settled and edited, under the graphics
-//! API's own validation: Vulkan's Khronos
-//! layer and D3D12's debug layer, which wgpu turns on in debug builds
-//! (or with `WGPU_VALIDATION=1`) where they're installed and whose
-//! findings wgpu-hal logs as errors. Any error fails the test. Metal's and
-//! GL's validation don't report through wgpu-hal, so there it skips, as it
-//! does where validation is off or its layer isn't found (it says which
-//! under `--nocapture`); on Apple it runs on MoltenVK with
-//! `ORB_BACKEND=vulkan cargo test -p orb-runtime -p orb-hal-wgpu
-//! --features orb-hal-wgpu/vulkan --test validation` (AGENTS.md).
+//! Every offline scene's frames, settled and edited, on the driver
+//! `ORB_DRIVER` names (`cargo xtask check` runs this on each): between them
+//! they draw every pass, so a pass the driver's device can't take fails here
+//! by its scene. Where the graphics API's own validation reports through
+//! wgpu-hal (Vulkan's Khronos layer and D3D12's debug layer, which wgpu turns
+//! on in debug builds, or with `WGPU_VALIDATION=1`, where they're installed),
+//! any error it logs fails too; elsewhere it says why under `--nocapture`. On
+//! Apple, Vulkan's runs on MoltenVK with `ORB_BACKEND=vulkan cargo test -p
+//! orb-runtime -p orb-hal-wgpu --features orb-hal-wgpu/vulkan --test
+//! validation` (AGENTS.md).
 //!
 //! Its own test binary: the log is the process's.
 
@@ -55,12 +55,12 @@ static LOG: Log = Log {
     no_layer: Mutex::new(None),
 };
 
-#[test]
-fn scenes_validate() {
+/// Why the API's validation can't report here, or `None` where it does,
+/// its errors then logged to [`LOG`].
+fn unvalidated() -> Option<String> {
     // The instance offscreen devices make: whether it validates.
     if !(wgpu::InstanceFlags::default().with_env()).contains(wgpu::InstanceFlags::VALIDATION) {
-        eprintln!("skipped: wgpu's validation is off (a release build without WGPU_VALIDATION=1)");
-        return;
+        return Some("wgpu's validation is off (a release build without WGPU_VALIDATION=1)".into());
     }
     // wgpu-hal hears the layer through debug utils, which offscreen
     // devices leave off on Vulkan loaders that race on them (#169) unless
@@ -75,14 +75,25 @@ fn scenes_validate() {
     let gpu = pollster::block_on(WgpuGpu::offscreen()).unwrap();
     log::set_max_level(log::LevelFilter::Error);
     let backend = gpu.adapter_info().expect("a native adapter").backend;
-    drop(gpu);
-    if !matches!(backend, Backend::Vulkan | Backend::Dx12) {
-        eprintln!("skipped: {backend:?}'s validation doesn't report through wgpu-hal");
-        return;
+    let why = if !matches!(backend, Backend::Vulkan | Backend::Dx12) {
+        Some(format!(
+            "{backend:?}'s validation doesn't report through wgpu-hal"
+        ))
+    } else {
+        let no_layer = LOG.no_layer.lock().unwrap().take();
+        no_layer
+            .map(|message| format!("{backend:?}'s validation layer isn't available ({message})"))
+    };
+    if why.is_some() {
+        log::set_max_level(log::LevelFilter::Off);
     }
-    if let Some(message) = LOG.no_layer.lock().unwrap().take() {
-        eprintln!("skipped: {backend:?}'s validation layer isn't available ({message})");
-        return;
+    why
+}
+
+#[test]
+fn scenes_draw_and_validate() {
+    if let Some(why) = unvalidated() {
+        eprintln!("unvalidated: {why}");
     }
     let mut failed = Vec::new();
     let first = std::mem::take(&mut *LOG.errors.lock().unwrap());

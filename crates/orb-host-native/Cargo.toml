@@ -77,5 +77,8 @@ rustls = { version = "0.23.46", default-features = false, features = [
 ], optional = true }
 ureq = { workspace = true, features = ["rustls-no-provider"], optional = true }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

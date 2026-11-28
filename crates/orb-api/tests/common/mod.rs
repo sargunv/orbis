@@ -127,41 +127,6 @@ pub(crate) fn wake(map: &Map) {
     }
 }
 
-/// A directory of a test's own under the system's temporary one, removed
-/// with what it holds when it drops, as a failing test unwinds too.
-pub(crate) struct Scratch(PathBuf);
-
-impl Scratch {
-    pub(crate) fn new(name: &str) -> Self {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("orb-{name}-{}-{n}", std::process::id()));
-        // What a killed run with this process id left.
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Self(dir)
-    }
-}
-
-impl std::ops::Deref for Scratch {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl AsRef<std::path::Path> for Scratch {
-    fn as_ref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 /// The demo's Tokyo extract, with `extra` spliced into the document's top
 /// level (a projection, a terrain) and `sources` into its sources.
 pub(crate) fn tokyo(extra: &str, sources: &str) -> String {
@@ -216,13 +181,6 @@ pub(crate) fn options() -> MapOptions {
         previews: orb_api::Previews::ALL,
         ..MapOptions::default()
     }
-}
-
-/// The cull dispatches a frame runs: one on the GPU driver, none on the
-/// CPU's (`cargo xtask check` runs every test here on it too).
-pub(crate) fn culls() -> u32 {
-    let driver = std::env::var("ORB_DRIVER").unwrap_or_default();
-    u32::from(driver.is_empty() || driver == "gpu")
 }
 
 /// A camera: centre, zoom, bearing, pitch.

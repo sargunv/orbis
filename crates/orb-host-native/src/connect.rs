@@ -367,9 +367,9 @@ Certificate:
             RootCerts::Specific(certificates) => certificates.len(),
             _ => panic!("not specific certificates"),
         };
-        let scratch = crate::Scratch::new("stores");
+        let scratch = tempfile::tempdir().unwrap();
         let [missing, empty, store, later] =
-            ["missing", "empty", "store", "later"].map(|name| scratch.join(name));
+            ["missing", "empty", "store", "later"].map(|name| scratch.path().join(name));
         for dir in [&empty, &store, &later] {
             std::fs::create_dir_all(dir).unwrap();
         }

@@ -3,8 +3,8 @@
 
 [profile.default]
 # A test running past a minute is named as slow, and stopped at three, so a
-# hung test fails by name instead of hanging the check. The slowest (the
-# drivers test's) take under 40 s on an M-series Mac.
+# hung test fails by name instead of hanging the check. The slowest (orb-api's
+# path tests over terrain) take about a minute on a loaded M-series Mac.
 slow-timeout = { period = "60s", terminate-after = 3 }
 # Name failures and slow tests, not every pass.
 status-level = "slow"
