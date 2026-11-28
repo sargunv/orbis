@@ -51,25 +51,22 @@ pub(crate) fn parse(
 
 #[cfg(test)]
 mod tests {
-    fn parse(terrain: &str) -> Result<crate::v8::Style, crate::v8::Diagnostics> {
+    fn parse(terrain: &str) -> crate::v8::Style {
         crate::v8::parse(&format!(
             r#"{{"version":8,"sources":{{"dem":{{"type":"raster-dem","tiles":["x/{{z}}/{{x}}/{{y}}.png"]}},"v":{{"type":"vector","tiles":["x"]}}}},"layers":[],"terrain":{terrain}}}"#
         ))
+        .unwrap()
     }
 
     #[test]
     fn terrain_names_a_raster_dem_source() {
-        let style = parse(r#"{"source":"dem","exaggeration":1.5}"#).unwrap();
+        let style = parse(r#"{"source":"dem","exaggeration":1.5}"#);
         let terrain = style.terrain.unwrap();
         assert_eq!(terrain.source, "dem");
         assert_eq!(terrain.exaggeration, 1.5);
         assert!(style.warnings.is_empty(), "{:?}", style.warnings);
         assert_eq!(
-            parse(r#"{"source":"dem"}"#)
-                .unwrap()
-                .terrain
-                .unwrap()
-                .exaggeration,
+            parse(r#"{"source":"dem"}"#).terrain.unwrap().exaggeration,
             1.0
         );
         for bad in [
@@ -78,7 +75,13 @@ mod tests {
             r#"{"exaggeration":1}"#,
             r#"{"source":"dem","exaggeration":-1}"#,
         ] {
-            assert!(parse(bad).is_err(), "{bad}");
+            let style = parse(bad);
+            assert!(style.terrain.is_none(), "{bad}");
+            let drops = crate::v8::dropped(&style);
+            assert!(
+                drops.len() == 1 && drops[0].path.starts_with("terrain"),
+                "{bad}"
+            );
         }
     }
 }

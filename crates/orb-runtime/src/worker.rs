@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_expr::json::Json;
-use orb_style::{Encoding, GeoJsonData, SourceKind, Style, Value};
+use orb_style::{Encoding, GeoJsonData, LayerKey, SourceKey, SourceKind, Style, Value};
 use orb_tile::TileFrame;
 
 use crate::TileLocation;
@@ -224,13 +224,9 @@ impl TileWorker {
     /// errors joined by newlines.
     pub fn new(style_json: &str) -> Result<Self, String> {
         let style = orb_style::v8::parse(style_json).map_err(|d| d.to_string())?;
-        let layers = (1..=style.layers.len() as u32).collect();
-        let sources = (1..=style.sources.len() as u32).collect();
         Ok(Self::with_style(
             None,
             Arc::new(style),
-            layers,
-            sources,
             &[],
             0,
             MapFonts::default(),
@@ -245,14 +241,12 @@ impl TileWorker {
     pub(crate) fn with_style(
         previous: Option<&TileWorker>,
         style: Arc<Style>,
-        layer_keys: Vec<u32>,
-        source_keys: Vec<u32>,
         new_data: &[u32],
         revision: u64,
         fonts: MapFonts,
         surface: crate::surface::SurfaceTiles,
     ) -> Self {
-        let plan = StylePlan::new(style, layer_keys, source_keys, revision);
+        let plan = StylePlan::new(style, revision);
         let data = match previous {
             Some(previous) => {
                 let data = Arc::clone(&previous.data);
@@ -385,29 +379,20 @@ impl TileWorker {
         let mut sources = Vec::with_capacity(update.sources.len());
         for key in &update.sources {
             let previous = || {
-                old.and_then(|plan| {
-                    let at = plan.source_keys.iter().position(|k| k == key)?;
-                    Some(&plan.style.sources[at])
-                })
+                let source = old.and_then(|plan| plan.style_source(*key));
+                source.ok_or_else(|| format!("style update without source {key}"))
             };
             let diffs = update.source_diffs.iter().find(|(k, _)| k == key);
             let source = match update.source_json.iter().find(|(k, ..)| k == key) {
                 Some((_, id, json)) => Arc::new(
-                    orb_style::v8::parse_source(id, json, update.previews)
+                    orb_style::v8::parse_source(SourceKey(*key), id, json, update.previews)
                         .map_err(|d| d.to_string())?
                         .0,
                 ),
                 None if let Some((_, diffs)) = diffs => {
-                    let source =
-                        previous().ok_or_else(|| format!("a diff of unknown source {key}"))?;
-                    Arc::new(orb_style::v8::apply_diffs(source, diffs)?)
+                    Arc::new(orb_style::v8::apply_diffs(previous()?, diffs)?)
                 }
-                None => old
-                    .and_then(|plan| {
-                        let at = plan.source_keys.iter().position(|k| k == key)?;
-                        Some(plan.style.sources[at].clone())
-                    })
-                    .ok_or_else(|| format!("style update without source {key}"))?,
+                None => Arc::clone(previous()?),
             };
             sources.push(source);
         }
@@ -418,6 +403,7 @@ impl TileWorker {
                     orb_style::v8::parse_layer(
                         json,
                         index,
+                        LayerKey(*key),
                         &sources,
                         &update.state,
                         update.previews,
@@ -426,10 +412,8 @@ impl TileWorker {
                     .0,
                 ),
                 None => old
-                    .and_then(|plan| {
-                        let at = plan.layer_keys.iter().position(|k| k == key)?;
-                        Some(plan.style.layers[at].clone())
-                    })
+                    .and_then(|plan| plan.style.layers.iter().find(|l| l.key.0 == *key))
+                    .cloned()
                     .ok_or_else(|| format!("style update without layer {key}"))?,
             };
             layers.push(layer);
@@ -469,8 +453,6 @@ impl TileWorker {
         Ok(Self::with_style(
             previous,
             Arc::new(style),
-            update.layers.clone(),
-            update.sources.clone(),
             &new_data,
             update.revision,
             MapFonts {
@@ -571,8 +553,7 @@ impl TileWorker {
     /// there, as the map draws it (`crate::image::warp_grid`). `None`
     /// if no part of it reaches the plane.
     pub(crate) fn warp_grid(&self, key: u32, tile: TileIndex) -> Option<orb_crs::WarpGrid> {
-        let at = self.plan.source_keys.iter().position(|&k| k == key)?;
-        let tms = (self.surface).source_tms(&self.plan.style.sources[at].id);
+        let tms = (self.surface).source_tms(&self.plan.style_source(key)?.id);
         let plane = self.surface.plane.as_ref();
         let plane = *plane.unwrap_or(TileMatrixSet::web_mercator()).projection();
         crate::image::warp_grid(&orb_crs::Warp::new(tms.clone(), plane), tile)
@@ -617,8 +598,7 @@ impl TileWorker {
     /// than lay out, and of which kind: any of the style's sources, drawn
     /// by layers or by the terrain alone.
     pub(crate) fn image_kind(&self, source: u32) -> Option<ImageKind> {
-        let at = self.plan.source_keys.iter().position(|&k| k == source)?;
-        match self.plan.style.sources[at].kind {
+        match self.plan.style_source(source)?.kind {
             orb_style::SourceKind::Raster(_) | orb_style::SourceKind::Image(_) => {
                 Some(ImageKind::Raster)
             }
@@ -630,22 +610,15 @@ impl TileWorker {
     /// Whether `source` (a source key) is a `sparse` vector source, whose
     /// empty responses mean its tileset has no tile there.
     pub(crate) fn sparse(&self, source: u32) -> bool {
-        let at = self.plan.source_keys.iter().position(|&k| k == source);
-        at.is_some_and(
-            |at| matches!(&self.plan.style.sources[at].kind, SourceKind::Vector(v) if v.sparse),
-        )
+        let source = self.plan.style_source(source);
+        source.is_some_and(|s| matches!(&s.kind, SourceKind::Vector(v) if v.sparse))
     }
 
     /// What a fetch of `request`'s data is: an image source's image, a
     /// GeoJSON document, or a tile in its source's format.
     pub(crate) fn resource_kind(&self, request: &TileRequest) -> orb_host::ResourceKind {
         use orb_host::{ResourceKind, TileFormat};
-        let at = self
-            .plan
-            .source_keys
-            .iter()
-            .position(|&k| k == request.source);
-        match at.map(|at| &self.plan.style.sources[at].kind) {
+        match self.plan.style_source(request.source).map(|s| &s.kind) {
             Some(SourceKind::Image(_)) => ResourceKind::Image,
             Some(SourceKind::GeoJson(_)) => ResourceKind::Source,
             Some(SourceKind::Raster(_) | SourceKind::RasterDem(_)) => {
@@ -2432,8 +2405,6 @@ pub(crate) mod tests {
         let second = Arc::new(TileWorker::with_style(
             Some(&first),
             Arc::new(parsed),
-            vec![1, 2],
-            vec![1],
             &[1],
             1,
             MapFonts::default(),

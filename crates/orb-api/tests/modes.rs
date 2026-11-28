@@ -302,12 +302,8 @@ fn a_style_that_fails_to_load_fails_a_snapshot_at_once() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("style.json");
-    // A layer of a type v8 doesn't have fails the style.
-    std::fs::write(
-        &path,
-        r#"{"version":8,"sources":{},"layers":[{"id":"bg","type":"backdrop"}]}"#,
-    )
-    .unwrap();
+    // A version other than 8 fails the style.
+    std::fs::write(&path, r#"{"version":7,"sources":{},"layers":[]}"#).unwrap();
     let mut map = Map::new(&runtime, MapOptions::default());
     map.load_style_url(&orb_host::file_url(&path));
     // Waiting out the snapshot's stall would fail it with "the map

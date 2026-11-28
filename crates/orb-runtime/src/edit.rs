@@ -207,11 +207,9 @@ impl Map {
             .collect();
         layers.dedup();
         StyleUpdate {
-            layer_json: doc
-                .layer_keys()
-                .enumerate()
-                .filter(|(_, k)| layers.contains(&k.0))
-                .map(|(i, k)| (k.0, Arc::new(doc.layer_json(i).clone())))
+            layer_json: (doc.style().layers.iter())
+                .filter(|l| layers.contains(&l.key.0))
+                .map(|l| (l.key.0, Arc::clone(doc.layer_json(l.key).expect("a layer"))))
                 .collect(),
             source_json: patch
                 .changes
@@ -222,9 +220,9 @@ impl Map {
                         None
                     }
                     Change::SourceAdded(key) | Change::SourceData(key) => {
-                        let i = doc.source_index(*key).expect("added sources exist");
-                        let id = doc.style().sources[i].id.clone();
-                        Some((key.0, id, Arc::new(doc.source_json(i).clone())))
+                        let source = doc.style().sources.iter().find(|s| s.key == *key);
+                        let id = source.expect("added sources exist").id.clone();
+                        Some((key.0, id, Arc::clone(doc.source_json(*key)?)))
                     }
                     _ => None,
                 })
@@ -250,9 +248,7 @@ impl Map {
         for change in &patch.changes {
             // A layer shown or hidden fades in or out.
             if let Change::Visibility(layer) = change {
-                let index = |plan: &crate::style::StylePlan| {
-                    plan.layer_keys.iter().position(|k| *k == layer.0)
-                };
+                let index = |plan: &StylePlan| plan.layer_index(layer.0);
                 if let (Some(before), Some(after)) = (index(old_plan), index(plan)) {
                     let (old, new) = (&old_plan.style.layers[before], &plan.style.layers[after]);
                     let shown = new.visibility == orb_style::Visibility::Visible;
@@ -271,8 +267,7 @@ impl Map {
             let Change::Paint { layer, id, .. } = change else {
                 continue;
             };
-            let index =
-                |plan: &crate::style::StylePlan| plan.layer_keys.iter().position(|k| *k == layer.0);
+            let index = |plan: &StylePlan| plan.layer_index(layer.0);
             let (Some(before), Some(after)) = (index(old_plan), index(plan)) else {
                 continue;
             };
@@ -717,7 +712,7 @@ fn stale_nodes(
         let Some(layer) = change.layer() else {
             continue;
         };
-        let Some(index) = plan.layer_keys.iter().position(|k| *k == layer.0) else {
+        let Some(index) = plan.layer_index(layer.0) else {
             continue;
         };
         let layer = &plan.style.layers[index];
@@ -756,7 +751,7 @@ fn stale_nodes(
     // A symbol bucket is its group's: a group that gained or lost a layer
     // lays out again whole, and buckets laid out for it before are stale.
     let group_of = |plan: &StylePlan, leader: u32| {
-        let at = plan.layer_keys.iter().position(|&k| k == leader)?;
+        let at = plan.layer_index(leader)?;
         let mut group = plan.layout_group(at);
         group.sort_unstable();
         (plan.layout_leaders[at].is_none()).then_some(group)
@@ -766,7 +761,7 @@ fn stale_nodes(
         .iter()
         .filter(|n| n.family == orb_render::Family::SymbolIcon);
     for node in symbols {
-        let leader = plan.layer_keys[node.layer];
+        let leader = plan.style.layers[node.layer].key.0;
         let group = group_of(plan, leader);
         if group.is_none() || group == group_of(old_plan, leader) {
             continue;

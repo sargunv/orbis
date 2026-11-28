@@ -26,6 +26,14 @@ fn commands(doc: &mut StyleDoc, text: &str) -> Patch {
         .unwrap()
 }
 
+fn layer_keys(doc: &StyleDoc) -> Vec<LayerKey> {
+    doc.style().layers.iter().map(|l| l.key).collect()
+}
+
+fn source_keys(doc: &StyleDoc) -> Vec<SourceKey> {
+    doc.style().sources.iter().map(|s| s.key).collect()
+}
+
 fn classes(patch: &Patch) -> Vec<Class> {
     patch.changes.iter().map(Change::class).collect()
 }
@@ -33,7 +41,7 @@ fn classes(patch: &Patch) -> Vec<Class> {
 #[test]
 fn paint_edits_classify_by_binding() {
     let mut doc = doc();
-    let water = doc.layer_keys().nth(1).unwrap();
+    let water = layer_keys(&doc)[1];
     let patch = commands(
         &mut doc,
         r#"[["setPaintProperty", "water", "fill-color", "green"]]"#,
@@ -115,9 +123,9 @@ fn layout_filter_and_layer_edits() {
         ["moveLayer", "bg"],
         ["removeLayer", "points"]
     ]"#;
-    let before: Vec<_> = doc.layer_keys().collect();
+    let before: Vec<_> = layer_keys(&doc);
     let patch = commands(&mut doc, layers);
-    let after: Vec<_> = doc.layer_keys().collect();
+    let after: Vec<_> = layer_keys(&doc);
     assert_eq!(after[0], before[1]);
     assert_eq!(after[2], before[2], "roads keeps its key");
     assert_eq!(after[3], before[0], "bg moved to the top");
@@ -213,10 +221,63 @@ fn edits_may_not_write_what_a_document_may_hold() {
     assert_eq!(patch.warnings.len(), 2, "{:?}", patch.warnings);
 }
 
+/// A document's broken layer, source or terrain is dropped with a warning,
+/// as in MapLibre Native, and the rest draws; an edit adding one fails.
+#[test]
+fn documents_drop_what_is_broken_but_edits_fail() {
+    let broken = STYLE
+        .replace(
+            r#""g": {"type": "geojson""#,
+            r#""bad": {"type": "nope"}, "g": {"type": "geojson""#,
+        )
+        .replace(
+            r#"{"id": "points", "type": "circle", "source": "g"}"#,
+            r#"{"id": "points", "type": "circle", "source": "g"}, {"id": "odd", "type": "nope"}"#,
+        )
+        .replace(
+            r#""version": 8,"#,
+            r#""version": 8, "terrain": {"source": "v"},"#,
+        );
+    let mut doc = StyleDoc::parse(&broken).unwrap();
+    let dropped = |warnings: &[Diagnostic]| -> Vec<String> {
+        (warnings.iter())
+            .filter(|w| w.message.ends_with(DROPPED))
+            .map(|w| w.path.clone())
+            .collect()
+    };
+    assert_eq!(
+        dropped(&doc.style().warnings),
+        ["sources.bad.type", "layers[4].type", "terrain.source"]
+    );
+    assert_eq!(
+        doc.layer_ids().collect::<Vec<_>>(),
+        ["bg", "water", "roads", "points"]
+    );
+    assert!(doc.layer("odd").is_none() && doc.source("bad").is_none());
+    assert!(doc.root(RootKey::Terrain).is_none());
+    for edit in [
+        r#"[["addLayer", {"id": "odd", "type": "nope"}]]"#,
+        r#"[["addSource", "bad", {"type": "nope"}]]"#,
+        r#"[["setTerrain", {"source": "v"}]]"#,
+    ] {
+        assert!(
+            doc.apply(&Transaction::from_commands(edit).unwrap())
+                .is_err(),
+            "{edit}"
+        );
+    }
+    // A new document drops its own, and its kept layers keep their keys.
+    let keys = layer_keys(&doc);
+    let patch = commands(&mut doc, &format!(r#"[["setStyle", {broken}]]"#));
+    assert_eq!(dropped(&patch.warnings).len(), 3, "{:?}", patch.warnings);
+    assert_eq!(layer_keys(&doc), keys);
+    assert_eq!(doc.layer_ids().count(), doc.style().layers.len());
+}
+
 #[test]
 fn global_state_changes_reach_the_layers_that_read_it() {
     let mut doc = doc();
-    let roads = doc.layer_keys().nth(2).unwrap();
+    let roads = layer_keys(&doc)[2];
     let patch = commands(
         &mut doc,
         r#"[["setGlobalStateProperty", "accent", "green"]]"#,
@@ -250,15 +311,15 @@ fn global_state_changes_reach_the_layers_that_read_it() {
 #[test]
 fn set_style_diffs_against_the_document() {
     let mut doc = doc();
-    let keys: Vec<_> = doc.layer_keys().collect();
-    let sources: Vec<_> = doc.source_keys().collect();
+    let keys: Vec<_> = layer_keys(&doc);
+    let sources: Vec<_> = source_keys(&doc);
     let next = STYLE
         .replace(r#""fill-color": "blue""#, r#""fill-color": "teal""#)
         .replace(r#""source-layer": "roads""#, r#""source-layer": "streets""#)
         .replace(r#""features": []"#, r#""features": [{"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [0, 0]}}]"#);
     let patch = commands(&mut doc, &format!(r#"[["setStyle", {next}]]"#));
-    let after: Vec<_> = doc.layer_keys().collect();
-    let after_sources: Vec<_> = doc.source_keys().collect();
+    let after: Vec<_> = layer_keys(&doc);
+    let after_sources: Vec<_> = source_keys(&doc);
     assert_eq!(after[..2], keys[..2]);
     assert_ne!(after[2], keys[2], "a new source layer is a new layer");
     assert_ne!(after[3], keys[3], "a layer of a changed source is new");
@@ -463,7 +524,7 @@ fn planes_and_tile_matrix_sets_restyle() {
 #[test]
 fn source_data_is_a_new_revision_of_the_same_source() {
     let mut doc = doc();
-    let keys: Vec<_> = doc.source_keys().collect();
+    let keys: Vec<_> = source_keys(&doc);
     let patch = commands(
         &mut doc,
         r#"[["setSourceData", "g", {"type": "Feature", "properties": {},
@@ -471,12 +532,17 @@ fn source_data_is_a_new_revision_of_the_same_source() {
     );
     assert_eq!(patch.changes, [Change::SourceData(keys[1])]);
     assert_eq!(classes(&patch), [Class::Relayout]);
-    assert_eq!(doc.source_keys().collect::<Vec<_>>(), keys);
+    assert_eq!(source_keys(&doc), keys);
     let crate::v8::SourceKind::GeoJson(g) = &doc.style().sources[1].kind else {
         panic!("a GeoJSON source");
     };
     assert!(matches!(&g.data, crate::v8::GeoJsonData::Inline(f) if f.len() == 1));
-    assert!(doc.source_json(1).to_string().contains("[1,2]"));
+    assert!(
+        doc.source_json(keys[1])
+            .unwrap()
+            .to_string()
+            .contains("[1,2]")
+    );
     for bad in [
         r#"[["setSourceData", "v", {}]]"#,
         r#"[["setSourceData", "nope", {}]]"#,
@@ -492,7 +558,7 @@ fn source_data_is_a_new_revision_of_the_same_source() {
 #[test]
 fn merged_patches_keep_diffs_only_of_sources_not_given_whole_data() {
     let mut doc = doc();
-    let key = doc.source_keys().nth(1).unwrap();
+    let key = doc.source_key("g").unwrap();
     let data = r#"{"type":"FeatureCollection","features":[]}"#;
     let set = commands(&mut doc, &format!(r#"[["setSourceData", "g", {data}]]"#));
     let update = r#"[["updateSourceData", "g", {"remove": [1]}]]"#;
@@ -535,7 +601,7 @@ fn source_diffs_change_the_record_and_the_features_alike() {
             point("4", 4.0, "d")
         ),
     );
-    let key = doc.source_keys().nth(1).unwrap();
+    let key = source_keys(&doc)[1];
     assert_eq!(patch.changes, [Change::SourceData(key)]);
     assert_eq!(patch.source_diffs.len(), 1);
     // The parsed features, as job hosts get them by the diff.
@@ -551,7 +617,8 @@ fn source_diffs_change_the_record_and_the_features_alike() {
         .collect();
     // The record, parsed again from scratch, agrees.
     let reparsed =
-        crate::v8::geojson::geojson_features(doc.source_json(1).get("data").unwrap()).unwrap();
+        crate::v8::geojson::geojson_features(doc.source_json(key).unwrap().get("data").unwrap())
+            .unwrap();
     let again: Vec<String> = reparsed
         .iter()
         .map(|f| format!("{:?} {:?} {:?}", f.id, f.properties, f.geometry))
@@ -589,14 +656,14 @@ fn set_style_between_basemaps_keeps_shared_sources() {
         )
     };
     let mut doc = StyleDoc::parse(&style("light", "white")).unwrap();
-    let sources: Vec<_> = doc.source_keys().collect();
-    let layers: Vec<_> = doc.layer_keys().collect();
+    let sources: Vec<_> = source_keys(&doc);
+    let layers: Vec<_> = layer_keys(&doc);
     let patch = commands(
         &mut doc,
         &format!(r#"[["setStyle",{}]]"#, style("dark", "black")),
     );
-    assert_eq!(doc.source_keys().collect::<Vec<_>>(), sources);
-    assert_eq!(doc.layer_keys().collect::<Vec<_>>(), layers);
+    assert_eq!(source_keys(&doc), sources);
+    assert_eq!(layer_keys(&doc), layers);
     assert!(patch.changes.contains(&Change::Sprite));
     assert!(!patch.changes.contains(&Change::Restyle));
     assert!(

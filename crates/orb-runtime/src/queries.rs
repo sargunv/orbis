@@ -105,7 +105,7 @@ impl crate::Map {
                 .source_layer
                 .clone()
                 .unwrap_or_else(|| orb_tile::geojson::LAYER_NAME.into());
-            let layer_key = plan.layer_keys[order];
+            let layer_key = layer.key.0;
             // The state its paint is evaluated with; the answer's `state`
             // member is read apart, with every queried feature's.
             let states = crate::state::States {

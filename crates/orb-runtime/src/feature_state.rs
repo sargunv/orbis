@@ -302,8 +302,8 @@ impl Map {
             .filter_map(|op| {
                 let (FeatureStateOp::Set { source, .. } | FeatureStateOp::Remove { source, .. }) =
                     op;
-                let index = doc.source_index(*source)?;
-                Some((doc.source_ids().nth(index)?.to_string(), op))
+                let source = doc.style().sources.iter().find(|s| s.key == *source)?;
+                Some((source.id.clone(), op))
             })
             .collect();
         for (id, op) in edits {

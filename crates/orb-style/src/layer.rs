@@ -9,6 +9,8 @@ use crate::spec::{Key, LayerType, PropertyId, Ramp};
 /// A style layer.
 #[derive(Clone, Debug)]
 pub struct Layer {
+    /// Its identity across edits.
+    pub key: crate::LayerKey,
     pub id: String,
     pub ty: LayerType,
     /// The source drawn; `None` for a background.
@@ -45,13 +47,14 @@ pub struct Layer {
 impl Layer {
     /// A layer of type `ty` with `props`, one slot per property of the
     /// type in table order, and the rest unset: for front ends to fill in.
-    pub fn new(id: String, ty: LayerType, props: Vec<Slot>) -> Self {
+    pub fn new(key: crate::LayerKey, id: String, ty: LayerType, props: Vec<Slot>) -> Self {
         assert_eq!(
             props.len(),
             ty.properties().count(),
             "one slot per property"
         );
         Self {
+            key,
             id,
             ty,
             source: None,

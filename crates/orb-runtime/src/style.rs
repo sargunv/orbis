@@ -38,10 +38,6 @@ pub(crate) struct StylePlan {
     /// The map's style version this plan is of.
     pub(crate) revision: u64,
     pub(crate) style: Arc<Style>,
-    /// Keys of the style's layers, in order.
-    pub(crate) layer_keys: Vec<u32>,
-    /// Keys of the style's sources, in order.
-    pub(crate) source_keys: Vec<u32>,
     pub(crate) nodes: Vec<NodePlan>,
     /// The sources nodes draw from; nodes refer to them by index.
     pub(crate) sources: Vec<PlanSource>,
@@ -223,19 +219,10 @@ impl StylePlan {
     /// is never edited.
     #[cfg(test)]
     pub(crate) fn of(style: Style) -> Self {
-        let layers = (1..=style.layers.len() as u32).collect();
-        let sources = (1..=style.sources.len() as u32).collect();
-        Self::new(Arc::new(style), layers, sources, 0)
+        Self::new(Arc::new(style), 0)
     }
 
-    pub(crate) fn new(
-        style: Arc<Style>,
-        layer_keys: Vec<u32>,
-        source_keys: Vec<u32>,
-        revision: u64,
-    ) -> Self {
-        assert_eq!(layer_keys.len(), style.layers.len());
-        assert_eq!(source_keys.len(), style.sources.len());
+    pub(crate) fn new(style: Arc<Style>, revision: u64) -> Self {
         let mut nodes = Vec::new();
         let mut sources: Vec<PlanSource> = Vec::new();
         let mut warnings = Vec::new();
@@ -245,7 +232,7 @@ impl StylePlan {
         };
 
         for (index, layer) in style.layers.iter().enumerate() {
-            let key = node_key(layer_keys[index], 0);
+            let key = node_key(layer.key.0, 0);
             // An image-process layer draws through the target plan; a fill
             // drawn through a target draws everywhere, as a background
             // does, through the target's coverage.
@@ -329,7 +316,7 @@ impl StylePlan {
                 None => {
                     let at = style.sources.iter().position(|s| s.id == source);
                     sources.push(PlanSource {
-                        key: source_keys[at.expect("layers' sources exist")],
+                        key: style.sources[at.expect("layers' sources exist")].key.0,
                         id: source.to_string(),
                     });
                     sources.len() - 1
@@ -388,7 +375,7 @@ impl StylePlan {
             && let Some(at) = style.sources.iter().position(|s| s.id == terrain.source)
         {
             sources.push(PlanSource {
-                key: source_keys[at],
+                key: style.sources[at].key.0,
                 id: terrain.source.clone(),
             });
         }
@@ -413,8 +400,6 @@ impl StylePlan {
         Self {
             revision,
             style,
-            layer_keys,
-            source_keys,
             nodes,
             sources,
             warnings,
@@ -520,8 +505,18 @@ impl StylePlan {
         let leader = self.layout_leaders[layer].unwrap_or(layer);
         (leader..self.layout_leaders.len())
             .filter(|&i| i == leader || self.layout_leaders[i] == Some(leader))
-            .map(|i| self.layer_keys[i])
+            .map(|i| self.style.layers[i].key.0)
             .collect()
+    }
+
+    /// The index of layer `key` in the style.
+    pub(crate) fn layer_index(&self, key: u32) -> Option<usize> {
+        self.style.layers.iter().position(|l| l.key.0 == key)
+    }
+
+    /// Source `key` of the style, drawn or not.
+    pub(crate) fn style_source(&self, key: u32) -> Option<&Arc<orb_style::Source>> {
+        self.style.sources.iter().find(|s| s.key.0 == key)
     }
 
     /// `nodes` (keys) with every other node of their symbol layers'

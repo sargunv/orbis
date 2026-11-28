@@ -15,13 +15,11 @@ fn style(layers: &str) -> Result<Style, Diagnostics> {
     ))
 }
 
-fn errors(layers: &str) -> Vec<String> {
-    style(layers)
-        .unwrap_err()
-        .errors
-        .iter()
-        .map(|e| e.to_string())
-        .collect()
+/// The warnings that dropped layers of a style whose layers are `layers`,
+/// as text.
+fn drops(layers: &str) -> Vec<String> {
+    let style = style(layers).unwrap_or_else(|d| panic!("{d}"));
+    dropped(&style).iter().map(|w| w.to_string()).collect()
 }
 
 /// The warnings of a style whose layers are `layers`, as text.
@@ -127,24 +125,24 @@ fn an_image_source_needs_no_url_but_a_video_needs_its_urls() {
         parse(&format!(
             r#"{{"version": 8, "sources": {{"s": {json}}}, "layers": []}}"#
         ))
+        .unwrap()
     };
     let corners = r#""coordinates": [[0, 1], [1, 1], [1, 0], [0, 0]]"#;
-    let s = source(&format!(r#"{{"type": "image", {corners}}}"#)).unwrap();
+    let s = source(&format!(r#"{{"type": "image", {corners}}}"#));
     assert!(s.warnings.is_empty(), "{:?}", s.warnings);
     let SourceKind::Image(image) = &s.source("s").unwrap().kind else {
         panic!()
     };
     assert_eq!(image.content, crate::ImageContent::Image(None));
-    let errors = source(&format!(r#"{{"type": "video", {corners}}}"#)).unwrap_err();
-    assert!(
-        errors.errors[0].to_string().contains("\"urls\""),
-        "{errors:?}"
-    );
+    let video = source(&format!(r#"{{"type": "video", {corners}}}"#));
+    assert!(video.sources.is_empty());
+    let drops = dropped(&video);
+    assert!(drops[0].message.contains("\"urls\""), "{drops:?}");
 }
 
 #[test]
 fn image_layers_need_matching_sources() {
-    let errors = errors(
+    let errors = drops(
         r#"[{"id": "h", "type": "hillshade", "source": "r"},
             {"id": "f", "type": "fill", "source": "r"}]"#,
     );
@@ -302,7 +300,7 @@ fn diagnostics_carry_json_paths() {
         ]
     );
 
-    let e = errors(
+    let e = drops(
         r#"[{"id": "a", "type": "fill", "source": "v", "source-layer": "x"},
             {"id": "a", "type": "line", "source": "v"},
             {"id": "c", "type": "fill", "source": "r"},
@@ -312,11 +310,11 @@ fn diagnostics_carry_json_paths() {
     assert_eq!(
         e,
         [
-            "layers[1].id: duplicate layer id \"a\"",
-            "layers[1]: layer \"a\" must specify a \"source-layer\"",
-            "layers[2].source: layer \"c\" requires a vector source",
-            "layers[3].type: expected one of [fill, line, symbol, circle, heatmap, fill-extrusion, raster, hillshade, color-relief, background], \"bogus\" found",
-            "layers[4].filter[2]: expected one of [Point, LineString, Polygon], \"Circle\" found",
+            "layers[1].id: duplicate layer id \"a\"; the layer is dropped",
+            "layers[1]: layer \"a\" must specify a \"source-layer\"; the layer is dropped",
+            "layers[2].source: layer \"c\" requires a vector source; the layer is dropped",
+            "layers[3].type: expected one of [fill, line, symbol, circle, heatmap, fill-extrusion, raster, hillshade, color-relief, background], \"bogus\" found; the layer is dropped",
+            "layers[4].filter[2]: expected one of [Point, LineString, Polygon], \"Circle\" found; the layer is dropped",
         ]
     );
 
@@ -907,8 +905,9 @@ fn world_planes_adapt_to_mercator() {
         Previews::ALL,
         &[],
     )
-    .unwrap_err();
-    let paths: Vec<_> = bad_tms.errors.iter().map(|e| e.path.as_str()).collect();
+    .unwrap();
+    assert!(bad_tms.sources.is_empty());
+    let paths: Vec<_> = dropped(&bad_tms).iter().map(|w| w.path.as_str()).collect();
     assert_eq!(paths, ["sources.a.dev.sargunv.orbis:tileMatrixSet"]);
     // GeoJSON tiles on the plane, whatever set it names: drawn through
     // that set's warp, it would land in the wrong place.
@@ -1097,7 +1096,8 @@ fn extended_inputs_are_drawn_and_warn_once() {
     let filter = r#"{"version": 8, "sources": {"s": {"type": "geojson",
         "data": {"type": "FeatureCollection", "features": []}}},
         "layers": [{"id": "f", "type": "fill", "source": "s", "filter": [">", ["pitch"], 10]}]}"#;
-    assert!(parse_with(filter, Previews::ALL, &[]).is_err());
+    let style = parse_with(filter, Previews::ALL, &[]).unwrap();
+    assert!(style.layers.is_empty() && dropped(&style).len() == 1);
 }
 
 /// A symbol layer's filter may read the camera, decided per symbol at
@@ -1135,21 +1135,21 @@ fn symbol_filters_read_the_camera() {
     assert!(camera.reads_center_distance() && !camera.reads_camera());
 
     for filter in [pitch, far] {
-        let errors = parse_with(&layer("circle", filter), Previews::ALL, &[])
-            .unwrap_err()
-            .errors;
+        let style = parse_with(&layer("circle", filter), Previews::ALL, &[]).unwrap();
+        assert!(style.layers.is_empty());
+        let drops = dropped(&style);
         let operator = if filter == pitch {
             "pitch"
         } else {
             "dev.sargunv.orbis:distance-from-center"
         };
         assert_eq!(
-            errors[0].message,
+            drops[0].message,
             format!(
-                "[\"{operator}\"] expression is not supported in a filter for a circle layer with id: f"
+                "[\"{operator}\"] expression is not supported in a filter for a circle layer with id: f; the layer is dropped"
             )
         );
-        assert_eq!(errors[0].path, "layers[0].filter");
+        assert_eq!(drops[0].path, "layers[0].filter");
     }
 }
 

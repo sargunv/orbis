@@ -31,13 +31,9 @@ impl Stages {
         local_ideographs: Option<String>,
     ) -> Result<Self, String> {
         let style = orb_style::v8::parse(style_json).map_err(|d| d.to_string())?;
-        let layers = (1..=style.layers.len() as u32).collect();
-        let sources = (1..=style.sources.len() as u32).collect();
         let worker = TileWorker::with_style(
             None,
             Arc::new(style),
-            layers,
-            sources,
             &[],
             0,
             crate::worker::MapFonts {

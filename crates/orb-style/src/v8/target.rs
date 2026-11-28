@@ -642,6 +642,14 @@ mod tests {
         )
     }
 
+    /// The warnings that dropped the one layer, `layer`, of a style with
+    /// the root members `root`.
+    fn drops(previews: Previews, root: &str, layer: &str) -> Vec<crate::v8::Diagnostic> {
+        let style = parse(previews, root, layer).unwrap_or_else(|d| panic!("{layer}: {d}"));
+        assert!(style.layers.is_empty(), "{layer}");
+        crate::v8::dropped(&style).into_iter().cloned().collect()
+    }
+
     const ON: Previews = Previews::NONE.with(Preview::Targets);
     const TARGETS: &str = r#""dev.sargunv.orbis:targets":[{"id":"paint"},{"id":"land"}],"#;
 
@@ -787,65 +795,41 @@ mod tests {
                 "layers[0].dev.sargunv.orbis:destination-target"
             ]
         );
-        let err = parse(
+        let drops = drops(
             Previews::NONE,
             "",
             r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"x"}"#,
-        )
-        .unwrap_err();
-        assert!(err.errors[0].message.contains("preview"), "{err:?}");
+        );
+        assert!(drops[0].message.contains("preview"), "{drops:?}");
     }
 
     #[test]
-    fn invalid_targets_and_operations_are_errors_but_values_draw_defaults() {
-        for (root, layers) in [
-            (
-                r#""dev.sargunv.orbis:targets":[{"id":"a"},{"id":"a"}],"#,
-                "",
-            ),
-            (r#""dev.sargunv.orbis:targets":[{}],"#, ""),
-            (
-                r#""dev.sargunv.orbis:targets":[{"id":"a","precision":"double"}],"#,
-                "",
-            ),
-            ("", r#"{"id":"p","type":"dev.sargunv.orbis.image-process"}"#),
-            (
-                "",
-                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
-                    "dev.sargunv.orbis:operations":[{"type":"smudge"}]}"#,
-            ),
-            (
-                "",
-                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
-                    "dev.sargunv.orbis:operations":[{"type":"convolve","kernel":[1,2]}]}"#,
-            ),
-            (
-                "",
-                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
-                    "dev.sargunv.orbis:operations":[{"type":"select"}]}"#,
-            ),
-            (
-                "",
-                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
-                    "dev.sargunv.orbis:operations":[{"type":"combine","target":"a","mode":"xor"}]}"#,
-            ),
-            (
-                "",
-                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
-                    "dev.sargunv.orbis:operations":[{"type":"ramp","stops":[[0.5,"red"],[0.2,"blue"]]}]}"#,
-            ),
-            (
-                "",
-                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
-                    "dev.sargunv.orbis:operations":[{"type":"split","radial":"yes"}]}"#,
-            ),
-            (
-                "",
-                r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
-                    "dev.sargunv.orbis:operations":[{"type":"gradient","kind":"conic"}]}"#,
-            ),
+    fn invalid_targets_fail_invalid_operations_drop_their_layer_and_values_draw_defaults() {
+        for root in [
+            r#""dev.sargunv.orbis:targets":[{"id":"a"},{"id":"a"}],"#,
+            r#""dev.sargunv.orbis:targets":[{}],"#,
+            r#""dev.sargunv.orbis:targets":[{"id":"a","precision":"double"}],"#,
         ] {
-            assert!(parse(ON, root, layers).is_err(), "{root} {layers}");
+            assert!(parse(ON, root, "").is_err(), "{root}");
+        }
+        for layer in [
+            r#"{"id":"p","type":"dev.sargunv.orbis.image-process"}"#,
+            r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
+                "dev.sargunv.orbis:operations":[{"type":"smudge"}]}"#,
+            r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
+                "dev.sargunv.orbis:operations":[{"type":"convolve","kernel":[1,2]}]}"#,
+            r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
+                "dev.sargunv.orbis:operations":[{"type":"select"}]}"#,
+            r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
+                "dev.sargunv.orbis:operations":[{"type":"combine","target":"a","mode":"xor"}]}"#,
+            r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
+                "dev.sargunv.orbis:operations":[{"type":"ramp","stops":[[0.5,"red"],[0.2,"blue"]]}]}"#,
+            r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
+                "dev.sargunv.orbis:operations":[{"type":"split","radial":"yes"}]}"#,
+            r#"{"id":"p","type":"dev.sargunv.orbis.image-process","dev.sargunv.orbis:source-target":"a",
+                "dev.sargunv.orbis:operations":[{"type":"gradient","kind":"conic"}]}"#,
+        ] {
+            assert!(!drops(ON, "", layer).is_empty(), "{layer}");
         }
         // A parameter's value that doesn't fit it draws the parameter's
         // default, as a property's does.
@@ -898,7 +882,7 @@ mod tests {
             r#"{"type":"noise","size":4,"dev.sargunv.orbis:anchor":"map",
                 "dev.sargunv.orbis:reference-zoom":30}"#,
         ] {
-            assert!(operations(invalid).is_err(), "{invalid}");
+            assert!(!dropping(invalid).is_empty(), "{invalid}");
         }
     }
 
@@ -916,25 +900,26 @@ mod tests {
             (r#"{"type":"ramp"}"#, "stops"),
             (r#"{"type":"offset"}"#, "translate"),
         ] {
-            let err = operations(missing).unwrap_err();
-            let message = format!("missing required property \"{key}\"");
+            let drops = dropping(missing);
+            let message = format!("missing required property \"{key}\"; the layer is dropped");
             assert!(
-                err.errors.iter().any(|e| e.message == message),
-                "{missing}: {err}"
+                drops.iter().any(|w| w.message == message),
+                "{missing}: {drops:?}"
             );
         }
         // Every key is checked, whichever fails first.
-        let err = operations(r#"{"type":"combine","mode":"bogus"}"#).unwrap_err();
-        assert_eq!(err.errors.len(), 2, "{err}");
+        let drops = dropping(r#"{"type":"combine","mode":"bogus"}"#);
+        assert_eq!(drops.len(), 2, "{drops:?}");
         // A kind that isn't one is its only fault: the keys aren't read as
         // another kind's.
-        let err =
-            operations(r#"{"type":"gradient","kind":"conic","radius":2,"length":-1}"#).unwrap_err();
-        assert_eq!((err.errors.len(), err.warnings.len()), (1, 0), "{err:?}");
-        let err = operations(r#"{"type":"smudge"}"#).unwrap_err();
+        let gradient = r#"{"type":"gradient","kind":"conic","radius":2,"length":-1}"#;
+        let style = operations(gradient).unwrap();
+        assert_eq!(crate::v8::dropped(&style).len(), 1, "{:?}", style.warnings);
+        assert_eq!(style.warnings.len(), 1, "{:?}", style.warnings);
+        let drops = dropping(r#"{"type":"smudge"}"#);
         assert!(
-            (err.errors[0].message).starts_with("expected one of [select, blur, noise,"),
-            "{err}"
+            (drops[0].message).starts_with("expected one of [select, blur, noise,"),
+            "{drops:?}"
         );
     }
 
@@ -996,21 +981,28 @@ mod tests {
     }
 
     /// One image-process layer of `ops`.
-    fn operations(ops: &str) -> Result<Style, crate::v8::Diagnostics> {
-        parse(
-            ON,
-            TARGETS,
-            &format!(
-                r#"{{"id":"p","type":"dev.sargunv.orbis.image-process",
-                    "dev.sargunv.orbis:source-target":"paint","dev.sargunv.orbis:operations":[{ops}]}}"#
-            ),
+    fn process(ops: &str) -> String {
+        format!(
+            r#"{{"id":"p","type":"dev.sargunv.orbis.image-process",
+                "dev.sargunv.orbis:source-target":"paint","dev.sargunv.orbis:operations":[{ops}]}}"#
         )
+    }
+
+    /// A style of one image-process layer of `ops`.
+    fn operations(ops: &str) -> Result<Style, crate::v8::Diagnostics> {
+        parse(ON, TARGETS, &process(ops))
+    }
+
+    /// The warnings that dropped the image-process layer of `ops`.
+    fn dropping(ops: &str) -> Vec<crate::v8::Diagnostic> {
+        drops(ON, TARGETS, &process(ops))
     }
 
     /// Asserts that image-process operations `ops` parse, with a value
     /// that draws its default.
     fn draws_defaults(ops: &str) {
         let style = operations(ops).unwrap_or_else(|d| panic!("{ops}: {d}"));
+        assert_eq!(style.layers.len(), 1, "{ops}: {:?}", style.warnings);
         assert!(
             (style.warnings.iter()).any(|w| w.message.ends_with(crate::v8::INVALID_VALUE)),
             "{ops}: {:?}",
@@ -1193,7 +1185,7 @@ mod tests {
             r#"{"type":"ramp","stops":[[0,"red"],[1,"red"],[0,"red"],[1,"red"],[0,"red"],
                [1,"red"],[0,"red"],[1,"red"],[1,"red"]]}"#,
         ] {
-            assert!(operations(invalid).is_err(), "{invalid}");
+            assert!(!dropping(invalid).is_empty(), "{invalid}");
         }
     }
 

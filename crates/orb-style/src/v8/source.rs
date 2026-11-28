@@ -16,20 +16,29 @@ const SOURCE_TYPES: &[&str] = &[
     "canvas",
 ];
 
+/// A document's sources, keyed `1..` in order. A broken one is dropped
+/// with a warning.
 pub(crate) fn parse_sources(cx: &mut Cx, json: &Json) -> Vec<Source> {
     let Some(members) = cx.object(json, "sources") else {
         return Vec::new();
     };
-    members
-        .iter()
-        .filter_map(|m| {
+    (members.iter().zip(1..))
+        .filter_map(|(m, key)| {
             let path = format!("sources.{}", m.key);
-            parse_source(cx, &m.key, &m.value, &path)
+            cx.item("the source", true, |cx| {
+                parse_source(cx, SourceKey(key), &m.key, &m.value, &path)
+            })
         })
         .collect()
 }
 
-pub(crate) fn parse_source(cx: &mut Cx, id: &str, json: &Json, path: &str) -> Option<Source> {
+pub(crate) fn parse_source(
+    cx: &mut Cx,
+    key: SourceKey,
+    id: &str,
+    json: &Json,
+    path: &str,
+) -> Option<Source> {
     cx.object(json, path)?;
     let Some(ty) = json.get("type") else {
         cx.error(path, json.span, "missing required property \"type\"");
@@ -55,14 +64,14 @@ pub(crate) fn parse_source(cx: &mut Cx, id: &str, json: &Json, path: &str) -> Op
         "image" | "video" | "canvas" => SourceKind::Image(parse_image(cx, json, path, ty)?),
         _ => unreachable!("checked against SOURCE_TYPES"),
     };
-    let key = Preview::TileMatrixSet.name();
-    let tms_path = format!("{path}.{key}");
-    let tile_matrix_set = match json.get(key).filter(|tms| {
+    let tms_key = Preview::TileMatrixSet.name();
+    let tms_path = format!("{path}.{tms_key}");
+    let tile_matrix_set = match json.get(tms_key).filter(|tms| {
         cx.preview(
             Preview::TileMatrixSet,
             &tms_path,
             tms.span,
-            format!("\"{key}\""),
+            format!("\"{tms_key}\""),
         )
     }) {
         None => None,
@@ -71,13 +80,14 @@ pub(crate) fn parse_source(cx: &mut Cx, id: &str, json: &Json, path: &str) -> Op
             cx.warn(
                 &tms_path,
                 tms.span,
-                format!("a GeoJSON source tiles on the map's plane; its \"{key}\" is ignored"),
+                format!("a GeoJSON source tiles on the map's plane; its \"{tms_key}\" is ignored"),
             );
             None
         }
         Some(tms) => Some(parse_tms(cx, tms, &tms_path)?),
     };
     Some(Source {
+        key,
         id: id.to_string(),
         kind,
         tile_matrix_set,
@@ -550,23 +560,23 @@ fn cluster(json: &Json, path: &str, max_zoom: u8, cx: &mut Cx) -> crate::Cluster
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn parse(source: &str) -> Result<crate::v8::Style, crate::v8::Diagnostics> {
-        crate::v8::parse(&format!(
-            r#"{{"version":8,"sources":{{"s":{source}}},"layers":[]}}"#
-        ))
+    /// A source, parsed alone, and its warnings.
+    fn parse(source: &str) -> Result<(Source, Vec<crate::v8::Diagnostic>), crate::v8::Diagnostics> {
+        let json = orb_expr::json::parse(source).unwrap();
+        crate::v8::parse_source(SourceKey(1), "s", &json, Previews::NONE)
     }
     #[test]
     fn geojson_defaults_and_source_options() {
         let style =
             parse(r#"{"type":"geojson","data":{"type":"FeatureCollection","features":[]}}"#)
                 .unwrap();
-        let SourceKind::GeoJson(s) = &style.sources[0].kind else {
+        let SourceKind::GeoJson(s) = &style.0.kind else {
             panic!()
         };
         assert_eq!(s.options, orb_tile::geojson::Options::default());
         assert!(matches!(&s.data, GeoJsonData::Inline(features) if features.is_empty()));
         let style = parse(r#"{"type":"geojson","data":"data.json","maxzoom":12,"tolerance":1.25,"buffer":32,"lineMetrics":true,"generateId":true}"#).unwrap();
-        let SourceKind::GeoJson(s) = &style.sources[0].kind else {
+        let SourceKind::GeoJson(s) = &style.0.kind else {
             panic!()
         };
         assert_eq!(s.data, GeoJsonData::Url("data.json".into()));
@@ -576,7 +586,7 @@ mod tests {
         assert_eq!(s.options.extent, 8192);
         assert!(s.options.line_metrics && s.options.generate_id);
         let style = parse(r#"{"type":"geojson","data":"data.json","promoteId":{"_geojsonTileLayer":"name"},"cluster":true}"#).unwrap();
-        let SourceKind::GeoJson(s) = &style.sources[0].kind else {
+        let SourceKind::GeoJson(s) = &style.0.kind else {
             panic!()
         };
         assert_eq!(s.options.promote_id.as_deref(), Some("name"));
@@ -590,7 +600,7 @@ mod tests {
                 "max":[["max",["accumulated"],["get","max"]],["get","n"]]}}"#,
         )
         .unwrap();
-        let SourceKind::GeoJson(s) = &style.sources[0].kind else {
+        let SourceKind::GeoJson(s) = &style.0.kind else {
             panic!()
         };
         let cluster = s.cluster.as_ref().expect("clustered");
@@ -619,7 +629,7 @@ mod tests {
     fn vector_sources_read_sparse() {
         let sparse = |json: &str| {
             let style = parse(&format!(r#"{{"type":"vector","tiles":["t"]{json}}}"#))?;
-            let SourceKind::Vector(v) = &style.sources[0].kind else {
+            let SourceKind::Vector(v) = &style.0.kind else {
                 panic!("{json}")
             };
             Ok::<_, crate::v8::Diagnostics>(v.sparse)
@@ -639,7 +649,7 @@ mod tests {
             r#""buffer":513"#,
             r#""tolerance":-1"#,
             r#""lineMetrics":0"#,
-            r#""generateId":true,"promoteId":"name"#,
+            r#""generateId":true,"promoteId":"name""#,
         ] {
             assert!(
                 parse(&format!(
@@ -659,8 +669,8 @@ mod tests {
             r#"{"type":"geojson","data":{"type":"Model","geometry":[1,2]}}"#,
         ] {
             let style = parse(source).unwrap_or_else(|e| panic!("{source}: {e:?}"));
-            assert_eq!(style.warnings.len(), 1, "{source}");
-            let SourceKind::GeoJson(geojson) = &style.sources[0].kind else {
+            assert_eq!(style.1.len(), 1, "{source}");
+            let SourceKind::GeoJson(geojson) = &style.0.kind else {
                 panic!("{source}");
             };
             assert_eq!(geojson.data, GeoJsonData::Inline(Vec::new()));

@@ -53,6 +53,9 @@ pub(crate) struct Draft {
     pub(crate) diffs: Vec<(SourceKey, Vec<Arc<Json>>)>,
     /// The root (other than sources and layers) was replaced.
     pub(crate) new_root: bool,
+    /// A new document replaced the old (`setStyle`): its broken layers,
+    /// sources and terrain are dropped, as a document's are.
+    pub(crate) replaced: bool,
     /// The values edits wrote, which must be valid where a document's may
     /// not be.
     pub(crate) written: Vec<Written>,
@@ -60,18 +63,16 @@ pub(crate) struct Draft {
     next_key: u32,
 }
 
-/// A value an edit wrote: what a document holds may be invalid, drawing
-/// its property's default, but an edit may not write an invalid value.
-#[derive(Clone, Debug)]
+/// What an edit wrote: what a document holds may be invalid, drawing its
+/// property's default or dropping its layer, but an edit may not write an
+/// invalid value.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Written {
-    /// A whole layer, added.
-    Layer(LayerKey),
-    /// A layer's `paint` or `layout` property.
-    Property {
-        layer: LayerKey,
-        section: &'static str,
-        name: String,
-    },
+    /// A layer added, or one of its members (`paint.fill-color`,
+    /// `filter`).
+    Layer(LayerKey, Option<String>),
+    /// A source added or given data.
+    Source(SourceKey),
     /// A root member.
     Root(RootKey),
 }
@@ -80,12 +81,10 @@ impl Written {
     /// The JSON path of what it wrote in layer `key` at `index`.
     pub(crate) fn layer_path(&self, key: LayerKey, index: usize) -> Option<String> {
         match self {
-            Written::Layer(layer) if *layer == key => Some(format!("layers[{index}]")),
-            Written::Property {
-                layer,
-                section,
-                name,
-            } if *layer == key => Some(format!("layers[{index}].{section}.{name}")),
+            Written::Layer(layer, None) if *layer == key => Some(format!("layers[{index}]")),
+            Written::Layer(layer, Some(member)) if *layer == key => {
+                Some(format!("layers[{index}].{member}"))
+            }
             _ => None,
         }
     }
@@ -194,11 +193,6 @@ impl StyleDoc {
         let JsonValue::Object(members) = root.value else {
             unreachable!("parsed styles are objects");
         };
-        let mut next_key = 0;
-        let mut key = || {
-            next_key += 1;
-            next_key
-        };
         // The last of a repeated key is the one that counts.
         let (mut sources, mut layers, mut root) = (Vec::new(), Vec::new(), Vec::new());
         for m in members {
@@ -214,18 +208,24 @@ impl StyleDoc {
                 _ => root.push(m),
             }
         }
-        let sources = sources
-            .into_iter()
-            .map(|m| SourceEntry {
-                key: SourceKey(key()),
+        if style.terrain.is_none() {
+            root.retain(|m| m.key != RootKey::Terrain.name());
+        }
+        // Entries under the keys the style gave them, `1..` in order, but
+        // for those it dropped.
+        let next_key = sources.len().max(layers.len()) as u32;
+        let sources = (sources.into_iter().zip(1..))
+            .filter(|(_, key)| style.sources.iter().any(|s| s.key.0 == *key))
+            .map(|(m, key)| SourceEntry {
+                key: SourceKey(key),
                 id: m.key,
                 json: Arc::new(m.value),
             })
             .collect();
-        let layers = layers
-            .into_iter()
-            .map(|json| LayerEntry {
-                key: LayerKey(key()),
+        let layers = (layers.into_iter().zip(1..))
+            .filter(|(_, key)| style.layers.iter().any(|l| l.key.0 == *key))
+            .map(|(json, key)| LayerEntry {
+                key: LayerKey(key),
                 json: Arc::new(json),
             })
             .collect();
@@ -250,32 +250,19 @@ impl StyleDoc {
         &self.style
     }
 
-    /// Keys of [`style`](Self::style)'s layers, in order.
-    pub fn layer_keys(&self) -> impl ExactSizeIterator<Item = LayerKey> + '_ {
-        self.layers.iter().map(|l| l.key)
-    }
-
-    /// Keys of the style's sources, in order.
-    pub fn source_keys(&self) -> impl ExactSizeIterator<Item = SourceKey> + '_ {
-        self.sources.iter().map(|s| s.key)
-    }
-
-    pub fn source_index(&self, key: SourceKey) -> Option<usize> {
-        self.sources.iter().position(|s| s.key == key)
-    }
-
     /// The key of the source named `id`.
     pub fn source_key(&self, id: &str) -> Option<SourceKey> {
         self.sources.iter().find(|s| s.id == id).map(|s| s.key)
     }
 
-    /// The JSON of the layer at `index`.
-    pub fn layer_json(&self, index: usize) -> &Json {
-        &self.layers[index].json
+    /// The JSON of layer `key`.
+    pub fn layer_json(&self, key: LayerKey) -> Option<&Arc<Json>> {
+        self.layers.iter().find(|l| l.key == key).map(|l| &l.json)
     }
 
-    pub fn source_json(&self, index: usize) -> &Json {
-        &self.sources[index].json
+    /// The JSON of source `key`.
+    pub fn source_json(&self, key: SourceKey) -> Option<&Arc<Json>> {
+        self.sources.iter().find(|s| s.key == key).map(|s| &s.json)
     }
 
     /// The layers' ids, in drawing order.
@@ -383,6 +370,7 @@ impl StyleDoc {
             new_data: Vec::new(),
             diffs: Vec::new(),
             new_root: false,
+            replaced: false,
             written: Vec::new(),
             feature_state: Vec::new(),
             next_key: self.next_key,
@@ -390,7 +378,7 @@ impl StyleDoc {
         for op in &tx.ops {
             draft.apply(op).map_err(error)?;
         }
-        let (style, mut patch) = diff::diff(self, &draft)?;
+        let (style, mut patch) = diff::diff(self, &mut draft)?;
         self.version += 1;
         patch.version = self.version;
         patch.feature_state = std::mem::take(&mut draft.feature_state);
@@ -447,10 +435,18 @@ impl Draft {
             .ok_or_else(|| format!("the source \"{id}\" does not exist"))
     }
 
-    /// Edits the members of layer `id`.
-    fn edit_layer(&mut self, id: &str, edit: impl FnOnce(&mut Vec<Member>)) -> Result<(), String> {
+    /// Edits the members of layer `id`, writing its `members`.
+    fn edit_layer(
+        &mut self,
+        id: &str,
+        members: &[&str],
+        edit: impl FnOnce(&mut Vec<Member>),
+    ) -> Result<(), String> {
         let index = self.layer(id)?;
         let entry = &mut self.layers[index];
+        for member in members {
+            (self.written).push(Written::Layer(entry.key, Some(member.to_string())));
+        }
         let mut members = entry.json.as_object().expect("layers are objects").to_vec();
         edit(&mut members);
         entry.json = Arc::new(synthetic(JsonValue::Object(members)));
@@ -466,13 +462,8 @@ impl Draft {
         name: &str,
         value: Option<Json>,
     ) -> Result<(), String> {
-        let key = self.layers[self.layer(layer)?].key;
-        self.written.push(Written::Property {
-            layer: key,
-            section,
-            name: name.to_string(),
-        });
-        self.edit_layer(layer, |members| {
+        let written = format!("{section}.{name}");
+        self.edit_layer(layer, &[&written], |members| {
             let mut properties = member(members, section)
                 .and_then(Json::as_object)
                 .unwrap_or_default()
@@ -491,14 +482,16 @@ impl Draft {
             Op::SetLayout { layer, name, value } => {
                 self.set_property(layer, "layout", name, value.clone())
             }
-            Op::SetFilter { layer, filter } => {
-                self.edit_layer(layer, |m| set_member(m, "filter", filter.clone()))
-            }
-            Op::SetZoomRange { layer, min, max } => self.edit_layer(layer, |m| {
-                let number = |z: &Option<f64>| z.map(|z| synthetic(JsonValue::Number(z)));
-                set_member(m, "minzoom", number(min));
-                set_member(m, "maxzoom", number(max));
+            Op::SetFilter { layer, filter } => self.edit_layer(layer, &["filter"], |m| {
+                set_member(m, "filter", filter.clone())
             }),
+            Op::SetZoomRange { layer, min, max } => {
+                self.edit_layer(layer, &["minzoom", "maxzoom"], |m| {
+                    let number = |z: &Option<f64>| z.map(|z| synthetic(JsonValue::Number(z)));
+                    set_member(m, "minzoom", number(min));
+                    set_member(m, "maxzoom", number(max));
+                })
+            }
             Op::AddLayer { layer, before } => {
                 let id = layer_id(layer).ok_or("a layer needs an id")?;
                 if self.layer(id).is_ok() {
@@ -509,7 +502,7 @@ impl Draft {
                     None => self.layers.len(),
                 };
                 let key = LayerKey(self.key());
-                self.written.push(Written::Layer(key));
+                self.written.push(Written::Layer(key, None));
                 self.layers.insert(
                     index,
                     LayerEntry {
@@ -538,6 +531,7 @@ impl Draft {
                     return Err(format!("the source \"{id}\" already exists"));
                 }
                 let key = SourceKey(self.key());
+                self.written.push(Written::Source(key));
                 self.sources.push(SourceEntry {
                     key,
                     id: id.clone(),
@@ -579,6 +573,7 @@ impl Draft {
                 if !self.new_data.contains(&entry.key) {
                     self.new_data.push(entry.key);
                 }
+                self.written.push(Written::Source(entry.key));
                 Ok(())
             }
             Op::UpdateSourceData { id, diff } => {
@@ -692,7 +687,8 @@ impl Draft {
             .and_then(Json::as_array)
             .unwrap_or_default()
         {
-            let old = layer_id(json).and_then(|id| by_id.get(id));
+            // Each old key goes to one layer at most.
+            let old = layer_id(json).and_then(|id| by_id.remove(id));
             let kept = old.filter(|old| {
                 identity(&old.json) == identity(json)
                     && source_key(&self.sources, &old.json) == source_key(&sources, json)
@@ -717,6 +713,7 @@ impl Draft {
             .cloned()
             .collect();
         self.new_root = true;
+        self.replaced = true;
         self.root = Arc::new(root);
         self.sources = sources;
         self.layers = layers;

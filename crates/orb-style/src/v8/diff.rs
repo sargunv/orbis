@@ -5,11 +5,12 @@ use crate::*;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::Arc;
 
-use crate::v8::{Diagnostic, Diagnostics, RootKey};
+use crate::v8::{Diagnostics, RootKey};
 use orb_expr::json::{Json, JsonValue, Member};
 
-use crate::v8::doc::{Draft, StyleDoc, Written, member, synthetic};
+use crate::v8::doc::{Draft, StyleDoc, Written, member, set_member, synthetic};
 use crate::v8::doc::{same, same_opt};
+use crate::v8::{layer, parse_edited, source, terrain};
 
 /// Whether `json` reads any of `keys` through `global-state`.
 fn reads_global(json: &Json, keys: &HashSet<&str>) -> bool {
@@ -110,7 +111,9 @@ fn add_once(changes: &mut Vec<Change>, change: Change) {
 }
 
 /// The new snapshot and the patch from `doc` to `draft`.
-pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diagnostics> {
+/// `draft` loses what it held that failed to parse and the document drops:
+/// broken layers, sources and terrain of a new document.
+pub(crate) fn diff(doc: &StyleDoc, draft: &mut Draft) -> Result<(Style, Patch), Diagnostics> {
     let old = doc.style();
     let previews = old.previews;
     let mut changes = Vec::new();
@@ -218,7 +221,8 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
     // Sources.
     let mut source_diffs = Vec::new();
     let old_sources: HashMap<SourceKey, &Arc<Source>> =
-        doc.source_keys().zip(&old.sources).collect();
+        old.sources.iter().map(|s| (s.key, s)).collect();
+    let mut dropped = Vec::new();
     for entry in &draft.sources {
         let old = old_sources.get(&entry.key);
         let kept = old.filter(|_| !draft.new_data.contains(&entry.key));
@@ -233,8 +237,18 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
             }
             (Some(source), None) => style.sources.push(Arc::clone(source)),
             (None, _) => {
-                let (source, w) = crate::v8::parse_source(&entry.id, &entry.json, previews)?;
+                let path = format!("sources.{}", entry.id);
+                let droppable =
+                    draft.replaced && !draft.written.contains(&Written::Source(entry.key));
+                let (source, w) =
+                    parse_edited("the source", &[], previews, Vec::new(), droppable, |cx| {
+                        source::parse_source(cx, entry.key, &entry.id, &entry.json, &path)
+                    })?;
                 warnings.extend(w);
+                let Some(source) = source else {
+                    dropped.push(entry.key);
+                    continue;
+                };
                 style.sources.push(Arc::new(source));
                 changes.push(match old {
                     Some(_) => Change::SourceData(entry.key),
@@ -243,9 +257,10 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
             }
         }
     }
-    for key in doc.source_keys() {
-        if !draft.sources.iter().any(|s| s.key == key) {
-            changes.push(Change::SourceRemoved(key));
+    draft.sources.retain(|s| !dropped.contains(&s.key));
+    for source in &old.sources {
+        if !style.sources.iter().any(|s| s.key == source.key) {
+            changes.push(Change::SourceRemoved(source.key));
         }
     }
 
@@ -257,68 +272,75 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
 
     // Terrain reads the new sources; switching it needs no reload.
     if let Some(json) = member(&draft.root, RootKey::Terrain.name()) {
-        let (terrain, w) = crate::v8::parse_terrain(json, &style.sources)?;
+        let terrain = Written::Root(RootKey::Terrain);
+        let droppable = draft.replaced && !draft.written.contains(&terrain);
+        let (parsed, w) =
+            parse_edited("the terrain", &[], previews, Vec::new(), droppable, |cx| {
+                terrain::parse(cx, json, &style.sources)
+            })?;
         warnings.extend(w);
-        style.terrain = Some(terrain);
+        style.terrain = parsed;
+        if style.terrain.is_none() {
+            let mut root = draft.root.as_ref().clone();
+            set_member(&mut root, RootKey::Terrain.name(), None);
+            draft.root = Arc::new(root);
+        }
     }
 
     // Layers.
-    let old_layers: HashMap<LayerKey, (usize, &Arc<Layer>)> = doc
-        .layer_keys()
-        .zip(&old.layers)
-        .enumerate()
-        .map(|(i, (k, l))| (k, (i, l)))
-        .collect();
-    // Which old layers the draft keeps, by index.
-    let mut kept = vec![false; old.layers.len()];
+    let old_layers: HashMap<LayerKey, &Arc<Layer>> =
+        old.layers.iter().map(|l| (l.key, l)).collect();
     let mut dirty = draft.dirty.clone();
     dirty.sort_unstable();
-    let dirty = |key| dirty.binary_search(key).is_ok();
+    let dirty = |key: &LayerKey| dirty.binary_search(key).is_ok();
     let mut ids = HashSet::default();
+    let mut dropped = Vec::new();
     for (index, entry) in draft.layers.iter().enumerate() {
+        let old = old_layers.get(&entry.key);
         let id = entry
             .json
             .get("id")
             .and_then(Json::as_str)
             .unwrap_or_default();
-        if !ids.insert(id) {
-            return Err(Diagnostics {
-                errors: vec![Diagnostic {
-                    path: format!("layers[{index}].id"),
-                    span: Default::default(),
-                    message: format!("duplicate layer id \"{id}\""),
-                }],
-                warnings: Vec::new(),
-            });
-        }
-        let old_entry = old_layers.get(&entry.key);
-        if let Some(&(i, _)) = old_entry {
-            kept[i] = true;
-        }
-        if let Some(&(_, old)) = old_entry
+        let duplicate = !ids.insert(id);
+        if let Some(old) = old
+            && !duplicate
             && !dirty(&entry.key)
             && !reads_global(&entry.json, &changed)
         {
             style.layers.push(Arc::clone(old));
             continue;
         }
-        let written = (draft.written.iter())
+        let written: Vec<String> = (draft.written.iter())
             .filter_map(|w| w.layer_path(entry.key, index))
             .collect();
-        let (layer, w) = crate::v8::parse_edited_layer(
-            &entry.json,
-            index,
-            &style.sources,
+        let droppable = draft.replaced && written.is_empty();
+        let (layer, w) = parse_edited(
+            "the layer",
             &new_state,
             previews,
             written,
+            droppable,
+            |cx| {
+                if duplicate {
+                    let message = format!("duplicate layer id \"{id}\"");
+                    cx.error(format!("layers[{index}].id"), Default::default(), message);
+                    return None;
+                }
+                let (json, sources) = (&entry.json, &style.sources);
+                layer::parse_layer(cx, json, index, entry.key, sources, &mut Default::default())
+            },
         )?;
         warnings.extend(w);
-        match old_entry {
+        let Some(layer) = layer else {
+            dropped.push(entry.key);
+            continue;
+        };
+        match old {
             None => changes.push(Change::LayerAdded(entry.key)),
-            Some(&(old_index, old)) => layer_changes(
+            Some(old) => layer_changes(
                 entry.key,
-                (doc.layer_json(old_index), old),
+                (doc.layer_json(entry.key).expect("an old layer"), old),
                 (&entry.json, &layer),
                 &changed,
                 &mut changes,
@@ -326,23 +348,23 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         }
         style.layers.push(Arc::new(layer));
     }
-    let old_keys = || doc.layer_keys().zip(&kept);
+    draft.layers.retain(|l| !dropped.contains(&l.key));
+    let kept = |key: &LayerKey| style.layers.iter().any(|l| l.key == *key);
     changes.extend(
-        old_keys()
-            .filter(|(_, kept)| !**kept)
-            .map(|(key, _)| Change::LayerRemoved(key)),
+        (old.layers.iter())
+            .filter(|l| !kept(&l.key))
+            .map(|l| Change::LayerRemoved(l.key)),
     );
     // The layers both have, in their old order and in their new.
-    let before = old_keys().filter(|(_, kept)| **kept).map(|(key, _)| key);
-    let after = (draft.layers.iter().map(|l| l.key)).filter(|k| old_layers.contains_key(k));
+    let before = (old.layers.iter().map(|l| l.key)).filter(kept);
+    let after = (style.layers.iter().map(|l| l.key)).filter(|k| old_layers.contains_key(k));
     if !before.eq(after) {
         changes.push(Change::LayersReordered);
     }
     // Unchanged layers' JSON is shared; only edited ones were compared.
     debug_assert!(draft.layers.iter().all(|l| {
-        old_layers
-            .get(&l.key)
-            .is_none_or(|&(i, _)| dirty(&l.key) || same(doc.layer_json(i), &l.json))
+        doc.layer_json(l.key)
+            .is_none_or(|old| dirty(&l.key) || same(old, &l.json))
     }));
     style.warnings.clone_from(&warnings);
     Ok((

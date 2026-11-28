@@ -977,17 +977,13 @@ pub(crate) fn full_update(
     surface: crate::surface::SurfaceTiles,
 ) -> StyleUpdate {
     StyleUpdate {
-        layer_json: doc
-            .layer_keys()
-            .enumerate()
-            .map(|(i, k)| (k.0, Arc::new(doc.layer_json(i).clone())))
+        layer_json: (doc.style().layers.iter())
+            .map(|l| (l.key.0, Arc::clone(doc.layer_json(l.key).expect("a layer"))))
             .collect(),
-        source_json: doc
-            .source_keys()
-            .enumerate()
-            .map(|(i, k)| {
-                let id = doc.style().sources[i].id.clone();
-                (k.0, id, Arc::new(doc.source_json(i).clone()))
+        source_json: (doc.style().sources.iter())
+            .map(|s| {
+                let json = doc.source_json(s.key).expect("a source");
+                (s.key.0, s.id.clone(), Arc::clone(json))
             })
             .collect(),
         ..StyleUpdate::base(doc, revision, fonts, surface)
@@ -1005,8 +1001,8 @@ impl StyleUpdate {
     ) -> Self {
         Self {
             revision,
-            layers: doc.layer_keys().map(|k| k.0).collect(),
-            sources: doc.source_keys().map(|k| k.0).collect(),
+            layers: doc.style().layers.iter().map(|l| l.key.0).collect(),
+            sources: doc.style().sources.iter().map(|s| s.key.0).collect(),
             layer_json: Vec::new(),
             source_json: Vec::new(),
             source_diffs: Vec::new(),
@@ -1033,8 +1029,6 @@ pub(crate) fn revise(
     TileWorker::with_style(
         previous,
         Arc::clone(doc.style()),
-        doc.layer_keys().map(|k| k.0).collect(),
-        doc.source_keys().map(|k| k.0).collect(),
         new_data,
         revision,
         fonts,

@@ -157,9 +157,8 @@ impl TileWorker {
                             continue;
                         };
                         let feature = &mut read[at];
-                        let Some(style_layer) = (plan.layer_keys.iter())
-                            .position(|&k| k == drawn.layer)
-                            .map(|i| &plan.style.layers[i])
+                        let Some(style_layer) =
+                            plan.style.layers.iter().find(|l| l.key.0 == drawn.layer)
                         else {
                             continue;
                         };

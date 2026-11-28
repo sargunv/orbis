@@ -392,6 +392,7 @@ pub(crate) fn parse_layer(
     cx: &mut Cx,
     json: &Json,
     index: usize,
+    key: LayerKey,
     sources: &[std::sync::Arc<Source>],
     ids: &mut rustc_hash::FxHashSet<String>,
 ) -> Option<Layer> {
@@ -558,7 +559,7 @@ pub(crate) fn parse_layer(
             transitions.push((id, t));
         }
     }
-    let mut layer = Layer::new(id, ty, props);
+    let mut layer = Layer::new(key, id, ty, props);
     layer.source = source;
     layer.source_layer = source_layer;
     layer.filter = filter;

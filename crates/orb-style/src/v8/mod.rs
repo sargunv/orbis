@@ -37,14 +37,20 @@ pub use tx::{FeatureTarget, Op, Transaction};
 /// property draws its default.
 pub const INVALID_VALUE: &str = "drawing the default";
 
+/// How the warning of a document's broken layer, source or terrain ends,
+/// after what it is.
+pub(crate) const DROPPED: &str = "is dropped";
+
 // The native model this front end builds.
 use crate::*;
 
 use orb_expr::json::{self, Json, JsonValue, Member};
 
 /// Everything a failed parse found. An error rejects the style, as GL JS's
-/// validation does; a value that doesn't fit its property is only a
-/// warning, and draws the property's default, unless an edit wrote it.
+/// validation does, but in a document only its layer, source or terrain,
+/// which is dropped with a warning, as MapLibre Native drops it; a value
+/// that doesn't fit its property is only a warning, and draws the
+/// property's default. Neither is forgiven where an edit wrote it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Diagnostics {
     pub errors: Vec<Diagnostic>,
@@ -248,10 +254,14 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
             None => Vec::new(),
             Some(items) => {
                 let mut ids = rustc_hash::FxHashSet::default();
-                items
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, l)| layer::parse_layer(cx, l, i, &sources, &mut ids))
+                (items.iter().enumerate())
+                    .filter_map(|(i, l)| {
+                        // Keyed `1..` in order.
+                        let key = LayerKey(i as u32 + 1);
+                        cx.item("the layer", true, |cx| {
+                            layer::parse_layer(cx, l, i, key, &sources, &mut ids)
+                        })
+                    })
                     .map(std::sync::Arc::new)
                     .collect()
             }
@@ -278,7 +288,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         atmosphere: doc.get("sky").map(|json| sky::parse(cx, json)),
         terrain: doc
             .get("terrain")
-            .and_then(|json| terrain::parse(cx, json, &sources)),
+            .and_then(|json| cx.item("the terrain", true, |cx| terrain::parse(cx, json, &sources))),
         sources,
         layers,
         targets,
@@ -323,43 +333,42 @@ pub(crate) fn resolve_state(
     state
 }
 
-/// Parses one layer of a style whose sources are `sources`, with
+/// Parses one layer, `key`, of a style whose sources are `sources`, with
 /// `global-state` reads resolved to `state`. `index` locates diagnostics
 /// (`layers[index]`). Returns the layer and its warnings.
 pub fn parse_layer(
     json: &Json,
     index: usize,
+    key: LayerKey,
     sources: &[std::sync::Arc<Source>],
     state: &[(String, Value<'static>)],
     previews: Previews,
 ) -> Result<(Layer, Vec<Diagnostic>), Diagnostics> {
-    parse_edited_layer(json, index, sources, state, previews, Vec::new())
-}
-
-/// [`parse_layer`], failing on an invalid value an edit wrote at one of
-/// the JSON paths `written`.
-pub(crate) fn parse_edited_layer(
-    json: &Json,
-    index: usize,
-    sources: &[std::sync::Arc<Source>],
-    state: &[(String, Value<'static>)],
-    previews: Previews,
-    written: Vec<String>,
-) -> Result<(Layer, Vec<Diagnostic>), Diagnostics> {
-    let mut cx = Cx::new(state, previews).written(written);
-    let layer = layer::parse_layer(&mut cx, json, index, sources, &mut Default::default());
+    let mut cx = Cx::new(state, previews);
+    let layer = layer::parse_layer(&mut cx, json, index, key, sources, &mut Default::default());
     cx.finish(layer)
 }
 
-/// Parses a root `terrain` against the style's sources, returning its
-/// warnings.
-pub(crate) fn parse_terrain(
-    json: &Json,
-    sources: &[std::sync::Arc<Source>],
-) -> Result<(Terrain, Vec<Diagnostic>), Diagnostics> {
-    let mut cx = Cx::default();
-    let terrain = terrain::parse(&mut cx, json, sources);
-    cx.finish(terrain)
+/// One layer, source or the terrain of an edited document, `what`: an
+/// error drops it with a
+/// warning where `droppable`, as in a document, and fails the edit
+/// otherwise; an invalid value at a JSON path an edit wrote (`written`)
+/// fails it too. `None` for one dropped.
+pub(crate) fn parse_edited<T>(
+    what: &str,
+    state: &[(String, Value<'static>)],
+    previews: Previews,
+    written: Vec<String>,
+    droppable: bool,
+    parse: impl FnOnce(&mut Cx) -> Option<T>,
+) -> Result<(Option<T>, Vec<Diagnostic>), Diagnostics> {
+    let mut cx = Cx::new(state, previews).written(written);
+    let parsed = cx.item(what, droppable, parse);
+    match parsed {
+        Some(parsed) => cx.finish(Some(Some(parsed))),
+        None if droppable => Ok((None, cx.diagnostics.warnings)),
+        None => cx.finish(None),
+    }
 }
 
 /// v8 `projection`, returning the plane the map draws on and the low-zoom
@@ -579,14 +588,16 @@ pub(crate) fn parse_transition(json: &Json) -> Option<Option<[f64; 2]>> {
     }
 }
 
-/// Parses one source, `id`, of a style. Returns it and its warnings.
+/// Parses one source, `key` named `id`, of a style. Returns it and its
+/// warnings.
 pub fn parse_source(
+    key: SourceKey,
     id: &str,
     json: &Json,
     previews: Previews,
 ) -> Result<(Source, Vec<Diagnostic>), Diagnostics> {
     let mut cx = Cx::new(&[], previews);
-    let source = source::parse_source(&mut cx, id, json, &format!("sources.{id}"));
+    let source = source::parse_source(&mut cx, key, id, json, &format!("sources.{id}"));
     cx.finish(source)
 }
 
@@ -623,6 +634,31 @@ impl Cx {
     /// one of them.
     fn written(self, written: Vec<String>) -> Self {
         Self { written, ..self }
+    }
+
+    /// Runs `parse` for `what`, a layer, source or terrain: an error it
+    /// reports drops it where `droppable`, as MapLibre Native drops a
+    /// document's broken layer or source, each error becoming a warning
+    /// that says so; otherwise errors stay. `None` for one dropped or
+    /// failed.
+    pub(crate) fn item<T>(
+        &mut self,
+        what: &str,
+        droppable: bool,
+        parse: impl FnOnce(&mut Self) -> Option<T>,
+    ) -> Option<T> {
+        let errors = self.diagnostics.errors.len();
+        let parsed = parse(self);
+        if self.diagnostics.errors.len() == errors {
+            return parsed;
+        }
+        if droppable {
+            for d in self.diagnostics.errors.drain(errors..).collect::<Vec<_>>() {
+                let message = d.message.trim_end_matches('.');
+                self.warn(d.path, d.span, format!("{message}; {what} {DROPPED}"));
+            }
+        }
+        None
     }
 
     /// What was parsed and its warnings; every diagnostic instead if
@@ -849,6 +885,15 @@ impl Cx {
         }
         value
     }
+}
+
+/// The warnings of a document that dropped its layers, sources or
+/// terrain.
+#[cfg(test)]
+pub(crate) fn dropped(style: &Style) -> Vec<&Diagnostic> {
+    (style.warnings.iter())
+        .filter(|w| w.message.ends_with(DROPPED))
+        .collect()
 }
 
 #[cfg(test)]

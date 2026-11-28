@@ -5,6 +5,8 @@ use crate::property::{DemEncoding, Encoding, Scheme};
 /// A style source.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Source {
+    /// Its identity across edits.
+    pub key: crate::SourceKey,
     pub id: String,
     pub kind: SourceKind,
     /// The tile matrix set its tiles are in (its `dev.sargunv.orbis:tileMatrixSet`); `None`

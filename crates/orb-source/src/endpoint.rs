@@ -692,6 +692,7 @@ mod tests {
     #[test]
     fn region_tiles_stop_at_the_source_maxzoom() {
         let source = orb_style::v8::parse_source(
+            orb_style::SourceKey(1),
             "s",
             &json::parse(r#"{"type": "raster", "tiles": ["https://x/{z}/{x}/{y}.png"], "tileSize": 256, "maxzoom": 3}"#).unwrap(),
             orb_style::Previews::NONE,
