@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use orb_host::jobs::Executor;
-use orb_host::{Abort, Fetch, FetchError, FontFiles, ResourceKind};
+use orb_host::{Abort, Fetch, FetchError, FontFiles, Lifetime, ResourceKind};
 
 use crate::glyphs::{GlyphRaster, LocalGlyphs, RasterDone, ResourceError};
 use crate::loader::TileLoader;
@@ -726,11 +726,14 @@ impl JobHost {
                                 done(Ok(Loaded::Missing))
                             }
                             Ok((fetched, encoding)) => {
-                                let fresh_until =
-                                    (fetched.fresh_until).map(|until| match fetched.stale {
-                                        true => until,
-                                        false => until.max(request.asked_at + MIN_LIFETIME),
-                                    });
+                                let fresh_until = match fetched.lifetime {
+                                    Lifetime::Fresh { until } => {
+                                        Some(until.max(request.asked_at + MIN_LIFETIME))
+                                    }
+                                    Lifetime::Expired { at } => Some(at),
+                                    Lifetime::Unknown | Lifetime::Stale => None,
+                                };
+                                let stale = fetched.lifetime == Lifetime::Stale;
                                 let request = TileRequest {
                                     encoding,
                                     fresh_until,
@@ -739,12 +742,12 @@ impl JobHost {
                                 // A reload no server answered, a cached copy
                                 // standing in, leaves the tile as drawn too.
                                 if request.job == TileJob::Revalidate
-                                    && (fetched.stale || worker.renew(&request, &fetched.bytes))
+                                    && (stale || worker.renew(&request, &fetched.bytes))
                                 {
                                     let build = TileBuild {
                                         fresh_until,
                                         renewed: true,
-                                        stale: fetched.stale,
+                                        stale,
                                         ..TileBuild::default()
                                     };
                                     return done(Ok(Loaded::Tile(build)));

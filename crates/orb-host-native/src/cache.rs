@@ -75,31 +75,36 @@ pub(crate) struct Cached {
 }
 
 impl Cached {
-    /// The copy as a fetch's answer, with the lifetime its headers gave if
-    /// it is fresh, else stale.
+    /// The copy as a fetch's answer: with the lifetime its headers gave
+    /// while it's fresh, else stale.
     pub(crate) fn fetched(self) -> orb_host::Fetched {
         let Freshness {
             until, explicit, ..
         } = self.freshness;
+        let lifetime = match (self.fresh, explicit) {
+            (true, true) => orb_host::Lifetime::Fresh { until },
+            (true, false) => orb_host::Lifetime::Unknown,
+            (false, _) => orb_host::Lifetime::Stale,
+        };
         orb_host::Fetched {
             bytes: self.bytes,
-            fresh_until: (self.fresh && explicit).then_some(until),
-            stale: !self.fresh,
+            lifetime,
         }
     }
 
-    /// The copy, stale, as [`Fetch::get_or_stale`](orb_host::Fetch::get_or_stale)
-    /// answers before the server revalidates it: with the time it expired,
-    /// whoever guessed it. The copy itself when it is fresh, or its
-    /// response forbade that.
+    /// The copy, expired, as [`Fetch::get_or_stale`](orb_host::Fetch::get_or_stale)
+    /// answers before the server revalidates it, whoever guessed when it
+    /// expired. The copy itself when it is fresh, or its response forbade
+    /// that.
     pub(crate) fn stale(self) -> Result<orb_host::Fetched, Self> {
         if self.fresh || self.freshness.must_revalidate {
             return Err(self);
         }
         Ok(orb_host::Fetched {
-            fresh_until: Some(self.freshness.until),
+            lifetime: orb_host::Lifetime::Expired {
+                at: self.freshness.until,
+            },
             bytes: self.bytes,
-            stale: true,
         })
     }
 }
@@ -528,14 +533,20 @@ mod tests {
         assert!(!stale.fresh);
         assert!(stale.last_modified.is_some());
         // Stale, it answers at once only as such, with when it expired.
-        assert_eq!(stale.stale().unwrap().fresh_until, Some(now - 1));
+        assert_eq!(
+            stale.stale().unwrap().lifetime,
+            orb_host::Lifetime::Expired { at: now - 1 }
+        );
         let checked = cache.lookup("https://a/checked").unwrap();
         assert!(checked.stale().is_err(), "must revalidate first");
         // Fresh by a lifetime the cache guessed, which no reload follows.
         let guessed = cache.lookup("https://a/guessed").unwrap();
         assert!(guessed.fresh);
-        assert_eq!(guessed.fetched().fresh_until, None);
-        assert_eq!(fresh.fetched().fresh_until, Some(now + 60));
+        assert_eq!(guessed.fetched().lifetime, orb_host::Lifetime::Unknown);
+        assert_eq!(
+            fresh.fetched().lifetime,
+            orb_host::Lifetime::Fresh { until: now + 60 }
+        );
         assert!(cache.lookup("https://a/missing").is_none());
         drop(cache);
     }

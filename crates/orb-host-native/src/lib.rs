@@ -211,34 +211,14 @@ impl NativeFetch {
         cached: Option<cache::Cached>,
         response: Result<Response, FetchError>,
     ) -> Result<Fetched, FetchError> {
-        // A lifetime already over is none: the response came stale. One
-        // the cache guessed keeps it fresh there, but isn't the map's.
+        // A lifetime the cache guessed keeps it fresh there, but isn't the
+        // map's.
         let now = cache::now();
-        let fresh = |freshness: Option<Freshness>| {
-            freshness
-                .filter(|f| f.explicit && f.until > now)
-                .map(|f| f.until)
+        let lifetime = |freshness: Option<Freshness>| {
+            let until = freshness.filter(|f| f.explicit).map(|f| f.until);
+            orb_host::Lifetime::given(until, now)
         };
-        let Some((cache, key)) = cache.zip(key) else {
-            return match (response?, cached) {
-                (
-                    Response::Body {
-                        bytes, freshness, ..
-                    },
-                    _,
-                ) => Ok(Fetched {
-                    bytes,
-                    fresh_until: fresh(freshness),
-                    stale: false,
-                }),
-                (Response::NotModified { freshness, .. }, Some(cached)) => Ok(Fetched {
-                    bytes: cached.bytes,
-                    fresh_until: fresh(freshness),
-                    stale: false,
-                }),
-                (Response::NotModified { .. }, None) => Err(FetchError::Status(304)),
-            };
-        };
+        let store = cache.zip(key.as_deref());
         match (response, cached) {
             (
                 Ok(Response::Body {
@@ -249,20 +229,17 @@ impl NativeFetch {
                 }),
                 _,
             ) => {
-                match freshness {
-                    Some(freshness) => cache.store(
-                        &key,
-                        &bytes,
-                        freshness,
-                        etag.as_deref(),
-                        last_modified.as_deref(),
-                    ),
-                    None => cache.remove(&key),
+                if let Some((cache, key)) = store {
+                    match freshness {
+                        Some(f) => {
+                            cache.store(key, &bytes, f, etag.as_deref(), last_modified.as_deref())
+                        }
+                        None => cache.remove(key),
+                    }
                 }
                 Ok(Fetched {
                     bytes,
-                    fresh_until: fresh(freshness),
-                    stale: false,
+                    lifetime: lifetime(freshness),
                 })
             }
             (
@@ -272,24 +249,25 @@ impl NativeFetch {
                 }),
                 Some(cached),
             ) => {
-                // Without directives, those the stale copy came with stand.
-                let freshness = freshness.map(|f| Freshness {
-                    must_revalidate: match directives_kept {
-                        true => cached.freshness.must_revalidate,
-                        false => f.must_revalidate,
-                    },
-                    ..f
-                });
-                // Unstorable, it leaves the copy stale, its directives kept.
-                let stale = Freshness {
-                    until: 0,
-                    ..cached.freshness
-                };
-                cache.refresh(&key, freshness.unwrap_or(stale));
+                if let Some((cache, key)) = store {
+                    // Without directives, those the stale copy came with
+                    // stand; unstorable, it leaves the copy stale.
+                    let kept = |f: Freshness| Freshness {
+                        must_revalidate: match directives_kept {
+                            true => cached.freshness.must_revalidate,
+                            false => f.must_revalidate,
+                        },
+                        ..f
+                    };
+                    let stale = Freshness {
+                        until: 0,
+                        ..cached.freshness
+                    };
+                    cache.refresh(key, freshness.map(kept).unwrap_or(stale));
+                }
                 Ok(Fetched {
                     bytes: cached.bytes,
-                    fresh_until: fresh(freshness),
-                    stale: false,
+                    lifetime: lifetime(freshness),
                 })
             }
             (Ok(Response::NotModified { .. }), None) => Err(FetchError::Status(304)),
@@ -299,11 +277,12 @@ impl NativeFetch {
             // copy.
             (Err(error), Some(cached)) if error.transient() => Ok(Fetched {
                 bytes: cached.bytes,
-                fresh_until: None,
-                stale: true,
+                lifetime: orb_host::Lifetime::Stale,
             }),
             (Err(error), _) => {
-                cache.remove(&key);
+                if let Some((cache, key)) = store {
+                    cache.remove(key);
+                }
                 Err(error)
             }
         }
@@ -581,13 +560,8 @@ fn http(
             });
         }
         status => {
-            let now = cache::now();
-            let wait = reply.header("retry-after").and_then(|h| {
-                orb_host::parse_retry_after(&h, |date| {
-                    let at = http::http_date(date, now)?;
-                    Some(std::time::Duration::from_secs(at.saturating_sub(now)))
-                })
-            });
+            let wait = (reply.header("retry-after"))
+                .and_then(|h| orb_host::http::retry_after(&h, cache::now()));
             return Err(FetchError::of_status(status, wait));
         }
     }
@@ -768,7 +742,7 @@ impl NativeFetch {
                 modified: c
                     .last_modified
                     .as_deref()
-                    .and_then(|date| http::http_date(date, cache::now())),
+                    .and_then(|date| orb_host::http::parse_date(date, cache::now())),
                 bytes: c.bytes.clone(),
             });
             let asked = NetworkRequest {
@@ -793,7 +767,7 @@ impl NativeFetch {
                             bytes,
                             freshness: hooked(fresh_until, must_revalidate),
                             etag,
-                            last_modified: modified.map(http::format_http_date),
+                            last_modified: modified.map(orb_host::http::format_date),
                         }),
                         NetworkAnswer::NotModified {
                             fresh_until,
@@ -978,7 +952,7 @@ impl Drop for Scratch {
 #[cfg(all(test, ureq_transport))]
 mod tests {
     use super::*;
-    use orb_host::TileFormat;
+    use orb_host::{Lifetime, TileFormat};
     use std::io::{Read, Write};
 
     const MVT: ResourceKind = ResourceKind::Tile(TileFormat::Mvt);
@@ -1220,10 +1194,12 @@ mod tests {
         assert_eq!(get().unwrap(), b"tile".to_vec().into());
         let renewed = get().unwrap();
         assert_eq!(renewed.bytes, b"tile");
-        let until = renewed.fresh_until.expect("the 304's lifetime");
+        let Lifetime::Fresh { until } = renewed.lifetime else {
+            panic!("the 304's lifetime: {:?}", renewed.lifetime);
+        };
         assert!((59..=61).contains(&(until - cache::now())), "{until}");
         // Fresh after the 304: no request, and the same lifetime.
-        assert_eq!(get().unwrap().fresh_until, Some(until));
+        assert_eq!(get().unwrap().lifetime, Lifetime::Fresh { until });
         let requests = server.join().unwrap();
         assert!(
             requests[1].contains("if-none-match: \"v1\""),
@@ -1234,10 +1210,10 @@ mod tests {
         cache.refresh(&orb_host::cache::key(&url, None), Freshness::default());
         let fallback = get().unwrap();
         assert_eq!(
-            (fallback.bytes, fallback.fresh_until),
-            (b"tile".to_vec(), None)
+            (fallback.bytes, fallback.lifetime),
+            (b"tile".to_vec(), Lifetime::Stale),
+            "no server vouched for it"
         );
-        assert!(fallback.stale, "no server vouched for it");
     }
 
     #[test]
@@ -1259,14 +1235,10 @@ mod tests {
         // Stale: at once, with a lifetime already over, and no request.
         let stale = get(&url, true).unwrap();
         assert_eq!(stale.bytes, b"tile");
-        assert!(stale.fresh_until.is_some_and(|until| until <= cache::now()));
+        assert!(matches!(stale.lifetime, Lifetime::Expired { at } if at <= cache::now()));
         // What revalidates it asks the server, with its validator.
         let renewed = get(&url, false).unwrap();
-        assert!(
-            renewed
-                .fresh_until
-                .is_some_and(|until| until > cache::now())
-        );
+        assert!(matches!(renewed.lifetime, Lifetime::Fresh { .. }));
         let requests = server.join().unwrap();
         assert!(
             requests[1].contains("if-none-match: \"v1\""),
@@ -1313,7 +1285,7 @@ mod tests {
     fn failed_responses_say_when_to_ask_again() {
         use std::time::Duration;
         let close = "Connection: close\r\n";
-        let in_an_hour = http::format_http_date(cache::now() + 3600);
+        let in_an_hour = orb_host::http::format_date(cache::now() + 3600);
         let (url, server) = serve(vec![
             format!("HTTP/1.1 429 Too Many Requests\r\n{close}Retry-After: 120\r\n\r\n"),
             format!("HTTP/1.1 429 Too Many Requests\r\n{close}Retry-After: {in_an_hour}\r\n\r\n"),
@@ -1504,8 +1476,10 @@ mod tests {
         ]);
         assert_eq!(get(&fetch, &url).unwrap().bytes, b"tile");
         // Revalidated with the stale copy's validator, then fresh.
-        assert!(get(&fetch, &url).unwrap().fresh_until.is_some());
-        assert!(get(&fetch, &url).unwrap().fresh_until.is_some());
+        for _ in 0..2 {
+            let lifetime = get(&fetch, &url).unwrap().lifetime;
+            assert!(matches!(lifetime, Lifetime::Fresh { .. }), "{lifetime:?}");
+        }
         let requests = server.join().unwrap();
         assert!(
             requests[1].contains("if-none-match: \"v1\""),

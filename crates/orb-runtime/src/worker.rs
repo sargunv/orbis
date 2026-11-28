@@ -1299,7 +1299,7 @@ impl TileRequest {
 pub(crate) mod tests {
     use super::*;
     use crate::jobs::*;
-    use orb_host::Fetch;
+    use orb_host::{Fetch, Lifetime};
 
     fn request(tile: TileIndex) -> TileRequest {
         let location = TileLocation::Url("test://data.json".into());
@@ -2134,13 +2134,10 @@ pub(crate) mod tests {
             }
         };
         let fetches = || fetch.0.lock().unwrap().len();
-        let fetched = |fresh_until| {
+        let fetched = |lifetime| {
             let (done, _) = fetch.0.lock().unwrap().pop().expect("a fetch");
-            done(Ok(orb_host::Fetched {
-                bytes: bytes.clone(),
-                fresh_until,
-                stale: false,
-            }));
+            let bytes = bytes.clone();
+            done(Ok(orb_host::Fetched { bytes, lifetime }));
         };
         let tile = TileIndex::new(z, x, y);
         let whole = |asked_at| TileRequest {
@@ -2149,7 +2146,7 @@ pub(crate) mod tests {
             ..request(tile)
         };
         let built = ask(whole(100));
-        fetched(Some(200));
+        fetched(Lifetime::Fresh { until: 200 });
         let first = built();
         assert!(!first.labels_later.is_empty(), "its labels wait for glyphs");
         assert_eq!(first.fresh_until, Some(200));
@@ -2175,14 +2172,14 @@ pub(crate) mod tests {
             job: TileJob::Revalidate,
             ..whole(250)
         });
-        fetched(Some(300));
+        fetched(Lifetime::Fresh { until: 300 });
         let renewed = reload();
         assert!(renewed.renewed && renewed.meshes.is_empty());
         assert_eq!(renewed.fresh_until, Some(300));
         assert_eq!(ask(whole(260))().fresh_until, Some(300), "renewed");
         assert_eq!(fetches(), 1);
         let built = ask(whole(300));
-        fetched(None);
+        fetched(Lifetime::Unknown);
         assert_eq!(built().fresh_until, None, "fetched again, stale");
     }
 
@@ -2209,13 +2206,10 @@ pub(crate) mod tests {
                 other => panic!("not built: {other:?}"),
             }
         };
-        let fetched = |fresh_until, stale| {
+        let fetched = |lifetime| {
             let (done, _) = fetch.0.lock().unwrap().pop().expect("a fetch");
-            done(Ok(orb_host::Fetched {
-                bytes: bytes.clone(),
-                fresh_until,
-                stale,
-            }));
+            let bytes = bytes.clone();
+            done(Ok(orb_host::Fetched { bytes, lifetime }));
         };
         let url = "local://tile";
         let first = |asked_at, tile| TileRequest {
@@ -2226,7 +2220,7 @@ pub(crate) mod tests {
         };
         // The cache's copy expired at 90: not made to last a few seconds.
         let built = ask(first(100, TileIndex::new(z, x, y)));
-        fetched(Some(90), true);
+        fetched(Lifetime::Expired { at: 90 });
         assert_eq!(built().fresh_until, Some(90));
         // A sibling takes the frame, expired as it is.
         let sibling = ask(TileRequest {
@@ -2239,7 +2233,7 @@ pub(crate) mod tests {
             takes_stale: false,
             ..first(150, TileIndex::new(z, x, y))
         });
-        fetched(Some(400), false);
+        fetched(Lifetime::Fresh { until: 400 });
         let renewed = reload();
         assert!(renewed.renewed && !renewed.stale);
         assert_eq!(renewed.fresh_until, Some(400));

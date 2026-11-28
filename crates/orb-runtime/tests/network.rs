@@ -473,8 +473,9 @@ impl Fetch for Throttling {
         done(match n {
             1 => Ok(orb_host::Fetched {
                 bytes: self.vector.clone(),
-                fresh_until: Some(unix as u64 + 60),
-                stale: false,
+                lifetime: orb_host::Lifetime::Fresh {
+                    until: unix as u64 + 60,
+                },
             }),
             2 => Err(FetchError::RetryAfter {
                 error: Box::new(FetchError::Status(429)),

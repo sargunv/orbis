@@ -7,6 +7,7 @@
 
 pub mod abort;
 pub mod cache;
+pub mod http;
 pub mod jobs;
 pub mod loss;
 
@@ -22,22 +23,7 @@ pub type FetchDone = Box<dyn FnOnce(Result<Fetched, FetchError>) + Send + 'stati
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Fetched {
     pub bytes: Vec<u8>,
-    /// Until when (Unix seconds) the resource stays fresh, as its
-    /// response's caching headers said, when it came fresh: a map loads
-    /// the tiles it draws from it again then (GL JS's reload timer,
-    /// MapLibre Native's revalidation). `None` when it came stale
-    /// (`no-cache`, `max-age=0`, a [`stale`](Self::stale) copy standing
-    /// in for a failure) or nothing gave it a lifetime (`no-store`, a
-    /// file, no headers): what it shows stays until it loads again for
-    /// another reason. A time already past answers
-    /// [`Fetch::get_or_stale`] alone: a cached copy that had expired
-    /// then, which the map loads again at once.
-    pub fresh_until: Option<u64>,
-    /// A cached copy past its lifetime answered without the server's word
-    /// on it: offline, standing in for a failure, or as
-    /// [`Fetch::get_or_stale`] answers. A map loading a tile again to
-    /// revalidate it tries again later, as it does after a failure.
-    pub stale: bool,
+    pub lifetime: Lifetime,
 }
 
 impl From<Vec<u8>> for Fetched {
@@ -45,43 +31,42 @@ impl From<Vec<u8>> for Fetched {
     fn from(bytes: Vec<u8>) -> Self {
         Self {
             bytes,
-            fresh_until: None,
-            stale: false,
+            lifetime: Lifetime::Unknown,
         }
     }
 }
 
-/// What a response's `Cache-Control` says of how long it stays fresh
-/// (RFC 9111 §5.2.2), to a private cache.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MaxAge {
-    /// `no-store`: it has no lifetime.
-    NoStore,
-    /// Fresh this many seconds from its arrival: its `max-age`, 0 for
-    /// `no-cache`.
-    Seconds(u64),
-    /// Neither: `Expires`, or a heuristic, decides.
-    Unsaid,
+/// How long what a fetch brought stays fresh, which a map's reloads of
+/// what it draws from it follow (GL JS's reload timer, MapLibre Native's
+/// revalidation).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Lifetime {
+    /// Fresh until then (Unix seconds), as its response's caching headers
+    /// said: a map loads what it draws from it again then.
+    Fresh { until: u64 },
+    /// Nothing gave it a lifetime that lasts (`no-store`, `no-cache`,
+    /// `max-age=0`, a file, no headers): what it shows stays until it
+    /// loads again for another reason.
+    #[default]
+    Unknown,
+    /// A cached copy past its lifetime, standing in without the server's
+    /// word on it (offline, a failure): a map revalidating what it draws
+    /// tries again later, as after a failure.
+    Stale,
+    /// A cached copy that expired then (Unix seconds), answered before the
+    /// server revalidates it ([`Fetch::get_or_stale`]): a map loads it
+    /// again at once.
+    Expired { at: u64 },
 }
 
-impl MaxAge {
-    /// What the `Cache-Control` header `directives` says.
-    pub fn of(directives: &str) -> Self {
-        let mut max_age = Self::Unsaid;
-        for directive in directives.split(',').map(str::trim) {
-            let (name, value) = directive.split_once('=').unwrap_or((directive, ""));
-            match name.to_ascii_lowercase().as_str() {
-                "no-store" => return Self::NoStore,
-                "no-cache" => max_age = Self::Seconds(0),
-                "max-age" if max_age != Self::Seconds(0) => {
-                    if let Ok(seconds) = value.trim_matches('"').parse() {
-                        max_age = Self::Seconds(seconds);
-                    }
-                }
-                _ => {}
-            }
+impl Lifetime {
+    /// A fresh response's lifetime, from when its headers said it stays
+    /// fresh until (`None`: they gave none), at `now` (Unix seconds).
+    pub fn given(until: Option<u64>, now: u64) -> Self {
+        match until {
+            Some(until) if until > now => Self::Fresh { until },
+            _ => Self::Unknown,
         }
-        max_age
     }
 }
 
@@ -154,11 +139,11 @@ pub trait Fetch: Send + Sync {
     fn get(&self, kind: ResourceKind, url: &str, abort: &Abort, done: FetchDone);
     /// As [`get`](Self::get), but a cached copy past its lifetime answers
     /// at once rather than wait for the server to revalidate it, unless
-    /// its response forbade that (`must-revalidate`, `no-cache`): its
-    /// [`Fetched::fresh_until`] is then the time it expired, already past,
-    /// and the caller gets it again to revalidate it, as a map reloads a
-    /// tile whose data expired (MapLibre Native's cache answers so). A
-    /// host without such a cache answers as `get` does.
+    /// its response forbade that (`must-revalidate`, `no-cache`): it comes
+    /// [`Lifetime::Expired`], and the caller gets it again to revalidate
+    /// it, as a map reloads a tile whose data expired (MapLibre Native's
+    /// cache answers so). A host without such a cache answers as `get`
+    /// does.
     fn get_or_stale(&self, kind: ResourceKind, url: &str, abort: &Abort, done: FetchDone) {
         self.get(kind, url, abort, done);
     }
@@ -351,7 +336,7 @@ pub const RATE_LIMIT_WAIT: Duration = Duration::from_secs(5);
 impl FetchError {
     /// What an HTTP response of `status` that brought no resource comes
     /// to, given the wait its `Retry-After` header asked for when a host
-    /// could read one ([`parse_retry_after`]): 404 is [`NotFound`](Self::NotFound);
+    /// could read one ([`http::retry_after`]): 404 is [`NotFound`](Self::NotFound);
     /// 429 waits as asked, else [`RATE_LIMIT_WAIT`]; a 5xx waits as asked
     /// (a 503 says for how long the server is out of service).
     pub fn of_status(status: u16, retry_after: Option<Duration>) -> Self {
@@ -383,20 +368,6 @@ impl FetchError {
             self,
             Self::Network(_) | Self::Status(408 | 429 | 500..) | Self::RetryAfter { .. }
         )
-    }
-}
-
-/// The wait an HTTP `Retry-After` header asks for (RFC 9110 §10.2.3):
-/// whole seconds, or until an HTTP date, which `until` reads as the time
-/// from now to then, zero once past. `None` when it reads as neither.
-pub fn parse_retry_after(
-    header: &str,
-    until: impl FnOnce(&str) -> Option<Duration>,
-) -> Option<Duration> {
-    let header = header.trim();
-    match header.parse::<u64>() {
-        Ok(seconds) => Some(Duration::from_secs(seconds)),
-        Err(_) => until(header),
     }
 }
 
@@ -493,7 +464,7 @@ pub trait Clock: Send + Sync {
     /// Monotonic time in milliseconds, for animations and fades.
     fn now(&self) -> f64;
     /// Milliseconds since the Unix epoch, for what HTTP dates: when the
-    /// data a map draws expires ([`Fetched::fresh_until`]).
+    /// data a map draws expires ([`Lifetime`]).
     fn unix_ms(&self) -> f64;
 }
 
@@ -627,31 +598,5 @@ mod tests {
         assert!(FetchError::of_status(429, None).transient());
         assert!(FetchError::Status(408).transient());
         assert!(!FetchError::Status(403).transient());
-    }
-
-    #[test]
-    fn cache_control_says_how_long_a_response_stays_fresh() {
-        assert_eq!(MaxAge::of("public, max-age=300"), MaxAge::Seconds(300));
-        assert_eq!(MaxAge::of("Max-Age=\"60\""), MaxAge::Seconds(60));
-        assert_eq!(MaxAge::of("no-cache, max-age=300"), MaxAge::Seconds(0));
-        assert_eq!(MaxAge::of("max-age=300, no-store"), MaxAge::NoStore);
-        assert_eq!(MaxAge::of("max-age=soon"), MaxAge::Unsaid);
-        assert_eq!(MaxAge::of("private"), MaxAge::Unsaid);
-    }
-
-    #[test]
-    fn retry_after_reads_seconds_or_a_date() {
-        let never = |_: &str| None;
-        assert_eq!(
-            parse_retry_after(" 120 ", never),
-            Some(Duration::from_secs(120))
-        );
-        assert_eq!(parse_retry_after("-1", never), None);
-        assert_eq!(parse_retry_after("soon", never), None);
-        let date = |text: &str| (text == "Sun, 06 Nov 1994 08:49:37 GMT").then_some(Duration::ZERO);
-        assert_eq!(
-            parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT", date),
-            Some(Duration::ZERO)
-        );
     }
 }
