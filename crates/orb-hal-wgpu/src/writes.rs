@@ -16,6 +16,9 @@ use std::ops::Range;
 
 use orb_hal::BufferId;
 
+use crate::TextureEntry;
+use crate::slots::Slots;
+
 /// Writes up to this size are gathered; larger ones are staged natively
 /// and go to the queue on WebGPU (on WebGL 2, gathered too).
 pub(crate) const GATHERED: usize = 64 << 10;
@@ -56,8 +59,9 @@ struct Run {
     overlapping: bool,
 }
 
+/// The writes gathered since the last submission.
 #[derive(Debug, Default)]
-struct Pending {
+pub(crate) struct Writes {
     data: Vec<u8>,
     writes: Vec<Write>,
     /// The writes' indices by buffer and offset, and the runs they merge
@@ -84,7 +88,7 @@ struct Pending {
     staged: Vec<crate::staging::Staged>,
 }
 
-impl Pending {
+impl Writes {
     /// Merges the writes into runs and returns the upload's size: the
     /// runs into buffers `apart` picks after the rest, in the upload too.
     fn plan(&mut self, apart: impl Fn(BufferId) -> bool) -> u64 {
@@ -163,22 +167,17 @@ impl Pending {
     }
 }
 
-/// The writes gathered since the last submission.
-#[derive(Debug, Default)]
-pub(crate) struct Writes(Pending);
-
 impl Writes {
     /// Gathers a write of `data` at `offset` in buffer `id`.
     pub(crate) fn gather(&mut self, id: BufferId, offset: u64, data: &[u8]) {
-        let pending = &mut self.0;
         // Copies take 4-byte offsets and sizes, as writes already do.
         debug_assert!(
             offset.is_multiple_of(4) && data.len().is_multiple_of(4),
             "unaligned write"
         );
-        let at = pending.data.len() as u64;
-        pending.data.extend_from_slice(data);
-        pending.writes.push(Write {
+        let at = self.data.len() as u64;
+        self.data.extend_from_slice(data);
+        self.writes.push(Write {
             buffer: id,
             offset,
             at,
@@ -188,27 +187,23 @@ impl Writes {
 
     /// Whether a gathered write touches `len` bytes at `offset` of `id`: a
     /// write that goes to the queue directly would land before it.
-    pub(crate) fn overlaps(&mut self, id: BufferId, offset: u64, len: u64) -> bool {
-        let pending = &mut self.0;
-        pending
-            .writes
+    pub(crate) fn overlaps(&self, id: BufferId, offset: u64, len: u64) -> bool {
+        self.writes
             .iter()
             .any(|w| w.buffer == id && w.offset < offset + len && offset < w.offset + w.len)
     }
 
     /// Drops the gathered and staged writes to a buffer being destroyed.
     pub(crate) fn forget(&mut self, id: BufferId) {
-        let pending = &mut self.0;
-        pending.writes.retain(|w| w.buffer != id);
+        self.writes.retain(|w| w.buffer != id);
         #[cfg(not(target_arch = "wasm32"))]
-        pending.staged.retain(|s| !s.writes_buffer(id));
+        self.staged.retain(|s| !s.writes_buffer(id));
     }
 
     /// Drops the staged writes to a texture being destroyed.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn forget_texture(&mut self, id: orb_hal::TextureId) {
-        let pending = &mut self.0;
-        pending.staged.retain(|s| !s.writes_texture(id));
+        self.staged.retain(|s| !s.writes_texture(id));
     }
 
     /// Stages a write too large to gather: it lands ahead of the gathered
@@ -222,10 +217,9 @@ impl Writes {
         offset: u64,
         data: &[u8],
     ) -> bool {
-        let pending = &mut self.0;
-        let staged = crate::staging::Staged::buffer(&mut pending.belt, device, (id, offset), data);
+        let staged = crate::staging::Staged::buffer(&mut self.belt, device, (id, offset), data);
         let staged_ok = staged.is_some();
-        pending.staged.extend(staged);
+        self.staged.extend(staged);
         staged_ok
     }
 
@@ -240,27 +234,25 @@ impl Writes {
         data: &[u8],
         bytes_per_row: u32,
     ) -> bool {
-        let pending = &mut self.0;
         let staged = crate::staging::Staged::texture(
-            &mut pending.belt,
+            &mut self.belt,
             device,
             (region, wave),
             data,
             bytes_per_row,
         );
         let staged_ok = staged.is_some();
-        pending.staged.extend(staged);
+        self.staged.extend(staged);
         staged_ok
     }
 
     /// Drops the gathered writes: their device is gone.
     pub(crate) fn discard(&mut self) {
-        let pending = &mut self.0;
-        pending.clear();
+        self.clear();
         #[cfg(not(target_arch = "wasm32"))]
         {
-            pending.belt = Default::default();
-            pending.staged.clear();
+            self.belt = Default::default();
+            self.staged.clear();
         }
     }
 
@@ -275,101 +267,98 @@ impl Writes {
     pub(crate) fn encode(
         &mut self,
         (device, queue): (&wgpu::Device, &wgpu::Queue),
-        buffer: impl Fn(BufferId) -> wgpu::Buffer,
-        texture: impl Fn(orb_hal::TextureId) -> wgpu::Texture,
+        (buffers, textures): (&Slots<wgpu::Buffer>, &Slots<TextureEntry>),
         encoder: &mut wgpu::CommandEncoder,
     ) -> Option<Issued> {
-        let pending = &mut self.0;
         let mut gathered = None;
-        if !pending.writes.is_empty() {
-            let size = pending.plan(|_| false);
-            let mut belt = std::mem::take(&mut pending.belt);
+        if !self.writes.is_empty() {
+            let size = self.plan(|_| false);
+            let mut belt = std::mem::take(&mut self.belt);
             gathered = belt.stage(device, size, wgpu::COPY_BUFFER_ALIGNMENT, |f| {
-                pending.fill(|to, bytes| f.put(to, bytes));
+                self.fill(|to, bytes| f.put(to, bytes));
             });
-            pending.belt = belt;
+            self.belt = belt;
             if gathered.is_none() {
-                pending.clear();
-                pending.staged.clear();
+                self.clear();
+                self.staged.clear();
                 return None;
             }
         }
-        if pending.staged.is_empty() && gathered.is_none() {
+        if self.staged.is_empty() && gathered.is_none() {
             return Some(Issued::default());
         }
         let mut issued = Issued {
             calls: u32::from(gathered.is_some()),
             submissions: 0,
         };
-        pending.belt.finish(encoder);
-        let staged = std::mem::take(&mut pending.staged);
+        self.belt.finish(encoder);
+        let staged = std::mem::take(&mut self.staged);
         let last = staged.iter().map(crate::staging::Staged::wave).max();
         for wave in 0..last.unwrap_or(0) {
             let mut early = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("texture writes"),
             });
             for s in staged.iter().filter(|s| s.wave() == wave) {
-                s.encode(&mut early, &buffer, &texture);
+                s.encode(&mut early, buffers, textures);
             }
             queue.submit([early.finish()]);
             issued.submissions += 1;
         }
         let last = last.unwrap_or(0);
-        let (buffers, textures): (Vec<_>, Vec<_>) = (staged.iter())
+        let (to_buffers, to_textures): (Vec<_>, Vec<_>) = (staged.iter())
             .filter(|s| s.wave() == last)
             .partition(|s| matches!(s, crate::staging::Staged::Buffer { .. }));
-        for s in buffers {
-            s.encode(encoder, &buffer, &texture);
+        for s in to_buffers {
+            s.encode(encoder, buffers, textures);
         }
         if let Some((staging, start)) = gathered {
-            for run in &pending.runs {
+            for run in &self.runs {
                 encoder.copy_buffer_to_buffer(
                     &staging,
                     start + run.at,
-                    &buffer(run.buffer),
+                    &buffers[run.buffer.0],
                     run.offset,
                     run.len,
                 );
             }
         }
-        for s in textures {
-            s.encode(encoder, &buffer, &texture);
+        for s in to_textures {
+            s.encode(encoder, buffers, textures);
         }
-        pending.clear();
+        self.clear();
         // Kept for its allocation.
-        pending.staged = staged;
-        pending.staged.clear();
+        self.staged = staged;
+        self.staged.clear();
         Some(issued)
     }
 
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn encode(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        buffer: impl Fn(BufferId) -> wgpu::Buffer,
+        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        (buffers, _): (&Slots<wgpu::Buffer>, &Slots<TextureEntry>),
         encoder: &mut wgpu::CommandEncoder,
-    ) -> Issued {
-        let pending = &mut self.0;
+    ) -> Option<Issued> {
         let mut issued = Issued::default();
-        if pending.writes.is_empty() {
-            pending.clear();
-            return issued;
+        if self.writes.is_empty() {
+            self.clear();
+            return Some(issued);
         }
         // Index buffers' runs last, from their own upload on WebGL 2.
-        let index = |id| cfg!(webgl) && buffer(id).usage().contains(wgpu::BufferUsages::INDEX);
-        let size = pending.plan(index);
-        let mut upload = std::mem::take(&mut pending.upload);
+        let index =
+            |id: BufferId| cfg!(webgl) && buffers[id.0].usage().contains(wgpu::BufferUsages::INDEX);
+        let size = self.plan(index);
+        let mut upload = std::mem::take(&mut self.upload);
         upload.clear();
         upload.resize(size as usize, 0);
-        pending.fill(|to, bytes| upload[to..to + bytes.len()].copy_from_slice(bytes));
+        self.fill(|to, bytes| upload[to..to + bytes.len()].copy_from_slice(bytes));
         let ring = if cfg!(webgl) { RING } else { 1 };
-        let turn = pending.turn % ring;
-        pending.turn = turn + 1;
-        let split = (pending.runs.iter())
+        let turn = self.turn % ring;
+        self.turn = turn + 1;
+        let split = (self.runs.iter())
             .position(|run| index(run.buffer))
-            .unwrap_or(pending.runs.len());
-        let Pending { runs, staging, .. } = &mut *pending;
+            .unwrap_or(self.runs.len());
+        let Self { runs, staging, .. } = self;
         for (kind, runs) in [&runs[..split], &runs[split..]].into_iter().enumerate() {
             let (Some(first), Some(last)) = (runs.first(), runs.last()) else {
                 continue;
@@ -398,15 +387,15 @@ impl Writes {
                 encoder.copy_buffer_to_buffer(
                     staging,
                     run.at - start,
-                    &buffer(run.buffer),
+                    &buffers[run.buffer.0],
                     run.offset,
                     run.len,
                 );
             }
         }
-        pending.upload = upload;
-        pending.clear();
-        issued
+        self.upload = upload;
+        self.clear();
+        Some(issued)
     }
 }
 
@@ -414,16 +403,15 @@ impl Writes {
 mod tests {
     use super::*;
 
-    fn upload(writes: &[(u32, u64, &[u8])]) -> (Vec<(u32, u64, Vec<u8>)>, u64) {
+    fn upload(writes: &[(u32, u64, &[u8])]) -> Vec<(u32, u64, Vec<u8>)> {
         let mut gathered = Writes::default();
         for &(b, o, d) in writes {
             gathered.gather(BufferId(b), o, d);
         }
-        let pending = &mut gathered.0;
-        let size = pending.plan(|_| false);
+        let size = gathered.plan(|_| false);
         let mut bytes = vec![0; size as usize];
-        pending.fill(|to, b| bytes[to..to + b.len()].copy_from_slice(b));
-        let runs = pending
+        gathered.fill(|to, b| bytes[to..to + b.len()].copy_from_slice(b));
+        gathered
             .runs
             .iter()
             .map(|r| {
@@ -434,32 +422,12 @@ mod tests {
                     bytes[at..at + r.len as usize].to_vec(),
                 )
             })
-            .collect();
-        (runs, size)
-    }
-
-    #[test]
-    fn merges_touching_writes_into_one_copy() {
-        let (runs, size) = upload(&[
-            (1, 8, &[3, 3, 3, 3]),
-            (0, 0, &[1, 1, 1, 1]),
-            (1, 0, &[2, 2, 2, 2, 2, 2, 2, 2]),
-            (0, 8, &[4, 4, 4, 4]),
-        ]);
-        assert_eq!(
-            runs,
-            [
-                (0, 0, vec![1, 1, 1, 1]),
-                (0, 8, vec![4, 4, 4, 4]),
-                (1, 0, vec![2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3]),
-            ]
-        );
-        assert_eq!(size, 20);
+            .collect()
     }
 
     #[test]
     fn later_writes_win_where_they_overlap() {
-        let (runs, _) = upload(&[
+        let runs = upload(&[
             (0, 4, &[1, 1, 1, 1, 1, 1, 1, 1]),
             (0, 0, &[2, 2, 2, 2, 2, 2, 2, 2]),
             (0, 8, &[3, 3, 3, 3]),

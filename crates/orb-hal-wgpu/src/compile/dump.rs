@@ -17,7 +17,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-use super::{Job, Stage, convert};
+use super::{Job, Pipeline, Stage, convert};
 
 /// Where pipelines are written down, and the lines written so far.
 static DUMP: OnceLock<Option<(PathBuf, Mutex<HashSet<String>>)>> = OnceLock::new();
@@ -59,8 +59,8 @@ pub(super) fn job(job: &Job) {
             .collect();
         format!("{file}\t{}\t{}", s.entry_point, constants.join(","))
     };
-    let line = match job {
-        Job::Render(_, j) => {
+    let line = match &job.pipeline {
+        Pipeline::Render(j) => {
             let targets: Vec<String> = (j.targets.iter())
                 .map(|t| format!("{:?}:{:?}", convert::texture_format(t.format), t.blend))
                 .collect();
@@ -85,7 +85,7 @@ pub(super) fn job(job: &Job) {
                 j.attribute_zero,
             )
         }
-        Job::Compute(_, j) => format!("compute\t{}\t{}\n", j.label, stage(&j.compute)),
+        Pipeline::Compute(j) => format!("compute\t{}\t{}\n", j.label, stage(&j.compute)),
     };
     let Ok(mut written) = written.lock() else {
         return;

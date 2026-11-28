@@ -132,11 +132,11 @@ impl Backing {
     /// The device's.
     pub(crate) fn of(caps: &Caps) -> Self {
         #[cfg(cpu_driven)]
-        if !caps.vertex_storage {
+        if !caps.storage_tables() {
             return Self::Texture;
         }
         assert!(
-            caps.vertex_storage,
+            caps.storage_tables(),
             "this build keeps no tables in textures (#140)"
         );
         Self::Storage
@@ -178,9 +178,7 @@ impl Place {
         match self {
             Self::Buffer(buffer) => BindGroupEntry::buffer(binding, buffer),
             #[cfg(cpu_driven)]
-            Self::Texture(texture) => {
-                BindGroupEntry::texture(binding, texture, TextureViewDimension::D2)
-            }
+            Self::Texture(texture) => BindGroupEntry::texture(binding, texture),
             #[cfg(cpu_driven)]
             Self::Cpu => panic!("a table only the CPU reads has no binding"),
         }
@@ -446,9 +444,7 @@ impl DataTable {
         match self.place {
             TablePlace::Buffer(buffer) => BindGroupEntry::buffer(binding, buffer),
             #[cfg(cpu_driven)]
-            TablePlace::Texture(texture) => {
-                BindGroupEntry::texture(binding, texture, TextureViewDimension::D2)
-            }
+            TablePlace::Texture(texture) => BindGroupEntry::texture(binding, texture),
         }
     }
 

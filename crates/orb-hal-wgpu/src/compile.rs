@@ -220,10 +220,12 @@ impl Stage {
 #[derive(Debug)]
 pub(crate) struct RenderJob {
     pub(crate) label: String,
-    /// wgpu's layout. WebGPU's async call takes the browser's, made from
-    /// the bind group layouts' own handles.
+    /// wgpu's layout.
     #[cfg(not(webgpu))]
     pub(crate) layout: wgpu::PipelineLayout,
+    /// The browser's bind group layouts, which its async call takes.
+    #[cfg(webgpu)]
+    pub(crate) layouts: Vec<wasm_bindgen::JsValue>,
     pub(crate) vertex: Stage,
     pub(crate) fragment: Stage,
     pub(crate) targets: Vec<ColorTargetState>,
@@ -257,15 +259,107 @@ pub(crate) struct ComputeJob {
     pub(crate) label: String,
     #[cfg(not(webgpu))]
     pub(crate) layout: wgpu::PipelineLayout,
+    #[cfg(webgpu)]
+    pub(crate) layouts: Vec<wasm_bindgen::JsValue>,
     pub(crate) compute: Stage,
     #[cfg(not(webgpu))]
     pub(crate) cache: Option<wgpu::PipelineCache>,
 }
 
 #[derive(Debug)]
-pub(crate) enum Job {
-    Render(u32, RenderJob),
-    Compute(u32, ComputeJob),
+pub(crate) enum Pipeline {
+    Render(RenderJob),
+    Compute(ComputeJob),
+}
+
+/// Set while no frame has asked for a pipeline: it compiles in the
+/// background, behind the others, and its compile wakes nothing. Its slot
+/// in `WgpuGpu` and its job share it, so a frame asking for it reaches a
+/// compile already running.
+pub(crate) type Background = Shared<std::sync::atomic::AtomicBool>;
+
+/// A pipeline's compile, from its request to its finish.
+#[derive(Debug)]
+pub(crate) struct Job {
+    pub(crate) id: PipelineId,
+    pub(crate) background: Background,
+    pub(crate) pipeline: Pipeline,
+}
+
+/// The compiles waiting to start: those a frame waits for, front first,
+/// and background ones behind them, which start a few at a time while
+/// none a frame waits for is pending.
+#[derive(Debug, Default)]
+pub(crate) struct Lines {
+    pub(crate) waited: std::collections::VecDeque<Job>,
+    pub(crate) background: std::collections::VecDeque<Job>,
+    /// Background compiles may not start.
+    pub(crate) held: bool,
+    /// Background compiles started and not finished (WebGL 2 counts its
+    /// links instead).
+    #[cfg(not(webgl))]
+    pub(crate) running: usize,
+}
+
+impl Lines {
+    pub(crate) fn push(&mut self, job: Job) {
+        match job.background() {
+            true => self.background.push_back(job),
+            false => self.waited.push_back(job),
+        }
+    }
+
+    /// Moves a waited-for job to the front.
+    #[cfg(not(webgpu))]
+    pub(crate) fn prioritize(&mut self, id: PipelineId) {
+        if let Some(job) = take(&mut self.waited, id) {
+            self.waited.push_front(job);
+        }
+    }
+
+    /// Makes a background job one a frame waits for, at the front: whether
+    /// it was still waiting.
+    #[cfg(not(webgpu))]
+    pub(crate) fn promote(&mut self, id: PipelineId) -> bool {
+        let job = take(&mut self.background, id);
+        job.map(|job| self.waited.push_front(job)).is_some()
+    }
+
+    /// Drops a job not yet started: whether there was one.
+    pub(crate) fn cancel(&mut self, id: PipelineId) -> bool {
+        take(&mut self.waited, id)
+            .or_else(|| take(&mut self.background, id))
+            .is_some()
+    }
+
+    /// Lets background compiles start, or holds those not started: whether
+    /// they may start now and couldn't before.
+    pub(crate) fn open(&mut self, open: bool) -> bool {
+        std::mem::replace(&mut self.held, !open) && open
+    }
+
+    /// Takes one of `lanes` for a background compile, where one is free, one
+    /// waits and they may start.
+    #[cfg(not(webgl))]
+    pub(crate) fn reserve_lane(&mut self, lanes: usize) -> bool {
+        let free = !self.held && self.running < lanes && !self.background.is_empty();
+        self.running += usize::from(free);
+        free
+    }
+
+    /// The next background compile, while they may start.
+    pub(crate) fn next_background(&mut self) -> Option<Job> {
+        match self.held {
+            true => None,
+            false => self.background.pop_front(),
+        }
+    }
+}
+
+/// Takes the job of `id` out of `line`.
+fn take(line: &mut std::collections::VecDeque<Job>, id: PipelineId) -> Option<Job> {
+    let at = line.iter().position(|job| job.id == id)?;
+    line.remove(at)
 }
 
 /// A compiled pipeline.
@@ -285,18 +379,15 @@ pub(crate) struct Done {
 }
 
 impl Job {
-    pub(crate) fn id(&self) -> PipelineId {
-        match self {
-            Self::Render(slot, _) => PipelineId::Render(RenderPipelineId(*slot)),
-            Self::Compute(slot, _) => PipelineId::Compute(ComputePipelineId(*slot)),
+    pub(crate) fn label(&self) -> &str {
+        match &self.pipeline {
+            Pipeline::Render(job) => &job.label,
+            Pipeline::Compute(job) => &job.label,
         }
     }
 
-    pub(crate) fn label(&self) -> &str {
-        match self {
-            Self::Render(_, job) => &job.label,
-            Self::Compute(_, job) => &job.label,
-        }
+    pub(crate) fn background(&self) -> bool {
+        self.background.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Makes the pipeline with wgpu.
@@ -304,9 +395,9 @@ impl Job {
     fn build(&self, device: &wgpu::Device) -> Result<Built, String> {
         #[cfg(not(target_arch = "wasm32"))]
         dump::job(self);
-        Ok(match self {
-            Self::Render(_, job) => Built::Render(job.build(device)?),
-            Self::Compute(_, job) => {
+        Ok(match &self.pipeline {
+            Pipeline::Render(job) => Built::Render(job.build(device)?),
+            Pipeline::Compute(job) => {
                 let (module, constants) = job.compute.module(device)?;
                 Built::Compute(
                     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -447,6 +538,8 @@ impl RenderJob {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+pub use native::CompileHold;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::Compiler;
 
 /// Where `WgpuGpu` records its device's loss, which compiles watch.
@@ -465,13 +558,14 @@ pub(crate) use webgpu::Compiler;
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use std::collections::VecDeque;
-    use std::sync::{Arc, Condvar, Mutex, mpsc};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
     use std::time::{Duration, Instant};
 
     use orb_hal::PipelineId;
     use orb_host::jobs::Executor;
 
-    use super::{Done, Job, Loss};
+    use super::{Done, Job, Lines, Loss};
 
     /// Background compiles running at once: each runs as a task of its
     /// own, queued behind whatever the executor has at any rank, so tiles
@@ -484,15 +578,27 @@ mod native {
     /// compile on an Adreno 619 with a wide margin.
     pub(crate) const WATCHDOG: Duration = Duration::from_secs(60);
 
-    /// Compiles on the host's job executor, front of the queue first: each
-    /// request spawns one task, which compiles the job at the front when
-    /// it runs.
+    /// Caps how many pipelines compile at once (by default as many as the
+    /// host's job threads run): `1` makes them one at a time, for drivers
+    /// suspected of failing compiles that overlap (Qualcomm's, #141).
+    /// Under a cap, background compiles wait until a frame asks for them.
+    const COMPILES: &str = "ORB_COMPILES_AT_ONCE";
+
+    fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+        mutex.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Compiles on the host's job executor: each request a frame waits for
+    /// spawns a task, which compiles the job at the front of the line when
+    /// it runs, and background compiles run in lanes behind the
+    /// executor's other work.
     pub(crate) struct Compiler {
         shared: Arc<Shared>,
         done_tx: mpsc::Sender<Done>,
         done: mpsc::Receiver<Done>,
         /// Without one, each job compiles on the calling thread (tools
-        /// that want every pipeline ready when it is asked for).
+        /// that want every pipeline ready when it is asked for), and
+        /// background ones wait until a frame asks for them.
         executor: Option<Arc<dyn Executor>>,
         finished: VecDeque<Done>,
         watched: bool,
@@ -507,72 +613,105 @@ mod native {
     #[derive(Default)]
     struct Shared {
         queue: Mutex<Queue>,
-        /// Fault injection: tasks stall in their job until the compiler
-        /// closes, as in a driver hung in its compiler.
-        hang: std::sync::atomic::AtomicBool,
-        /// Fault injection: compiles of pipelines of these labels take
-        /// this much longer, as on a device compiling cold.
-        slow: Mutex<Option<(Vec<String>, Duration)>>,
-        /// Fault injection: compiles of pipelines of these labels fail, as
-        /// a driver that can't make them does.
-        fail: Mutex<Vec<String>>,
-        /// Called from a task when a compile finishes.
-        compiled: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
-        /// The jobs compiling and since when, by task.
-        busy: Mutex<Vec<(u64, String, Instant)>>,
-        /// Signalled when a task takes a job, and when the compiler
-        /// closes: the watchdog and injected hangs wait on it.
+        watch: Mutex<Watch>,
+        /// Signalled when a compile starts or ends, a hold is released and
+        /// the compiler closes: the watchdog and held compiles wait on it.
         changed: Condvar,
-        /// How long a compile may run before its driver is taken to have
-        /// hung.
-        limit: Mutex<Duration>,
+        /// Set when the compiler is dropped: tasks find no jobs.
+        closed: AtomicBool,
+        /// Fault injection: compiles of these labels take this much
+        /// longer, as on a device compiling cold; those of these fail, as
+        /// a driver that can't make them does.
+        slow: Mutex<Option<(Vec<String>, Duration)>>,
+        fail: Mutex<Vec<String>>,
+        /// Called from a task when a compile a frame waits for finishes.
+        wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
         /// The device's loss, once watched.
         loss: std::sync::OnceLock<Loss>,
         /// How many pipelines may compile at once ([`COMPILES`]).
         at_once: usize,
-        background: Mutex<Background>,
-        /// Background compiles may start ([`Compiler::open_background`]).
-        open: std::sync::atomic::AtomicBool,
-    }
-
-    /// Background compiles ([`Compiler::submit_background`]).
-    #[derive(Default)]
-    struct Background {
-        /// Waiting, front first.
-        jobs: VecDeque<Job>,
-        /// Compiling now.
-        running: usize,
-        /// Background jobs waiting or compiling that no frame asked for:
-        /// their compiles don't wake the host.
-        quiet: rustc_hash::FxHashSet<PipelineId>,
     }
 
     #[derive(Default)]
     struct Queue {
-        jobs: VecDeque<Job>,
-        next_task: u64,
-        closed: bool,
-        /// Tasks compiling, each taking jobs from the front until none
-        /// are left.
+        lines: Lines,
+        /// Tasks compiling jobs a frame waits for.
         compiling: usize,
+        next_task: u64,
     }
 
-    /// Caps how many pipelines compile at once (by default as many as the
-    /// host's job threads run): `1` makes them one at a time, for drivers
-    /// suspected of failing compiles that overlap (Qualcomm's, #141).
-    const COMPILES: &str = "ORB_COMPILES_AT_ONCE";
+    /// The compiles running, and what holds them.
+    #[derive(Default)]
+    struct Watch {
+        /// Each compile running: its task, label and start.
+        busy: Vec<(u64, String, Instant)>,
+        /// Compiles of these labels (every label for `None`) wait while
+        /// their hold stands, by its number.
+        holds: Vec<(u64, Option<Vec<String>>)>,
+        next_hold: u64,
+        /// How long a compile may run before its driver is taken to have
+        /// hung.
+        limit: Duration,
+    }
 
-    impl Compiler {
-        pub(crate) fn new() -> Self {
+    impl Watch {
+        fn held(&self, label: &str) -> bool {
+            (self.holds.iter())
+                .any(|(_, l)| l.as_ref().is_none_or(|l| l.iter().any(|l| l == label)))
+        }
+
+        fn hold(&mut self, labels: Option<Vec<String>>) -> u64 {
+            self.next_hold += 1;
+            self.holds.push((self.next_hold, labels));
+            self.next_hold
+        }
+    }
+
+    /// Holds compiles of some pipelines from finishing until it is
+    /// dropped ([`WgpuGpu::hold_compiles`](crate::WgpuGpu::hold_compiles)).
+    #[must_use = "the compiles go on once it is dropped"]
+    pub struct CompileHold {
+        shared: Arc<Shared>,
+        id: u64,
+    }
+
+    impl std::fmt::Debug for CompileHold {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_tuple("CompileHold").field(&self.id).finish()
+        }
+    }
+
+    impl Drop for CompileHold {
+        fn drop(&mut self) {
+            lock(&self.shared.watch)
+                .holds
+                .retain(|(id, _)| *id != self.id);
+            self.shared.changed.notify_all();
+        }
+    }
+
+    /// What a task needs to compile: one per spawn.
+    #[derive(Clone)]
+    struct Worker {
+        shared: Arc<Shared>,
+        device: wgpu::Device,
+        done: mpsc::Sender<Done>,
+        executor: Arc<dyn Executor>,
+    }
+
+    impl Default for Compiler {
+        fn default() -> Self {
             let (done_tx, done) = mpsc::channel();
             let at_once = (std::env::var(COMPILES).ok())
                 .and_then(|n| n.parse::<usize>().ok())
                 .filter(|&n| n > 0)
                 .unwrap_or(usize::MAX);
             let shared = Shared {
-                limit: Mutex::new(WATCHDOG),
+                watch: Mutex::new(Watch {
+                    limit: WATCHDOG,
+                    ..Default::default()
+                }),
                 at_once,
-                open: true.into(),
                 ..Default::default()
             };
             Self {
@@ -584,7 +723,9 @@ mod native {
                 watched: false,
             }
         }
+    }
 
+    impl Compiler {
         /// Compiles every later request on `executor`, or on the calling
         /// thread, before `create_*_pipeline` returns.
         pub(crate) fn set_executor(&mut self, executor: Option<Arc<dyn Executor>>) {
@@ -597,152 +738,128 @@ mod native {
             let _ = self.shared.loss.set(loss);
         }
 
-        pub(crate) fn submit(&mut self, device: &wgpu::Device, job: Job) {
-            self.submit_at(device, job, false);
-        }
-
-        fn submit_at(&mut self, device: &wgpu::Device, job: Job, front: bool) {
-            let Some(executor) = self.executor.clone() else {
-                let started = Instant::now();
-                let built = job.compile(device, self.shared.loss.get());
-                self.finished.push_back(Done {
-                    id: job.id(),
-                    built,
-                    label: job.label().to_owned(),
-                    took: started.elapsed(),
-                });
-                return;
-            };
-            let task = {
-                let mut queue = self.shared.queue.lock().expect("compile queue poisoned");
-                if front {
-                    queue.jobs.push_front(job);
-                } else {
-                    queue.jobs.push_back(job);
-                }
-                queue.next_task += 1;
-                queue.next_task
-            };
-            self.watch();
-            let (shared, device, done) =
-                (self.shared.clone(), device.clone(), self.done_tx.clone());
-            executor.spawn(Box::new(move || {
-                compile_front(&shared, &device, task, &done)
-            }));
-        }
-
-        fn watch(&mut self) {
-            if !self.watched {
-                self.watched = true;
+        fn worker(&mut self, device: &wgpu::Device) -> Option<Worker> {
+            let executor = self.executor.clone()?;
+            if !std::mem::replace(&mut self.watched, true) {
                 let shared = self.shared.clone();
                 std::thread::Builder::new()
                     .name("orbis pipeline watchdog".into())
                     .spawn(move || watchdog(&shared))
                     .expect("spawn the pipeline watchdog");
             }
+            Some(Worker {
+                shared: self.shared.clone(),
+                device: device.clone(),
+                done: self.done_tx.clone(),
+                executor,
+            })
         }
 
-        /// Queues a background compile: [`BACKGROUND_LANES`] at a time,
-        /// each a task behind what the executor has queued. Without an
-        /// executor, or under a cap on compiles at once ([`COMPILES`]), it
-        /// waits until [`promote`](Self::promote)d.
-        pub(crate) fn submit_background(&mut self, device: &wgpu::Device, job: Job) {
-            {
-                let mut background = self.shared.background.lock().expect("compile poisoned");
-                background.quiet.insert(job.id());
-                background.jobs.push_back(job);
+        /// Queues a compile: one a frame waits for starts a task, a
+        /// background one waits for a lane.
+        pub(crate) fn submit(&mut self, device: &wgpu::Device, job: Job) {
+            let background = job.background();
+            lock(&self.shared.queue).lines.push(job);
+            match background {
+                true => self.feed_lanes(device, 1),
+                false => self.start(device),
             }
-            if let Some(executor) = self.executor.clone() {
-                self.watch();
-                let lane = Lane {
-                    shared: self.shared.clone(),
-                    device: device.clone(),
-                    done: self.done_tx.clone(),
-                    executor,
-                };
-                lane.feed();
+        }
+
+        /// Compiles the job at the front of the line: on a task, or here.
+        fn start(&mut self, device: &wgpu::Device) {
+            match self.worker(device) {
+                Some(worker) => {
+                    let executor = worker.executor.clone();
+                    executor.spawn(Box::new(move || worker.compile_front()));
+                }
+                None => {
+                    let job = lock(&self.shared.queue).lines.waited.pop_front();
+                    if let Some(job) = job {
+                        let started = Instant::now();
+                        let built = job.compile(device, self.shared.loss.get());
+                        self.finished.push_back(Done {
+                            id: job.id,
+                            built,
+                            label: job.label().to_owned(),
+                            took: started.elapsed(),
+                        });
+                    }
+                }
+            }
+        }
+
+        /// Starts up to `lanes` background compiles, in lanes free.
+        fn feed_lanes(&mut self, device: &wgpu::Device, lanes: usize) {
+            if let Some(worker) = self.worker(device) {
+                for _ in 0..lanes {
+                    worker.clone().feed();
+                }
             }
         }
 
         /// Lets background compiles start (`open`), or holds those that
         /// haven't: lanes finish the compile they run.
         pub(crate) fn open_background(&mut self, device: &wgpu::Device, open: bool) {
-            use std::sync::atomic::Ordering;
-            let was = self.shared.open.swap(open, Ordering::Relaxed);
-            if open
-                && !was
-                && let Some(executor) = self.executor.clone()
-            {
-                for _ in 0..BACKGROUND_LANES {
-                    let lane = Lane {
-                        shared: self.shared.clone(),
-                        device: device.clone(),
-                        done: self.done_tx.clone(),
-                        executor: executor.clone(),
-                    };
-                    lane.feed();
-                }
+            if lock(&self.shared.queue).lines.open(open) {
+                self.feed_lanes(device, BACKGROUND_LANES);
             }
         }
 
-        /// Makes a background compile an ordinary one, compiled next: a
-        /// frame waits for it.
+        /// Makes a background compile one a frame waits for, compiled next.
         pub(crate) fn promote(&mut self, device: &wgpu::Device, id: PipelineId) {
-            let job = {
-                let mut background = self.shared.background.lock().expect("compile poisoned");
-                // Its compile, finishing now, wakes the host.
-                background.quiet.remove(&id);
-                let at = background.jobs.iter().position(|j| j.id() == id);
-                at.and_then(|at| background.jobs.remove(at))
-            };
-            if let Some(job) = job {
-                self.submit_at(device, job, true);
+            if lock(&self.shared.queue).lines.promote(id) {
+                self.start(device);
             }
+        }
+
+        /// Drops a compile not yet started.
+        pub(crate) fn cancel(&mut self, id: PipelineId) {
+            lock(&self.shared.queue).lines.cancel(id);
+        }
+
+        /// Moves a queued job to the front.
+        pub(crate) fn prioritize(&mut self, id: PipelineId) {
+            lock(&self.shared.queue).lines.prioritize(id);
         }
 
         /// How long a compile may run before its driver is taken to have
         /// hung.
         pub(crate) fn set_watchdog(&self, limit: Duration) {
-            *self.shared.limit.lock().expect("compile watch poisoned") = limit;
+            lock(&self.shared.watch).limit = limit;
         }
 
-        /// Calls `wake` from a task whenever a compile finishes, and from
-        /// the watchdog when one runs past its limit.
+        /// Calls `wake` from a task whenever a compile a frame waits for
+        /// finishes, and from the watchdog when one runs past its limit.
         pub(crate) fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
-            *self.shared.compiled.lock().expect("compile wake poisoned") = Some(wake);
+            *lock(&self.shared.wake) = Some(wake);
         }
 
-        /// Makes tasks stall in their next job (fault injection for the
-        /// watchdog's tests).
-        pub(crate) fn inject_hang(&self) {
-            self.shared
-                .hang
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+        /// Holds compiles of pipelines labelled one of `labels` until the
+        /// hold is dropped.
+        pub(crate) fn hold(&self, labels: &[&str]) -> CompileHold {
+            let labels = labels.iter().map(|&l| l.to_owned()).collect();
+            CompileHold {
+                shared: self.shared.clone(),
+                id: lock(&self.shared.watch).hold(Some(labels)),
+            }
+        }
+
+        /// Holds every compile until the compiler drops.
+        pub(crate) fn hang(&self) {
+            lock(&self.shared.watch).hold(None);
         }
 
         /// Makes compiles of pipelines labelled one of `labels` take `by`
-        /// longer (fault injection for tests of what waits for them).
+        /// longer.
         pub(crate) fn inject_slow(&self, labels: &[&str], by: Duration) {
             let labels = labels.iter().map(|&l| l.to_owned()).collect();
-            *self.shared.slow.lock().expect("compile watch poisoned") = Some((labels, by));
+            *lock(&self.shared.slow) = Some((labels, by));
         }
 
-        /// Makes compiles of pipelines labelled one of `labels` fail
-        /// (fault injection for tests of maps drawing without them).
+        /// Makes compiles of pipelines labelled one of `labels` fail.
         pub(crate) fn inject_failure(&self, labels: &[&str]) {
-            let labels = labels.iter().map(|&l| l.to_owned()).collect();
-            *self.shared.fail.lock().expect("compile watch poisoned") = labels;
-        }
-
-        /// Moves a queued job to the front.
-        pub(crate) fn prioritize(&mut self, id: PipelineId) {
-            let mut queue = self.shared.queue.lock().expect("compile queue poisoned");
-            if let Some(at) = queue.jobs.iter().position(|j| j.id() == id)
-                && at > 0
-            {
-                let job = queue.jobs.remove(at).expect("found");
-                queue.jobs.push_front(job);
-            }
+            *lock(&self.shared.fail) = labels.iter().map(|&l| l.to_owned()).collect();
         }
 
         /// Compiles finished since the last call.
@@ -765,24 +882,23 @@ mod native {
         /// after a loss, so one that lost the device reports as failed.
         pub(crate) fn settle(&self, limit: Duration) {
             let deadline = Instant::now() + limit;
-            let mut busy = self.shared.busy.lock().expect("compile watch poisoned");
-            while !busy.is_empty() {
+            let mut watch = lock(&self.shared.watch);
+            while !watch.busy.is_empty() {
                 let left = deadline.saturating_duration_since(Instant::now());
                 if left.is_zero() {
                     return;
                 }
-                busy = (self.shared.changed.wait_timeout(busy, left))
-                    .expect("compile watch poisoned")
+                watch = (self.shared.changed.wait_timeout(watch, left))
+                    .unwrap_or_else(|e| e.into_inner())
                     .0;
             }
         }
 
         /// A compile that has run past the watchdog's limit.
         pub(crate) fn hung(&self) -> Option<crate::Fault> {
-            let limit = *self.shared.limit.lock().expect("compile watch poisoned");
-            let busy = self.shared.busy.lock().expect("compile watch poisoned");
-            busy.iter()
-                .find(|(.., since)| since.elapsed() > limit)
+            let watch = lock(&self.shared.watch);
+            (watch.busy.iter())
+                .find(|(.., since)| since.elapsed() > watch.limit)
                 .map(|(_, label, since)| crate::Fault::Hung {
                     label: label.clone(),
                     after: since.elapsed(),
@@ -792,14 +908,20 @@ mod native {
 
     impl Shared {
         fn closed(&self) -> bool {
-            self.queue.lock().expect("compile queue poisoned").closed
+            self.closed.load(Ordering::Relaxed)
         }
 
         fn wake(&self) {
-            let wake = self.compiled.lock().expect("compile wake poisoned").clone();
+            let wake = lock(&self.wake).clone();
             if let Some(wake) = wake {
                 wake();
             }
+        }
+
+        fn next_task(&self) -> u64 {
+            let mut queue = lock(&self.queue);
+            queue.next_task += 1;
+            queue.next_task
         }
     }
 
@@ -807,155 +929,105 @@ mod native {
         /// Drops queued jobs: their tasks find none. A task stuck in a
         /// driver stays stuck.
         fn drop(&mut self) {
-            let mut queue = self.shared.queue.lock().expect("compile queue poisoned");
-            queue.closed = true;
-            queue.jobs.clear();
+            self.shared.closed.store(true, Ordering::Relaxed);
+            // Not `running`: a lane mid-compile counts itself out.
+            let mut queue = lock(&self.shared.queue);
+            queue.lines.waited.clear();
+            queue.lines.background.clear();
             drop(queue);
-            (self.shared.background.lock().expect("compile poisoned"))
-                .jobs
-                .clear();
-            let _busy = self.shared.busy.lock().expect("compile watch poisoned");
+            let _watch = lock(&self.shared.watch);
             self.shared.changed.notify_all();
         }
     }
 
-    /// Background compiles' tasks: each takes the next background job and,
-    /// once compiled, queues the task for the one after.
-    struct Lane {
-        shared: Arc<Shared>,
-        device: wgpu::Device,
-        done: mpsc::Sender<Done>,
-        executor: Arc<dyn Executor>,
-    }
-
-    impl Lane {
-        /// Starts a task for the next waiting job if a lane is free and
-        /// background compiles may start.
-        fn feed(self) {
-            if !self.shared.open.load(std::sync::atomic::Ordering::Relaxed) {
+    impl Worker {
+        /// Compiles the job at the front of the line, and the next while
+        /// any are left, unless as many tasks as may compile at once
+        /// already do, which then take its job. A task finds the line
+        /// empty and stops under the queue's lock, so no job waits
+        /// without one.
+        fn compile_front(self) {
+            let task = self.shared.next_task();
+            let mut queue = lock(&self.shared.queue);
+            if queue.compiling >= self.shared.at_once {
                 return;
             }
-            {
-                let mut background = self.shared.background.lock().expect("compile poisoned");
-                // Under a cap on compiles at once ([`COMPILES`]), they
-                // wait until a frame asks for them.
-                let lanes = match self.shared.at_once {
-                    usize::MAX => BACKGROUND_LANES,
-                    _ => 0,
-                };
-                if background.running >= lanes || background.jobs.is_empty() {
-                    return;
-                }
-                background.running += 1;
+            queue.compiling += 1;
+            while let Some(job) = queue.lines.waited.pop_front() {
+                drop(queue);
+                self.compile(task, job);
+                queue = lock(&self.shared.queue);
             }
-            // Behind every job queued, ranked ones too: a map's tiles rank
-            // theirs by distance from the view's centre.
-            let executor = self.executor.clone();
-            executor.spawn_ranked(u64::MAX, Box::new(move || self.run()));
+            queue.compiling -= 1;
         }
 
-        fn run(self) {
-            // The gate may have closed since the lane was fed: the job
-            // waits for it to open again, which feeds lanes anew.
-            let open = self.shared.open.load(std::sync::atomic::Ordering::Relaxed);
-            let job = match open {
-                true => (self.shared.background.lock().expect("compile poisoned"))
-                    .jobs
-                    .pop_front(),
-                false => None,
+        /// Starts a task for the next background job if a lane is free
+        /// and background compiles may start, behind every job the
+        /// executor has queued (a map's tiles rank theirs by distance from
+        /// the view's centre).
+        fn feed(self) {
+            let lanes = match self.shared.at_once {
+                usize::MAX => BACKGROUND_LANES,
+                _ => 0,
             };
-            let closed = self.shared.closed();
-            if let Some(job) = job.filter(|_| !closed) {
-                let task = {
-                    let mut queue = self.shared.queue.lock().expect("compile queue poisoned");
-                    queue.next_task += 1;
-                    queue.next_task
-                };
-                compile(&self.shared, &self.device, task, &self.done, job);
+            if !lock(&self.shared.queue).lines.reserve_lane(lanes) {
+                return;
             }
-            self.shared
-                .background
-                .lock()
-                .expect("compile poisoned")
-                .running -= 1;
-            if !closed {
-                // Spawned from the executor's thread, behind what it has.
-                let lane = Lane {
-                    shared: self.shared.clone(),
-                    device: self.device.clone(),
-                    done: self.done.clone(),
-                    executor: self.executor.clone(),
-                };
-                lane.feed();
+            let executor = self.executor.clone();
+            executor.spawn_ranked(u64::MAX, Box::new(move || self.run_lane()));
+        }
+
+        /// A lane's task: the next background job, unless they were held
+        /// since the lane was fed (opening them again feeds lanes anew),
+        /// then the lane is fed again.
+        fn run_lane(self) {
+            let job = lock(&self.shared.queue).lines.next_background();
+            if let Some(job) = job.filter(|_| !self.shared.closed()) {
+                self.compile(self.shared.next_task(), job);
+            }
+            lock(&self.shared.queue).lines.running -= 1;
+            if !self.shared.closed() {
+                self.clone().feed();
             }
         }
-    }
 
-    /// One request's task: compiles the job at the front of the queue, and
-    /// the next while any are left, unless as many tasks as may compile at
-    /// once already do, which then take its job. A task finds the queue
-    /// empty and stops under the queue's lock, so no job waits without one.
-    fn compile_front(shared: &Shared, device: &wgpu::Device, task: u64, done: &mpsc::Sender<Done>) {
-        let mut queue = shared.queue.lock().expect("compile queue poisoned");
-        if queue.compiling >= shared.at_once {
-            return;
-        }
-        queue.compiling += 1;
-        while let Some(job) = queue.jobs.pop_front() {
-            drop(queue);
-            compile(shared, device, task, done, job);
-            queue = shared.queue.lock().expect("compile queue poisoned");
-        }
-        queue.compiling -= 1;
-    }
-
-    fn compile(
-        shared: &Shared,
-        device: &wgpu::Device,
-        task: u64,
-        done: &mpsc::Sender<Done>,
-        job: Job,
-    ) {
-        let started = Instant::now();
-        let mut busy = shared.busy.lock().expect("compile watch poisoned");
-        busy.push((task, job.label().to_owned(), started));
-        shared.changed.notify_all();
-        while shared.hang.load(std::sync::atomic::Ordering::Relaxed) && !shared.closed() {
-            busy = shared.changed.wait(busy).expect("compile watch poisoned");
-        }
-        drop(busy);
-        let slow = shared.slow.lock().expect("compile watch poisoned").clone();
-        if let Some((_, by)) = slow.filter(|(labels, _)| labels.iter().any(|l| l == job.label())) {
-            std::thread::sleep(by);
-        }
-        let fail = (shared.fail.lock().expect("compile watch poisoned"))
-            .iter()
-            .any(|l| l == job.label());
-        let built = match fail {
-            true => Err("failed by fault injection".to_owned()),
-            false => job.compile(device, shared.loss.get()),
-        };
-        let id = job.id();
-        let finished = Done {
-            id,
-            built,
-            label: job.label().to_owned(),
-            took: started.elapsed(),
-        };
-        // Sent before it leaves `busy`, so `settle` finds it.
-        let sent = done.send(finished).is_ok();
-        let mut busy = shared.busy.lock().expect("compile watch poisoned");
-        busy.retain(|(t, ..)| *t != task);
-        shared.changed.notify_all();
-        drop(busy);
-        // A background compile no frame asked for wakes nothing. Read after
-        // the send: a promotion before it is woken for, and one after it
-        // finds the pipeline compiled.
-        let quiet = (shared.background.lock().expect("compile poisoned"))
-            .quiet
-            .remove(&id);
-        if sent && !quiet {
-            shared.wake();
+        fn compile(&self, task: u64, job: Job) {
+            let shared = &self.shared;
+            let started = Instant::now();
+            let label = job.label().to_owned();
+            let mut watch = lock(&shared.watch);
+            watch.busy.push((task, label.clone(), started));
+            shared.changed.notify_all();
+            while watch.held(&label) && !shared.closed() {
+                watch = (shared.changed.wait(watch)).unwrap_or_else(|e| e.into_inner());
+            }
+            drop(watch);
+            let slow = lock(&shared.slow).clone();
+            if let Some((_, by)) = slow.filter(|(labels, _)| labels.contains(&label)) {
+                std::thread::sleep(by);
+            }
+            let built = match lock(&shared.fail).contains(&label) {
+                true => Err("failed by fault injection".to_owned()),
+                false => job.compile(&self.device, shared.loss.get()),
+            };
+            // Sent before it leaves `busy`, so `settle` finds it.
+            let sent = (self.done)
+                .send(Done {
+                    id: job.id,
+                    built,
+                    label,
+                    took: started.elapsed(),
+                })
+                .is_ok();
+            lock(&shared.watch).busy.retain(|(t, ..)| *t != task);
+            shared.changed.notify_all();
+            // Read after the send, past a fence the frame that promotes
+            // it mirrors (`pipeline_ready`): either this reads it promoted
+            // and wakes, or that frame finds it sent.
+            std::sync::atomic::fence(Ordering::SeqCst);
+            if sent && !job.background() {
+                shared.wake();
+            }
         }
     }
 
@@ -964,26 +1036,23 @@ mod native {
     /// wake finds the compile hung. The device is lost then, so once is
     /// enough.
     fn watchdog(shared: &Shared) {
-        let mut busy = shared.busy.lock().expect("compile watch poisoned");
+        let mut watch = lock(&shared.watch);
         loop {
             if shared.closed() {
                 return;
             }
-            let limit = *shared.limit.lock().expect("compile watch poisoned");
-            let Some(since) = busy.iter().map(|(.., since)| *since).min() else {
-                busy = shared.changed.wait(busy).expect("compile watch poisoned");
+            let Some(since) = watch.busy.iter().map(|(.., since)| *since).min() else {
+                watch = (shared.changed.wait(watch)).unwrap_or_else(|e| e.into_inner());
                 continue;
             };
-            let left = limit.saturating_sub(since.elapsed());
+            let left = watch.limit.saturating_sub(since.elapsed());
             if left.is_zero() {
-                drop(busy);
+                drop(watch);
                 shared.wake();
                 return;
             }
-            busy = shared
-                .changed
-                .wait_timeout(busy, left)
-                .expect("compile watch poisoned")
+            watch = (shared.changed.wait_timeout(watch, left))
+                .unwrap_or_else(|e| e.into_inner())
                 .0;
         }
     }
@@ -999,7 +1068,7 @@ mod webgpu {
     use orb_hal::*;
     use wasm_bindgen::{JsCast, JsValue};
 
-    use super::{Built, Done, Job, Module, RenderJob, Stage};
+    use super::{Built, Done, Job, Lines, Module, Pipeline, RenderJob, Stage};
 
     /// Called when a promise settles: the map draws the pipeline then.
     type Wake = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
@@ -1039,23 +1108,9 @@ mod webgpu {
         /// Pipelines made since the last [`Compiler::take`].
         settled: RefCell<VecDeque<Done>>,
         wake: Wake,
-        background: RefCell<Background>,
-    }
-
-    /// Background compiles ([`Compiler::submit`]).
-    #[derive(Default)]
-    struct Background {
-        /// Waiting, front first, with their bind group layouts.
-        jobs: VecDeque<(Job, Vec<JsValue>)>,
-        /// Promises not yet settled.
-        running: usize,
-        /// Waiting or compiling, and no frame asked for them: their
-        /// promises wake nothing.
-        quiet: rustc_hash::FxHashSet<PipelineId>,
-        /// The device, once a job came.
-        device: Option<JsValue>,
-        /// They may start ([`Compiler::open_background`]).
-        closed: bool,
+        /// Background compiles waiting for a lane: those a frame waits
+        /// for are asked for at once.
+        lines: RefCell<Lines>,
     }
 
     impl std::fmt::Debug for Compiler {
@@ -1076,96 +1131,93 @@ mod webgpu {
     }
 
     impl Compiler {
-        pub(crate) fn new() -> Self {
-            Self::default()
-        }
-
-        /// Calls `wake` whenever a pipeline's promise settles.
+        /// Calls `wake` whenever a pipeline a frame waits for settles.
         pub(crate) fn set_wake(&self, wake: Rc<dyn Fn()>) {
             *self.state.wake.borrow_mut() = Some(wake);
         }
 
-        /// Asks the browser for a pipeline; a `background` one waits its
+        /// Asks the browser for a pipeline; a background one waits its
         /// turn ([`BACKGROUND_LANES`]).
-        pub(crate) fn submit(
-            &mut self,
-            device: &wgpu::Device,
-            layouts: Vec<JsValue>,
-            job: Job,
-            background: bool,
-        ) {
+        pub(crate) fn submit(&mut self, device: &wgpu::Device, job: Job) {
             self.state.device.get_or_init(|| device.clone());
-            let raw = device.as_webgpu().expect("the web uses the WebGPU backend");
-            let raw: &JsValue = raw.as_ref();
-            if background {
-                let mut b = self.state.background.borrow_mut();
-                b.device.get_or_insert_with(|| raw.clone());
-                b.quiet.insert(job.id());
-                b.jobs.push_back((job, layouts));
-                drop(b);
+            if job.background() {
+                self.state.lines.borrow_mut().push(job);
                 feed(&self.state);
             } else {
-                dispatch(&self.state, raw, &layouts, job, false);
+                dispatch(&self.state, job, false);
             }
         }
 
         /// Lets background compiles be asked for (`open`), or holds those
         /// not asked for yet.
         pub(crate) fn open_background(&mut self, _: &wgpu::Device, open: bool) {
-            let was = !std::mem::replace(&mut self.state.background.borrow_mut().closed, !open);
-            if open && !was {
+            if self.state.lines.borrow_mut().open(open) {
                 feed(&self.state);
             }
         }
 
-        /// Makes a background compile one a frame waits for: asked for now
-        /// if it waits its turn, woken for when it settles.
-        pub(crate) fn promote(&mut self, id: PipelineId) {
-            let mut b = self.state.background.borrow_mut();
-            b.quiet.remove(&id);
-            let Some(at) = b.jobs.iter().position(|(j, _)| j.id() == id) else {
-                return;
-            };
-            let (job, layouts) = b.jobs.remove(at).expect("found above");
-            let device = b.device.clone().expect("set with the job");
-            drop(b);
-            dispatch(&self.state, &device, &layouts, job, false);
+        /// Asks for a background compile now, if it waits its turn.
+        pub(crate) fn promote(&mut self, _: &wgpu::Device, id: PipelineId) {
+            let job = super::take(&mut self.state.lines.borrow_mut().background, id);
+            if let Some(job) = job {
+                dispatch(&self.state, job, false);
+            }
+        }
+
+        /// Drops a background compile not yet asked for.
+        pub(crate) fn cancel(&mut self, id: PipelineId) {
+            self.state.lines.borrow_mut().cancel(id);
+        }
+
+        /// Every compile a frame waits for is asked for at once.
+        pub(crate) fn prioritize(&mut self, _: PipelineId) {}
+
+        /// Compiles finished since the last call.
+        pub(crate) fn take(&mut self) -> Vec<Done> {
+            self.state.settled.borrow_mut().drain(..).collect()
         }
     }
 
     /// Asks for waiting background compiles while lanes are free.
     fn feed(state: &Rc<State>) {
         loop {
-            let mut b = state.background.borrow_mut();
-            if b.closed || b.running >= BACKGROUND_LANES {
-                return;
-            }
-            let Some((job, layouts)) = b.jobs.pop_front() else {
+            let job = {
+                let mut lines = state.lines.borrow_mut();
+                match lines.reserve_lane(BACKGROUND_LANES) {
+                    true => lines.next_background(),
+                    false => None,
+                }
+            };
+            let Some(job) = job else {
                 return;
             };
-            b.running += 1;
-            let device = b.device.clone().expect("set with the job");
-            drop(b);
-            dispatch(state, &device, &layouts, job, true);
+            dispatch(state, job, true);
         }
     }
 
     /// Asks the browser to compile `job`; once its promise settles, the
-    /// next [`Compiler::take`] takes it. A `background` one's settling
-    /// starts the next.
-    fn dispatch(state: &Rc<State>, raw: &JsValue, layouts: &[JsValue], job: Job, background: bool) {
-        let layout = call(
-            raw,
-            "createPipelineLayout",
-            &dict(&[("bindGroupLayouts", layouts.iter().collect::<Array>().into())]),
-        );
-        let (method, descriptor) = match &job {
-            Job::Render(_, job) => ("createRenderPipelineAsync", render(raw, &layout, job)),
-            Job::Compute(_, job) => (
+    /// next [`Compiler::take`] takes it. One in a `lane` frees it then.
+    fn dispatch(state: &Rc<State>, job: Job, lane: bool) {
+        let device = state.device.get().expect("set with the job");
+        let raw = device.as_webgpu().expect("the web uses the WebGPU backend");
+        let raw: &JsValue = raw.as_ref();
+        let layout = |layouts: &[JsValue]| {
+            call(
+                raw,
+                "createPipelineLayout",
+                &dict(&[("bindGroupLayouts", layouts.iter().collect::<Array>().into())]),
+            )
+        };
+        let (method, descriptor) = match &job.pipeline {
+            Pipeline::Render(job) => (
+                "createRenderPipelineAsync",
+                render(raw, &layout(&job.layouts), job),
+            ),
+            Pipeline::Compute(job) => (
                 "createComputePipelineAsync",
                 dict(&[
                     ("label", job.label.as_str().into()),
-                    ("layout", layout.clone()),
+                    ("layout", layout(&job.layouts)),
                     ("compute", stage(raw, &job.compute, None)),
                 ]),
             ),
@@ -1180,51 +1232,34 @@ mod webgpu {
                     .and_then(|m| m.as_string())
                     .unwrap_or_else(|| format!("{reason:?}"))
             });
-            settle(&state, job, result, now() - started, background);
+            settle(&state, job, result, now() - started, lane);
         });
     }
 
     /// A promise settled: wgpu wraps the pipeline the browser compiled, and
     /// the host is woken unless no frame asked for it.
-    fn settle(
-        state: &Rc<State>,
-        job: Job,
-        result: Result<JsValue, String>,
-        ms: f64,
-        background: bool,
-    ) {
-        let id = job.id();
+    fn settle(state: &Rc<State>, job: Job, result: Result<JsValue, String>, ms: f64, lane: bool) {
         let device = state.device.get().expect("set with the job");
-        let built = result.map(|pipeline| match &job {
-            Job::Render(..) => Built::Render(
+        let built = result.map(|pipeline| match &job.pipeline {
+            Pipeline::Render(_) => Built::Render(
                 device.create_render_pipeline_from_webgpu_handle(pipeline.unchecked_into()),
             ),
-            Job::Compute(..) => Built::Compute(
+            Pipeline::Compute(_) => Built::Compute(
                 device.create_compute_pipeline_from_webgpu_handle(pipeline.unchecked_into()),
             ),
         });
         state.settled.borrow_mut().push_back(Done {
-            id,
+            id: job.id,
             built,
             label: job.label().to_owned(),
             took: std::time::Duration::from_secs_f64(ms / 1000.0),
         });
-        let quiet = state.background.borrow_mut().quiet.remove(&id);
-        if background {
-            state.background.borrow_mut().running -= 1;
+        if lane {
+            state.lines.borrow_mut().running -= 1;
             feed(state);
         }
-        if !quiet {
+        if !job.background() {
             wake_up(&state.wake);
-        }
-    }
-
-    impl Compiler {
-        pub(crate) fn prioritize(&mut self, _: PipelineId) {}
-
-        /// Compiles finished since the last call.
-        pub(crate) fn take(&mut self) -> Vec<Done> {
-            self.state.settled.borrow_mut().drain(..).collect()
         }
     }
 

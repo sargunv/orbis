@@ -3,7 +3,8 @@
 //! (the `webgpu` and `gl` features).
 //!
 //! [`WgpuGpu`] owns every wgpu handle behind the ids it hands out. Hosts
-//! register their own targets (a surface frame, an offscreen texture) with
+//! register their own targets: a surface's frame with
+//! [`WgpuGpu::register_surface`], a view of a texture of theirs with
 //! [`WgpuGpu::register_view`].
 
 // `unsafe` only where a surface or a host's texture is made from a raw
@@ -24,20 +25,22 @@ mod offscreen;
 mod slots;
 #[cfg(not(target_arch = "wasm32"))]
 mod staging;
-#[cfg(not(target_arch = "wasm32"))]
 mod surface;
 mod texture_writes;
 mod timing;
 mod wait;
 mod writes;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use compile::CompileHold;
 pub use convert::from_texture_format;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use metal::{MetalTexture, metal_texture};
 use orb_hal::*;
 use slots::Slots;
 #[cfg(not(target_arch = "wasm32"))]
-pub use surface::{RawSurface, Surface, SurfaceError};
+pub use surface::{RawSurface, Surface};
+pub use surface::{SharedSurface, SurfaceError};
 pub use timing::SubmitTimes;
 pub use wait::Lost;
 /// The wgpu this HAL is built on, for hosts that hand it windows.
@@ -69,86 +72,76 @@ const CHECKED_TEXTURE_BYTES: u64 = 64 << 20;
 /// passes make at most 3072, and the uploads and readback a few more.
 const PASSES_PER_ENCODER: usize = 1024;
 
-/// The frame driver a native device's renderers take: `gpu` (the default
-/// where the device has it), `cpu` and `cpu-tex`
-/// ([`WgpuGpu::force_cpu_driver`]) or `webgl2`
-/// ([`WgpuGpu::force_webgl2`]). `cpu-tex` and `webgl2` also have the
-/// device offer only the storage bindings their path fits in
-/// ([`TEXTURE_TABLES`], [`NO_COMPUTE`]), so their runs hold its pipelines
-/// to them.
+/// The frame path a native device takes at most ([`FramePath`]): `gpu`
+/// (the default), `cpu`, `cpu-tex` or `webgl2`. `cpu-tex` and `webgl2`
+/// also have the device offer only the storage bindings their path fits
+/// in, so validation holds the pipelines to them.
 #[cfg(not(target_arch = "wasm32"))]
 const DRIVER: &str = "ORB_DRIVER";
 
-/// The storage bindings a stage of Orbis's pipelines takes at most with
-/// the scene's tables in storage buffers (the GPU frame driver's cull and
-/// fetches, the compute placement): WebGPU's defaults, 8 storage buffers
-/// a stage, the most [`device_limits`] asks for, so every test holds the
-/// pipelines to them. A device short of them keeps the tables in data
-/// textures.
+/// The storage bindings a stage takes at most with the scene's tables in
+/// storage buffers (the GPU frame driver's cull and fetches, the compute
+/// placement): WebGPU's defaults, 8 storage buffers a stage, the most
+/// [`device_limits`] asks for, so every test holds the pipelines to them.
 const STORAGE_TABLES: wgpu::Limits = wgpu::Limits::defaults();
 
 /// The storage bindings a stage takes at most with the tables in data
-/// textures, on the CPU frame driver with compute: downlevel's, Vulkan's
-/// least (4 storage buffers and 4 storage textures a stage). A device
-/// short of them takes WebGL 2's path, which binds none
-/// ([`NO_COMPUTE`]).
+/// textures, with compute: downlevel's, Vulkan's least (4 storage buffers
+/// and 4 storage textures a stage).
 const TEXTURE_TABLES: wgpu::Limits = wgpu::Limits::downlevel_defaults();
 
 /// WebGL 2's storage bindings: none.
 #[cfg(not(target_arch = "wasm32"))]
 const NO_COMPUTE: wgpu::Limits = wgpu::Limits::downlevel_webgl2_defaults();
 
-/// Whether a device with `limits` runs compute passes, and whether it
-/// keeps the scene's tables in storage buffers, `(compute,
-/// storage_tables)`: each where its pipelines' storage bindings fit
-/// ([`TEXTURE_TABLES`], [`STORAGE_TABLES`]). Neither on GL, which runs
-/// the CPU frame driver as WebGL 2 does even where it offers compute
-/// (#140).
-fn compute_and_storage_tables(limits: &wgpu::Limits, gl: bool) -> (bool, bool) {
+/// The frame path a device with `flags` and `limits` takes: compute needs
+/// compute shaders and the storage bindings of [`TEXTURE_TABLES`]; tables
+/// in storage buffers need the vertex stage's storage and
+/// [`STORAGE_TABLES`]; the GPU-driven frame needs indirect draws too. GL
+/// takes WebGL 2's, even where it offers compute (#140).
+fn frame_path(flags: wgpu::DownlevelFlags, limits: &wgpu::Limits, gl: bool) -> FramePath {
+    use wgpu::DownlevelFlags as F;
     let fits = |floor: &wgpu::Limits| {
         limits.max_storage_buffers_per_shader_stage >= floor.max_storage_buffers_per_shader_stage
             && limits.max_storage_textures_per_shader_stage
                 >= floor.max_storage_textures_per_shader_stage
     };
-    let compute = !gl && limits.max_compute_invocations_per_workgroup > 0 && fits(&TEXTURE_TABLES);
-    (compute, compute && fits(&STORAGE_TABLES))
+    if gl || !flags.contains(F::COMPUTE_SHADERS) || !fits(&TEXTURE_TABLES) {
+        FramePath::Webgl2
+    } else if !flags.contains(F::VERTEX_STORAGE) || !fits(&STORAGE_TABLES) {
+        FramePath::CpuTex
+    } else if !flags.contains(F::INDIRECT_EXECUTION) {
+        FramePath::Cpu
+    } else {
+        FramePath::Gpu
+    }
 }
 
-/// What `ORB_DRIVER` asks of a native device.
+/// The frame path `ORB_DRIVER` asks of native devices at most.
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Driver {
-    Gpu,
-    Cpu,
-    CpuTex,
-    Webgl2,
+pub(crate) fn driver_from_env() -> FramePath {
+    match std::env::var(DRIVER).as_deref() {
+        Ok("" | "gpu") | Err(_) => FramePath::Gpu,
+        Ok("cpu") => FramePath::Cpu,
+        Ok("cpu-tex") => FramePath::CpuTex,
+        Ok("webgl2") => FramePath::Webgl2,
+        Ok(other) => panic!("{DRIVER}={other}: expected gpu, cpu, cpu-tex or webgl2"),
+    }
 }
 
+/// `limits` lowered to the storage bindings a device that takes `path` at
+/// most binds, where it keeps the tables in textures.
 #[cfg(not(target_arch = "wasm32"))]
-impl Driver {
-    fn from_env() -> Self {
-        match std::env::var(DRIVER).as_deref() {
-            Ok("" | "gpu") | Err(_) => Self::Gpu,
-            Ok("cpu") => Self::Cpu,
-            Ok("cpu-tex") => Self::CpuTex,
-            Ok("webgl2") => Self::Webgl2,
-            Ok(other) => panic!("{DRIVER}={other}: expected gpu, cpu, cpu-tex or webgl2"),
-        }
-    }
-
-    /// `limits` lowered to the storage bindings its path fits in, where it
-    /// keeps the tables in textures.
-    fn lower_storage(self, limits: &mut wgpu::Limits) {
-        let floor = match self {
-            Self::Gpu | Self::Cpu => return,
-            Self::CpuTex => &TEXTURE_TABLES,
-            Self::Webgl2 => &NO_COMPUTE,
-        };
-        let buffers = &mut limits.max_storage_buffers_per_shader_stage;
-        *buffers = (*buffers).min(floor.max_storage_buffers_per_shader_stage);
-        let textures = &mut limits.max_storage_textures_per_shader_stage;
-        *textures = (*textures).min(floor.max_storage_textures_per_shader_stage);
-    }
+fn lower_storage(path: FramePath, limits: &mut wgpu::Limits) {
+    let floor = match path {
+        FramePath::Gpu | FramePath::Cpu => return,
+        FramePath::CpuTex => &TEXTURE_TABLES,
+        FramePath::Webgl2 => &NO_COMPUTE,
+    };
+    let buffers = &mut limits.max_storage_buffers_per_shader_stage;
+    *buffers = (*buffers).min(floor.max_storage_buffers_per_shader_stage);
+    let textures = &mut limits.max_storage_textures_per_shader_stage;
+    *textures = (*textures).min(floor.max_storage_textures_per_shader_stage);
 }
 
 /// A native device's 2D texture side, lowered to this to stand in for a
@@ -215,10 +208,6 @@ pub struct WgpuGpu {
     caps: Caps,
     /// The device is wgpu's GL back end (WebGL 2, GLES).
     gl: bool,
-    /// Array textures count the layers GL makes them with
-    /// ([`gl_array_layers`]) against [`Limits::max_texture_bytes`]: on GL,
-    /// and under [`force_webgl2`](Self::force_webgl2), which stands in for it.
-    gl_layers: bool,
     /// The device is a GL one that takes GLSL ES (WebGL 2, OpenGL ES):
     /// pipelines compile the build's GLSL there (`ShaderModuleDesc::glsl`).
     glsl_es: bool,
@@ -230,7 +219,7 @@ pub struct WgpuGpu {
     /// Buffers made with [`BufferUsages::IDLE_WRITES`], which writes go to
     /// in place.
     idle_writes: rustc_hash::FxHashSet<u32>,
-    textures: Slots<Texture>,
+    textures: Slots<TextureEntry>,
     shader_modules: Slots<compile::Shared<compile::Module>>,
     bind_group_layouts: Slots<BindGroupLayout>,
     bind_groups: Slots<wgpu::BindGroup>,
@@ -241,15 +230,13 @@ pub struct WgpuGpu {
     /// and grown to the most instances a pass or bundle draws.
     attribute_zero: Option<wgpu::Buffer>,
     compiler: compile::Compiler,
-    /// Pipelines asked for and not yet compiled, background ones aside:
-    /// those [`Compiled::Pending`] and not `background`, kept in step by
-    /// [`settle_pipeline`](Self::settle_pipeline) and the other
+    /// Pipelines [`Compiled::Pending`] outside the background, kept in
+    /// step by [`settle_pipeline`](Self::settle_pipeline) and the other
     /// transitions.
     pending: u32,
-    /// The surface texture a frame draws into, once a pass draws into it
+    /// The surface a frame draws into, acquired once a pass draws into it
     /// ([`register_surface`](Self::register_surface)).
-    #[cfg(target_arch = "wasm32")]
-    surface: Option<PendingSurface>,
+    surface: Option<surface::Pending>,
     /// Later requests are background ones
     /// ([`Gpu::set_background_compiles`]).
     background: bool,
@@ -327,51 +314,12 @@ pub struct WgpuGpu {
     shader_compiler: Option<String>,
 }
 
-/// A write from core memory: gathered when small, or when it overlaps a
-/// gathered one it must land after; otherwise staged natively, and on the
-/// web straight to the queue. Whether it was issued now, not gathered.
-fn write_core(
-    writes: &mut writes::Writes,
-    (device, queue): (&wgpu::Device, &wgpu::Queue),
-    buffers: &Slots<wgpu::Buffer>,
-    (id, idle): (BufferId, bool),
-    offset: u64,
-    data: &[u8],
-) -> bool {
-    // On WebGL 2 every write is gathered, whatever its size: a
-    // `bufferSubData` into a buffer the GPU still reads makes ANGLE's Metal
-    // back end copy the whole buffer into a new one, and a frame's writes
-    // into the scene's arenas then cost hundreds of milliseconds (#140).
-    // Gathered, they land in a staging buffer the GPU is done with and are
-    // copied into place on the GPU. A buffer the GPU no longer reads is
-    // written in place: a copy on the GPU into an index buffer makes ANGLE
-    // wait for it before it next reads the buffer for restart indices.
-    if !idle
-        && (cfg!(webgl)
-            || data.len() <= writes::GATHERED
-            || writes.overlaps(id, offset, data.len() as u64))
-    {
-        writes.gather(id, offset, data);
-        return false;
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    if writes.stage(device, id, offset, data) {
-        return true;
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = device;
-    queue.write_buffer(&buffers[id.0], offset, data);
-    true
-}
-
 /// Where a pipeline's compile has come to.
 #[derive(Debug)]
 enum Compiled {
-    /// Compiling; `background` while no frame has asked for it
+    /// Compiling, in the background while its flag is set
     /// ([`Gpu::set_background_compiles`]).
-    Pending {
-        background: bool,
-    },
+    Pending(compile::Background),
     Ready(compile::Built),
     /// The driver failed to make it: what draws or dispatches with it does
     /// nothing.
@@ -457,40 +405,56 @@ struct BindGroupLayout {
     raw: wasm_bindgen::JsValue,
 }
 
+/// What a [`TextureId`] names: a texture, or a view that passes draw into
+/// and bindings sample as it is.
 #[derive(Debug)]
-struct Texture {
-    /// `None` for views the host registered and owns.
-    texture: Option<wgpu::Texture>,
-    /// `None` for a surface's texture not yet acquired
-    /// ([`WgpuGpu::register_surface`]).
-    view: Option<wgpu::TextureView>,
-    /// A view of these mip levels of another entry's texture, which it
-    /// doesn't own.
-    levels: Option<std::ops::Range<u32>>,
+enum TextureEntry {
+    /// A texture made here, which destroying the id destroys, viewed at
+    /// its desc's dimension.
+    Owned {
+        texture: wgpu::Texture,
+        view: wgpu::TextureView,
+        dimension: wgpu::TextureViewDimension,
+    },
+    /// A view of some of another entry's texture: some mip levels at its
+    /// dimension, or one layer at one level as a 2D texture.
+    View {
+        texture: wgpu::Texture,
+        view: wgpu::TextureView,
+    },
+    /// A view the host registered and owns.
+    Host(wgpu::TextureView),
+    /// A surface's texture, once acquired ([`WgpuGpu::register_surface`]).
+    Surface(Option<wgpu::TextureView>),
 }
 
-/// A surface's texture for the frame ([`WgpuGpu::register_surface`]).
-#[cfg(target_arch = "wasm32")]
-#[derive(Debug)]
-struct PendingSurface {
-    id: TextureId,
-    surface: std::rc::Rc<wgpu::Surface<'static>>,
-    /// Configured so before its texture is acquired.
-    configure: Option<wgpu::SurfaceConfiguration>,
-    /// Once a pass drew into it.
-    frame: Option<Result<wgpu::SurfaceTexture, String>>,
+impl TextureEntry {
+    fn texture(&self) -> Option<&wgpu::Texture> {
+        match self {
+            Self::Owned { texture, .. } | Self::View { texture, .. } => Some(texture),
+            Self::Host(_) | Self::Surface(_) => None,
+        }
+    }
+
+    fn view(&self) -> Option<&wgpu::TextureView> {
+        match self {
+            Self::Owned { view, .. } | Self::View { view, .. } | Self::Host(view) => Some(view),
+            Self::Surface(view) => view.as_ref(),
+        }
+    }
 }
 
-/// The layers wgpu's GL back end makes an array texture of `desc` with,
-/// which picks the GL target from the layer count alone: one layer is a
-/// 2D texture, and a square one of 6n layers a cube map (an array of them
-/// past 6, an enum WebGL 2 lacks), both incomplete to an array's sampler,
-/// which reads black (pages, atlases). Such an array gets a layer more
-/// that it never uses.
-fn gl_array_layers(desc: &TextureDesc<'_>) -> u32 {
+/// The layers a texture of `desc` is made with, on wgpu's GL back end
+/// where `gl`. GL picks an array's target from its layer count alone: one
+/// layer is a 2D texture, and a square one of 6n layers a cube map (an
+/// array of them past 6, an enum WebGL 2 lacks), both incomplete to an
+/// array's sampler, which reads black (pages, atlases). Such an array gets
+/// a layer more that it never uses.
+fn gl_array_layers(desc: &TextureDesc<'_>, gl: bool) -> u32 {
     let layers = desc.array_layers;
     let cube = desc.width == desc.height && desc.sample_count == 1 && layers.is_multiple_of(6);
-    if layers == 1 || cube {
+    let array = gl && desc.dimension == TextureViewDimension::D2Array;
+    if array && (layers == 1 || cube) {
         layers + 1
     } else {
         layers
@@ -552,19 +516,49 @@ fn platform_texture_usages() -> wgpu::TextureUsages {
     }
 }
 
-/// Whether `device`, a GL one, takes GLSL ES (WebGL 2's or OpenGL ES's
-/// context, not desktop OpenGL's).
+/// Whether two copies into one texture level and layer in one submission
+/// can race on `device` (`texture_writes`, #156): on Apple GPUs, natively
+/// through Metal or MoltenVK, and in a browser that says it runs on one
+/// (or withholds its vendor). GL orders its uploads as they come.
+fn copies_race(device: &wgpu::Device) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let info = device.adapter_info();
+        info.backend == wgpu::Backend::Metal || info.driver.contains("MoltenVK")
+    }
+    #[cfg(webgpu)]
+    {
+        let raw = device.as_webgpu().expect("the web uses the WebGPU backend");
+        let vendor = js_sys::Reflect::get(raw.as_ref(), &"adapterInfo".into())
+            .and_then(|info| js_sys::Reflect::get(&info, &"vendor".into()))
+            .ok()
+            .and_then(|vendor| vendor.as_string());
+        vendor.is_none_or(|vendor| vendor.is_empty() || vendor == "apple")
+    }
+    #[cfg(webgl)]
+    {
+        let _ = device;
+        false
+    }
+}
+
+/// What `device`'s GL context is, on wgpu's GL back end: whether it
+/// takes GLSL ES (WebGL 2's or OpenGL ES's, not desktop OpenGL's), and
+/// whether it clips depth from 0 to 1 as the shaders write it
+/// (`EXT_clip_control`; Chrome, Safari and ANGLE have it, Firefox doesn't)
+/// rather than wgpu remapping it into GL's -1 to 1.
 #[allow(unsafe_code)]
 #[cfg_attr(
     not(any(feature = "gl", target_os = "android")),
     allow(unused_variables)
 )]
-fn gl_takes_glsl_es(device: &wgpu::Device) -> bool {
-    // SAFETY: only reads a flag of the device's.
+fn gl_context(device: &wgpu::Device) -> Option<(bool, bool)> {
+    // SAFETY: only reads flags of the device's.
     #[cfg(any(feature = "gl", target_os = "android"))]
-    return unsafe { device.as_hal::<wgpu::hal::api::Gles>() }.is_some_and(|d| d.is_embedded());
+    return unsafe { device.as_hal::<wgpu::hal::api::Gles>() }
+        .map(|d| (d.is_embedded(), d.zero_to_one_depth()));
     #[cfg(not(any(feature = "gl", target_os = "android")))]
-    false
+    None
 }
 
 /// Whether GL raised an error since it was last asked, clearing it: after
@@ -594,23 +588,6 @@ fn gl_error(device: &wgpu::Device) -> bool {
     false
 }
 
-/// Whether `device`, a GL one, clips depth from 0 to 1 as the shaders
-/// write it (`EXT_clip_control`; Chrome, Safari and ANGLE have it, Firefox
-/// doesn't), rather than wgpu remapping it into GL's -1 to 1.
-#[allow(unsafe_code)]
-#[cfg_attr(
-    not(any(feature = "gl", target_os = "android")),
-    allow(unused_variables)
-)]
-fn gl_clips_zero_to_one(device: &wgpu::Device) -> bool {
-    // SAFETY: only reads a flag of the device's.
-    #[cfg(any(feature = "gl", target_os = "android"))]
-    return unsafe { device.as_hal::<wgpu::hal::api::Gles>() }
-        .is_some_and(|d| d.zero_to_one_depth());
-    #[cfg(not(any(feature = "gl", target_os = "android")))]
-    false
-}
-
 impl WgpuGpu {
     /// A device on `adapter`, with the features and limits Orbis asks of
     /// it ([`device_limits`]) and the render formats it reads from it
@@ -619,14 +596,13 @@ impl WgpuGpu {
     /// ([`lost`](Self::lost)).
     pub async fn open(
         adapter: &wgpu::Adapter,
+        most: FramePath,
         on_lost: impl Fn(&str) + Send + 'static,
     ) -> Result<Self, wgpu::RequestDeviceError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let driver = Driver::from_env();
         #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut required_limits = device_limits(adapter);
         #[cfg(not(target_arch = "wasm32"))]
-        driver.lower_storage(&mut required_limits);
+        lower_storage(most, &mut required_limits);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("orbis"),
@@ -635,48 +611,58 @@ impl WgpuGpu {
                 ..Default::default()
             })
             .await?;
+        let flags = adapter.get_downlevel_capabilities().flags;
         #[cfg_attr(webgpu, allow(unused_mut))]
-        let mut gpu = Self::new(device, queue);
-        #[cfg(not(target_arch = "wasm32"))]
-        match driver {
-            Driver::Gpu => {}
-            Driver::Cpu => gpu.force_cpu_driver(false),
-            Driver::CpuTex => gpu.force_cpu_driver(true),
-            Driver::Webgl2 => gpu.force_webgl2(),
-        }
+        let mut gpu = Self::new(device, queue, flags, most);
         #[cfg(not(webgpu))]
         gpu.read_formats(adapter);
         gpu.watch_loss(on_lost);
         Ok(gpu)
     }
 
-    fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
+    /// A device on `device`, whose adapter has `flags`, taking the frame
+    /// path they and its limits allow, or `most` where that is less.
+    fn new(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        flags: wgpu::DownlevelFlags,
+        most: FramePath,
+    ) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         let gl = device.adapter_info().backend == wgpu::Backend::Gl;
         #[cfg(target_arch = "wasm32")]
         let gl = cfg!(webgl);
         let limits = device.limits();
-        let (compute, storage_tables) = compute_and_storage_tables(&limits, gl);
+        let gl_context = gl_context(&device);
+        let frame_path = frame_path(flags, &limits, gl).max(most);
+        let webgl2 = frame_path == FramePath::Webgl2;
+        // Another back end standing in for WebGL 2 takes the limits wgpu
+        // asks of it by default.
+        let stand_in = webgl2 && !gl;
         let caps = Caps {
             limits: Limits {
                 max_buffer_size: limits.max_buffer_size,
                 max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size,
                 max_texture_dimension_2d: limits.max_texture_dimension_2d,
-                max_texture_array_layers: limits.max_texture_array_layers,
-                max_texture_bytes: if gl { GL_TEXTURE_BYTES } else { u64::MAX },
-                min_uniform_buffer_offset_alignment: limits.min_uniform_buffer_offset_alignment,
+                max_texture_array_layers: match stand_in {
+                    true => limits.max_texture_array_layers.min(256),
+                    false => limits.max_texture_array_layers,
+                },
+                max_texture_bytes: if webgl2 { GL_TEXTURE_BYTES } else { u64::MAX },
+                min_uniform_buffer_offset_alignment: match stand_in {
+                    true => limits.min_uniform_buffer_offset_alignment.max(256),
+                    false => limits.min_uniform_buffer_offset_alignment,
+                },
             },
             timestamp_query: device.features().contains(wgpu::Features::TIMESTAMP_QUERY),
-            // Not on GL: its shaders are WebGL 2's, which has none, though
-            // native GLES (Mesa's) offers them.
-            clip_distances: !gl && device.features().contains(wgpu::Features::CLIP_DISTANCES),
-            compute,
-            indirect: compute,
-            vertex_storage: storage_tables,
+            // WebGL 2's shaders have none, though native GLES (Mesa's)
+            // offers them.
+            clip_distances: !webgl2 && device.features().contains(wgpu::Features::CLIP_DISTANCES),
+            frame_path,
             // WebGPU guarantees both; elsewhere `read_formats` asks the
             // adapter (WebGL 2 has them with `EXT_color_buffer_float`).
             float_targets: cfg!(webgpu),
-            zero_to_one_depth: !gl || gl_clips_zero_to_one(&device),
+            zero_to_one_depth: gl_context.is_none_or(|(_, zero_to_one)| zero_to_one),
             depth32_stencil8: (device.features()).contains(wgpu::Features::DEPTH32FLOAT_STENCIL8),
             // `ORB_COMPILES_HOLD_PRESENTS` has a native device stand in for
             // Firefox's: what a map does there, in tests and benches.
@@ -690,7 +676,8 @@ impl WgpuGpu {
             // (`flat_from_first`).
             flat_from_last: gl,
         };
-        let glsl_es = gl && gl_takes_glsl_es(&device);
+        let glsl_es = gl_context.is_some_and(|(glsl_es, _)| glsl_es);
+        let texture_writes = texture_writes::TextureWrites::new(copies_race(&device));
         #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut gpu = Self {
             device,
@@ -703,7 +690,6 @@ impl WgpuGpu {
             pipeline_cache_kept: None,
             caps,
             gl,
-            gl_layers: gl,
             glsl_es,
             texture_usages: platform_texture_usages(),
             buffers: Slots::default(),
@@ -714,9 +700,8 @@ impl WgpuGpu {
             bind_groups: Slots::default(),
             pipelines: Slots::default(),
             attribute_zero: None,
-            compiler: compile::Compiler::new(),
+            compiler: Default::default(),
             pending: 0,
-            #[cfg(target_arch = "wasm32")]
             surface: None,
             background: false,
             made: 0,
@@ -740,7 +725,7 @@ impl WgpuGpu {
             ledger: ledger::Ledger::from_env(),
             shader_nonce: None,
             writes: writes::Writes::default(),
-            texture_writes: Default::default(),
+            texture_writes,
             readbacks: Default::default(),
             copy_next: None,
             copied: Default::default(),
@@ -763,37 +748,33 @@ impl WgpuGpu {
         gpu
     }
 
-    /// Has a device report everything WebGL 2 lacks, compute and clip
-    /// distances too ([`force_cpu_driver`](Self::force_cpu_driver) with
-    /// textures keeps them): WebGL 2's whole path on a native device, its
-    /// drawn mips and its gaps included, short of GL itself.
-    /// `ORB_DRIVER=webgl2` sets it for every native device, and only it
-    /// also has the device offer no storage bindings, so validation holds
-    /// the pipelines to WebGL 2's none.
-    pub fn force_webgl2(&mut self) {
-        self.force_cpu_driver(true);
-        self.caps.compute = false;
-        self.caps.clip_distances = false;
-        // What wgpu asks of WebGL 2 by default (`device_limits`).
-        let limits = &mut self.caps.limits;
-        limits.max_texture_array_layers = limits.max_texture_array_layers.min(256);
-        limits.max_texture_bytes = limits.max_texture_bytes.min(GL_TEXTURE_BYTES);
-        self.gl_layers = true;
-        limits.min_uniform_buffer_offset_alignment =
-            limits.min_uniform_buffer_offset_alignment.max(256);
-    }
-
-    /// Has a device that draws GPU-driven report what WebGL 2 lacks, so
-    /// renderers made on it after take the CPU frame driver (no indirect
-    /// draws) and, with `textures`, keep their tables in data textures (no
-    /// vertex-stage storage): the WebGL 2 path's logic on a native device,
-    /// for tests that hold it to the GPU-driven one (#140).
-    /// `ORB_DRIVER=cpu` or `cpu-tex` sets it for every native device, and
-    /// only `cpu-tex` also has the device offer just the storage bindings
-    /// the texture path fits in, so validation holds the pipelines to them.
-    pub fn force_cpu_driver(&mut self, textures: bool) {
-        self.caps.indirect = false;
-        self.caps.vertex_storage &= !textures;
+    /// A buffer write from core memory: gathered when small, or when it
+    /// overlaps a gathered one it must land after; otherwise staged
+    /// natively, and on the web straight to the queue.
+    fn write_core(&mut self, id: BufferId, offset: u64, data: &[u8]) {
+        // On WebGL 2 every write is gathered, whatever its size: a
+        // `bufferSubData` into a buffer the GPU still reads makes ANGLE's
+        // Metal back end copy the whole buffer into a new one, and a
+        // frame's writes into the scene's arenas then cost hundreds of
+        // milliseconds (#140). Gathered, they land in a staging buffer the
+        // GPU is done with and are copied into place on the GPU. A buffer
+        // the GPU no longer reads is written in place: a copy on the GPU
+        // into an index buffer makes ANGLE wait for it before it next
+        // reads the buffer for restart indices.
+        if !self.idle_writes.contains(&id.0)
+            && (cfg!(webgl)
+                || data.len() <= writes::GATHERED
+                || self.writes.overlaps(id, offset, data.len() as u64))
+        {
+            self.writes.gather(id, offset, data);
+            return;
+        }
+        self.counters.upload_calls += 1;
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.writes.stage(&self.device, id, offset, data) {
+            return;
+        }
+        self.queue.write_buffer(&self.buffers[id.0], offset, data);
     }
 
     /// Copies the gathered writes into place ahead of what `encoder`
@@ -806,20 +787,11 @@ impl WgpuGpu {
             return;
         }
         self.issue_texture_writes();
-        #[cfg(not(target_arch = "wasm32"))]
         let issued = self.writes.encode(
             (&self.device, &self.queue),
-            |id| self.buffers[id.0].clone(),
-            |id| (self.textures[id.0].texture.clone()).expect("texture is a registered view"),
+            (&self.buffers, &self.textures),
             encoder,
         );
-        #[cfg(target_arch = "wasm32")]
-        let issued = Some(self.writes.encode(
-            &self.device,
-            &self.queue,
-            |id| self.buffers[id.0].clone(),
-            encoder,
-        ));
         match issued {
             Some(issued) => {
                 self.counters.upload_calls += issued.calls;
@@ -831,18 +803,12 @@ impl WgpuGpu {
 
     /// Issues the held texture writes, wave by wave, each wave before the
     /// last its own submission (see `texture_writes`): natively staged,
-    /// each in its wave, and on the web to the queue. GL orders its
-    /// texture uploads as they come, so there the waves share one, in
-    /// order, natively as on the web: each submission is a flush, which
-    /// ANGLE's Metal back end commits as a command buffer of its own
-    /// (#140), and the CPU frame driver's data tables write a texture's
-    /// layer many times a frame.
+    /// each in its wave, and on the web to the queue.
     fn issue_texture_writes(&mut self) {
         let mut held = std::mem::take(&mut self.texture_writes);
         // The waves the web has ended with a submission.
         let mut ended = 0;
         held.issue(|write, texels, wave| {
-            let wave = if self.gl { 0 } else { wave };
             while cfg!(target_arch = "wasm32") && ended < wave {
                 self.queue.submit([]);
                 self.counters.texture_write_submissions += 1;
@@ -1045,8 +1011,8 @@ impl WgpuGpu {
         self.shader_nonce = nonce;
     }
 
-    /// Marks the start of a frame: its submissions, and a host target's
-    /// acquire and present around them. Starts a capture asked for.
+    /// Marks the start of a frame, its submissions and a host's present
+    /// after them. Starts a capture asked for.
     #[allow(unsafe_code)]
     pub fn start_frame(&mut self) {
         let frame = self.frames_started;
@@ -1152,7 +1118,15 @@ impl WgpuGpu {
     /// threads.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn inject_compile_hang(&self) {
-        self.compiler.inject_hang();
+        self.compiler.hang();
+    }
+
+    /// Holds compiles of pipelines labelled one of `labels` from finishing
+    /// until the hold is dropped, as a slow compiler would: fault
+    /// injection for tests of what waits for them. Needs compile threads.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn hold_compiles(&self, labels: &[&str]) -> CompileHold {
+        self.compiler.hold(labels)
     }
 
     /// Makes later compiles of pipelines labelled one of `labels` fail, and
@@ -1261,43 +1235,44 @@ impl WgpuGpu {
         let Some(entry) = self.pipelines.get_mut(slot(id)) else {
             return;
         };
-        if let Compiled::Pending { background: false } = entry {
+        if let Compiled::Pending(background) = entry
+            && !background.load(std::sync::atomic::Ordering::Relaxed)
+        {
             self.pending -= 1;
             self.made += 1;
         }
         *entry = state;
     }
 
-    /// Asks for the compile of a pipeline just made pending: background,
-    /// or one a frame waits for.
-    fn submit_job(&mut self, job: compile::Job, layouts: &[BindGroupLayoutId]) {
-        let background = self.background;
-        if !background {
+    /// Makes a pipeline pending and asks for its compile, a background
+    /// one while [`background`](Self::background) is set: its slot.
+    fn submit_job(&mut self, pipeline: compile::Pipeline) -> u32 {
+        self.counters.pipelines_requested += 1;
+        let background = compile::Background::new(self.background.into());
+        let slot = self.pipelines.insert(Compiled::Pending(background.clone()));
+        let id = match &pipeline {
+            compile::Pipeline::Render(_) => RenderPipelineId(slot).into(),
+            compile::Pipeline::Compute(_) => ComputePipelineId(slot).into(),
+        };
+        if !self.background {
             self.pending += 1;
             self.gate_background();
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let _ = layouts;
-            if background {
-                self.compiler.submit_background(&self.device, job);
-            } else {
-                self.compiler.submit(&self.device, job);
-            }
-        }
-        #[cfg(webgpu)]
-        {
-            let raw = layouts
-                .iter()
-                .map(|id| self.bind_group_layouts[id.0].raw.clone())
-                .collect();
-            self.compiler.submit(&self.device, raw, job, background);
-        }
-        #[cfg(webgl)]
-        {
-            let _ = layouts;
-            self.compiler.submit(&self.device, job, background);
-        }
+        let job = compile::Job {
+            id,
+            background,
+            pipeline,
+        };
+        self.compiler.submit(&self.device, job);
+        slot
+    }
+
+    /// The browser's bind group layouts of `layouts`, for async compiles.
+    #[cfg(webgpu)]
+    fn raw_layouts(&self, layouts: &[BindGroupLayoutId]) -> Vec<wasm_bindgen::JsValue> {
+        (layouts.iter())
+            .map(|id| self.bind_group_layouts[id.0].raw.clone())
+            .collect()
     }
 
     /// The pipeline cache pipelines are made through, if any.
@@ -1492,81 +1467,18 @@ impl WgpuGpu {
     /// frame, as a render target. Release it with
     /// [`Gpu::destroy_texture`] before the view is dropped or presented.
     pub fn register_view(&mut self, view: wgpu::TextureView) -> TextureId {
-        TextureId(self.textures.insert(Texture {
-            texture: None,
-            view: Some(view),
-            levels: None,
-        }))
+        TextureId(self.textures.insert(TextureEntry::Host(view)))
     }
 
-    /// A target for a frame into `surface`, whose texture is acquired
-    /// when a pass first draws into it, so a frame that draws nothing
-    /// (one held while compiles run, [`Gpu::presents_wait`]) presents
-    /// nothing. [`take_surface`](Self::take_surface) takes the texture.
-    /// The surface takes `configure`, if given, before its texture.
-    #[cfg(target_arch = "wasm32")]
-    pub fn register_surface(
-        &mut self,
-        surface: std::rc::Rc<wgpu::Surface<'static>>,
-        configure: Option<wgpu::SurfaceConfiguration>,
-    ) -> TextureId {
-        let id = TextureId(self.textures.insert(Texture {
-            texture: None,
-            view: None,
-            levels: None,
-        }));
-        self.surface = Some(PendingSurface {
-            id,
-            surface,
-            configure,
-            frame: None,
-        });
-        id
-    }
-
-    /// The texture the frame acquired for `id` (`None` if no pass drew
-    /// into it), or why acquiring it failed; `id` is released.
-    #[cfg(target_arch = "wasm32")]
-    pub fn take_surface(&mut self, id: TextureId) -> Option<Result<wgpu::SurfaceTexture, String>> {
-        let pending = self.surface.take().filter(|s| s.id == id);
-        self.textures.remove(id.0);
-        pending.and_then(|s| s.frame)
-    }
-
-    /// Acquires the pending surface's texture if a pass draws into it
-    /// (`id`) and it wasn't yet.
-    #[cfg(target_arch = "wasm32")]
-    fn acquire_surface(&mut self, id: TextureId) {
-        let Some(pending) = (self.surface.as_mut()).filter(|s| s.id == id && s.frame.is_none())
-        else {
-            return;
-        };
-        if let Some(config) = pending.configure.take() {
-            pending.surface.configure(&self.device, &config);
-        }
-        let frame = match pending.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
-            other => Err(format!("canvas texture: {other:?}")),
-        };
-        if let Ok(frame) = &frame {
-            let view = (frame.texture).create_view(&wgpu::TextureViewDescriptor::default());
-            self.textures[id.0].view = Some(view);
-        }
-        pending.frame = Some(frame);
-    }
-
-    /// The view of a texture a pass draws into.
+    /// The view of a texture a pass draws into or a binding samples.
     fn view(&self, id: TextureId) -> &wgpu::TextureView {
-        (self.textures[id.0].view.as_ref()).expect("a surface's texture acquired for its pass")
+        (self.textures[id.0].view()).expect("a surface's texture acquired for its pass")
     }
 
-    /// The wgpu texture behind an id created with [`Gpu::create_texture`].
+    /// The wgpu texture behind an id made with [`Gpu::create_texture`], or
+    /// of a view of one.
     pub fn texture(&self, id: TextureId) -> &wgpu::Texture {
-        self.textures[id.0]
-            .texture
-            .as_ref()
-            .expect("texture is a registered view")
+        (self.textures[id.0].texture()).expect("a texture, not a host's view")
     }
 
     /// The wgpu buffer behind an id.
@@ -1731,16 +1643,8 @@ impl Gpu for WgpuGpu {
     }
 
     fn write_buffer(&mut self, id: BufferId, offset: u64, data: &[u8]) {
-        let issued = write_core(
-            &mut self.writes,
-            (&self.device, &self.queue),
-            &self.buffers,
-            (id, self.idle_writes.contains(&id.0)),
-            offset,
-            data,
-        );
         self.counters.buffer_bytes_from_core += data.len() as u64;
-        self.counters.upload_calls += u32::from(issued);
+        self.write_core(id, offset, data);
     }
 
     fn write_buffer_from_host(
@@ -1750,20 +1654,14 @@ impl Gpu for WgpuGpu {
         bytes: HostBytesId,
         range: std::ops::Range<u64>,
     ) {
+        #[cfg(target_arch = "wasm32")]
         let len = range.end - range.start;
-        match &self.host_bytes[bytes.0] {
+        match &mut self.host_bytes[bytes.0] {
+            // Taken out while the device writes from them.
             HostBytes::Owned(data) => {
-                let range = range.start as usize..range.end as usize;
-                let issued = write_core(
-                    &mut self.writes,
-                    (&self.device, &self.queue),
-                    &self.buffers,
-                    (id, self.idle_writes.contains(&id.0)),
-                    offset,
-                    &data[range],
-                );
-                self.counters.buffer_bytes_from_core += len;
-                self.counters.upload_calls += u32::from(issued);
+                let data = std::mem::take(data);
+                self.write_buffer(id, offset, &data[range.start as usize..range.end as usize]);
+                self.host_bytes[bytes.0] = HostBytes::Owned(data);
             }
             #[cfg(webgl)]
             HostBytes::Js(data) => {
@@ -1773,16 +1671,8 @@ impl Gpu for WgpuGpu {
                     len as u32,
                 )
                 .to_vec();
-                let issued = write_core(
-                    &mut self.writes,
-                    (&self.device, &self.queue),
-                    &self.buffers,
-                    (id, self.idle_writes.contains(&id.0)),
-                    offset,
-                    &data,
-                );
                 self.counters.buffer_bytes_from_host += len;
-                self.counters.upload_calls += u32::from(issued);
+                self.write_core(id, offset, &data);
             }
             #[cfg(webgpu)]
             HostBytes::Js(data) => {
@@ -1852,10 +1742,12 @@ impl Gpu for WgpuGpu {
         let texture = self.texture(region.texture);
         let bytes_per_row = region.width * convert::texel_bytes(texture.format());
         let len = u64::from(bytes_per_row * region.height);
-        match &self.host_bytes[bytes.0] {
+        match &mut self.host_bytes[bytes.0] {
+            // Taken out while the device writes from them.
             HostBytes::Owned(data) => {
-                let texels = data[offset as usize..(offset + len) as usize].to_vec();
-                self.write_texture(region, &texels);
+                let data = std::mem::take(data);
+                self.write_texture(region, &data[offset as usize..(offset + len) as usize]);
+                self.host_bytes[bytes.0] = HostBytes::Owned(data);
             }
             #[cfg(target_arch = "wasm32")]
             HostBytes::Js(_) => {
@@ -1871,26 +1763,14 @@ impl Gpu for WgpuGpu {
         }
     }
 
-    fn texture_fits(&self, desc: &TextureDesc<'_>) -> bool {
-        orb_hal::level_bytes(desc, self.allocated_layers(desc))
-            <= self.caps.limits.max_texture_bytes
-    }
-
+    /// As [`gl_array_layers`] on GL, and on another back end standing in
+    /// for WebGL 2 as GL would make it.
     fn allocated_layers(&self, desc: &TextureDesc<'_>) -> u32 {
-        if self.gl_layers && desc.dimension == TextureViewDimension::D2Array {
-            gl_array_layers(desc)
-        } else {
-            desc.array_layers
-        }
+        gl_array_layers(desc, self.caps.gl_shaders())
     }
 
     fn try_create_texture(&mut self, desc: &TextureDesc<'_>) -> Option<TextureId> {
-        let layers = if self.gl && desc.dimension == TextureViewDimension::D2Array {
-            gl_array_layers(desc)
-        } else {
-            desc.array_layers
-        };
-        let bytes = orb_hal::level_bytes(desc, layers);
+        let bytes = orb_hal::level_bytes(desc, gl_array_layers(desc, self.gl));
         let checked = self.gl && bytes >= CHECKED_TEXTURE_BYTES;
         // An error raised before it isn't the texture's.
         if checked {
@@ -1907,11 +1787,7 @@ impl Gpu for WgpuGpu {
     }
 
     fn create_texture(&mut self, desc: &TextureDesc<'_>) -> TextureId {
-        let layers = if self.gl && desc.dimension == TextureViewDimension::D2Array {
-            gl_array_layers(desc)
-        } else {
-            desc.array_layers
-        };
+        let layers = gl_array_layers(desc, self.gl);
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some(desc.label),
             size: wgpu::Extent3d {
@@ -1928,11 +1804,15 @@ impl Gpu for WgpuGpu {
         });
         self.counters.textures_created += 1;
         self.counters.bytes_allocated += texture_bytes(desc, layers);
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let id = self.textures.insert(Texture {
-            texture: Some(texture),
-            view: Some(view),
-            levels: None,
+        let dimension = convert::view_dimension(desc.dimension);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(dimension),
+            ..Default::default()
+        });
+        let id = self.textures.insert(TextureEntry::Owned {
+            texture,
+            view,
+            dimension,
         });
         if let Some(l) = &mut self.ledger {
             l.made(true, id, desc.label, texture_bytes(desc, layers));
@@ -1945,17 +1825,20 @@ impl Gpu for WgpuGpu {
         texture: TextureId,
         levels: std::ops::Range<u32>,
     ) -> TextureId {
-        let texture = self.texture(texture).clone();
+        let TextureEntry::Owned {
+            texture, dimension, ..
+        } = &self.textures[texture.0]
+        else {
+            panic!("a view of a view");
+        };
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(*dimension),
             base_mip_level: levels.start,
             mip_level_count: Some(levels.len() as u32),
             ..Default::default()
         });
-        TextureId(self.textures.insert(Texture {
-            texture: Some(texture),
-            view: Some(view),
-            levels: Some(levels),
-        }))
+        let texture = texture.clone();
+        TextureId(self.textures.insert(TextureEntry::View { texture, view }))
     }
 
     fn create_layer_view(&mut self, texture: TextureId, layer: u32, level: u32) -> TextureId {
@@ -1968,19 +1851,14 @@ impl Gpu for WgpuGpu {
             array_layer_count: Some(1),
             ..Default::default()
         });
-        TextureId(self.textures.insert(Texture {
-            texture: Some(texture),
-            view: Some(view),
-            levels: Some(level..level + 1),
-        }))
+        TextureId(self.textures.insert(TextureEntry::View { texture, view }))
     }
 
     fn destroy_texture(&mut self, id: TextureId) {
         self.texture_writes.forget(id);
         #[cfg(not(target_arch = "wasm32"))]
         self.writes.forget_texture(id);
-        let entry = self.textures.remove(id.0);
-        if let (Some(texture), None) = (entry.texture, entry.levels) {
+        if let TextureEntry::Owned { texture, .. } = self.textures.remove(id.0) {
             if let Some(l) = &mut self.ledger {
                 l.freed(true, id.0);
             }
@@ -2070,12 +1948,15 @@ impl Gpu for WgpuGpu {
     }
 
     fn destroy_pipeline(&mut self, id: PipelineId) {
-        // Nothing waits for it now; its compile, when it lands, finds no
-        // slot and is dropped. Until then it is outside `pending`, so the
-        // watchdog and the present and background gates no longer cover it.
-        if let Compiled::Pending { background: false } = self.pipelines.remove(slot(id)) {
-            self.pending -= 1;
-            self.gate_background();
+        // A compile running when it lands finds no slot and is dropped.
+        // Until then it is outside `pending`, so the watchdog and the
+        // present and background gates no longer cover it.
+        if let Compiled::Pending(background) = self.pipelines.remove(slot(id)) {
+            self.compiler.cancel(id);
+            if !background.load(std::sync::atomic::Ordering::Relaxed) {
+                self.pending -= 1;
+                self.gate_background();
+            }
         }
     }
 
@@ -2137,31 +2018,10 @@ impl Gpu for WgpuGpu {
     }
 
     fn create_bind_group(&mut self, desc: &BindGroupDesc<'_>) -> BindGroupId {
-        // Texture views live until the bind group is created; wgpu keeps
-        // what it needs.
-        let views: Vec<Option<wgpu::TextureView>> = desc
-            .entries
-            .iter()
-            .map(|entry| match entry.resource {
-                BindingResource::Texture { texture, dimension } => {
-                    let entry = &self.textures[texture.0];
-                    let levels = entry.levels.clone();
-                    let texture = self.texture(texture);
-                    Some(texture.create_view(&wgpu::TextureViewDescriptor {
-                        dimension: Some(convert::view_dimension(dimension)),
-                        base_mip_level: levels.as_ref().map_or(0, |l| l.start),
-                        mip_level_count: levels.map(|l| l.len() as u32),
-                        ..Default::default()
-                    }))
-                }
-                _ => None,
-            })
-            .collect();
         let entries: Vec<_> = desc
             .entries
             .iter()
-            .zip(&views)
-            .map(|(entry, view)| wgpu::BindGroupEntry {
+            .map(|entry| wgpu::BindGroupEntry {
                 binding: entry.binding,
                 resource: match entry.resource {
                     BindingResource::Buffer {
@@ -2173,8 +2033,8 @@ impl Gpu for WgpuGpu {
                         offset,
                         size: size.map(|s| s.try_into().expect("binding size must be non-zero")),
                     }),
-                    BindingResource::Texture { .. } => {
-                        wgpu::BindingResource::TextureView(view.as_ref().expect("created above"))
+                    BindingResource::Texture(id) => {
+                        wgpu::BindingResource::TextureView(self.view(id))
                     }
                     BindingResource::Sampler(id) => {
                         wgpu::BindingResource::Sampler(&self.samplers[id.0])
@@ -2200,6 +2060,8 @@ impl Gpu for WgpuGpu {
             label: desc.label.to_owned(),
             #[cfg(not(webgpu))]
             layout: self.pipeline_layout(desc.label, desc.bind_group_layouts),
+            #[cfg(webgpu)]
+            layouts: self.raw_layouts(desc.bind_group_layouts),
             vertex: compile::Stage::new(&desc.vertex, module(&desc.vertex)),
             fragment: compile::Stage::new(&desc.fragment, module(&desc.fragment)),
             targets: desc.targets.to_vec(),
@@ -2212,12 +2074,7 @@ impl Gpu for WgpuGpu {
             #[cfg(not(webgpu))]
             cache: self.cache(),
         };
-        self.counters.pipelines_requested += 1;
-        let slot = self.pipelines.insert(Compiled::Pending {
-            background: self.background,
-        });
-        self.submit_job(compile::Job::Render(slot, job), desc.bind_group_layouts);
-        RenderPipelineId(slot)
+        RenderPipelineId(self.submit_job(compile::Pipeline::Render(job)))
     }
 
     fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> ComputePipelineId {
@@ -2225,6 +2082,8 @@ impl Gpu for WgpuGpu {
             label: desc.label.to_owned(),
             #[cfg(not(webgpu))]
             layout: self.pipeline_layout(desc.label, desc.bind_group_layouts),
+            #[cfg(webgpu)]
+            layouts: self.raw_layouts(desc.bind_group_layouts),
             compute: compile::Stage::new(
                 &desc.compute,
                 self.shader_modules[desc.compute.module.0].clone(),
@@ -2232,12 +2091,7 @@ impl Gpu for WgpuGpu {
             #[cfg(not(webgpu))]
             cache: self.cache(),
         };
-        self.counters.pipelines_requested += 1;
-        let slot = self.pipelines.insert(Compiled::Pending {
-            background: self.background,
-        });
-        self.submit_job(compile::Job::Compute(slot, job), desc.bind_group_layouts);
-        ComputePipelineId(slot)
+        ComputePipelineId(self.submit_job(compile::Pipeline::Compute(job)))
     }
 
     fn pipeline_failed(&self, id: PipelineId) -> bool {
@@ -2247,27 +2101,25 @@ impl Gpu for WgpuGpu {
     fn pipeline_ready(&mut self, id: PipelineId) -> bool {
         // A destroyed one (ids aren't reused) has nothing waiting for it.
         let settled = |gpu: &Self| {
-            (gpu.pipelines.get(slot(id))).is_none_or(|p| !matches!(p, Compiled::Pending { .. }))
+            (gpu.pipelines.get(slot(id))).is_none_or(|p| !matches!(p, Compiled::Pending(_)))
         };
         if settled(self) {
             return true;
         }
         self.take_compiled(false);
-        if settled(self) {
-            return true;
-        }
-        // A frame asks for a background pipeline: it waits for it now.
-        if let Some(Compiled::Pending { background }) = self.pipelines.get_mut(slot(id))
-            && std::mem::take(background)
+        // A frame asks for a background pipeline: it waits for it now. A
+        // compile finishing as it does woke nothing, so it is taken again,
+        // past a fence the compile mirrors after its send.
+        if let Some(Compiled::Pending(background)) = self.pipelines.get(slot(id))
+            && background.swap(false, std::sync::atomic::Ordering::Relaxed)
         {
+            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
             self.pending += 1;
             self.gate_background();
-            #[cfg(not(target_arch = "wasm32"))]
             self.compiler.promote(&self.device, id);
-            #[cfg(target_arch = "wasm32")]
-            self.compiler.promote(id);
+            self.take_compiled(false);
         }
-        false
+        settled(self)
     }
 
     fn poll_pipelines(&mut self) -> PipelineCounts {
@@ -2344,7 +2196,6 @@ impl Gpu for WgpuGpu {
         }
         let started = timing::now();
         // The frame's surface texture, once a pass draws into it.
-        #[cfg(target_arch = "wasm32")]
         for pass in passes {
             if let Pass::Render(render) = pass {
                 for color in &render.colors {
@@ -2443,76 +2294,33 @@ impl Gpu for WgpuGpu {
                     destination,
                     copies,
                 } => {
-                    let source = self.texture(*source);
-                    let destination = self.texture(*destination);
-                    let mut copied = 0;
+                    let (source, destination) = (self.texture(*source), self.texture(*destination));
                     let levels = source.mip_level_count().min(destination.mip_level_count());
+                    let mut copied = 0;
                     for (copy, level) in
                         copies.iter().flat_map(|c| (0..levels).map(move |l| (c, l)))
                     {
-                        let at = |[x, y, z]: [u32; 3]| wgpu::Origin3d {
-                            x: x >> level,
-                            y: y >> level,
-                            z,
-                        };
+                        let at = |[x, y, z]: [u32; 3]| [x >> level, y >> level, z];
                         let [w, h, layers] = copy.size;
-                        let size = wgpu::Extent3d {
-                            width: (w >> level).max(1),
-                            height: (h >> level).max(1),
-                            depth_or_array_layers: layers,
+                        let copy = TextureCopy {
+                            from: at(copy.from),
+                            to: at(copy.to),
+                            size: [(w >> level).max(1), (h >> level).max(1), layers],
                         };
-                        let texel = u64::from(convert::texel_bytes(source.format()));
-                        copied += u64::from(size.width)
-                            * u64::from(size.height)
-                            * u64::from(layers)
-                            * texel;
-                        encoder.copy_texture_to_texture(
-                            wgpu::TexelCopyTextureInfo {
-                                mip_level: level,
-                                origin: at(copy.from),
-                                ..source.as_image_copy()
-                            },
-                            wgpu::TexelCopyTextureInfo {
-                                mip_level: level,
-                                origin: at(copy.to),
-                                ..destination.as_image_copy()
-                            },
-                            size,
-                        );
+                        copied +=
+                            copy_box(&mut encoder, (source, level), (destination, level), &copy);
                     }
                     self.counters.bytes_copied += copied;
                 }
                 Pass::CopyTextureLevel {
-                    source: (source, source_level),
-                    destination: (destination, level),
+                    source: (source, from),
+                    destination: (destination, to),
                     copies,
                 } => {
-                    let source = self.texture(*source);
-                    let destination = self.texture(*destination);
-                    let texel = u64::from(convert::texel_bytes(source.format()));
-                    let mut copied = 0;
-                    for copy in copies {
-                        let at = |[x, y, z]: [u32; 3]| wgpu::Origin3d { x, y, z };
-                        let [width, height, layers] = copy.size;
-                        copied += u64::from(width) * u64::from(height) * u64::from(layers) * texel;
-                        encoder.copy_texture_to_texture(
-                            wgpu::TexelCopyTextureInfo {
-                                mip_level: *source_level,
-                                origin: at(copy.from),
-                                ..source.as_image_copy()
-                            },
-                            wgpu::TexelCopyTextureInfo {
-                                mip_level: *level,
-                                origin: at(copy.to),
-                                ..destination.as_image_copy()
-                            },
-                            wgpu::Extent3d {
-                                width,
-                                height,
-                                depth_or_array_layers: layers,
-                            },
-                        );
-                    }
+                    let (source, destination) = (self.texture(*source), self.texture(*destination));
+                    let copied: u64 = (copies.iter())
+                        .map(|c| copy_box(&mut encoder, (source, *from), (destination, *to), c))
+                        .sum();
                     self.counters.bytes_copied += copied;
                 }
                 Pass::ClearBuffer {
@@ -2592,10 +2400,12 @@ impl Gpu for WgpuGpu {
                     }
                 }
                 // Into a surface whose texture couldn't be acquired
-                // (`take_surface` says why).
+                // (`take_surface` says why), drawn or resolved into.
                 Pass::Render(render)
-                    if (render.colors.iter()).any(|c| self.textures[c.target.0].view.is_none()) => {
-                }
+                    if render.colors.iter().any(|c| {
+                        (Some(c.target).into_iter().chain(c.resolve))
+                            .any(|id| self.textures[id.0].view().is_none())
+                    }) => {}
                 Pass::Render(render) => {
                     let colors: Vec<Option<wgpu::RenderPassColorAttachment>> = render
                         .colors
@@ -2620,7 +2430,7 @@ impl Gpu for WgpuGpu {
                         depth_stencil_attachment: render.depth.as_ref().map(|depth| {
                             let store = convert::store_op(depth.store);
                             // A stencil clears and stores as the depth does.
-                            let stencil = (self.textures[depth.target.0].texture.as_ref())
+                            let stencil = (self.textures[depth.target.0].texture())
                                 .is_some_and(|t| t.format().has_stencil_aspect());
                             wgpu::RenderPassDepthStencilAttachment {
                                 view: self.view(depth.target),
@@ -2690,6 +2500,37 @@ impl Gpu for WgpuGpu {
     }
 }
 
+/// Encodes a copy of `copy`'s box, in texels of the levels given, from
+/// `source`'s level into `destination`'s: the bytes it copies.
+fn copy_box(
+    encoder: &mut wgpu::CommandEncoder,
+    (source, from): (&wgpu::Texture, u32),
+    (destination, to): (&wgpu::Texture, u32),
+    copy: &TextureCopy,
+) -> u64 {
+    let at = |[x, y, z]: [u32; 3]| wgpu::Origin3d { x, y, z };
+    let [width, height, layers] = copy.size;
+    encoder.copy_texture_to_texture(
+        wgpu::TexelCopyTextureInfo {
+            mip_level: from,
+            origin: at(copy.from),
+            ..source.as_image_copy()
+        },
+        wgpu::TexelCopyTextureInfo {
+            mip_level: to,
+            origin: at(copy.to),
+            ..destination.as_image_copy()
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: layers,
+        },
+    );
+    let texel = u64::from(convert::texel_bytes(source.format()));
+    u64::from(width) * u64::from(height) * u64::from(layers) * texel
+}
+
 /// Per pass, whether it is a compute pass joined to the one before it:
 /// compute passes with only debug group markers between them (none while
 /// `groups` keeps them) encode as one. wgpu-core gives each pass a command
@@ -2717,28 +2558,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_device_short_of_storage_bindings_takes_the_path_that_fits() {
-        let paths = |limits: &wgpu::Limits| compute_and_storage_tables(limits, false);
-        assert_eq!(paths(&wgpu::Limits::defaults()), (true, true));
-        // Vulkan's least: 4 storage buffers a stage, short of the GPU
-        // frame driver's cull, so the CPU driver over data textures.
-        let downlevel = wgpu::Limits::downlevel_defaults();
-        assert_eq!(paths(&downlevel), (true, false));
-        let seven = wgpu::Limits {
-            max_storage_buffers_per_shader_stage: 7,
+    fn a_device_takes_the_most_its_flags_and_storage_bindings_allow() {
+        use wgpu::DownlevelFlags as F;
+        let all = F::all();
+        let storage = |buffers| wgpu::Limits {
+            max_storage_buffers_per_shader_stage: buffers,
             ..wgpu::Limits::defaults()
         };
-        assert_eq!(paths(&seven), (true, false));
-        let three = wgpu::Limits {
-            max_storage_buffers_per_shader_stage: 3,
-            ..downlevel
-        };
-        assert_eq!(paths(&three), (false, false));
-        assert_eq!(paths(&NO_COMPUTE), (false, false));
-        assert_eq!(
-            compute_and_storage_tables(&wgpu::Limits::defaults(), true),
-            (false, false)
-        );
+        let cases = [
+            (all, wgpu::Limits::defaults(), false, FramePath::Gpu),
+            (
+                all - F::INDIRECT_EXECUTION,
+                storage(8),
+                false,
+                FramePath::Cpu,
+            ),
+            // Vulkan's least: 4 storage buffers a stage, short of the cull.
+            (
+                all,
+                wgpu::Limits::downlevel_defaults(),
+                false,
+                FramePath::CpuTex,
+            ),
+            (all, storage(7), false, FramePath::CpuTex),
+            (
+                all - F::VERTEX_STORAGE,
+                storage(8),
+                false,
+                FramePath::CpuTex,
+            ),
+            (all, storage(3), false, FramePath::Webgl2),
+            (
+                all - F::COMPUTE_SHADERS,
+                storage(8),
+                false,
+                FramePath::Webgl2,
+            ),
+            (all, NO_COMPUTE, false, FramePath::Webgl2),
+            (all, wgpu::Limits::defaults(), true, FramePath::Webgl2),
+        ];
+        for (flags, limits, gl, path) in cases {
+            assert_eq!(frame_path(flags, &limits, gl), path, "{flags:?} gl {gl}");
+        }
     }
 
     #[test]
@@ -2778,54 +2639,22 @@ fn cs() {}
     }
 
     #[test]
-    fn compute_passes_join_across_debug_markers_only() {
-        let compute = || {
-            Pass::Compute(ComputePass {
-                label: "c",
-                commands: Vec::new(),
-            })
-        };
-        let render = || {
-            Pass::Render(RenderPass {
-                label: "r",
-                colors: Vec::new(),
-                depth: None,
-                commands: Vec::new(),
-            })
-        };
-        let passes = [
-            compute(),
-            Pass::PushDebugGroup("g"),
-            compute(),
-            Pass::PopDebugGroup,
-            compute(),
-            render(),
-            compute(),
-        ];
-        assert_eq!(
-            joined_compute(&passes, false),
-            [false, false, true, false, true, false, false]
-        );
-        assert_eq!(
-            joined_compute(&passes, true),
-            [false, false, false, false, false, false, false]
-        );
-    }
-
-    #[test]
     fn gl_arrays_take_neither_a_2d_nor_a_cube_target() {
         let layers = |width, height, array_layers| {
-            gl_array_layers(&TextureDesc {
-                label: "array",
-                width,
-                height,
-                array_layers,
-                dimension: TextureViewDimension::D2Array,
-                format: TextureFormat::Rgba8Unorm,
-                usage: TextureUsages::TEXTURE_BINDING,
-                sample_count: 1,
-                mip_levels: 1,
-            })
+            gl_array_layers(
+                &TextureDesc {
+                    label: "array",
+                    width,
+                    height,
+                    array_layers,
+                    dimension: TextureViewDimension::D2Array,
+                    format: TextureFormat::Rgba8Unorm,
+                    usage: TextureUsages::TEXTURE_BINDING,
+                    sample_count: 1,
+                    mip_levels: 1,
+                },
+                true,
+            )
         };
         assert_eq!(layers(258, 258, 1), 2);
         assert_eq!(layers(258, 258, 5), 5);

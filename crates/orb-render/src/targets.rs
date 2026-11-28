@@ -1097,14 +1097,10 @@ impl Targets {
                         layout: self.layout,
                         entries: &[
                             BindGroupEntry::buffer(0, uniform),
-                            BindGroupEntry::texture(1, resolve(input), TextureViewDimension::D2),
-                            BindGroupEntry::texture(
-                                2,
-                                original.map_or(blank, resolve),
-                                TextureViewDimension::D2,
-                            ),
+                            BindGroupEntry::texture(1, resolve(input)),
+                            BindGroupEntry::texture(2, original.map_or(blank, resolve)),
                             BindGroupEntry::sampler(3, self.sampler),
-                            BindGroupEntry::texture(4, other, TextureViewDimension::D2),
+                            BindGroupEntry::texture(4, other),
                         ],
                     });
                     Pass_ {

@@ -118,7 +118,8 @@ pub struct TextureDesc<'a> {
     pub width: u32,
     pub height: u32,
     pub array_layers: u32,
-    /// How shaders sample it: every binding uses this dimension.
+    /// How shaders sample it, and so how a binding of it or of its mip
+    /// levels' view reads it.
     pub dimension: TextureViewDimension,
     pub format: TextureFormat,
     pub usage: TextureUsages,
@@ -342,14 +343,10 @@ impl BindGroupEntry {
         }
     }
 
-    pub const fn texture(
-        binding: u32,
-        texture: TextureId,
-        dimension: TextureViewDimension,
-    ) -> Self {
+    pub const fn texture(binding: u32, texture: TextureId) -> Self {
         Self {
             binding,
-            resource: BindingResource::Texture { texture, dimension },
+            resource: BindingResource::Texture(texture),
         }
     }
 
@@ -369,11 +366,9 @@ pub enum BindingResource {
         offset: u64,
         size: Option<u64>,
     },
-    /// A view of every layer of a texture, sampled or as storage.
-    Texture {
-        texture: TextureId,
-        dimension: TextureViewDimension,
-    },
+    /// A texture, sampled or as storage, as its id names it: every layer
+    /// of one made, a view's levels, or a layer view's one layer.
+    Texture(TextureId),
     Sampler(SamplerId),
 }
 

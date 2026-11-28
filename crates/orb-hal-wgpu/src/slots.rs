@@ -38,10 +38,6 @@ impl<T> Slots<T> {
         self.items.get_mut(&id)
     }
 
-    pub(crate) fn contains(&self, id: u32) -> bool {
-        self.items.contains_key(&id)
-    }
-
     /// Live resources.
     pub(crate) fn len(&self) -> usize {
         self.items.len()

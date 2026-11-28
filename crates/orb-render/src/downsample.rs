@@ -126,7 +126,7 @@ impl Release for Transient {
 impl Downsampler {
     pub(crate) fn new(gpu: &mut dyn Gpu) -> Self {
         // Only WebGL 2's build (`cpu-driven`) meets a device without compute.
-        let drawn = cfg!(cpu_driven) && !gpu.caps().compute;
+        let drawn = cfg!(cpu_driven) && !gpu.caps().compute();
         let entries = if drawn {
             let (vs, vf) = (
                 ShaderStages::VERTEX,
@@ -271,9 +271,7 @@ impl Downsampler {
         regions: &Regions,
         at: u64,
     ) -> BindGroupId {
-        let view = |binding, texture| {
-            BindGroupEntry::texture(binding, texture, TextureViewDimension::D2Array)
-        };
+        let view = |binding, texture| BindGroupEntry::texture(binding, texture);
         let mut entries = vec![view(0, source)];
         if !self.drawn {
             entries.push(view(1, destination));

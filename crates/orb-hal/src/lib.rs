@@ -55,21 +55,15 @@ pub trait Gpu {
     fn texture_fits(&self, desc: &TextureDesc<'_>) -> bool {
         level_bytes(desc, self.allocated_layers(desc)) <= self.caps().limits.max_texture_bytes
     }
-    /// The layers the device makes a texture of `desc` with: its own,
-    /// or more where the back end can't make an array of that shape
-    /// (wgpu's GL back end makes a one-layer array, and a square one of
-    /// 6n layers, with a layer more).
-    fn allocated_layers(&self, desc: &TextureDesc<'_>) -> u32 {
-        desc.array_layers
-    }
+    /// The layers the device counts a texture of `desc` as taking: its
+    /// own, or one more for an array GL can't make as asked (a one-layer
+    /// array, a square one of 6n layers).
+    fn allocated_layers(&self, desc: &TextureDesc<'_>) -> u32;
     /// [`create_texture`](Self::create_texture), or `None` where the
-    /// device says at once that it couldn't allocate it (GL's driver
-    /// refusing a large one), for textures large enough that it might:
-    /// the device then lowers its [`Limits::max_texture_bytes`] below
-    /// it, so that the caller can ask for less.
-    fn try_create_texture(&mut self, desc: &TextureDesc<'_>) -> Option<TextureId> {
-        Some(self.create_texture(desc))
-    }
+    /// driver refuses a large one at once (GL's): the device then lowers
+    /// its [`Limits::max_texture_bytes`] below it, so that the caller can
+    /// ask for less.
+    fn try_create_texture(&mut self, desc: &TextureDesc<'_>) -> Option<TextureId>;
     /// A view of some of a texture's mip levels, to render into or sample
     /// apart from the others (WebGPU's `createView`). Destroying it with
     /// [`destroy_texture`](Self::destroy_texture) leaves the texture.
@@ -123,7 +117,8 @@ pub trait Gpu {
     fn create_render_pipeline(&mut self, desc: &RenderPipelineDesc<'_>) -> RenderPipelineId;
     /// Queues a pipeline's compile and returns its id at once.
     fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> ComputePipelineId;
-    /// A pipeline still compiling is dropped when its compile finishes.
+    /// Drops a pipeline's compile if it hasn't started; one running is
+    /// dropped when it finishes.
     fn destroy_pipeline(&mut self, id: PipelineId);
     /// Whether a pipeline settled, so commands may use it: it compiled, or
     /// the driver failed to make it where the device lives on (the web's),
@@ -136,26 +131,21 @@ pub trait Gpu {
     /// Takes compiles that finished, and counts pipelines made and still
     /// compiling (background ones aside).
     fn poll_pipelines(&mut self) -> PipelineCounts;
-    /// Compiles a pending pipeline before those queued ahead of it, where
-    /// the implementation keeps a queue: what the current view needs
-    /// first.
+    /// Compiles a pending pipeline before those queued ahead of it: what
+    /// the current view needs first.
     fn prioritize_pipeline(&mut self, id: PipelineId);
     /// Makes the pipelines asked for from now on background ones (`on`),
     /// or ones a frame waits for again: a background pipeline compiles
-    /// after every other, a few at a time, while the device is otherwise
-    /// idle, and isn't counted in [`PipelineCounts`] nor wakes the host.
+    /// after every other, a few at a time, while no other is pending,
+    /// and isn't counted in [`PipelineCounts`] nor wakes the host.
     /// [`pipeline_ready`](Self::pipeline_ready) asking for one still
-    /// compiling makes it an ordinary request, compiled first. An
-    /// implementation without a queue compiles them as any other.
-    fn set_background_compiles(&mut self, on: bool) {
-        let _ = on;
-    }
+    /// compiling makes it an ordinary request, compiled first. A device
+    /// whose compiles hold presents has none.
+    fn set_background_compiles(&mut self, on: bool);
     /// Whether a frame presented now would wait behind compiles: on a
     /// device whose compiles hold presents
     /// ([`Caps::compiles_hold_presents`]), while one runs.
-    fn presents_wait(&mut self) -> bool {
-        false
-    }
+    fn presents_wait(&mut self) -> bool;
 
     /// Records render commands once for replay with
     /// [`RenderCommand::ExecuteBundles`]. Bundles may not contain
@@ -173,11 +163,8 @@ pub trait Gpu {
     /// Resources alive, of every kind, for leak checks.
     fn live_resources(&self) -> usize;
 
-    /// What the device has done since it was made, for measurements. An
-    /// implementation that counts nothing reports zeros.
-    fn counters(&self) -> GpuCounters {
-        GpuCounters::default()
-    }
+    /// What the device has done since it was made, for measurements.
+    fn counters(&self) -> GpuCounters;
 }
 
 /// What a device has done since it was made: every count only grows, so
@@ -324,17 +311,8 @@ pub struct Caps {
     /// Clip distances in vertex shaders (`clip-distances`): a placement's
     /// clip rectangle as planes, where a fragment would otherwise discard.
     pub clip_distances: bool,
-    /// Compute passes, with the storage bindings the CPU frame driver's
-    /// take (Vulkan's least). WebGPU has them; WebGL 2 doesn't, and frames
-    /// there cull and make mips without them.
-    pub compute: bool,
-    /// Indirect draws (`DrawIndirect*`), whose arguments a compute pass
-    /// writes.
-    pub indirect: bool,
-    /// Storage buffers the vertex stage reads, as many a stage as the
-    /// GPU frame driver binds (WebGPU's 8); short of them, tables are data
-    /// textures.
-    pub vertex_storage: bool,
+    /// How frames cull and draw here.
+    pub frame_path: FramePath,
     /// Blendable `Rgba16Float` and renderable `R32Float` targets: heatmap
     /// density, high-precision render targets and the terrain's depth for
     /// what it hides.
@@ -359,19 +337,46 @@ pub struct Caps {
     pub flat_from_last: bool,
 }
 
+/// How a device's frames cull and draw, from the most capable down: each
+/// path needs what the ones after it need, and more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FramePath {
+    /// A compute cull writes indirect draws over tables in storage
+    /// buffers (WebGPU's 8 a stage, the vertex stage's too).
+    Gpu,
+    /// The CPU frame driver, over tables in storage buffers: a device
+    /// without indirect draws.
+    Cpu,
+    /// The CPU frame driver, over tables in data textures, with compute
+    /// (4 storage buffers a stage, Vulkan's least).
+    CpuTex,
+    /// WebGL 2's: the CPU frame driver over data textures, without
+    /// compute, so mips are drawn. Pipelines take WebGL 2's shaders
+    /// (`Shader::gl_source`), whose vertex stages read a `u32` at
+    /// `@location(0)` that the HAL binds, instance-stepped, over zeros
+    /// (#179).
+    Webgl2,
+}
+
 impl Caps {
-    /// Whether the GPU-driven frame (a compute cull writing indirect
-    /// draws over storage-buffer tables) runs here.
+    /// Whether the GPU-driven frame runs here.
     pub fn gpu_driven(&self) -> bool {
-        self.compute && self.indirect && self.vertex_storage
+        self.frame_path == FramePath::Gpu
     }
 
-    /// Whether pipelines take WebGL 2's shaders (`Shader::gl_source`):
-    /// on a device without compute or vertex-stage storage. Their vertex
-    /// stages read a `u32` at `@location(0)`, which the HAL binds,
-    /// instance-stepped, over zeros (#179).
+    /// Whether compute passes run here.
+    pub fn compute(&self) -> bool {
+        self.frame_path < FramePath::Webgl2
+    }
+
+    /// Whether the scene's tables are storage buffers, else data textures.
+    pub fn storage_tables(&self) -> bool {
+        self.frame_path <= FramePath::Cpu
+    }
+
+    /// Whether pipelines take WebGL 2's shaders.
     pub fn gl_shaders(&self) -> bool {
-        !self.compute && !self.vertex_storage
+        self.frame_path == FramePath::Webgl2
     }
 }
 

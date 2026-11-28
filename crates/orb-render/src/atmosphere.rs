@@ -386,7 +386,7 @@ impl Sunward {
             label: "sunward",
             layout,
             entries: &[
-                BindGroupEntry::texture(0, table, TextureViewDimension::D2),
+                BindGroupEntry::texture(0, table),
                 BindGroupEntry::sampler(1, sampler),
             ],
         });

@@ -92,7 +92,7 @@ pub(crate) fn room(gpu: &dyn Gpu, stacks: [u32; 2]) -> u32 {
     let alloc = allocated(stacks);
     let shared = slots_per_texture(gpu, stacks);
     let fits = (0..2).filter(|&p| alloc[p] > 0).all(|page| {
-        let desc = slots_desc(alloc[page] * shared, PAGE_PX[page], gpu.caps().compute);
+        let desc = slots_desc(alloc[page] * shared, PAGE_PX[page], gpu.caps().compute());
         desc.array_layers <= gpu.caps().limits.max_texture_array_layers && gpu.texture_fits(&desc)
     });
     if fits { grid_side(gpu).pow(2) } else { 0 }
@@ -373,7 +373,7 @@ fn slots_desc(layers: u32, side: u32, computes: bool) -> TextureDesc<'static> {
 fn slots_per_texture(gpu: &dyn Gpu, stacks: [u32; 2]) -> u32 {
     let exact = |shared: &u32| {
         (0..2).filter(|&p| stacks[p] > 0).all(|page| {
-            let desc = slots_desc(stacks[page] * shared, PAGE_PX[page], gpu.caps().compute);
+            let desc = slots_desc(stacks[page] * shared, PAGE_PX[page], gpu.caps().compute());
             gpu.allocated_layers(&desc) == desc.array_layers
         })
     };
@@ -405,7 +405,7 @@ impl SlotTexture {
         (layers, side): (u32, u32),
         downsampler: &mut crate::downsample::Downsampler,
     ) -> Result<Self, u64> {
-        let desc = slots_desc(layers, side, gpu.caps().compute);
+        let desc = slots_desc(layers, side, gpu.caps().compute());
         let texture = gpu
             .try_create_texture(&desc)
             .ok_or_else(|| level_bytes(&desc, layers) * 4 / 3)?;
@@ -1462,13 +1462,13 @@ impl Terrain {
                     BindGroupEntry::buffer(0, frame),
                     self.tiles.entry(1),
                     self.grid.entry(2),
-                    BindGroupEntry::texture(3, dem.0, D2Array),
-                    BindGroupEntry::texture(4, colour.texture, D2Array),
+                    BindGroupEntry::texture(3, dem.0),
+                    BindGroupEntry::texture(4, colour.texture),
                     BindGroupEntry::sampler(5, self.linear),
                     BindGroupEntry::buffer(6, self.params),
                     BindGroupEntry::buffer(7, self.atmosphere),
                     props,
-                    BindGroupEntry::texture(9, slopes.texture, D2Array),
+                    BindGroupEntry::texture(9, slopes.texture),
                 ],
             }));
         }
@@ -1608,8 +1608,8 @@ impl Terrain {
             layout: self.shade_layout,
             entries: &[
                 BindGroupEntry::sampler(0, self.linear),
-                BindGroupEntry::texture(1, first, TextureViewDimension::D2),
-                BindGroupEntry::texture(2, second, TextureViewDimension::D2),
+                BindGroupEntry::texture(1, first),
+                BindGroupEntry::texture(2, second),
             ],
         });
         self.shade_groups[layer] = Some((tables, group));
@@ -1635,11 +1635,7 @@ impl Terrain {
         let group = gpu.create_bind_group(&BindGroupDesc {
             label: "terrain backdrop",
             layout: self.backdrop_layout,
-            entries: &[BindGroupEntry::texture(
-                0,
-                texture,
-                TextureViewDimension::D2,
-            )],
+            entries: &[BindGroupEntry::texture(0, texture)],
         });
         self.blank = Some((texture, group));
         (texture, group)
@@ -1657,11 +1653,7 @@ impl Terrain {
             let group = gpu.create_bind_group(&BindGroupDesc {
                 label: "terrain backdrop",
                 layout,
-                entries: &[BindGroupEntry::texture(
-                    0,
-                    texture,
-                    TextureViewDimension::D2,
-                )],
+                entries: &[BindGroupEntry::texture(0, texture)],
             });
             (texture, group)
         };

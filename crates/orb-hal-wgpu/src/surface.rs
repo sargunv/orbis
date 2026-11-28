@@ -1,37 +1,37 @@
-//! Native window surfaces: a window, a `CAMetalLayer` or an Android
+//! Window surfaces: a canvas, a window, a `CAMetalLayer` or an Android
 //! `ANativeWindow` as a render target.
 //!
-//! A [`Surface`] is made from the device's own instance, configured to a
-//! non-sRGB 8-bit format (GL JS blends in the style's colour space) and
-//! drawn one frame at a time: [`WgpuGpu::acquire`] registers the frame as a
-//! texture to render into, [`WgpuGpu::present`] shows it.
+//! A frame into a surface is a target registered for it
+//! ([`WgpuGpu::register_surface`]), whose texture is acquired when a pass
+//! first draws into it, so the CPU's work on the frame holds no image and
+//! a frame that draws nothing (one held while compiles run,
+//! [`orb_hal::Gpu::presents_wait`]) presents nothing.
+//! [`WgpuGpu::take_surface`] takes the texture to present.
+//!
+//! Natively a [`Surface`] is made from the device's own instance,
+//! configured to a non-sRGB 8-bit format (GL JS blends in the style's
+//! colour space).
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::ffi::c_void;
+#[cfg(not(target_arch = "wasm32"))]
 use std::ptr::NonNull;
 
-use orb_hal::{Gpu, TextureFormat, TextureId};
+#[cfg(not(target_arch = "wasm32"))]
+use orb_hal::TextureFormat;
+use orb_hal::TextureId;
 
-use crate::{WgpuGpu, from_texture_format};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::from_texture_format;
+use crate::{TextureEntry, WgpuGpu};
 
-/// A platform layer or window to draw into, by raw handle.
-#[derive(Clone, Copy, Debug)]
-pub enum RawSurface {
-    /// A `CAMetalLayer*` (macOS, iOS).
-    MetalLayer(NonNull<c_void>),
-    /// An `ANativeWindow*` (Android), with a reference the caller holds.
-    AndroidWindow(NonNull<c_void>),
-}
+/// A surface, shared between its host and the frame drawing into it.
+#[cfg(not(target_arch = "wasm32"))]
+pub type SharedSurface = std::sync::Arc<wgpu::Surface<'static>>;
+#[cfg(target_arch = "wasm32")]
+pub type SharedSurface = std::rc::Rc<wgpu::Surface<'static>>;
 
-/// A configured window surface and the frame being drawn, if any.
-#[derive(Debug)]
-pub struct Surface {
-    surface: wgpu::Surface<'static>,
-    config: wgpu::SurfaceConfiguration,
-    format: TextureFormat,
-    frame: Option<(wgpu::SurfaceTexture, TextureId)>,
-}
-
-/// Why a frame can't be drawn now.
+/// Why a frame couldn't take a surface's texture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SurfaceError {
     /// Nothing to draw into this time (the window is hidden, or acquiring
@@ -41,6 +41,106 @@ pub enum SurfaceError {
     Lost(String),
 }
 
+/// The surface a frame draws into ([`WgpuGpu::register_surface`]).
+#[derive(Debug)]
+pub(crate) struct Pending {
+    id: TextureId,
+    surface: SharedSurface,
+    config: wgpu::SurfaceConfiguration,
+    /// The surface takes `config` before its texture.
+    configure: bool,
+    /// Once a pass drew into it.
+    frame: Option<Result<wgpu::SurfaceTexture, SurfaceError>>,
+}
+
+impl WgpuGpu {
+    /// A target for a frame into `surface`, configured as `config`, which
+    /// it takes first if `configure`: its texture is acquired when a pass
+    /// first draws into it, for [`take_surface`](Self::take_surface).
+    pub fn register_surface(
+        &mut self,
+        surface: SharedSurface,
+        config: &wgpu::SurfaceConfiguration,
+        configure: bool,
+    ) -> TextureId {
+        let id = TextureId(self.textures.insert(TextureEntry::Surface(None)));
+        self.surface = Some(Pending {
+            id,
+            surface,
+            config: config.clone(),
+            configure,
+            frame: None,
+        });
+        id
+    }
+
+    /// The texture the frame acquired for `id`, to present (`None` if no
+    /// pass drew into it), or why acquiring it failed; `id` is released.
+    pub fn take_surface(
+        &mut self,
+        id: TextureId,
+    ) -> Option<Result<wgpu::SurfaceTexture, SurfaceError>> {
+        let pending = self.surface.take().filter(|s| s.id == id);
+        self.textures.remove(id.0);
+        pending.and_then(|s| s.frame)
+    }
+
+    /// Acquires the pending surface's texture if a pass draws into it
+    /// (`id`) and it wasn't yet, configuring the surface again once where
+    /// it is outdated.
+    pub(crate) fn acquire_surface(&mut self, id: TextureId) {
+        let Some(pending) = (self.surface.as_mut()).filter(|s| s.id == id && s.frame.is_none())
+        else {
+            return;
+        };
+        if std::mem::take(&mut pending.configure) {
+            pending.surface.configure(&self.device, &pending.config);
+        }
+        let mut configured = false;
+        let frame = loop {
+            match pending.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(frame)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => break Ok(frame),
+                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost
+                    if !configured =>
+                {
+                    pending.surface.configure(&self.device, &pending.config);
+                    configured = true;
+                }
+                wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                    break Err(SurfaceError::Skip);
+                }
+                other => break Err(SurfaceError::Lost(format!("{other:?}"))),
+            }
+        };
+        if let Ok(frame) = &frame {
+            let view = (frame.texture).create_view(&wgpu::TextureViewDescriptor::default());
+            self.textures[id.0] = TextureEntry::Surface(Some(view));
+        }
+        pending.frame = Some(frame);
+    }
+}
+
+/// A platform layer or window to draw into, by raw handle.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug)]
+pub enum RawSurface {
+    /// A `CAMetalLayer*` (macOS, iOS).
+    MetalLayer(NonNull<c_void>),
+    /// An `ANativeWindow*` (Android), with a reference the caller holds.
+    AndroidWindow(NonNull<c_void>),
+}
+
+/// A configured window surface.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+pub struct Surface {
+    surface: SharedSurface,
+    config: wgpu::SurfaceConfiguration,
+    format: TextureFormat,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl Surface {
     /// The color format frames are drawn in.
     pub fn format(&self) -> TextureFormat {
@@ -53,6 +153,7 @@ impl Surface {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl WgpuGpu {
     /// A surface on a window or view that the safe wgpu API accepts, such
     /// as a winit window, sized in physical pixels.
@@ -143,75 +244,43 @@ impl WgpuGpu {
         };
         surface.configure(&self.device, &config);
         Ok(Surface {
-            surface,
+            surface: SharedSurface::new(surface),
             config,
             format,
-            frame: None,
         })
     }
 
-    /// Resizes a surface, in physical pixels. A frame being drawn is
-    /// dropped unshown.
+    /// Resizes a surface, in physical pixels.
     pub fn resize_surface(&mut self, surface: &mut Surface, width: u32, height: u32) {
         let (width, height) = (width.max(1), height.max(1));
         if (width, height) == surface.size() {
             return;
-        }
-        if let Some((_, id)) = surface.frame.take() {
-            self.destroy_texture(id);
         }
         surface.config.width = width;
         surface.config.height = height;
         surface.surface.configure(&self.device, &surface.config);
     }
 
-    /// Starts a frame: the texture to render it into.
-    pub fn acquire(&mut self, surface: &mut Surface) -> Result<TextureId, SurfaceError> {
-        if let Some((_, id)) = &surface.frame {
-            return Ok(*id);
-        }
-        let mut reconfigured = false;
-        let frame = loop {
-            match surface.surface.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(frame)
-                | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => break frame,
-                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost
-                    if !reconfigured =>
-                {
-                    surface.surface.configure(&self.device, &surface.config);
-                    reconfigured = true;
-                }
-                wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                    return Err(SurfaceError::Skip);
-                }
-                other => return Err(SurfaceError::Lost(format!("{other:?}"))),
-            }
-        };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let id = self.register_view(view);
-        surface.frame = Some((frame, id));
-        Ok(id)
+    /// Starts a frame into `surface` ([`register_surface`](Self::register_surface)).
+    pub fn begin_surface(&mut self, surface: &Surface) -> TextureId {
+        self.register_surface(surface.surface.clone(), &surface.config, false)
     }
 
-    /// Readies a surface to be dropped: drops its frame and waits until
-    /// the GPU is done with submitted work, which holds its images until
-    /// retired (Vulkan can't release a swapchain whose images are held).
-    pub fn retire_surface(&mut self, surface: &mut Surface) {
-        if let Some((_, id)) = surface.frame.take() {
-            self.destroy_texture(id);
-        }
-        // A lost device holds nothing.
-        let _ = self.wait(None);
-    }
-
-    /// Shows the frame started with [`acquire`](Self::acquire).
-    pub fn present(&mut self, surface: &mut Surface) {
-        if let Some((frame, id)) = surface.frame.take() {
-            self.destroy_texture(id);
+    /// Ends a frame begun with [`begin_surface`](Self::begin_surface):
+    /// presents what it drew, if it drew anything.
+    pub fn present_surface(&mut self, id: TextureId) -> Result<(), SurfaceError> {
+        if let Some(frame) = self.take_surface(id).transpose()? {
             self.queue.present(frame);
         }
+        Ok(())
+    }
+
+    /// Readies a surface to be dropped: waits until the GPU is done with
+    /// submitted work, which holds its images until retired (Vulkan can't
+    /// release a swapchain whose images are held).
+    pub fn retire_surface(&mut self) {
+        // A lost device holds nothing.
+        let _ = self.wait(None);
     }
 
     fn native(&self) -> Result<(&wgpu::Instance, &wgpu::Adapter), String> {

@@ -1417,11 +1417,9 @@ impl Map {
         let viewport = target.viewport();
         // The frame borrows the device once: the target begins and ends
         // with it, and it's let go before anything else here borrows it.
-        let report = {
+        let (report, shown) = {
             let mut device = self.runtime.shared.gpu()?;
-            let Some(texture) = target.begin(&mut device)? else {
-                return Ok(None);
-            };
+            let texture = target.begin(&mut device)?;
             // Only a target that began says what the map draws in: a
             // released window reports a texture's format.
             self.format = format;
@@ -1442,9 +1440,9 @@ impl Map {
                 target.scale() as f32,
                 frame_time,
             );
-            target.end(&mut device);
+            let shown = target.end(&mut device, texture);
             device.finish_frame();
-            report
+            (report, shown?)
         };
         // The frame found the device lost (a compile the watchdog found
         // hung, a lost context): the next one makes another.
@@ -1452,7 +1450,7 @@ impl Map {
         self.events
             .extend(self.map.take_events().into_iter().map(Event::Map));
         self.map.drawn();
-        if lost {
+        if lost || !shown {
             self.map.mark();
         }
         self.shown = Shown::Drew {

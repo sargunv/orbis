@@ -79,7 +79,7 @@ const MAX_WORKGROUPS: u32 = 65535;
 /// uniforms and the cull's draw arguments, needs of their buffers' usage
 /// on `caps`'s device.
 pub(crate) fn read_usage(caps: &Caps) -> BufferUsages {
-    if caps.compute {
+    if caps.compute() {
         BufferUsages::STORAGE
     } else {
         BufferUsages::empty()
@@ -266,8 +266,7 @@ impl Symbols {
             }
             let made = entries.map(|scene| {
                 let mut entries = scene.clone();
-                let d2_array = TextureViewDimension::D2Array;
-                entries.push(BindGroupEntry::texture(19, dispatch.target, d2_array));
+                entries.push(BindGroupEntry::texture(19, dispatch.target));
                 let made = gpu.create_bind_group(&BindGroupDesc {
                     label: "symbol placements",
                     layout: dispatch.layout,
@@ -531,7 +530,7 @@ impl Placing {
     fn new(gpu: &mut dyn Gpu, backing: Backing) -> Self {
         // Only WebGL 2's build (`cpu-driven`) meets a device without compute.
         #[cfg(cpu_driven)]
-        if !gpu.caps().compute {
+        if !gpu.caps().compute() {
             return Self::Inline(Default::default());
         }
         Self::Dispatched(Box::new(Dispatch {
@@ -628,13 +627,12 @@ fn pass_groups(
     target: Option<TextureId>,
     glyphs: [TextureId; PAGE_CHUNKS],
 ) -> [BindGroupId; SYMBOL_PASSES.len()] {
-    let d2_array = TextureViewDimension::D2Array;
     std::array::from_fn(|i| {
         let mut entries = vec![BindGroupEntry::slice(0, buffer, i as u64 * stride, 16)];
-        entries.extend(target.map(|t| BindGroupEntry::texture(1, t, d2_array)));
+        entries.extend(target.map(|t| BindGroupEntry::texture(1, t)));
         entries.extend(
             (glyphs.iter().zip(GLYPH_BINDING..))
-                .map(|(&texture, binding)| BindGroupEntry::texture(binding, texture, d2_array)),
+                .map(|(&texture, binding)| BindGroupEntry::texture(binding, texture)),
         );
         gpu.create_bind_group(&BindGroupDesc {
             label: "symbol pass",

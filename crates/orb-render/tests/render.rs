@@ -913,12 +913,14 @@ fn nodes_wait_for_their_pipelines_without_blocking_the_frame() {
 /// candidates whose pipeline lands while the fill still waits for its own.
 #[test]
 fn bundles_record_again_only_for_what_they_waited_for() {
-    // Workers to spare while two compile slowly.
+    // Workers to spare while the fill's two are held.
     let mut h = Harness::with(4, 2, 8, Harness::SMALL, Some(4));
-    h.gpu.inject_slow_compile(
-        &["fill", "fill untested"],
-        std::time::Duration::from_secs(3),
-    );
+    let hold = h.gpu.hold_compiles(&["fill", "fill untested"]);
+    let (woken, wakes) = std::sync::mpsc::channel();
+    let woken = std::sync::Mutex::new(woken);
+    h.gpu.set_compile_wake(std::sync::Arc::new(move || {
+        let _ = woken.lock().unwrap().send(());
+    }));
     // A fill, and a circle without meshes, hidden until the fill waits.
     h.renderer
         .set_nodes(&mut h.gpu, &[Family::Fill, Family::Circle]);
@@ -939,10 +941,10 @@ fn bundles_record_again_only_for_what_they_waited_for() {
             &Default::default(),
         )
         .unwrap();
-    // Everything but the fill's pipelines compiles well before them.
+    // Everything but the fill's pipelines compiles.
     let wait_for_fill_alone = |h: &mut Harness| {
         while h.gpu.poll_pipelines().pending > 2 {
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            wakes.recv().unwrap();
         }
     };
     h.render_stats();
@@ -964,6 +966,7 @@ fn bundles_record_again_only_for_what_they_waited_for() {
         "nothing waited for the circle's pipeline"
     );
     assert_eq!(arrived.nodes_waiting, 1);
+    drop(hold);
     h.gpu.finish_pipelines();
     let drawn = h.render_stats();
     assert!(drawn.bundle_recorded);

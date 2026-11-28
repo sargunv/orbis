@@ -295,10 +295,11 @@ impl Canvas {
         if read && GL {
             return self.frame_read_gl(draw);
         }
-        let config = self.configure_due.then(|| self.config.clone());
-        let target = self.gpu.register_surface(self.surface.clone(), config);
+        let target =
+            (self.gpu).register_surface(self.surface.clone(), &self.config, self.configure_due);
         let result = draw(&mut self.gpu, target, self.format);
-        let frame = self.gpu.take_surface(target).transpose()?;
+        let frame = (self.gpu.take_surface(target).transpose())
+            .map_err(|e| format!("canvas texture: {e:?}"))?;
         let presented = frame.is_some();
         self.configure_due &= !presented;
         let pixels = frame.and_then(|frame| {
@@ -320,6 +321,15 @@ impl Canvas {
         &mut self,
         draw: impl FnOnce(&mut dyn Gpu, TextureId, TargetFormat) -> R,
     ) -> Result<Drawn<R>, String> {
+        let size = self.size();
+        let fits = |r: &ReadTarget| (r.texture.width(), r.texture.height()) == size;
+        if !self.read.as_ref().is_some_and(fits) {
+            self.read = Some(ReadTarget::new(self.gpu.device(), self.config.format, size));
+        }
+        let drawn = self.read.as_ref().expect("made above");
+        let target = self.gpu.register_view(drawn.view.clone());
+        let result = draw(&mut self.gpu, target, self.format);
+        // The canvas's texture, taken only for the copy.
         if std::mem::take(&mut self.configure_due) {
             self.surface.configure(self.gpu.device(), &self.config);
         }
@@ -331,15 +341,6 @@ impl Canvas {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let size = self.size();
-        let fits = |r: &ReadTarget| (r.texture.width(), r.texture.height()) == size;
-        if !self.read.as_ref().is_some_and(fits) {
-            let format = frame.texture.format();
-            self.read = Some(ReadTarget::new(self.gpu.device(), format, size));
-        }
-        let drawn = self.read.as_ref().expect("made above");
-        let target = self.gpu.register_view(drawn.view.clone());
-        let result = draw(&mut self.gpu, target, self.format);
         let drawn = self.read.as_ref().expect("made above");
         let pixels = Box::pin(self.gpu.read_wgpu_texture(&drawn.texture)) as Pixels;
         drawn.copy_to(self.gpu.device(), self.gpu.queue(), &view);
@@ -420,7 +421,7 @@ impl Canvas {
         // it as `kIOGPUCommandBufferCallbackErrorInvalidResource`). The next
         // frame sees the loss and the host recovers.
         #[cfg_attr(not(feature = "gl"), allow(unused_mut))]
-        let mut gpu = WgpuGpu::open(&adapter, move |why| {
+        let mut gpu = WgpuGpu::open(&adapter, orb_hal::FramePath::Gpu, move |why| {
             let why = format!("orbis: the GPU device was lost ({why})");
             web_sys::console::warn_1(&why.into());
             crate::map::wake(map);

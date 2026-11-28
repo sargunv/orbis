@@ -13,6 +13,9 @@ use std::sync::mpsc;
 
 use orb_hal::{BufferId, TextureId, TextureRegion};
 
+use crate::TextureEntry;
+use crate::slots::Slots;
+
 /// The size of the belt's chunks; a larger staging gets a chunk its size.
 const CHUNK: u64 = 256 << 10;
 
@@ -233,8 +236,8 @@ impl Staged {
     pub(crate) fn encode(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        buffer: impl Fn(BufferId) -> wgpu::Buffer,
-        texture: impl Fn(TextureId) -> wgpu::Texture,
+        buffers: &Slots<wgpu::Buffer>,
+        textures: &Slots<TextureEntry>,
     ) {
         match self {
             Self::Buffer {
@@ -242,7 +245,7 @@ impl Staged {
                 to,
                 offset,
                 len,
-            } => encoder.copy_buffer_to_buffer(from, *at, &buffer(*to), *offset, *len),
+            } => encoder.copy_buffer_to_buffer(from, *at, &buffers[to.0], *offset, *len),
             Self::Texture {
                 from: (from, at),
                 bytes_per_row,
@@ -258,7 +261,7 @@ impl Staged {
                     },
                 },
                 wgpu::TexelCopyTextureInfo {
-                    texture: &texture(region.texture),
+                    texture: (textures[region.texture.0].texture()).expect("a texture"),
                     mip_level: region.level,
                     origin: wgpu::Origin3d {
                         x: region.x,

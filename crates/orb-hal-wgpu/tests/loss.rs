@@ -110,7 +110,7 @@ fn the_host_hears_of_a_loss_it_didnt_make() {
         let host = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
         let (_, adapter) = host.instance_and_adapter().expect("a native device");
         let sink = heard.clone();
-        let gpu = pollster::block_on(WgpuGpu::open(adapter, move |why| {
+        let gpu = pollster::block_on(WgpuGpu::open(adapter, FramePath::Gpu, move |why| {
             sink.lock().unwrap().push(why.to_owned());
         }))
         .expect("a device");

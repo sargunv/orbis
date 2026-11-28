@@ -397,7 +397,7 @@ impl Composites {
         });
         let textures: [BindGroupEntry; STACK] = std::array::from_fn(|i| {
             let texture = layers.get(i).map_or(self.blank, |l| l.texture);
-            BindGroupEntry::texture(2 + i as u32, texture, TextureViewDimension::D2)
+            BindGroupEntry::texture(2 + i as u32, texture)
         });
         let mut entries = vec![
             BindGroupEntry::buffer(0, uniform),
@@ -484,16 +484,15 @@ impl Composites {
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
         write_uniform(gpu, uniform, flags, opacity, [0.0; 4]);
-        use TextureViewDimension::D2;
         let group = gpu.create_bind_group(&BindGroupDesc {
             label: "composite",
             layout: self.layout,
             entries: &[
                 BindGroupEntry::buffer(0, uniform),
-                BindGroupEntry::texture(1, source, D2),
-                BindGroupEntry::texture(2, aux.unwrap_or(self.blank), D2),
+                BindGroupEntry::texture(1, source),
+                BindGroupEntry::texture(2, aux.unwrap_or(self.blank)),
                 BindGroupEntry::sampler(3, self.linear),
-                BindGroupEntry::texture(4, mask.unwrap_or(self.blank), D2),
+                BindGroupEntry::texture(4, mask.unwrap_or(self.blank)),
             ],
         });
         let sampled = match mode {

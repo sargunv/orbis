@@ -430,7 +430,7 @@ fn module(gpu: &mut dyn Gpu, shader: &Shader, variant: Variant) -> (ShaderModule
         let source = (shader.gl_source())
             .unwrap_or_else(|| panic!("{} has no WebGL 2 source", shader.label));
         (source, None, gl)
-    } else if !gpu.caps().vertex_storage {
+    } else if !gpu.caps().storage_tables() {
         (shader.texture_tables_source(), None, None)
     } else {
         (shader.source(), shader.ir(), None)
@@ -473,7 +473,7 @@ fn data_width(gpu: &dyn Gpu, shader: &Shader, entry: &str) -> Option<(&'static s
     {
         use orb_shaders::DATA_WIDTH_LOG2;
         let width = crate::scene::data_width(&gpu.caps().limits);
-        (!gpu.caps().vertex_storage && width != 1 << 12 && shader.takes(entry, DATA_WIDTH_LOG2))
+        (!gpu.caps().storage_tables() && width != 1 << 12 && shader.takes(entry, DATA_WIDTH_LOG2))
             .then(|| (DATA_WIDTH_LOG2, f64::from(width.ilog2())))
     }
     #[cfg(not(cpu_driven))]

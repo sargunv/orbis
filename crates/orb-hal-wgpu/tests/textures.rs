@@ -70,7 +70,7 @@ fn samples_written_layers_of_a_texture_array() {
         label: "pages",
         layout,
         entries: &[
-            BindGroupEntry::texture(0, pages, D2Array),
+            BindGroupEntry::texture(0, pages),
             BindGroupEntry::sampler(1, sampler),
         ],
     });
@@ -205,6 +205,49 @@ fn packed_writes_in_one_submission_all_land() {
         assert_eq!(wrong, 0, "texels wrong of bitmaps {min}+{spread} wide");
         gpu.destroy_texture(page);
     }
+}
+
+/// Overlapping writes into one layer in one submission land in the order
+/// they came, however copies are ordered on the device (#156).
+#[test]
+fn overlapping_writes_in_one_submission_land_in_order() {
+    let mut gpu = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
+    let page = gpu.create_texture(&TextureDesc {
+        label: "page",
+        width: 256,
+        height: 4,
+        array_layers: 2,
+        dimension: D2Array,
+        format: TextureFormat::R8Unorm,
+        usage: TextureUsages::COPY_DST | TextureUsages::COPY_SRC,
+        sample_count: 1,
+        mip_levels: 1,
+    });
+    let write = |gpu: &mut WgpuGpu, x, width, value| {
+        let region = TextureRegion {
+            texture: page,
+            x,
+            y: 0,
+            layer: 0,
+            width,
+            height: 4,
+            level: 0,
+        };
+        gpu.write_texture(&region, &vec![value; (width * 4) as usize]);
+    };
+    write(&mut gpu, 0, 256, 1);
+    write(&mut gpu, 64, 128, 2);
+    write(&mut gpu, 96, 32, 3);
+    gpu.submit(&[]);
+    let row = &read_layers(&gpu, page)[..256];
+    let expected: Vec<u8> = (0..256)
+        .map(|x| match x {
+            96..128 => 3,
+            64..192 => 2,
+            _ => 1,
+        })
+        .collect();
+    assert_eq!(row, expected);
 }
 
 /// A submission of thousands of passes, as WebGL 2's frame driver makes

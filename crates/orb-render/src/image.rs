@@ -604,7 +604,7 @@ impl Images {
         }
         let levels = |border: u32| 32 - (width.max(height) + 2 * border).max(1).leading_zeros();
         // Mip levels are written as storage, or drawn apart and copied in.
-        let written = if gpu.caps().compute {
+        let written = if gpu.caps().compute() {
             TextureUsages::STORAGE_BINDING
         } else {
             TextureUsages::COPY_DST
@@ -1102,13 +1102,13 @@ impl Images {
         ];
         entries.extend(
             (IMAGE_CHUNK_BINDINGS.iter().zip(textures))
-                .map(|(&b, t)| BindGroupEntry::texture(b, t, TextureViewDimension::D2Array)),
+                .map(|(&b, t)| BindGroupEntry::texture(b, t)),
         );
         let layout = if family == Family::Raster {
             self.image_layout
         } else {
             let table = node.table.unwrap_or(self.placeholder_table);
-            entries.push(BindGroupEntry::texture(4, table, TextureViewDimension::D2));
+            entries.push(BindGroupEntry::texture(4, table));
             self.table_layout
         };
         gpu.create_bind_group(&BindGroupDesc {
@@ -1315,9 +1315,7 @@ mod prepare {
                             let textures = page.page.textures(source, held);
                             let mut entries: Vec<BindGroupEntry> =
                                 (PREPARE_CHUNK_BINDINGS.iter().zip(textures))
-                                    .map(|(&b, t)| {
-                                        BindGroupEntry::texture(b, t, TextureViewDimension::D2Array)
-                                    })
+                                    .map(|(&b, t)| BindGroupEntry::texture(b, t))
                                     .collect();
                             entries.push(BindGroupEntry::slice(
                                 2,

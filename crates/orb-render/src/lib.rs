@@ -1035,15 +1035,15 @@ impl Renderer {
     /// two to the same words ([`driver_check`](Self::driver_check)); the
     /// candidates are laid out again, so both start alike. Only a
     /// CPU-driven renderer on a device with compute and the tables in
-    /// storage buffers (orb-hal-wgpu's `force_cpu_driver(false)`) has a
-    /// twin; returns whether this one does.
+    /// storage buffers (`FramePath::Cpu`) has a twin; returns whether this
+    /// one does.
     #[cfg(cpu_driven)]
     #[doc(hidden)]
     pub fn check_driver(&mut self, gpu: &mut dyn Gpu, on: bool) -> bool {
         let driver::Driver::Cpu(d) = &mut self.driver else {
             return false;
         };
-        if on && (!gpu.caps().compute || self.scene.tables().backing() != Backing::Storage) {
+        if on && (!gpu.caps().compute() || self.scene.tables().backing() != Backing::Storage) {
             return false;
         }
         d.set_twin(gpu, &self.scene, on);
@@ -2945,7 +2945,6 @@ impl Renderer {
     /// the tables, the terrain as the scene group binds it, the node
     /// uniforms and the draw arguments.
     fn symbol_scene(&self) -> Vec<Option<Vec<BindGroupEntry>>> {
-        use TextureViewDimension::{D2, D2Array};
         let held: Vec<u32> = self.scene.blocks().collect();
         (0..self.scene.block_slots())
             .map(|block| {
@@ -2956,8 +2955,8 @@ impl Renderer {
                 let mut entries = vec![BindGroupEntry::buffer(0, frame)];
                 entries.extend(self.scene.tables().entries(block as usize));
                 entries.extend([
-                    BindGroupEntry::texture(14, self.dem_bound, D2Array),
-                    BindGroupEntry::texture(15, self.terrain_depth_bound, D2),
+                    BindGroupEntry::texture(14, self.dem_bound),
+                    BindGroupEntry::texture(15, self.terrain_depth_bound),
                     BindGroupEntry::buffer(17, self.node_uniforms),
                     BindGroupEntry::buffer(18, self.scene.buffers().args),
                 ]);
@@ -5262,7 +5261,6 @@ fn scene_groups(
     (nearest, dem, terrain_depth): (SamplerId, TextureId, TextureId),
     frames: Option<&[Option<BufferId>]>,
 ) -> Vec<Option<BindGroupId>> {
-    use TextureViewDimension::{D2, D2Array};
     let held: Vec<u32> = scene.blocks().collect();
     (0..scene.block_slots())
         .map(|block| {
@@ -5277,13 +5275,13 @@ fn scene_groups(
             entries.extend(scene.tables().entries(block as usize));
             entries.push(images.table.entry(8));
             entries.extend([
-                BindGroupEntry::texture(9, images.texture, D2Array),
+                BindGroupEntry::texture(9, images.texture),
                 BindGroupEntry::sampler(10, images.sampler),
-                BindGroupEntry::texture(11, images.dashes, D2),
+                BindGroupEntry::texture(11, images.dashes),
                 BindGroupEntry::sampler(13, nearest),
-                BindGroupEntry::texture(14, dem, D2Array),
-                BindGroupEntry::texture(15, terrain_depth, D2),
-                BindGroupEntry::texture(16, images.texture, D2Array),
+                BindGroupEntry::texture(14, dem),
+                BindGroupEntry::texture(15, terrain_depth),
+                BindGroupEntry::texture(16, images.texture),
             ]);
             Some(gpu.create_bind_group(&BindGroupDesc {
                 label: "scene",

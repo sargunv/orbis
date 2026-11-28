@@ -92,26 +92,20 @@ async fn adapter() -> Result<(wgpu::Instance, wgpu::Adapter, Option<String>), St
 
 impl WgpuGpu {
     /// A native device on the default adapter ([`open`](Self::open)),
-    /// without a surface. `ORB_BACKEND`, `WGPU_BACKEND` and wgpu's other
-    /// variables choose the adapter. The device keeps its instance, so it
-    /// can also draw to window surfaces.
+    /// without a surface, taking at most the frame path `ORB_DRIVER` asks
+    /// for (`gpu`, `cpu`, `cpu-tex` or `webgl2`). `ORB_BACKEND`,
+    /// `WGPU_BACKEND` and wgpu's other variables choose the adapter. The
+    /// device keeps its instance, so it can also draw to window surfaces.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn offscreen() -> Result<Self, String> {
+        Self::offscreen_on(crate::driver_from_env()).await
+    }
+
+    /// [`offscreen`](Self::offscreen), taking at most frame path `most`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn offscreen_on(most: orb_hal::FramePath) -> Result<Self, String> {
         let (instance, adapter, compiler) = adapter().await?;
-        // Orbis draws indirectly from compute; devices without that (the
-        // iOS simulator's Metal) can't draw it; GL boots to flat frames (#140).
-        let downlevel = adapter.get_downlevel_capabilities().flags;
-        let needed = wgpu::DownlevelFlags::COMPUTE_SHADERS
-            | wgpu::DownlevelFlags::INDIRECT_EXECUTION
-            | wgpu::DownlevelFlags::VERTEX_STORAGE;
-        if !downlevel.contains(needed) && adapter.get_info().backend != wgpu::Backend::Gl {
-            return Err(format!(
-                "{} lacks {:?}, which Orbis needs",
-                adapter.get_info().name,
-                needed - downlevel
-            ));
-        }
-        let mut gpu = Self::open(&adapter, |_| {})
+        let mut gpu = Self::open(&adapter, most, |_| {})
             .await
             .map_err(|e| format!("no device: {e}"))?;
         gpu.native = Some((instance, adapter));
@@ -179,7 +173,7 @@ impl WgpuGpu {
     /// texture may be drawn again.
     pub(crate) fn encode_armed_copy(&mut self, encoder: &mut wgpu::CommandEncoder) {
         let copy = (self.copy_next.take())
-            .filter(|id| self.textures.contains(id.0) && self.textures[id.0].texture.is_some())
+            .filter(|id| (self.textures.get(id.0)).is_some_and(|t| t.texture().is_some()))
             .map(|id| (id, self.encode_copy(encoder, self.texture(id))));
         let unread = std::mem::replace(&mut self.copied, copy);
         if let Some((_, unread)) = unread {
@@ -400,7 +394,8 @@ mod tests {
         }))
         .expect("a device");
         assert_eq!(device.limits().max_buffer_size, LARGEST);
-        let mut gpu = WgpuGpu::new(device, queue);
+        let flags = adapter.get_downlevel_capabilities().flags;
+        let mut gpu = WgpuGpu::new(device, queue, flags, orb_hal::FramePath::Gpu);
         let (width, height) = (4096, 150);
         let texture = gpu.create_texture(&TextureDesc {
             label: "banded",

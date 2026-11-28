@@ -34,8 +34,7 @@ struct Checked {
 
 impl Checked {
     fn new(scene: &Scene) -> Self {
-        let mut gpu = pollster::block_on(WgpuGpu::offscreen()).unwrap();
-        gpu.force_cpu_driver(false);
+        let mut gpu = pollster::block_on(WgpuGpu::offscreen_on(orb_hal::FramePath::Cpu)).unwrap();
         let format = TargetFormat {
             color: orb_hal::TextureFormat::Rgba8Unorm,
             sample_count: 1,

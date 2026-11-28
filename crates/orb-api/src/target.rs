@@ -243,8 +243,8 @@ impl Target {
     }
 
     /// Starts a frame on `device`, the runtime's, which the frame holds:
-    /// the texture to draw it into, or `None` to skip it.
-    pub(crate) fn begin(&mut self, device: &mut WgpuGpu) -> Result<Option<TextureId>, Error> {
+    /// the texture to draw it into.
+    pub(crate) fn begin(&mut self, device: &mut WgpuGpu) -> Result<TextureId, Error> {
         // Made before the device was replaced: textures are made again;
         // windows need the host.
         if self.generation != self.shared.generation() {
@@ -266,27 +266,31 @@ impl Target {
                 if self.read_back.swap(false, Ordering::Relaxed) {
                     device.read_with_next_submit(*id);
                 }
-                Ok(Some(*id))
+                Ok(*id)
             }
-            Kind::Borrowed(id, _) => Ok(Some(*id)),
+            Kind::Borrowed(id, _) => Ok(*id),
             Kind::Unmade(_) => unreachable!("made above: its generation is the first device's"),
             Kind::Released => Err(Error::TargetLost("the GPU was replaced".into())),
-            Kind::Surface(surface) => match device.acquire(surface) {
-                Ok(id) => Ok(Some(id)),
-                Err(SurfaceError::Skip) => Ok(None),
-                Err(SurfaceError::Lost(message)) => Err(Error::TargetLost(message)),
-            },
+            // Its texture is taken once a pass draws into it.
+            Kind::Surface(surface) => Ok(device.begin_surface(surface)),
         }
     }
 
-    /// Shows the frame on a surface, on the device that began it.
-    pub(crate) fn end(&mut self, device: &mut WgpuGpu) {
+    /// Ends the frame begun into `texture`, on the device that began it,
+    /// showing a surface's if it drew: `false` where the surface had
+    /// nothing to draw into this time, so the frame wants drawing again.
+    pub(crate) fn end(&mut self, device: &mut WgpuGpu, texture: TextureId) -> Result<bool, Error> {
         match &mut self.kind {
-            Kind::Surface(surface) => device.present(surface),
+            Kind::Surface(_) => match device.present_surface(texture) {
+                Ok(()) => return Ok(true),
+                Err(SurfaceError::Skip) => return Ok(false),
+                Err(SurfaceError::Lost(message)) => return Err(Error::TargetLost(message)),
+            },
             // The host reads it once the render returns.
             Kind::Borrowed(..) => device.end_frame(0),
             _ => device.end_frame(IN_FLIGHT),
         }
+        Ok(true)
     }
 }
 
@@ -305,7 +309,7 @@ impl Target {
         match kind {
             Kind::Released | Kind::Unmade(_) => {}
             Kind::Texture(id, _) | Kind::Borrowed(id, _) => device.destroy_texture(id),
-            Kind::Surface(mut surface) => device.retire_surface(&mut surface),
+            Kind::Surface(_) => device.retire_surface(),
         }
     }
 }

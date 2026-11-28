@@ -59,7 +59,7 @@ impl Shader {
 
     /// Its source for a device that reads the scene's and the terrain's
     /// tables from data textures and has the rest of WebGPU: WebGL 2's
-    /// path run natively (orb-hal-wgpu's `force_cpu_driver`), the
+    /// path run natively (`FramePath::CpuTex`), the
     /// built-ins and those tables' `fetch` modules swapped
     /// ([`gl_source`](Self::gl_source)'s first three).
     pub fn texture_tables_source(&self) -> String {

@@ -9,13 +9,12 @@
 //! few links at a time.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::rc::Rc;
 
 use orb_hal::PipelineId;
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 
-use super::{Built, Done, Job};
+use super::{Background, Built, Done, Job, Lines};
 
 /// How long one poll starts compiles for, at least one: a frame's share,
 /// so the map keeps drawing while the rest wait.
@@ -38,10 +37,8 @@ pub(crate) struct Compiler {
 
 #[derive(Default)]
 struct State {
-    /// Waiting for a frame's poll, front first.
-    queue: VecDeque<Job>,
-    /// Background jobs waiting for idle time, front first.
-    background: VecDeque<Job>,
+    /// Jobs a frame's poll compiles, and background ones for idle time.
+    lines: Lines,
     /// Pipelines made whose programs are still linking.
     linking: Vec<Linking>,
     /// Background compiles finished in idle time, for the next take.
@@ -50,8 +47,6 @@ struct State {
     device: Option<(wgpu::Device, bool)>,
     /// An idle callback is scheduled.
     idle: bool,
-    /// Background compiles may not start ([`Compiler::open_background`]).
-    closed: bool,
 }
 
 struct Linking {
@@ -59,15 +54,26 @@ struct Linking {
     label: String,
     built: Built,
     started: f64,
-    background: bool,
+    background: Background,
+}
+
+impl Linking {
+    fn background(&self) -> bool {
+        self.background.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl State {
+    /// Whether a compile a frame waits for is queued or linking.
+    fn frame_waits(&self) -> bool {
+        !self.lines.waited.is_empty() || self.linking.iter().any(|l| !l.background())
+    }
 }
 
 impl std::fmt::Debug for Compiler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let state = self.state.borrow();
         f.debug_struct("Compiler")
-            .field("queued", &state.queue.len())
-            .field("background", &state.background.len())
             .field("linking", &state.linking.len())
             .finish_non_exhaustive()
     }
@@ -78,61 +84,51 @@ fn now() -> f64 {
 }
 
 impl Compiler {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
     /// Calls `wake` while pipelines a frame waits for compile, so the map
     /// polls again.
     pub(crate) fn set_wake(&self, wake: Rc<dyn Fn()>) {
         *self.wake.borrow_mut() = Some(wake);
     }
 
-    pub(crate) fn submit(&mut self, device: &wgpu::Device, job: Job, background: bool) {
+    pub(crate) fn submit(&mut self, device: &wgpu::Device, job: Job) {
         let mut state = self.state.borrow_mut();
         state
             .device
             .get_or_insert_with(|| (device.clone(), defer_links(device)));
-        if background {
-            state.background.push_back(job);
-            drop(state);
-            schedule_idle(&self.state, &self.wake);
-        } else {
-            state.queue.push_back(job);
-            drop(state);
-            self.wake_soon();
+        let background = job.background();
+        state.lines.push(job);
+        drop(state);
+        match background {
+            true => schedule_idle(&self.state, &self.wake),
+            false => self.wake_soon(),
         }
     }
 
     pub(crate) fn prioritize(&mut self, id: PipelineId) {
-        let mut state = self.state.borrow_mut();
-        if let Some(at) = state.queue.iter().position(|job| job.id() == id) {
-            let job = state.queue.remove(at).expect("found above");
-            state.queue.push_front(job);
-        }
+        self.state.borrow_mut().lines.prioritize(id);
     }
 
     /// Lets background compiles start (`open`), or holds those that
     /// haven't.
     pub(crate) fn open_background(&mut self, _: &wgpu::Device, open: bool) {
-        let was = !std::mem::replace(&mut self.state.borrow_mut().closed, !open);
-        if open && !was {
+        if self.state.borrow_mut().lines.open(open) {
             schedule_idle(&self.state, &self.wake);
         }
     }
 
     /// Makes a background compile one a frame waits for: compiled first
     /// if it waits, polled with the frame's if it links.
-    pub(crate) fn promote(&mut self, id: PipelineId) {
-        let mut state = self.state.borrow_mut();
-        if let Some(at) = state.background.iter().position(|job| job.id() == id) {
-            let job = state.background.remove(at).expect("found above");
-            state.queue.push_front(job);
-        } else if let Some(link) = state.linking.iter_mut().find(|l| l.id == id) {
-            link.background = false;
-        }
-        drop(state);
+    pub(crate) fn promote(&mut self, _: &wgpu::Device, id: PipelineId) {
+        self.state.borrow_mut().lines.promote(id);
         self.wake_soon();
+    }
+
+    /// Drops a compile not yet started, or a pipeline still linking.
+    pub(crate) fn cancel(&mut self, id: PipelineId) {
+        let mut state = self.state.borrow_mut();
+        if !state.lines.cancel(id) {
+            state.linking.retain(|l| l.id != id);
+        }
     }
 
     /// Compiles finished since the last call; `compile` (a frame's poll)
@@ -146,14 +142,14 @@ impl Compiler {
         }
         let deferred = state.device.as_ref().is_some_and(|(_, d)| *d);
         let start = now();
-        while let Some(job) = state.queue.pop_front() {
-            start_compile(&mut state, device, deferred, job, false, &mut done);
+        while let Some(job) = state.lines.waited.pop_front() {
+            start_compile(&mut state, device, deferred, job, &mut done);
             if now() - start >= BUDGET_MS {
                 break;
             }
         }
-        poll_links(&mut state, device, &mut done, |l| !l.background);
-        let waiting = !state.queue.is_empty() || state.linking.iter().any(|l| !l.background);
+        poll_links(&mut state, device, &mut done, |l| !l.background());
+        let waiting = state.frame_waits();
         drop(state);
         if waiting {
             self.wake_soon();
@@ -176,21 +172,20 @@ fn start_compile(
     device: &wgpu::Device,
     deferred: bool,
     job: Job,
-    background: bool,
     done: &mut Vec<Done>,
 ) {
     let began = now();
-    let (id, label) = (job.id(), job.label().to_owned());
+    let label = job.label().to_owned();
     match job.compile(device) {
         Ok(built @ Built::Render(..)) if deferred => state.linking.push(Linking {
-            id,
+            id: job.id,
             label,
             built,
             started: began,
-            background,
+            background: job.background,
         }),
         built => done.push(Done {
-            id,
+            id: job.id,
             built,
             label,
             took: std::time::Duration::from_secs_f64((now() - began) / 1000.0),
@@ -281,9 +276,8 @@ fn idle_step(state: &Rc<RefCell<State>>, wake: &Wake, deadline: &JsValue) {
         return;
     };
     let mut done = Vec::new();
-    poll_links(&mut s, &device, &mut done, |l| l.background);
-    let frame_waits = !s.queue.is_empty() || s.linking.iter().any(|l| !l.background);
-    if !frame_waits && !s.closed {
+    poll_links(&mut s, &device, &mut done, Linking::background);
+    if !s.frame_waits() {
         let left = js_sys::Reflect::get(deadline, &"timeRemaining".into())
             .ok()
             .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
@@ -293,10 +287,10 @@ fn idle_step(state: &Rc<RefCell<State>>, wake: &Wake, deadline: &JsValue) {
             .min(IDLE_BUDGET_MS);
         let start = now();
         let lanes = if deferred { BACKGROUND_LANES } else { 1 };
-        while s.linking.iter().filter(|l| l.background).count() < lanes
-            && let Some(job) = s.background.pop_front()
+        while s.linking.iter().filter(|l| l.background()).count() < lanes
+            && let Some(job) = s.lines.next_background()
         {
-            start_compile(&mut s, &device, deferred, job, true, &mut done);
+            start_compile(&mut s, &device, deferred, job, &mut done);
             if !deferred || now() - start >= left {
                 break;
             }
@@ -304,8 +298,8 @@ fn idle_step(state: &Rc<RefCell<State>>, wake: &Wake, deadline: &JsValue) {
     }
     s.finished.extend(done);
     // Held, they wait for the gate to open again, which schedules them.
-    let held = s.closed && s.linking.iter().all(|l| !l.background);
-    let more = !held && (!s.background.is_empty() || s.linking.iter().any(|l| l.background));
+    let linking = s.linking.iter().any(Linking::background);
+    let more = linking || !(s.lines.held || s.lines.background.is_empty());
     drop(s);
     if more {
         schedule_idle(state, wake);
