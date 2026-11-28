@@ -3254,7 +3254,7 @@ impl Map {
         let (mut cached_tiles, mut cached) = (0, 0);
         for source in self.style.iter().flat_map(|s| &s.sources) {
             if let SourceState::Ready { pyramid, .. } = &source.state {
-                for (_, _, r) in pyramid.unused() {
+                for r in pyramid.cached() {
                     cached_tiles += 1;
                     cached += r.cost;
                 }

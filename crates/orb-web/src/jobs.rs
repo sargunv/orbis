@@ -258,6 +258,14 @@ impl JobWorker {
                 self.host.cancel(style, source, tile);
                 return Ok(None);
             }
+            JobRequest::Forget {
+                style,
+                source,
+                tile,
+            } => {
+                self.host.forget(style, source, tile);
+                return Ok(None);
+            }
             JobRequest::Glyphs { style, urls } => {
                 self.host.expect_glyphs(style, urls);
                 return Ok(None);

@@ -165,8 +165,6 @@ pub struct TilePyramid<T> {
     tiles: FxHashMap<TileIndex, Entry<T>>,
     min_zoom: u8,
     max_zoom: u8,
-    /// Ready tiles kept beyond those in use.
-    cache_size: usize,
     frame: u64,
     /// The last committed plan's cover, and the tiles it kept to stand
     /// in.
@@ -182,12 +180,11 @@ pub struct TilePyramid<T> {
 }
 
 impl<T> TilePyramid<T> {
-    pub fn new(min_zoom: u8, max_zoom: u8, cache_size: usize) -> Self {
+    pub fn new(min_zoom: u8, max_zoom: u8) -> Self {
         Self {
             tiles: FxHashMap::default(),
             min_zoom,
             max_zoom,
-            cache_size,
             frame: 0,
             cover: FxHashSet::default(),
             kept: Vec::new(),
@@ -628,30 +625,26 @@ impl<T> TilePyramid<T> {
         let _ = self.settle(tile, State::Missing);
     }
 
-    /// Evicts ready and empty tiles not used in the last update, least
-    /// recently used first, until at most `cache_size` unused ones remain.
-    /// In-flight entries remain until completion: eviction does not cancel
-    /// host jobs, and forgetting them would allow duplicate requests whose
-    /// out-of-order results could complete the wrong entry. Loading entries
-    /// do not consume the ready cache budget. Returns the evicted values.
-    pub fn evict(&mut self) -> Vec<T> {
+    /// Forgets settled tiles the last update didn't use, whatever they
+    /// settled as, least recently used first, until at most `limit` such
+    /// remain: a later plan that needs one requests it again. In-flight
+    /// entries stay until they're answered, so that no duplicate request's
+    /// answer completes the wrong entry. Returns the ready ones' values.
+    pub fn evict(&mut self, limit: usize) -> Vec<(TileIndex, T)> {
         let frame = self.frame;
-        let mut unused: Vec<(u64, TileIndex)> = self
-            .tiles
-            .iter()
+        let mut unused: Vec<(u64, TileIndex)> = (self.tiles.iter())
             .filter(|(_, e)| e.last_used != frame && !e.state.is_loading())
             .map(|(&t, e)| (e.last_used, t))
             .collect();
-        if unused.len() <= self.cache_size {
+        if unused.len() <= limit {
             return Vec::new();
         }
         unused.sort_unstable();
-        let excess = unused.len() - self.cache_size;
+        let excess = unused.len() - limit;
         self.revision += 1;
-        unused[..excess]
-            .iter()
-            .filter_map(|(_, t)| match self.tiles.remove(t)?.state {
-                State::Ready(value) => Some(value),
+        (unused[..excess].iter())
+            .filter_map(|&(_, t)| match self.tiles.remove(&t)?.state {
+                State::Ready(value) => Some((t, value)),
                 _ => None,
             })
             .collect()
@@ -666,29 +659,23 @@ impl<T> TilePyramid<T> {
             .count()
     }
 
-    /// The ready tiles the last update didn't use, with how many updates
-    /// ago each was last used: comparable across pyramids updated together.
-    pub fn unused(&self) -> impl Iterator<Item = (TileIndex, u64, &T)> {
+    /// The ready tiles the last update didn't use: the cache.
+    pub fn cached(&self) -> impl Iterator<Item = &T> {
         let frame = self.frame;
-        self.tiles
-            .iter()
-            .filter_map(move |(&tile, entry)| match &entry.state {
-                State::Ready(value) if entry.last_used != frame => {
-                    Some((tile, frame - entry.last_used, value))
-                }
-                _ => None,
-            })
+        (self.tiles.values()).filter_map(move |entry| match &entry.state {
+            State::Ready(value) if entry.last_used != frame => Some(value),
+            _ => None,
+        })
+    }
+
+    /// Whether any tile `which` picks has an entry, in any state.
+    pub fn holds(&self, which: impl Fn(TileIndex) -> bool) -> bool {
+        self.tiles.keys().any(|&t| which(t))
     }
 
     /// Removes `tile` if it's ready, used or not.
     pub fn remove(&mut self, tile: TileIndex) -> Option<T> {
         self.is_ready(tile).then(|| self.take_ready(tile))
-    }
-
-    /// Evicts `tile` if it's ready and the last update didn't use it.
-    pub fn evict_unused(&mut self, tile: TileIndex) -> Option<T> {
-        let unused = self.tiles.get(&tile)?.last_used != self.frame;
-        (unused && self.is_ready(tile)).then(|| self.take_ready(tile))
     }
 
     /// Removes `tile`, which is ready, and gives its value.
@@ -820,8 +807,8 @@ impl<T> TilePyramid<T> {
     }
 
     /// The tiles with a known descendant, the only branches worth
-    /// descending: walking the cached tiles' ancestors bounds this by cache
-    /// size × depth, not 4^depth.
+    /// descending: walking the held tiles' ancestors bounds this by what
+    /// the cache holds × depth, not 4^depth.
     fn branches(&self) -> FxHashSet<TileIndex> {
         let mut branches = FxHashSet::default();
         let known = (self.tiles.iter())
@@ -921,7 +908,7 @@ mod tests {
 
     #[test]
     fn requests_then_draws_ready_tiles() {
-        let mut p = TilePyramid::new(0, 14, 8);
+        let mut p = TilePyramid::new(0, 14);
         let view = cover(&[(1, 0, 0), (1, 1, 0)]);
         let first = p.update(&view);
         assert_eq!(first.request, [t(1, 0, 0), t(1, 1, 0)]);
@@ -948,7 +935,7 @@ mod tests {
     /// with them or without.
     #[test]
     fn kept_tiles_load_first_and_draw_only_as_stand_ins() {
-        let mut p = TilePyramid::new(0, 14, 0);
+        let mut p = TilePyramid::new(0, 14);
         let (view, kept) = (cover(&[(3, 6, 2), (3, 7, 2)]), [t(0, 0, 0)]);
         let plan = |p: &mut TilePyramid<&str>| {
             let update = p.plan_keeping(&view, &kept);
@@ -976,7 +963,7 @@ mod tests {
         assert_eq!(loaded.draw, p.plan(&view).draw);
         // Kept, the cache holds it even with no room past what's used,
         // and it never makes room for the cover's tiles.
-        p.evict();
+        p.evict(0);
         assert!(p.evict_stand_in(None).is_none());
         assert!(p.get(t(0, 0, 0)).is_some());
     }
@@ -985,7 +972,7 @@ mod tests {
     /// gave its tiles in: each run of four lies together.
     #[test]
     fn regions_come_in_z_order() {
-        let mut p = TilePyramid::new(0, 22, 64);
+        let mut p = TilePyramid::new(0, 22);
         p.update(&cover(&[(1, 0, 0)]));
         p.insert(t(1, 0, 0), "ancestor");
         let mut ideals: Vec<(u8, u32, u32)> = (0..4)
@@ -1005,7 +992,7 @@ mod tests {
 
     #[test]
     fn ready_parent_stands_in_for_missing_children() {
-        let mut p = TilePyramid::new(0, 14, 8);
+        let mut p = TilePyramid::new(0, 14);
         p.update(&cover(&[(1, 0, 0)]));
         p.insert(t(1, 0, 0), "parent");
 
@@ -1033,7 +1020,7 @@ mod tests {
 
     #[test]
     fn ready_children_stand_in_for_a_missing_parent() {
-        let mut p = TilePyramid::new(0, 14, 8);
+        let mut p = TilePyramid::new(0, 14);
         p.update(&cover(&[(2, 0, 0), (2, 1, 1)]));
         p.insert(t(2, 0, 0), "a");
         p.insert(t(2, 1, 1), "b");
@@ -1049,7 +1036,7 @@ mod tests {
     // A delayed coarse tile must not replace finer, already visible fallback.
     #[test]
     fn zoom_out_retains_descendants_when_a_late_ancestor_arrives() {
-        let mut p = TilePyramid::new(0, 14, 0);
+        let mut p = TilePyramid::new(0, 14);
         p.update(&cover(&[(0, 0, 0)])); // slow ancestor request
         let fine = cover(&[(3, 0, 0), (3, 1, 0)]);
         p.update(&fine);
@@ -1071,7 +1058,7 @@ mod tests {
         );
         let coarse = cover(&[(1, 0, 0)]);
         frames.push((coarse.clone(), p.update(&coarse).draw));
-        p.evict();
+        p.evict(0);
         assert!(
             frames[3].1.iter().any(|d| d.tile == t(3, 0, 0)),
             "{frames:#?}"
@@ -1087,7 +1074,7 @@ mod tests {
 
     #[test]
     fn ready_ideal_replaces_descendants_and_makes_them_evictable() {
-        let mut p = TilePyramid::new(0, 14, 0);
+        let mut p = TilePyramid::new(0, 14);
         let children = cover(&[(13, 7274, 3224), (13, 7275, 3225)]);
         p.update(&children);
         p.insert(t(13, 7274, 3224), "first child");
@@ -1095,7 +1082,10 @@ mod tests {
         let ideal = t(12, 3637, 1612);
         let view = cover(&[(ideal.z, ideal.col, ideal.row)]);
         assert_eq!(p.update(&view).draw.len(), 2);
-        assert!(p.evict().is_empty(), "fallback children stay while loading");
+        assert!(
+            p.evict(0).is_empty(),
+            "fallback children stay while loading"
+        );
         p.insert(ideal, "ideal");
         assert_eq!(
             p.update(&view).draw,
@@ -1105,7 +1095,7 @@ mod tests {
                 regions: vec![ideal],
             }]
         );
-        let mut evicted = p.evict();
+        let mut evicted: Vec<_> = p.evict(0).into_iter().map(|(_, v)| v).collect();
         evicted.sort_unstable();
         assert_eq!(evicted, ["first child", "second child"]);
         assert_eq!(p.get(ideal), Some(&"ideal"));
@@ -1113,7 +1103,7 @@ mod tests {
 
     #[test]
     fn zoom_out_two_levels_keeps_coverage_until_the_ideal_arrives() {
-        let mut p = TilePyramid::new(0, 14, 0);
+        let mut p = TilePyramid::new(0, 14);
         p.update(&cover(&[(3, 0, 0)]));
         p.insert(t(3, 0, 0), "fine");
         let coarse = cover(&[(1, 0, 0)]);
@@ -1126,14 +1116,14 @@ mod tests {
                 regions: vec![t(3, 0, 0)]
             }]
         );
-        p.evict();
+        p.evict(0);
         p.insert(t(1, 0, 0), "coarse");
         assert_eq!(p.update(&coarse).draw[0].tile, t(1, 0, 0));
     }
 
     #[test]
     fn descendant_and_ancestor_regions_partition_each_wrap_without_overlap() {
-        let mut p = TilePyramid::new(0, 14, 0);
+        let mut p = TilePyramid::new(0, 14);
         p.update(&cover(&[(0, 0, 0)]));
         p.insert(t(0, 0, 0), "ancestor");
         p.update(&cover(&[(3, 0, 0), (3, 3, 3)]));
@@ -1165,13 +1155,13 @@ mod tests {
             }
             // Empty fallback coverage must be retained too, or the ancestor
             // fills its region on the next frame and makes old data flash.
-            p.evict();
+            p.evict(0);
         }
     }
 
     #[test]
     fn empty_tiles_draw_nothing_and_need_no_fallback() {
-        let mut p = TilePyramid::new(0, 14, 8);
+        let mut p = TilePyramid::new(0, 14);
         p.update(&cover(&[(0, 0, 0)]));
         p.insert(t(0, 0, 0), "world");
         p.update(&cover(&[(1, 0, 0)]));
@@ -1181,7 +1171,7 @@ mod tests {
 
     #[test]
     fn failed_tiles_fall_back_and_retry_with_backoff() {
-        let mut p = TilePyramid::new(0, 14, 8);
+        let mut p = TilePyramid::new(0, 14);
         p.update(&cover(&[(0, 0, 0)]));
         p.insert(t(0, 0, 0), "world");
         p.update(&cover(&[(1, 0, 0)]));
@@ -1215,7 +1205,7 @@ mod tests {
     /// doesn't): met again, it backs off as on its first failure.
     #[test]
     fn failed_tiles_out_of_view_forget_their_failures() {
-        let mut p = TilePyramid::<&str>::new(0, 14, usize::MAX);
+        let mut p = TilePyramid::<&str>::new(0, 14);
         let (here, there) = (cover(&[(1, 0, 0)]), cover(&[(1, 1, 1)]));
         p.update(&here);
         p.insert_failed(t(1, 0, 0), 0.0, 0.0);
@@ -1236,7 +1226,7 @@ mod tests {
     /// view's.
     #[test]
     fn retried_tiles_plan_as_fresh_ones() {
-        let mut p = TilePyramid::new(0, 14, 8);
+        let mut p = TilePyramid::new(0, 14);
         let view = cover(&[(1, 0, 0)]);
         p.update(&cover(&[(0, 0, 0)]));
         p.insert(t(0, 0, 0), "world");
@@ -1244,7 +1234,7 @@ mod tests {
         p.update(&deeper);
         p.insert_failed(t(2, 0, 0), 0.0, 0.0);
         assert_eq!(p.retry_failed(1000.0), None);
-        let mut fresh = TilePyramid::new(0, 14, 8);
+        let mut fresh = TilePyramid::new(0, 14);
         fresh.update(&cover(&[(0, 0, 0)]));
         fresh.insert(t(0, 0, 0), "world");
         assert_eq!(p.plan(&view).draw, fresh.plan(&view).draw);
@@ -1258,7 +1248,7 @@ mod tests {
 
     #[test]
     fn failed_tiles_wait_as_long_as_their_server_asks() {
-        let mut p = TilePyramid::<&str>::new(0, 14, 8);
+        let mut p = TilePyramid::<&str>::new(0, 14);
         p.update(&cover(&[(1, 0, 0)]));
         p.insert_failed(t(1, 0, 0), 0.0, 30_000.0);
         assert_eq!(
@@ -1280,7 +1270,7 @@ mod tests {
 
     #[test]
     fn missing_tiles_load_their_ancestors() {
-        let mut pyramid = TilePyramid::new(0, 4, 8);
+        let mut pyramid = TilePyramid::new(0, 4);
         pyramid.update(&cover(&[(2, 0, 0)]));
         pyramid.insert_missing(t(2, 0, 0));
         let update = pyramid.update(&cover(&[(2, 0, 0)]));
@@ -1291,13 +1281,13 @@ mod tests {
         let update = pyramid.update(&cover(&[(2, 0, 0)]));
         assert!(update.request.is_empty());
         assert_eq!(update.draw[0].tile, t(0, 0, 0));
-        assert!(pyramid.evict().is_empty());
+        assert!(pyramid.evict(8).is_empty());
         assert!(pyramid.get(t(0, 0, 0)).is_some());
     }
 
     #[test]
     fn missing_tiles_fall_back_without_reloading() {
-        let mut pyramid = TilePyramid::new(0, 4, 8);
+        let mut pyramid = TilePyramid::new(0, 4);
         pyramid.update(&cover(&[(0, 0, 0)]));
         pyramid.insert(t(0, 0, 0), ());
         pyramid.update(&cover(&[(1, 0, 0)]));
@@ -1315,7 +1305,7 @@ mod tests {
     /// earlier, nor descendants.
     #[test]
     fn missing_tiles_draw_their_nearest_ancestor_whatever_is_cached() {
-        let mut pyramid = TilePyramid::new(0, 4, 8);
+        let mut pyramid = TilePyramid::new(0, 4);
         pyramid.update(&cover(&[(0, 0, 0)]));
         pyramid.insert(t(0, 0, 0), ());
         pyramid.update(&cover(&[(3, 0, 0)]));
@@ -1334,23 +1324,28 @@ mod tests {
 
     #[test]
     fn evicts_least_recently_used_beyond_the_cache() {
-        let mut p = TilePyramid::new(0, 14, 1);
+        let mut p = TilePyramid::new(0, 14);
         for col in 0..3 {
             p.update(&cover(&[(2, col, 0)]));
             p.insert(t(2, col, 0), col);
         }
-        p.update(&cover(&[(2, 3, 0)]));
-        // Three unused ready tiles, cache of one: the two oldest go.
-        let mut evicted = p.evict();
+        // Settled with nothing to draw, they count as cached as well.
+        p.update(&cover(&[(2, 3, 0), (2, 3, 1)]));
+        p.insert_empty(t(2, 3, 0));
+        p.insert_missing(t(2, 3, 1));
+        p.update(&cover(&[(2, 3, 2)]));
+        // Five unused settled tiles, a cache of one: all but the newest go.
+        let mut evicted = p.evict(1);
         evicted.sort_unstable();
-        assert_eq!(evicted, [0, 1]);
-        assert!(p.get(t(2, 2, 0)).is_some());
-        assert!(p.is_loading(t(2, 3, 0)));
+        assert_eq!(evicted, [(t(2, 0, 0), 0), (t(2, 1, 0), 1), (t(2, 2, 0), 2)]);
+        assert_eq!(p.evict(0), []);
+        assert!(!p.holds(|tile| tile != t(2, 3, 2)), "nothing settled stays");
+        assert!(p.is_loading(t(2, 3, 2)), "in flight stays");
     }
 
     #[test]
     fn kept_tiles_outlast_the_update_that_dropped_them() {
-        let mut p = TilePyramid::new(0, 14, 0);
+        let mut p = TilePyramid::new(0, 14);
         for col in 0..2 {
             p.update(&cover(&[(2, col, 0)]));
             p.insert(t(2, col, 0), col);
@@ -1359,14 +1354,14 @@ mod tests {
         p.keep(t(2, 1, 0));
         assert_eq!(p.evict_lru(), Some(0));
         assert_eq!(p.evict_lru(), None, "kept until the next update");
-        assert!(p.evict().is_empty());
+        assert!(p.evict(0).is_empty());
         p.update(&cover(&[(2, 2, 0)]));
-        assert_eq!(p.evict(), [1]);
+        assert_eq!(p.evict(0), [(t(2, 1, 0), 1)]);
     }
 
     #[test]
     fn the_tiles_the_last_update_used_change_in_place() {
-        let mut p = TilePyramid::new(0, 14, 8);
+        let mut p = TilePyramid::new(0, 14);
         for col in 0..2 {
             p.update(&cover(&[(2, col, 0)]));
             p.insert(t(2, col, 0), col);
@@ -1380,13 +1375,13 @@ mod tests {
 
     #[test]
     fn revisiting_an_inflight_tile_does_not_duplicate_or_lose_its_result() {
-        let mut p = TilePyramid::new(0, 14, 0);
+        let mut p = TilePyramid::new(0, 14);
         let view = cover(&[(3, 0, 0)]);
         assert_eq!(p.update(&view).request, [t(3, 0, 0)]);
         // Pan away and back before the request completes. No cancellation is
         // sent to the host, so this request is still alive across eviction.
         p.update(&cover(&[(3, 1, 0)]));
-        p.evict();
+        p.evict(0);
         let revisited = p.update(&view);
         // Replay a host in which earlier duplicate attempts fail and the
         // latest attempt succeeds. Before retaining in-flight entries, the
@@ -1405,17 +1400,17 @@ mod tests {
 
     #[test]
     fn results_for_drained_tiles_come_back() {
-        let mut p = TilePyramid::new(0, 14, 0);
+        let mut p = TilePyramid::new(0, 14);
         p.update(&cover(&[(3, 0, 0)]));
         p.update(&cover(&[(3, 1, 0)]));
-        p.evict();
+        p.evict(0);
         p.drain();
         assert_eq!(p.insert(t(3, 0, 0), "late"), Some("late"));
     }
 
     #[test]
     fn a_second_result_for_one_tile_comes_back() {
-        let mut p = TilePyramid::new(0, 14, 0);
+        let mut p = TilePyramid::new(0, 14);
         p.update(&cover(&[(3, 0, 0)]));
         // Duplicate replies cannot replace a published tile.
         assert_eq!(p.insert(t(3, 0, 0), "first"), None);
@@ -1426,7 +1421,7 @@ mod tests {
 
     #[test]
     fn evicts_the_least_recently_used_unused_tile_on_demand() {
-        let mut p = TilePyramid::new(0, 14, 8);
+        let mut p = TilePyramid::new(0, 14);
         for col in 0..3 {
             p.update(&cover(&[(2, col, 0)]));
             p.insert(t(2, col, 0), col);
@@ -1441,7 +1436,7 @@ mod tests {
 
     #[test]
     fn evicts_descendants_a_tile_replaces() {
-        let mut p = TilePyramid::new(0, 14, 8);
+        let mut p = TilePyramid::new(0, 14);
         p.update(&cover(&[(3, 0, 0), (3, 4, 4)]));
         p.insert(t(3, 0, 0), "inside");
         p.insert(t(3, 4, 4), "outside");
@@ -1453,7 +1448,7 @@ mod tests {
 
     #[test]
     fn evicts_tiles_that_only_stand_in() {
-        let mut p = TilePyramid::new(0, 14, 8);
+        let mut p = TilePyramid::new(0, 14);
         p.update(&cover(&[(1, 0, 0), (2, 3, 0), (3, 7, 7)]));
         p.insert(t(1, 0, 0), "grandparent");
         p.insert(t(2, 3, 0), "in the cover");
@@ -1483,7 +1478,7 @@ mod tests {
 
     #[test]
     fn failed_tiles_ask_for_their_nearest_ancestor() {
-        let mut p = TilePyramid::new(0, 14, 8);
+        let mut p = TilePyramid::new(0, 14);
         let view = cover(&[(3, 1, 2)]);
         p.update(&view);
         p.insert_failed(t(3, 1, 2), 0.0, 0.0);
@@ -1509,7 +1504,7 @@ mod tests {
     /// asked for anew.
     #[test]
     fn loads_the_view_left_are_given_up_once() {
-        let mut p: TilePyramid<()> = TilePyramid::new(0, 14, 8);
+        let mut p: TilePyramid<()> = TilePyramid::new(0, 14);
         let (here, there) = (cover(&[(3, 1, 2)]), cover(&[(3, 6, 6)]));
         p.update(&here);
         assert!(p.unwanted_loads(Some(&quad)).is_empty());
@@ -1532,7 +1527,7 @@ mod tests {
     /// goes last in the fetch order's eyes: the last plan didn't use it.
     #[test]
     fn loads_beside_the_view_load_on_when_asked_to() {
-        let mut p: TilePyramid<()> = TilePyramid::new(0, 14, 8);
+        let mut p: TilePyramid<()> = TilePyramid::new(0, 14);
         let near = [t(3, 7, 2), t(3, 2, 3), t(3, 1, 3)];
         p.update(&cover(&[
             (3, 7, 2),
@@ -1563,7 +1558,7 @@ mod tests {
     fn loads_beside_the_view_wrap_where_the_world_does() {
         let crs84 = |z: u8| Some(2u32 << z);
         let left = |beside: Option<&dyn Fn(u8) -> Option<u32>>| {
-            let mut p: TilePyramid<()> = TilePyramid::new(0, 14, 8);
+            let mut p: TilePyramid<()> = TilePyramid::new(0, 14);
             p.update(&cover(&[(3, 7, 2), (3, 15, 2)]));
             p.update(&cover(&[(3, 0, 2)]));
             let mut given_up = p.unwanted_loads(beside);
@@ -1578,7 +1573,7 @@ mod tests {
     /// it again first.
     #[test]
     fn loads_wanted_again_are_awaited_again() {
-        let mut p: TilePyramid<()> = TilePyramid::new(0, 14, 8);
+        let mut p: TilePyramid<()> = TilePyramid::new(0, 14);
         let (here, there) = (cover(&[(3, 1, 2)]), cover(&[(3, 6, 6)]));
         p.update(&here);
         assert_eq!(p.awaited(t(3, 1, 2)), Awaited::Wanted);
@@ -1595,7 +1590,7 @@ mod tests {
     /// as loading until it's inserted.
     #[test]
     fn arrived_tiles_are_not_in_flight() {
-        let mut p = TilePyramid::new(0, 14, 8);
+        let mut p = TilePyramid::new(0, 14);
         p.update(&cover(&[(0, 0, 0)]));
         p.insert(t(0, 0, 0), "world");
         let view = cover(&[(1, 0, 0)]);
@@ -1613,7 +1608,7 @@ mod tests {
 
     #[test]
     fn forgotten_loads_are_requested_again() {
-        let mut p: TilePyramid<()> = TilePyramid::new(0, 14, 8);
+        let mut p: TilePyramid<()> = TilePyramid::new(0, 14);
         let view = cover(&[(1, 0, 0)]);
         assert_eq!(p.update(&view).request, [t(1, 0, 0)]);
         p.forget_loading(t(1, 0, 0));
@@ -1622,7 +1617,7 @@ mod tests {
 
     #[test]
     fn keeps_ancestors_standing_in_for_missing_tiles() {
-        let mut p = TilePyramid::new(0, 14, 8);
+        let mut p = TilePyramid::new(0, 14);
         p.update(&cover(&[(1, 0, 0)]));
         p.insert(t(1, 0, 0), "parent");
         let view = cover(&[(2, 0, 0), (2, 1, 0)]);
@@ -1635,7 +1630,7 @@ mod tests {
 
     #[test]
     fn skips_tiles_below_min_zoom() {
-        let mut p: TilePyramid<()> = TilePyramid::new(2, 14, 8);
+        let mut p: TilePyramid<()> = TilePyramid::new(2, 14);
         let update = p.update(&cover(&[(1, 0, 0)]));
         assert!(update.request.is_empty() && update.draw.is_empty());
     }

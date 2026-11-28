@@ -38,8 +38,6 @@ use crate::frame::DrapeSphere;
 pub(crate) const TERRAIN_TILE_PX: f64 = 512.0;
 /// GL JS's terrain tile manager covers up to zoom 22.
 const TERRAIN_MAX_ZOOM: u8 = 22;
-/// Ready DEM tiles kept beyond those in use.
-const DEM_CACHE: usize = 64;
 
 /// A DEM tile the terrain stands on: its layer in the terrain's page and
 /// its elevations on the CPU.
@@ -302,7 +300,7 @@ impl Terrain {
             key,
             endpoint,
             exaggeration,
-            pyramid: TilePyramid::new(min_zoom, max_zoom, DEM_CACHE),
+            pyramid: TilePyramid::new(min_zoom, max_zoom),
             page: None,
             zooms: DemZooms {
                 delta,
@@ -527,12 +525,7 @@ impl Terrain {
         };
         renderer.set_terrain(gpu, Some((self.page, paint)));
         let requests = self.update(at, cover_room as usize);
-        let evicted = self.pyramid.evict();
-        self.stale |= !evicted.is_empty();
         if let Some(page) = self.page {
-            for retired in evicted {
-                renderer.free_layer(page, retired.layer);
-            }
             for job in self.pads(unpack) {
                 renderer.prepare_dem(page, job);
             }
@@ -654,6 +647,16 @@ impl Terrain {
                 },
                 done => return done,
             }
+        }
+    }
+
+    /// Keeps at most `limit` DEM tiles the cover doesn't read, freeing the
+    /// layers of those it lets go ([`TilePyramid::evict`]).
+    pub(crate) fn evict(&mut self, renderer: &mut Renderer, limit: usize) {
+        let evicted = self.pyramid.evict(limit);
+        self.stale |= !evicted.is_empty();
+        for (_, dem) in evicted {
+            renderer.free_layer(self.page.expect("DEM tiles live in the page"), dem.layer);
         }
     }
 

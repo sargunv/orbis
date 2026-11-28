@@ -277,8 +277,6 @@ pub(crate) fn ready_source(
                 endpoint.minzoom,
                 // Tiles past a source's maxzoom overzoom its last ones.
                 if image { endpoint.maxzoom } else { 24 },
-                // Map::trim_cache bounds the cache by memory.
-                usize::MAX,
             ),
             endpoint: Arc::new(endpoint),
         },

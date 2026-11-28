@@ -634,6 +634,25 @@ impl Jobs for WorkerJobs {
         }
     }
 
+    fn forget(&self, style: u64, source: u32, tile: TileIndex) {
+        let home = {
+            let state = self.state.lock().expect("jobs poisoned");
+            match state.whole.contains(&source) {
+                true => state.whole_homes.get(&source).copied(),
+                false => state.homes.get(&(source, tile)).copied(),
+            }
+        };
+        // A tile without a home has nothing kept of it.
+        if let Some(worker) = home {
+            let forget = JobRequest::Forget {
+                style,
+                source,
+                tile,
+            };
+            self.post(worker, &forget);
+        }
+    }
+
     fn fetch_counts(&self) -> FetchCounts {
         self.turns.counts()
     }

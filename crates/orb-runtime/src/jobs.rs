@@ -104,6 +104,12 @@ pub enum JobRequest {
         source: u32,
         tile: orb_crs::TileIndex,
     },
+    /// [`Jobs::forget`].
+    Forget {
+        style: u64,
+        source: u32,
+        tile: orb_crs::TileIndex,
+    },
 }
 
 /// A job host's answer to the request with `id`. Its large parts travel
@@ -199,20 +205,19 @@ pub trait Jobs: Send + Sync {
     fn load(&self, request: TileRequest, done: TileDone);
     /// The tile fetches these jobs started, aborted once started and
     /// completed so far.
-    fn fetch_counts(&self) -> crate::FetchCounts {
-        crate::FetchCounts::default()
-    }
+    fn fetch_counts(&self) -> crate::FetchCounts;
     /// Ranks the loads waiting for their fetches again: each that `rank`
     /// ranks takes that rank ([`Turns::reorder`](crate::Turns::reorder)).
-    fn reorder(&self, _rank: &dyn Fn(crate::LoadKey) -> Option<u64>) {}
+    fn reorder(&self, rank: &dyn Fn(crate::LoadKey) -> Option<u64>);
     /// Gives up the load of `tile` of style `style`'s source `source`: one
     /// whose fetch hasn't started never does and answers
-    /// [`TileResult::cancelled`]; others complete as usual.
-    fn cancel(&self, _style: u64, _source: u32, _tile: orb_crs::TileIndex) {}
-    /// Lets go of what the jobs keep of `tile` of style `style`'s source
-    /// `source` (its decoded frame), so that a later load fetches it again:
-    /// a map without a tile cache keeps nothing of tiles out of view.
-    fn forget(&self, _style: u64, _source: u32, _tile: orb_crs::TileIndex) {}
+    /// [`TileOutcome::Cancelled`]; others complete as usual.
+    fn cancel(&self, style: u64, source: u32, tile: orb_crs::TileIndex);
+    /// Lets go of what the jobs keep of data tile `tile` of style `style`'s
+    /// source `source` (its decoded frame): the map holds no tile that
+    /// reads it any more, so what the jobs keep of tiles follows the map's
+    /// cache.
+    fn forget(&self, style: u64, source: u32, tile: orb_crs::TileIndex);
     /// Starts fetching glyph ranges style `id`'s tiles are about to need,
     /// so that their layout finds them in.
     fn prefetch_glyphs(&self, _id: u64, _urls: Vec<String>) {}

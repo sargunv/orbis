@@ -576,16 +576,16 @@ impl Map {
         }
     }
 
-    /// Keeps each source's tiles out of view to two views' worth of
-    /// `viewport` ([`source_cache_limit`]; none with the tile cache off):
-    /// the least recently used go first.
-    /// The scene's pools then hold the tiles in view and what's left of the
-    /// cache, and arrivals that need room evict more (`evict_unused`).
+    /// Keeps each source's tiles out of view, the terrain's too, to two
+    /// views' worth of `viewport` ([`source_cache_limit`]; none with the
+    /// tile cache off or after a low-memory warning): the least recently
+    /// used go first. Without the cache, the jobs forget the data tiles no
+    /// tile left reads too; with it, their frames stay to stand in for a
+    /// tile the network fails to bring back (`JobHost::load`). The scene's
+    /// pools then hold the tiles in view and what's left of the cache, and
+    /// arrivals that need room evict more.
     pub(crate) fn trim_cache(&mut self, renderer: &mut Renderer, viewport: orb_camera::Viewport) {
         self.cache_viewport = viewport;
-        if self.style.is_none() {
-            return;
-        }
         // Pressure sheds what's kept out of view, parked payloads too.
         let release = std::mem::take(&mut self.release_cached);
         if release {
@@ -595,41 +595,34 @@ impl Map {
         let Some(style) = &mut self.style else {
             return;
         };
-        // Per source, its tiles out of view past its limit, oldest first:
-        // (source, tile).
-        let mut gone: Vec<(usize, TileIndex)> = Vec::new();
-        for (index, source) in style.sources.iter().enumerate() {
-            if let SourceState::Ready {
+        let limit = |used, cover_px| match keeps {
+            true => source_cache_limit(used, cover_px, viewport),
+            false => 0,
+        };
+        let plan = style.worker.plan();
+        for (index, source) in style.sources.iter_mut().enumerate() {
+            let SourceState::Ready {
                 pyramid, endpoint, ..
-            } = &source.state
-            {
-                let limit = match keeps {
-                    true => source_cache_limit(pyramid.used(), endpoint.cover_px, viewport),
-                    false => 0,
-                };
-                let mut unused: Vec<(u64, TileIndex)> =
-                    pyramid.unused().map(|(tile, age, _)| (age, tile)).collect();
-                if unused.len() > limit {
-                    unused.sort_unstable_by_key(|u| std::cmp::Reverse(u.0));
-                    let over = unused.len() - limit;
-                    gone.extend(unused.into_iter().take(over).map(|(_, tile)| (index, tile)));
-                }
-            }
-        }
-        for (index, tile) in gone {
-            let SourceState::Ready { pyramid, .. } = &mut style.sources[index].state else {
+            } = &mut source.state
+            else {
                 continue;
             };
-            if let Some(resident) = pyramid.evict_unused(tile) {
-                // Without a tile cache, nothing of it stays to load from.
-                if !self.tile_cache {
-                    let key = style.worker.plan().sources[index].key;
-                    self.services.jobs.forget(style.id, key, tile);
+            let evicted = pyramid.evict(limit(pyramid.used(), endpoint.cover_px));
+            let key = plan.sources[index].key;
+            for (tile, resident) in evicted {
+                let data = endpoint.data_tile(tile);
+                if !keeps && !pyramid.holds(|t| endpoint.data_tile(t) == data) {
+                    self.services.jobs.forget(style.id, key, data);
                 }
                 self.retired
                     .ramps
                     .extend(remove_resident(renderer, resident, &mut style.states));
             }
+        }
+        // Its DEM tiles are images: the jobs keep nothing of them.
+        if let Some(terrain) = style.terrain.get_mut() {
+            let limit = limit(terrain.pyramid.used(), terrain.endpoint.cover_px);
+            terrain.evict(renderer, limit);
         }
     }
 
